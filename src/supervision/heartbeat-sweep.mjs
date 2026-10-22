@@ -102,7 +102,7 @@ function untracked(candidates, rows) {
   return candidates.filter((candidate) => candidate.always || !tracked.has(candidate.source.toLowerCase()));
 }
 
-export async function sweep(opts, { cwd = process.cwd() } = {}) {
+export async function sweep(opts, { cwd = process.cwd(), worktreeOptions = {} } = {}) {
   let text;
   try {
     text = readFileSync(resolve(cwd, opts.ledger), 'utf8');
@@ -121,7 +121,12 @@ export async function sweep(opts, { cwd = process.cwd() } = {}) {
   if (bases.length === 0) notes.push('landings: no tracked base branch found (pass --base <ref>)');
   const proposed = new Set();
   for (const base of bases) take(discoverLandings(cwd, base, rows, { maxRows: opts.maxRows, proposed }));
-  take(discoverWorktrees(cwd, { staleDays: opts.staleDays, worktreeRoot: opts.worktreeRoot, configPath: opts.config }));
+  take(discoverWorktrees(cwd, {
+    staleDays: opts.staleDays,
+    worktreeRoot: opts.worktreeRoot,
+    configPath: opts.config,
+    ...worktreeOptions,
+  }));
   all.push(...registryHygiene(text, rows));
   const free = computeFree(rows, { repoDir: cwd, base: bases[0] ?? 'HEAD', ledgerPath: resolve(cwd, opts.ledger) });
   if (opts.probes) all.push(...(await runProbes(opts.probes, { ledgerPath: resolve(cwd, opts.ledger), repoDir: cwd, rows, bases })));

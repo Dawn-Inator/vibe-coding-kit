@@ -27,6 +27,7 @@ import { discoverRepo, readWorktreeMetadata } from '../../src/worktrees/worktree
 import { stashGuardStatus, primaryAuditLogPath } from '../../src/worktrees/hooks.mjs';
 import { loadConfig } from '../../src/worktrees/config.mjs';
 import { aiParentEnvMarkers } from '../../src/worktrees/process-provenance.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 
 // The suite may itself run inside an AI CLI session, which exports the very
 // markers sync-primary treats as proof of AI-parenthood. A "human shell" test
@@ -941,6 +942,28 @@ test('finish: an exhausted hold budget fails with a clear message and releases t
     assert.equal(existsSync(lockFile), false, 'the finish lock must be released after a hold timeout');
     assert.equal(existsSync(created.path), true, 'nothing was pushed or removed');
   } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('finish releases the lock if primary-CWD setup fails before heartbeat initialization', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wtg-finish-setup-failure-'));
+  const originalChdir = process.chdir;
+  try {
+    const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'setup failure');
+    process.chdir = function chdirWithInjectedPrimaryFailure(path) {
+      if (samePathIdentity(path, primaryDir)) throw new Error('injected primary CWD failure');
+      return originalChdir.call(process, path);
+    };
+    const finishRun = await withCwd(created.path, () => captureConsole(() => (
+      main(['finish', '--message', 'work', '--no-wait'])
+    )));
+    assert.equal(finishRun.result, 1);
+    assert.ok(finishRun.errors.some((line) => /injected primary CWD failure/.test(line)), finishRun.errors.join('\n'));
+    assert.equal(existsSync(lockFile), false, 'setup failure must release the already-acquired finish lock');
+    assert.equal(existsSync(created.path), true, 'setup failure leaves the worktree intact');
+  } finally {
+    process.chdir = originalChdir;
     rmSync(tmp, { recursive: true, force: true });
   }
 });

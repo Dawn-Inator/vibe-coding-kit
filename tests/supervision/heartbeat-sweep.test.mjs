@@ -13,6 +13,7 @@ import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { main as worktreeCli } from '../../src/worktrees/cli.mjs';
 import { discoverRepo } from '../../src/worktrees/worktree-core.mjs';
 import { checkItems, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
+import { parseArgs, sweep as runSweep } from '../../src/supervision/heartbeat-sweep.mjs';
 import { discoverWorktrees } from '../../src/supervision/heartbeat-sweep-worktrees.mjs';
 import { ageWorktreeReflogs } from '../support/worktree-age.mjs';
 
@@ -313,6 +314,25 @@ test('worktrees: Windows unknown cwd records use the directory safety probe', as
 
   assert.deepEqual(result.candidates.map((candidate) => candidate.source), ['sweep:worktrees:claude/unknown-cwd']);
   assert.deepEqual(probed, [{ candidate: path, options: { platform: 'win32' } }]);
+});
+
+test('worktrees: process inventory failure suppresses reclaim rows but preserves other sweep results', async () => {
+  const fx = makeRepo();
+  const path = await createWorktree(fx, 'inventory-failure');
+  landByCherryPick(fx, commitIn(path, 'independent-landing'), path);
+  writeLedger(fx);
+
+  const result = await runSweep(parseArgs(['--ledger', fx.ledger]), {
+    cwd: fx.primary,
+    worktreeOptions: {
+      platform: 'win32',
+      getLiveProcessCwds() { throw new Error('PowerShell CIM unavailable'); },
+    },
+  });
+
+  assert.ok(result.lines.some((line) => line.includes('landing:')));
+  assert.ok(!result.lines.some((line) => line.includes('sweep:worktrees:')));
+  assert.ok(result.notes.some((note) => /process CWD inventory failed \(PowerShell CIM unavailable\).*suppressing worktree reclaim suggestions/.test(note)));
 });
 
 test('worktrees: a spent time budget stops the pass after the oldest tree and says how many were left', async () => {

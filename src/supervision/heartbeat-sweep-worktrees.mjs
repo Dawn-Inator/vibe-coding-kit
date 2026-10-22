@@ -68,6 +68,16 @@ export function discoverWorktrees(cwd, {
     .filter((entry) => !samePathIdentity(entry.path, primaryPath))
     .sort((a, b) => rootMtimeMs(a.path) - rootMtimeMs(b.path));
   if (others.length === 0) return { candidates: [], notes };
+  let liveCwds;
+  try {
+    liveCwds = getLiveProcessCwds({ platform });
+  } catch (error) {
+    const detail = String(error?.message || error).split('\n')[0];
+    return {
+      candidates: [],
+      notes: [`worktrees: process CWD inventory failed (${detail}); suppressing worktree reclaim suggestions this wake`],
+    };
+  }
   const ctx = {
     config,
     primaryPath,
@@ -80,7 +90,7 @@ export function discoverWorktrees(cwd, {
     livePaths: livePathsFromFinishQueue(stateDir),
     platform,
     probeDirectoryDeleteSafety,
-    liveCwds: getLiveProcessCwds({ platform }),
+    liveCwds,
   };
   if (!ctx.liveCwds) notes.push('worktrees: lsof unavailable, live-process check skipped (clean, landed and idle gates still apply)');
 

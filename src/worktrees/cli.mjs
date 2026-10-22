@@ -949,25 +949,25 @@ async function commandFinish(flags, positional, config) {
       timeoutMs: flags.waitTimeoutMin ? Number(flags.waitTimeoutMin) * 60000 : undefined,
       config,
     });
-  // The heartbeat is a detached child. On Windows an open process CWD pins
-  // its directory against deletion, so start it from the surviving primary
-  // even though this command continues to operate on the candidate worktree.
-  const callerCwd = process.cwd();
   let heartbeat;
   try {
-    process.chdir(repo.primaryWorktree.path);
-    heartbeat = startFinishLockHeartbeat(stateDir, repo.branchShort, config);
-  } finally {
-    process.chdir(callerCwd);
-  }
-  // Stopped by release(), including when a signal releases the lock.
-  lock.addCleanup(() => heartbeat.stop());
-  const setPhase = (phase) => {
-    lock.setPhase(phase);
-    heartbeat.setPhase(phase);
-  };
+    // The heartbeat is a detached child. On Windows an open process CWD pins
+    // its directory against deletion, so start it from the surviving primary
+    // even though this command continues to operate on the candidate worktree.
+    const callerCwd = process.cwd();
+    try {
+      process.chdir(repo.primaryWorktree.path);
+      heartbeat = startFinishLockHeartbeat(stateDir, repo.branchShort, config);
+    } finally {
+      process.chdir(callerCwd);
+    }
+    // Stopped by release(), including when a signal releases the lock.
+    lock.addCleanup(() => heartbeat?.stop());
+    const setPhase = (phase) => {
+      lock.setPhase(phase);
+      heartbeat.setPhase(phase);
+    };
 
-  try {
     // Every fetch / rebase / push below runs under the hold budget.
     setPhase('fetch');
     await lockedGit(
@@ -1088,6 +1088,9 @@ async function commandFinish(flags, positional, config) {
     console.log(`[worktree-guard] finished and pushed to ${remoteName}/${baseBranch}. Remember to run: worktree-guard sync-primary`);
     return 0;
   } finally {
+    // Setup itself is protected too: chdir or heartbeat initialization can
+    // fail immediately after lock acquisition, before any network phase.
+    heartbeat?.stop();
     lock.release(); // also stops the heartbeat and removes the signal handlers
   }
 }
