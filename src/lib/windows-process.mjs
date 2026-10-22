@@ -11,10 +11,10 @@ using System.Text;
 public static class VibeWindowsProcessProbe {
   [StructLayout(LayoutKind.Sequential)]
   private struct ProcessBasicInformation {
-    public IntPtr Reserved1;
+    public int ExitStatus;
     public IntPtr PebBaseAddress;
-    public IntPtr Reserved2_0;
-    public IntPtr Reserved2_1;
+    public IntPtr AffinityMask;
+    public int BasePriority;
     public IntPtr UniqueProcessId;
     public IntPtr InheritedFromUniqueProcessId;
   }
@@ -25,10 +25,12 @@ public static class VibeWindowsProcessProbe {
   private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out UIntPtr read);
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool CloseHandle(IntPtr handle);
-  [DllImport("kernel32.dll")]
-  private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref ProcessBasicInformation info, uint length, out uint returned);
-  [DllImport("ntdll.dll")]
-  private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref IntPtr info, uint length, out uint returned);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool IsWow64Process(IntPtr process, out bool wow64Process);
+  [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess", ExactSpelling = true)]
+  private static extern int NtQueryInformationProcessBasic(IntPtr process, int infoClass, ref ProcessBasicInformation info, uint length, out uint returned);
+  [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess", ExactSpelling = true)]
+  private static extern int NtQueryInformationProcessPointer(IntPtr process, int infoClass, ref IntPtr info, uint length, out uint returned);
 
   private static IntPtr Add(IntPtr address, int offset) {
     return new IntPtr(address.ToInt64() + offset);
@@ -42,7 +44,9 @@ public static class VibeWindowsProcessProbe {
   }
 
   private static IntPtr ReadPointer(byte[] data, int pointerSize) {
-    return pointerSize == 8 ? new IntPtr(BitConverter.ToInt64(data, 0)) : new IntPtr(BitConverter.ToInt32(data, 0));
+    return pointerSize == 8
+      ? new IntPtr(BitConverter.ToInt64(data, 0))
+      : new IntPtr((long)(uint)BitConverter.ToInt32(data, 0));
   }
 
   public static object ReadCurrentDirectory(uint processId) {
@@ -55,18 +59,32 @@ public static class VibeWindowsProcessProbe {
     try {
       ProcessBasicInformation basic = new ProcessBasicInformation();
       uint returned;
-      int status = NtQueryInformationProcess(process, 0, ref basic, (uint)Marshal.SizeOf(typeof(ProcessBasicInformation)), out returned);
+      int status = NtQueryInformationProcessBasic(process, 0, ref basic, (uint)Marshal.SizeOf(typeof(ProcessBasicInformation)), out returned);
       if (status != 0 || basic.PebBaseAddress == IntPtr.Zero) {
         return new { path = (string)null, status = "unreadable", errorCode = status };
       }
 
       int pointerSize = IntPtr.Size;
       IntPtr peb = basic.PebBaseAddress;
+      // A 32-bit probe on 64-bit Windows cannot safely read a native 64-bit PEB.
+      // It can still inspect 32-bit WOW64 targets; report other targets unknown.
+      if (IntPtr.Size == 4 && Environment.Is64BitOperatingSystem) {
+        bool wow64Target;
+        if (!IsWow64Process(process, out wow64Target)) {
+          return new { path = (string)null, status = "unknown", errorCode = Marshal.GetLastWin32Error() };
+        }
+        if (!wow64Target) {
+          return new { path = (string)null, status = "unknown", errorCode = 0 };
+        }
+      }
       // A 64-bit PowerShell process can inspect a 32-bit target through its WOW64 PEB.
       if (IntPtr.Size == 8) {
         IntPtr wow64Peb = IntPtr.Zero;
-        int wow64Status = NtQueryInformationProcess(process, 26, ref wow64Peb, (uint)IntPtr.Size, out returned);
-        if (wow64Status == 0 && wow64Peb != IntPtr.Zero) { peb = wow64Peb; pointerSize = 4; }
+        int wow64Status = NtQueryInformationProcessPointer(process, 26, ref wow64Peb, (uint)IntPtr.Size, out returned);
+        if (wow64Status == 0 && wow64Peb != IntPtr.Zero) {
+          peb = new IntPtr(wow64Peb.ToInt64() & 0xffffffffL);
+          pointerSize = 4;
+        }
       }
 
       byte[] parametersBytes = Read(process, Add(peb, pointerSize == 8 ? 0x20 : 0x10), pointerSize);
@@ -81,7 +99,7 @@ public static class VibeWindowsProcessProbe {
       int byteLength = BitConverter.ToUInt16(unicodeString, 0);
       IntPtr pathBuffer = pointerSize == 8
         ? new IntPtr(BitConverter.ToInt64(unicodeString, 8))
-        : new IntPtr(BitConverter.ToInt32(unicodeString, 4));
+        : new IntPtr((long)(uint)BitConverter.ToInt32(unicodeString, 4));
       if (byteLength <= 0 || byteLength > 32766 || pathBuffer == IntPtr.Zero) {
         return new { path = (string)null, status = "unreadable", errorCode = 0 };
       }
@@ -96,7 +114,14 @@ public static class VibeWindowsProcessProbe {
 '@
 
 $rows = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
-  $cwd = [VibeWindowsProcessProbe]::ReadCurrentDirectory([uint32]$_.ProcessId)
+  $cwd = $null
+  try {
+    $cwd = [VibeWindowsProcessProbe]::ReadCurrentDirectory([uint32]$_.ProcessId)
+  } catch {
+    # Keep the CIM process record. A per-process native probe failure must not
+    # erase the rest of the inventory or make an unreadable cwd look like idle.
+    $cwd = [pscustomobject]@{ path = $null; status = 'unknown'; errorCode = $null }
+  }
   [pscustomobject]@{
     pid = [int]$_.ProcessId
     ppid = [int]$_.ParentProcessId
@@ -104,7 +129,7 @@ $rows = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-O
     commandLine = [string]$_.CommandLine
     cwd = [string]$cwd.path
     cwdStatus = [string]$cwd.status
-    cwdErrorCode = [int]$cwd.errorCode
+    cwdErrorCode = $cwd.errorCode
   }
 })
 ConvertTo-Json -InputObject $rows -Compress -Depth 3
@@ -131,7 +156,7 @@ function validateProcessRows(value) {
       commandLine: typeof row.commandLine === 'string' && row.commandLine ? row.commandLine : null,
       cwd,
       cwdStatus: cwd === null && cwdStatus === 'readable' ? 'unknown' : cwdStatus,
-      cwdErrorCode: Number.isInteger(Number(row.cwdErrorCode)) ? Number(row.cwdErrorCode) : null,
+      cwdErrorCode: row.cwdErrorCode != null && Number.isInteger(Number(row.cwdErrorCode)) ? Number(row.cwdErrorCode) : null,
     };
   });
 }

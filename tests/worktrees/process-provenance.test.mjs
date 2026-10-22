@@ -362,7 +362,18 @@ test('listWindowsProcesses: invokes built-in PowerShell CIM probe and normalizes
   assert.equal(invocation.command, 'powershell.exe');
   assert.ok(invocation.args.includes('-NoProfile'));
   assert.ok(invocation.args.at(-1).includes('Get-CimInstance -ClassName Win32_Process'));
-  assert.ok(invocation.args.at(-1).includes('NtQueryInformationProcess'));
+  const nativeSource = invocation.args.at(-1);
+  assert.equal((nativeSource.match(/DllImport\("ntdll\.dll", EntryPoint = "NtQueryInformationProcess"/g) || []).length, 2);
+  assert.doesNotMatch(nativeSource, /DllImport\("kernel32\.dll"[^\n]*\)\]\s*private static extern int NtQueryInformationProcess/);
+  assert.match(nativeSource, /DllImport\("kernel32\.dll", SetLastError = true\)\]\s*private static extern IntPtr OpenProcess/);
+  assert.match(nativeSource, /DllImport\("kernel32\.dll", SetLastError = true\)\]\s*private static extern bool ReadProcessMemory/);
+  assert.match(nativeSource, /DllImport\("kernel32\.dll", SetLastError = true\)\]\s*private static extern bool CloseHandle/);
+  assert.match(nativeSource, /DllImport\("kernel32\.dll", SetLastError = true\)\]\s*private static extern bool IsWow64Process/);
+  assert.match(nativeSource, /IntPtr\.Size == 4 && Environment\.Is64BitOperatingSystem/);
+  assert.match(nativeSource, /status = 'unknown'; errorCode = \$null/);
+  assert.match(nativeSource, /catch \{[\s\S]*status = 'unknown'/);
+  assert.match(nativeSource, /new IntPtr\(\(long\)\(uint\)BitConverter\.ToInt32/);
+  assert.match(nativeSource, /wow64Peb\.ToInt64\(\) & 0xffffffffL/);
   assert.equal(invocation.options.windowsHide, true);
   assert.deepEqual(rows, [{
     pid: 12, ppid: 3, executablePath: 'C:\\Tools\\claude.exe',
