@@ -113,7 +113,11 @@ The kit's `templates/` directory is only for initial scaffolding. Routine `prepa
 
 ## Compatibility and project policy
 
-The kit requires Node.js 20 or newer and Git. The consuming project decides which capabilities to enable and supplies its own identity, adapter, environment rules, gate commands, and release authorization. The tutorial's branch and production examples explain design choices; they do not configure or authorize a consumer's deployment workflow.
+The kit requires Node.js 20 or newer and Git. On Windows, worktree process-tree and current-working-directory checks use the system PowerShell 5.1, including `Add-Type`, plus native Win32 Job Object and file-handle checks. The kit adds no npm runtime dependency or external runtime installation. If system policy blocks PowerShell or `Add-Type`, the checks fail closed and the affected operation is refused.
+
+Windows cleanup may use a native DELETE-handle check when process inspection cannot prove whether a directory is a current working directory. Junctions and symlinks (reparse points) remain ineligible for cleanup. If signal draining fails, the runtime keeps its `recoveryRequired` lock; ordinary automatic stale cleanup will not cross that fence. Recovery requires confirming that all kit-owned Git operations have stopped, then using the project’s manual recovery process. Do not remove the lock while an owned Git operation may still be running.
+
+The consuming project decides which capabilities to enable and supplies its own identity, adapter, environment rules, gate commands, and release authorization. The tutorial's branch and production examples explain design choices; they do not configure or authorize a consumer's deployment workflow.
 
 For current command syntax, run:
 

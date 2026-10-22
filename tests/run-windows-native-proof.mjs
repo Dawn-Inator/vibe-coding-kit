@@ -11,6 +11,9 @@ export const NATIVE_CASES = Object.freeze([
   'native cancellation contains a parent-exited descendant and preserves unrelated processes',
   'native timeout terminates all job members but leaves unrelated process alive',
   'native setup and assignment failures never resume the requested command',
+  'native bare git.exe resolves through the child PATH and missing commands fail closed',
+  'native immediate cancellation before controller readiness never runs the target',
+  'native expired startup deadline cancels before the target entry point',
 ]);
 const PATTERN = `^(?:${NATIVE_CASES.map(escapeRegExp).join('|')})$`;
 const MAX_TRANSCRIPT_STREAM_BYTES = 12 * 1024;

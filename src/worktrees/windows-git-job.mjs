@@ -1,4 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import path from 'node:path';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
@@ -17,6 +19,7 @@ try {
   $json = [Console]::In.ReadLine()
   if ($null -eq $json) { throw 'Missing Windows Job Object configuration on stdin.' }
   $cfg = ConvertFrom-Json -InputObject $json
+  if ([int]$cfg.testDelayControllerMs -gt 0) { Start-Sleep -Milliseconds ([int]$cfg.testDelayControllerMs) }
   Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -256,6 +259,7 @@ public static class VibeWindowsGitJobRunner {
       output.Append(isStdout, buffer, (int)read);
       total += (int)read;
     }
+    return total;
   }
   static VibeWindowsGitJobOutcome Outcome(OutputCapture output, Nullable<int> status, bool timedOut, bool cancelled, bool confirmedZero, string error) {
     return new VibeWindowsGitJobOutcome {
@@ -270,8 +274,53 @@ public static class VibeWindowsGitJobRunner {
     };
   }
 
-  public static VibeWindowsGitJobOutcome Run(string command, string[] args, string cwd, string environmentBase64, int timeoutMs, int maxOutputBytes, string testFailAt) {
+  static readonly object controlLock = new object();
+  static readonly Queue<string> controlQueue = new Queue<string>();
+  static void EnqueueControl(string message) {
+    lock (controlLock) controlQueue.Enqueue(message);
+  }
+  static bool TryDequeueControl(out string message) {
+    lock (controlLock) {
+      if (controlQueue.Count == 0) { message = null; return false; }
+      message = controlQueue.Dequeue();
+      return true;
+    }
+  }
+  static void DrainControls(bool readyPublished, ref bool startRequested, ref bool cancelled, ref bool invalidControl) {
+    string message;
+    while (TryDequeueControl(out message)) {
+      if (message == "cancel" || message == "eof") cancelled = true;
+      else if (message == "start") {
+        if (readyPublished) startRequested = true;
+        else invalidControl = true;
+      } else invalidControl = true;
+    }
+  }
+  static void StartControlMonitor() {
+    Thread monitor = new Thread(delegate() {
+      try {
+        string line;
+        while ((line = Console.ReadLine()) != null) EnqueueControl(line.Trim());
+      } catch { }
+      EnqueueControl("eof");
+    });
+    monitor.IsBackground = true;
+    monitor.Start();
+  }
+  static long CurrentEpochMilliseconds() {
+    return (DateTime.UtcNow.Ticks - 621355968000000000L) / TimeSpan.TicksPerMillisecond;
+  }
+  static bool DeadlineExpired(long deadlineEpochMs) {
+    return CurrentEpochMilliseconds() >= deadlineEpochMs;
+  }
+
+  public static VibeWindowsGitJobOutcome Run(string command, string[] args, string cwd, string environmentBase64, int maxOutputBytes, long deadlineEpochMs, string testFailAt) {
     if (args == null) args = new string[0];
+    StartControlMonitor();
+    bool startRequested = false, ownerCancelled = false, invalidControl = false, readyPublished = false;
+    DrainControls(false, ref startRequested, ref ownerCancelled, ref invalidControl);
+    if (ownerCancelled || invalidControl) return Outcome(new OutputCapture(maxOutputBytes), null, false, ownerCancelled, true, invalidControl ? "Invalid Windows Job Object startup control message." : null);
+    if (DeadlineExpired(deadlineEpochMs)) return Outcome(new OutputCapture(maxOutputBytes), null, true, false, true, null);
     OutputCapture output = new OutputCapture(maxOutputBytes);
     IntPtr job = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero, errRead = IntPtr.Zero, errWrite = IntPtr.Zero, nullInput = IntPtr.Zero;
     IntPtr attributeList = IntPtr.Zero, handleArray = IntPtr.Zero;
@@ -323,6 +372,9 @@ public static class VibeWindowsGitJobRunner {
       if (commandLine.Length > 32766) return Outcome(output, null, false, false, true, "Windows command line exceeds 32,766 UTF-16 characters.");
       byte[] env = DecodeEnvironment(environmentBase64);
       if (testFailAt == "create-process") return Outcome(output, null, false, false, true, "Injected process initialization failure.");
+      DrainControls(false, ref startRequested, ref ownerCancelled, ref invalidControl);
+      if (ownerCancelled || invalidControl) return Outcome(output, null, false, ownerCancelled, true, invalidControl ? "Invalid Windows Job Object startup control message." : null);
+      if (DeadlineExpired(deadlineEpochMs)) return Outcome(output, null, true, false, true, null);
       if (!CreateProcessW(command, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, true,
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT, env, cwd, ref startup, out process)) {
         return Outcome(output, null, false, false, true, Win32Error("CreateProcessW"));
@@ -341,11 +393,14 @@ public static class VibeWindowsGitJobRunner {
         if (!confirmedZero) failure += " Suspended child termination was not confirmed.";
         return Outcome(output, null, false, false, confirmedZero, failure);
       }
-      if (ResumeThread(process.hThread) == UInt32.MaxValue) {
-        failure = Win32Error("ResumeThread");
-        TerminateJobObject(job, TERMINATE_CODE);
-      } else {
-        resumed = true;
+      DrainControls(false, ref startRequested, ref ownerCancelled, ref invalidControl);
+      if (ownerCancelled || invalidControl || DeadlineExpired(deadlineEpochMs)) {
+        cancelled = ownerCancelled;
+        timedOut = !ownerCancelled && DeadlineExpired(deadlineEpochMs);
+        TerminateProcess(process.hProcess, TERMINATE_CODE);
+        confirmedZero = WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0;
+        if (!confirmedZero) failure = "Suspended child termination was not confirmed before launch.";
+        return Outcome(output, null, timedOut, cancelled, confirmedZero, failure);
       }
       CloseHandle(outWrite); outWrite = IntPtr.Zero;
       CloseHandle(errWrite); errWrite = IntPtr.Zero;
@@ -354,21 +409,52 @@ public static class VibeWindowsGitJobRunner {
       if (attributeList != IntPtr.Zero) { if (attributeListInitialized) DeleteProcThreadAttributeList(attributeList); Marshal.FreeHGlobal(attributeList); attributeList = IntPtr.Zero; attributeListInitialized = false; }
 
       if (failure == null) {
-        Thread inputMonitor = new Thread(delegate() {
-          try {
-            string line;
-            while ((line = Console.ReadLine()) != null) {
-              if (line.Trim() == "cancel") { Interlocked.Exchange(ref cancelRequested, 1); return; }
-            }
-          } catch { }
-          Interlocked.Exchange(ref cancelRequested, 1);
-        });
-        inputMonitor.IsBackground = true;
-        inputMonitor.Start();
+        readyPublished = true;
+        Console.Out.WriteLine("{\"protocol\":1,\"event\":\"ready\"}");
+        Console.Out.Flush();
+        while (!startRequested && !ownerCancelled && !invalidControl && !DeadlineExpired(deadlineEpochMs)) {
+          DrainControls(readyPublished, ref startRequested, ref ownerCancelled, ref invalidControl);
+          if (!startRequested && !ownerCancelled && !invalidControl && !DeadlineExpired(deadlineEpochMs)) Thread.Sleep(5);
+        }
+        if (!startRequested || ownerCancelled || invalidControl || DeadlineExpired(deadlineEpochMs)) {
+          cancelled = ownerCancelled;
+          timedOut = !ownerCancelled && DeadlineExpired(deadlineEpochMs);
+          if (invalidControl && failure == null) failure = "Invalid Windows Job Object launch control message.";
+          TerminateJobObject(job, TERMINATE_CODE);
+          uint suspendedWait = WaitForSingleObject(process.hProcess, 5000);
+          uint suspendedActive;
+          confirmedZero = suspendedWait == WAIT_OBJECT_0 && TryActive(job, out suspendedActive) && suspendedActive == 0;
+          if (!confirmedZero && failure == null) failure = "Suspended job termination was not confirmed before launch.";
+          return Outcome(output, null, timedOut, cancelled, confirmedZero, failure);
+        }
+        lock (controlLock) {
+          DrainControls(readyPublished, ref startRequested, ref ownerCancelled, ref invalidControl);
+          if (ownerCancelled || invalidControl || DeadlineExpired(deadlineEpochMs)) {
+            cancelled = ownerCancelled;
+            timedOut = !ownerCancelled && DeadlineExpired(deadlineEpochMs);
+            if (invalidControl && failure == null) failure = "Invalid Windows Job Object launch control message.";
+          } else if (ResumeThread(process.hThread) == UInt32.MaxValue) {
+            failure = Win32Error("ResumeThread");
+            TerminateJobObject(job, TERMINATE_CODE);
+          } else {
+            resumed = true;
+          }
+        }
+        if (!resumed) {
+          if (failure == null) TerminateJobObject(job, TERMINATE_CODE);
+          uint gatedWait = WaitForSingleObject(process.hProcess, 5000);
+          uint gatedActive;
+          confirmedZero = gatedWait == WAIT_OBJECT_0 && TryActive(job, out gatedActive) && gatedActive == 0;
+          if (!confirmedZero && failure == null) failure = "Suspended job termination was not confirmed at launch gate.";
+          return Outcome(output, null, timedOut, cancelled, confirmedZero, failure);
+        }
         Stopwatch clock = Stopwatch.StartNew();
         bool terminationSent = false;
         long terminationAt = 0;
         while (true) {
+          bool ignoredStart = false, inputCancelled = false, badControl = false;
+          DrainControls(readyPublished, ref ignoredStart, ref inputCancelled, ref badControl);
+          if (inputCancelled || badControl) Interlocked.Exchange(ref cancelRequested, 1);
           try { DrainPipe(outRead, true, output, 64 * 1024); DrainPipe(errRead, false, output, 64 * 1024); }
           catch (Exception ex) {
             if (failure == null) failure = ex.Message;
@@ -380,7 +466,7 @@ public static class VibeWindowsGitJobRunner {
             terminationSent = true;
             terminationAt = clock.ElapsedMilliseconds;
           }
-          if (clock.ElapsedMilliseconds >= timeoutMs && !terminationSent) {
+          if (DeadlineExpired(deadlineEpochMs) && !terminationSent) {
             timedOut = true;
             TerminateJobObject(job, TERMINATE_CODE);
             terminationSent = true;
@@ -448,7 +534,7 @@ public static class VibeWindowsGitJobRunner {
 '@
   $commandArgs = @()
   if ($null -ne $cfg.args) { $commandArgs = @($cfg.args | ForEach-Object { [string]$_ }) }
-  $outcome = [VibeWindowsGitJobRunner]::Run([string]$cfg.command, [string[]]$commandArgs, $cfg.cwd, [string]$cfg.environmentBase64, [int]$cfg.timeoutMs, [int]$cfg.maxOutputBytes, [string]$cfg.testFailAt)
+  $outcome = [VibeWindowsGitJobRunner]::Run([string]$cfg.command, [string[]]$commandArgs, $cfg.cwd, [string]$cfg.environmentBase64, [int]$cfg.maxOutputBytes, [long]$cfg.deadlineEpochMs, [string]$cfg.testFailAt)
   $response = [pscustomobject]@{
     protocol = 1
     status = $outcome.Status
@@ -524,6 +610,54 @@ function encodeEnvironment(environment) {
   return Buffer.from(block, 'utf16le').toString('base64');
 }
 
+function getEnvValue(environment, name) {
+  const key = Object.keys(environment).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : environment[key];
+}
+
+function isFile(candidate) {
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveWindowsExecutable(command, cwd, environment) {
+  const normalizedCwd = path.win32.resolve(cwd || process.cwd());
+  const hasPath = command.includes('\\') || command.includes('/') || command.includes(':');
+  if (hasPath) {
+    const candidate = path.win32.resolve(normalizedCwd, command);
+    if (isFile(candidate)) return candidate;
+    throw new Error(`Windows command could not be resolved to a file: ${command}`);
+  }
+
+  const pathValue = getEnvValue(environment, 'PATH');
+  const pathDirectories = typeof pathValue === 'string' ? pathValue.split(';') : [];
+  if (pathDirectories.length > 256) throw new RangeError('Windows PATH contains more than 256 entries; command lookup is bounded');
+  const searchDirectories = [normalizedCwd, ...pathDirectories.map((entry) => {
+    const unquoted = entry.trim().replace(/^"(.*)"$/, '$1');
+    return unquoted ? path.win32.resolve(normalizedCwd, unquoted) : normalizedCwd;
+  })];
+  const extension = path.win32.extname(command);
+  const configuredExtensions = getEnvValue(environment, 'PATHEXT');
+  const extensions = extension
+    ? ['']
+    : String(configuredExtensions ?? '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((item) => item.trim().replace(/^"(.*)"$/, '$1'))
+      .filter(Boolean)
+      .map((item) => item.startsWith('.') ? item : `.${item}`);
+  const suffixes = extension ? [''] : ['', ...extensions];
+  for (const directory of searchDirectories) {
+    for (const suffix of suffixes) {
+      const candidate = path.win32.resolve(directory, `${command}${suffix}`);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  throw new Error(`Windows command could not be resolved using cwd, PATH, and PATHEXT: ${command}`);
+}
+
 function makeConfig(command, args, options) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -545,47 +679,58 @@ function makeConfig(command, args, options) {
   if (testFailAt !== undefined && !['create-job', 'create-process', 'assign'].includes(testFailAt)) {
     throw new TypeError('Unsupported internal Windows job test hook');
   }
+  const testDelayControllerMs = options.testHooks?.delayControllerMs ?? 0;
+  if (!Number.isSafeInteger(testDelayControllerMs) || testDelayControllerMs < 0 || testDelayControllerMs > 5000) {
+    throw new RangeError('Unsupported internal Windows job controller delay');
+  }
   return {
-    command,
+    command: (options.resolveExecutable ?? resolveWindowsExecutable)(command, options.cwd ?? process.cwd(), environment),
     args,
     cwd: options.cwd ?? null,
     environmentBase64: encodeEnvironment(environment),
     timeoutMs,
     maxOutputBytes,
+    testDelayControllerMs,
     testFailAt: testFailAt ?? null,
   };
 }
 
 /**
  * Run one Windows command inside a kill-on-close Job Object.
- * The child is created suspended, assigned to the job, then resumed. The
+ * The child is created suspended, assigned to the job, and resumed only after
+ * the caller grants the controller's ready event. A cancellation or EOF before
+ * that grant terminates the suspended child without running its entry point. The
  * controller reports completion only after QueryInformationJobObject proves
  * ActiveProcesses is zero. timeoutMs is the total launch/runtime deadline;
  * after it expires, cleanup confirmation is bounded to ten additional seconds.
  * maxOutputBytes caps retained stdout plus stderr together while both pipes
  * continue to drain, and is capped at 32 MiB. `testHooks` is a fail-safe
- * native-test seam which can only inject setup failures; it cannot bypass job
- * containment.
+ * native-test seam which can delay startup or inject setup failures; it cannot
+ * bypass job containment.
  */
 export function startWindowsJob(command, args = [], options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') {
+    const error = new Error('Windows Job Object execution is only available on win32');
+    return { result: rejectable(error), cancel: () => rejectable(error) };
+  }
+  const startedAt = Date.now();
   let config;
   try {
     if (typeof command !== 'string' || command.length === 0) throw new TypeError('command must be a non-empty string');
     if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new TypeError('args must be an array of strings');
     if (command.includes('\0') || args.some((arg) => arg.includes('\0'))) throw new TypeError('command and args cannot contain NUL characters');
     config = makeConfig(command, args, options);
+    const remainingTimeoutMs = config.timeoutMs - (Date.now() - startedAt);
+    if (remainingTimeoutMs < 1) throw new Error('Windows Job Object launch deadline expired during executable resolution');
+    config.timeoutMs = remainingTimeoutMs;
+    config.deadlineEpochMs = Date.now() + remainingTimeoutMs;
     if (quoteWindowsArg(command).length + args.reduce((size, arg) => size + quoteWindowsArg(arg).length + 1, 0) > 32766) {
       throw new RangeError('Windows command line exceeds 32,766 UTF-16 characters');
     }
   } catch (error) {
     const result = rejectable(error);
     return { result, cancel: () => rejectable(error) };
-  }
-
-  const platform = options.platform ?? process.platform;
-  if (platform !== 'win32') {
-    const error = new Error('Windows Job Object execution is only available on win32');
-    return { result: rejectable(error), cancel: () => rejectable(error) };
   }
 
   const script = CONTROLLER_SCRIPT;
@@ -602,6 +747,10 @@ export function startWindowsJob(command, args = [], options = {}) {
   let stderrText = '';
   let stderrKept = 0;
   let deadlineTriggered = false;
+  let cancelRequested = false;
+  let cancelCommandSent = false;
+  let startCommandSent = false;
+  let readinessSeen = false;
   let cancelPromise = null;
   let cancelTimer = null;
   const maxProtocolBytes = Math.max(64 * 1024, config.maxOutputBytes * 2 + 64 * 1024);
@@ -654,7 +803,34 @@ export function startWindowsJob(command, args = [], options = {}) {
       if (!line) continue;
       try {
         const record = JSON.parse(line);
-        if (record && typeof record === 'object' && record.protocol === 1) finalRecord = record;
+        if (record && typeof record === 'object' && record.protocol === 1 && record.event === 'ready') {
+          if (readinessSeen) {
+            try { child?.kill(); } catch { /* the job handle closes with the controller */ }
+            fail(new Error('Windows Job Object controller emitted duplicate readiness'));
+            return;
+          }
+          readinessSeen = true;
+          const command = cancelRequested || deadlineTriggered ? 'cancel' : 'start';
+          if (command === 'cancel') {
+            if (!cancelCommandSent) {
+              cancelCommandSent = true;
+              child.stdin.write('cancel\n', (error) => {
+                if (error) fail(new Error(`Could not cancel before Windows Job Object launch: ${error.message}`));
+              });
+            }
+          } else if (!startCommandSent) {
+            startCommandSent = true;
+            child.stdin.write('start\n', (error) => {
+              if (error) fail(new Error(`Could not authorize Windows Job Object launch: ${error.message}`));
+            });
+          }
+        } else if (record && typeof record === 'object' && record.protocol === 1 && !record.event) {
+          finalRecord = record;
+        } else {
+          try { child?.kill(); } catch { /* the job handle closes with the controller */ }
+          fail(new Error('Windows Job Object controller emitted an unknown protocol record'));
+          return;
+        }
       } catch {
         // PowerShell's stdout must contain only the final JSON record.
         try { child?.kill(); } catch { /* the job handle closes with the controller */ }
@@ -669,6 +845,7 @@ export function startWindowsJob(command, args = [], options = {}) {
   };
   const sendCancel = (isDeadline) => {
     if (isDeadline) deadlineTriggered = true;
+    cancelRequested = true;
     if (cancelPromise) return cancelPromise;
     cancelPromise = new Promise((resolve, reject) => {
       if (settled) {
@@ -678,10 +855,15 @@ export function startWindowsJob(command, args = [], options = {}) {
       cancelTimer = setTimeout(onCancelWatchdog, CANCEL_CONFIRM_TIMEOUT_MS);
       try {
         if (!child?.stdin || child.stdin.destroyed || child.exitCode !== null) throw new Error('Windows Job Object controller is not available');
-        child.stdin.write('cancel\n', (error) => {
-          if (error) reject(error);
-          else resolve();
-        });
+        if (cancelCommandSent) {
+          resolve();
+        } else {
+          cancelCommandSent = true;
+          child.stdin.write('cancel\n', (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        }
       } catch (error) {
         reject(error);
       }

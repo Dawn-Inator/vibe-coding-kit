@@ -23,6 +23,8 @@ The kit is invoked from its Git checkout with Node. It is not currently distribu
 
 `init` defaults to keeping generated `.agents/skills/` and `.claude/skills/` mirrors out of Git through a managed `.gitignore` block. Projects that intentionally track those projections can initialize with `--mirror-policy tracked`. Offline `prepare` requires the registered local submodule module cache to contain the exact pinned commit; a cold checkout must be prepared online first.
 
+Windows worktree process and cleanup checks use the system PowerShell 5.1 and native Windows process/file-handle facilities; the kit adds no npm runtime dependency. See [INSTALL.md](INSTALL.md#compatibility-and-project-policy) for failure and recovery behavior.
+
 ## Policy boundary
 
 The kit provides reusable mechanisms and examples. Each consuming project defines its own branches, environments, gate commands, authorization rules, deployment policy, and business constraints through project-owned configuration and adapters. No single project's production or gate policy becomes a default for every consumer. Existing integrations, including the LingoFly bridge, may keep thin project-owned bootstrap and adapter wrappers; the wrapper supplies project policy and delegates reusable operations to the pinned kit.

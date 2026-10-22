@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,17 +10,31 @@ import test from 'node:test';
 
 import { startWindowsJob } from '../../src/worktrees/windows-git-job.mjs';
 
-function fakeController({ onCancel, record = { protocol: 1, status: 0, stdoutBase64: '', stderrBase64: '', signal: null, timedOut: false, cancelled: false, confirmedZero: true } } = {}) {
+function fakeController({
+  emitReady = true,
+  onStart,
+  onCancel,
+  record = { protocol: 1, status: 0, stdoutBase64: '', stderrBase64: '', signal: null, timedOut: false, cancelled: false, confirmedZero: true },
+} = {}) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.exitCode = null;
   child.stdinData = '';
+  child.controls = [];
   child.stdin = new Writable({
     write(chunk, _encoding, callback) {
       const input = chunk.toString();
       child.stdinData += input;
-      if (input.includes('cancel') && onCancel) onCancel(child, record);
+      for (const line of input.split('\n').filter(Boolean)) {
+        if (line === 'start') {
+          child.controls.push('start');
+          if (onStart) onStart(child, record);
+        } else if (line === 'cancel') {
+          child.controls.push('cancel');
+          if (onCancel) onCancel(child, record);
+        }
+      }
       callback();
     },
   });
@@ -30,6 +45,7 @@ function fakeController({ onCancel, record = { protocol: 1, status: 0, stdoutBas
     child.exitCode = 0;
     child.emit('close', 0, null);
   };
+  if (emitReady) queueMicrotask(() => child.stdout.write('{"protocol":1,"event":"ready"}\n'));
   return child;
 }
 
@@ -47,10 +63,16 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
   let controller;
   let receivedArgs;
   let receivedOptions;
-  const started = startWindowsJob('C:\\Program Files\\Git\\bin\\git.exe', ['-c', 'user.name=a "quoted" value', 'status'], {
+  const started = startWindowsJob('git.exe', ['-c', 'user.name=a "quoted" value', 'status'], {
     platform: 'win32',
     cwd: 'C:\\work tree',
     env: { PATH: 'C:\\Windows', SAMPLE: 'quotes " and $; ` remain data' },
+    resolveExecutable(command, cwd, env) {
+      assert.equal(command, 'git.exe');
+      assert.equal(cwd, 'C:\\work tree');
+      assert.equal(env.PATH, 'C:\\Windows');
+      return 'C:\\Program Files\\Git\\cmd\\git.exe';
+    },
     spawn(_executable, args, options) {
       receivedArgs = args;
       receivedOptions = options;
@@ -65,7 +87,7 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
 
   await new Promise((resolve) => setImmediate(resolve));
   const config = JSON.parse(controller.stdinData.split('\n')[0]);
-  assert.equal(config.command, 'C:\\Program Files\\Git\\bin\\git.exe');
+  assert.equal(config.command, 'C:\\Program Files\\Git\\cmd\\git.exe');
   assert.deepEqual(config.args, ['-c', 'user.name=a "quoted" value', 'status']);
   assert.equal(config.cwd, 'C:\\work tree');
   assert.equal(Buffer.from(config.environmentBase64, 'base64').toString('utf16le').includes('SAMPLE=quotes " and $; ` remain data'), true);
@@ -73,9 +95,11 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
   assert.equal(receivedOptions.env.SAMPLE, 'quotes " and $; ` remain data');
   assert.ok(receivedArgs.at(-1).length < 30_000, 'the PowerShell controller source must fit in the native command-line limit');
   assert.equal(receivedArgs.at(-1).includes('SAMPLE=quotes'), false, 'environment values stay on stdin rather than the controller command line');
+  assert.deepEqual(controller.controls, ['start'], 'the controller must receive an explicit launch grant after readiness');
 
   const cancel = started.cancel('test cancellation');
   await cancel;
+  assert.deepEqual(controller.controls, ['start', 'cancel']);
   const result = await started.result;
   assert.equal(result.status, 0);
   assert.equal(result.signal, 'SIGTERM');
@@ -85,8 +109,9 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
 test('controller cleanup response without ActiveProcesses zero proof fails closed', async () => {
   const started = startWindowsJob('anything', [], {
     platform: 'win32',
+    resolveExecutable: () => 'C:\\tools\\anything.exe',
     spawn() {
-      const child = fakeController();
+      const child = fakeController({ emitReady: false });
       queueMicrotask(() => child.finish({
         protocol: 1, status: null, stdoutBase64: '', stderrBase64: '', signal: 'SIGTERM',
         timedOut: false, cancelled: true, confirmedZero: false, error: 'query failed',
@@ -97,10 +122,46 @@ test('controller cleanup response without ActiveProcesses zero proof fails close
   await assert.rejects(started.result, /did not confirm ActiveProcesses=0/);
 });
 
+test('cancellation before controller readiness never sends a launch grant', async () => {
+  let controller;
+  const job = startWindowsJob('anything', [], {
+    platform: 'win32',
+    resolveExecutable: () => 'C:\\tools\\anything.exe',
+    spawn() {
+      controller = fakeController({
+        emitReady: false,
+      });
+      return controller;
+    },
+  });
+
+  const cancellation = job.cancel('cancel before readiness');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(controller.controls, ['cancel']);
+  controller.stdout.write('{"protocol":1,"event":"ready"}\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(controller.controls, ['cancel'], 'a late readiness event must not grant launch after cancellation');
+  controller.finish({
+    protocol: 1,
+    status: null,
+    stdoutBase64: '',
+    stderrBase64: '',
+    signal: 'SIGTERM',
+    timedOut: false,
+    cancelled: true,
+    confirmedZero: true,
+  });
+  await cancellation;
+  const result = await job.result;
+  assert.equal(result.status, null);
+  assert.equal(result.signal, 'SIGTERM');
+});
+
 test('deadline cancellation is represented as a timeout after controller confirms cleanup', async () => {
   const started = startWindowsJob('anything', [], {
     platform: 'win32',
     timeoutMs: 20,
+    resolveExecutable: () => 'C:\\tools\\anything.exe',
     spawn() {
       return fakeController({
         onCancel(child, record) {
@@ -147,12 +208,15 @@ test('native cancellation contains a parent-exited descendant and preserves unre
     'process.exit(0);',
   ].join('\n');
   const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  let job;
   t.after(async () => {
+    if (job) await job.cancel('test cleanup').catch(() => {});
     if (unrelated.exitCode === null) unrelated.kill();
     await rm(root, { recursive: true, force: true });
   });
 
-  const job = startWindowsJob(process.execPath, ['-e', parentCode], { cwd: root, timeoutMs: 20_000 });
+  job = startWindowsJob(process.execPath, ['-e', parentCode], { cwd: root, timeoutMs: 20_000 });
+  const resultObserved = job.result.then((result) => ({ result }), (error) => ({ error }));
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try { await readFile(ready); break; } catch { await new Promise((resolve) => setTimeout(resolve, 20)); }
@@ -160,7 +224,9 @@ test('native cancellation contains a parent-exited descendant and preserves unre
   await readFile(ready);
   await new Promise((resolve) => setTimeout(resolve, 100));
   await job.cancel('terminate descendant holding CWD and pipes');
-  const result = await job.result;
+  const outcome = await resultObserved;
+  if (outcome.error) throw outcome.error;
+  const { result } = outcome;
   assert.equal(result.status, 0);
   assert.equal(result.signal, 'SIGTERM');
   assert.equal(unrelated.exitCode, null, 'unrelated process must remain alive');
@@ -194,4 +260,66 @@ test('native setup and assignment failures never resume the requested command', 
     assert.match(result.error ?? '', /failure/);
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
   }
+});
+
+test('native immediate cancellation before controller readiness never runs the target', windowsOnly, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'windows-git-job-prelaunch-cancel-'));
+  const marker = path.join(root, 'executed');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+  const job = startWindowsJob(process.execPath, ['-e', code], { cwd: root, timeoutMs: 20_000 });
+  const resultObserved = job.result.then((result) => ({ result }), (error) => ({ error }));
+  await job.cancel('cancel before controller readiness');
+  const outcome = await resultObserved;
+  if (outcome.error) throw outcome.error;
+  assert.equal(outcome.result.status, null);
+  assert.equal(outcome.result.signal, 'SIGTERM');
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('native expired startup deadline cancels before the target entry point', windowsOnly, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'windows-git-job-expired-startup-'));
+  const marker = path.join(root, 'executed');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+  const job = startWindowsJob(process.execPath, ['-e', code], {
+    cwd: root,
+    timeoutMs: 100,
+    testHooks: { delayControllerMs: 300 },
+  });
+  const outcome = await job.result.then((result) => ({ result }), (error) => ({ error }));
+  if (outcome.error) throw outcome.error;
+  assert.equal(outcome.result.timedOut, true);
+  assert.equal(outcome.result.status, null);
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('native bare git.exe resolves through the child PATH and missing commands fail closed', windowsOnly, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'windows-git-job-path-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gitDirectory = String(process.env.PATH ?? '')
+    .split(';')
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .find((entry) => entry && existsSync(path.join(entry, 'git.exe')));
+  assert.ok(gitDirectory, 'native Windows test host must provide git.exe on PATH');
+  const childEnv = {
+    PATH: gitDirectory,
+    PATHEXT: '.EXE',
+    SystemRoot: process.env.SystemRoot,
+    windir: process.env.windir ?? process.env.SystemRoot,
+  };
+
+  const git = await startWindowsJob('git.exe', ['--version'], { cwd: root, env: childEnv, timeoutMs: 20_000 }).result;
+  assert.equal(git.status, 0);
+  assert.match(git.stdout, /git version/i);
+  const pathext = await startWindowsJob('git', ['--version'], { cwd: root, env: childEnv, timeoutMs: 20_000 }).result;
+  assert.equal(pathext.status, 0);
+  assert.match(pathext.stdout, /git version/i);
+
+  const missing = startWindowsJob('vibe-coding-kit-command-that-does-not-exist.exe', [], {
+    cwd: root,
+    env: childEnv,
+    timeoutMs: 20_000,
+  });
+  await assert.rejects(missing.result, /could not be resolved/);
 });

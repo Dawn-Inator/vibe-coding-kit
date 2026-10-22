@@ -221,6 +221,53 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function liveProcessGroupMembers(pgid) {
+  const listing = spawnSync('ps', ['-Ao', 'pgid=,stat='], {
+    encoding: 'utf8',
+    timeout: 2000,
+    windowsHide: true,
+  });
+  if (listing.error || listing.status !== 0) {
+    throw new Error(`could not inspect process-group membership${listing.error ? `: ${listing.error.message}` : ` (ps exit ${listing.status})`}`);
+  }
+  return String(listing.stdout || '').split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\S+)/.exec(line);
+    if (!match || Number(match[1]) !== pgid) return [];
+    // Zombies have released their CWD and cannot write or push. Keep the
+    // group fenced only for runnable/stopped members that can still act.
+    return /^[ZX]/.test(match[2]) ? [] : [match[2]];
+  });
+}
+
+async function waitForProcessGroupEmpty(pgid, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (liveProcessGroupMembers(pgid).length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`process group ${pgid} still has live members after ${timeoutMs}ms`);
+    }
+    await delay(25);
+  }
+}
+
+async function terminateAndDrainProcessGroup(pgid) {
+  if (!pgid || process.platform === 'win32') return;
+  // The Git process was started as a new session leader, so this PGID is the
+  // stable ownership boundary for its helpers even after Git itself exits.
+  if (liveProcessGroupMembers(pgid).length === 0) return;
+  try { process.kill(-pgid, 'SIGTERM'); } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+  const termDeadline = Date.now() + 100;
+  while (Date.now() < termDeadline && liveProcessGroupMembers(pgid).length > 0) await delay(20);
+  if (liveProcessGroupMembers(pgid).length > 0) {
+    try { process.kill(-pgid, 'SIGKILL'); } catch (error) {
+      if (error?.code !== 'ESRCH') throw error;
+    }
+  }
+  await waitForProcessGroupEmpty(pgid);
+}
+
 const activeGitOperations = new Set();
 
 /** Cancel and await every Git operation owned by this process. A lock holder
@@ -292,7 +339,16 @@ export async function gitAsync(args, cwd, options = {}) {
         const finish = async (status, childSignal) => {
           if (timer) clearTimeout(timer);
           if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
-          if (cancelPromise) await cancelPromise;
+          try {
+            if (cancelPromise) await cancelPromise;
+            else if (process.platform !== 'win32' && child?.pid) await terminateAndDrainProcessGroup(child.pid);
+          } catch (error) {
+            cleanupUnconfirmed = true;
+            const failure = new Error(`Git process-group cleanup could not be confirmed: ${error?.message ?? error}`);
+            failure.code = 'GIT_JOB_UNCONFIRMED';
+            reject(failure);
+            return;
+          }
           resolve({
             error: spawnError, status,
             stdout: Buffer.concat(stdout).toString('utf8'),
@@ -314,9 +370,7 @@ export async function gitAsync(args, cwd, options = {}) {
               return;
             }
             if (!child?.pid) return;
-            try { process.kill(-child.pid, 'SIGTERM'); } catch { /* no group remains */ }
-            await delay(100);
-            try { process.kill(-child.pid, 'SIGKILL'); } catch { /* no group remains */ }
+            await terminateAndDrainProcessGroup(child.pid);
           })();
           return cancelPromise;
         };

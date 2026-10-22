@@ -17,7 +17,7 @@ test('Windows diagnostic requires native directory and Job Object proofs before 
   assert.match(proof, /timeout-minutes: 15/u);
   assert.match(proof, /persist-credentials: false/u);
   assert.match(proof, /run: node tests\/run-windows-native-proof\.mjs/u);
-  assert.equal(NATIVE_CASES.length, 7);
+  assert.equal(NATIVE_CASES.length, 10);
 
   const groups = workflow.slice(groupsStart);
   assert.match(groups, /needs: windows-native-proof/u);
@@ -42,7 +42,7 @@ test('native-only diagnostic refs run the bounded proof without running or claim
 
 const passingTap = `TAP version 13\n${NATIVE_CASES.map((name, index) => `ok ${index + 1} - ${name}`).join('\n')}\n`;
 
-test('native proof accepts exactly seven passed native results without depending on unrelated TAP counts', () => {
+test('native proof accepts exactly ten passed native results without depending on unrelated TAP counts', () => {
   assert.deepEqual(nativeProofOutputVerdict(passingTap), { ok: true, missingOrDuplicate: [], notPassed: [] });
   assert.equal(nativeProofOutputVerdict(`${passingTap}1..2\n# tests 2\n# pass 2\n` ).ok, true);
 });

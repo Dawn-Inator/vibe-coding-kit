@@ -530,29 +530,71 @@ test('probeWindowsDirectoryDeleteSafety: Windows DELETE denial is reported unsaf
   const root = await mkdtemp(join(tmpdir(), 'vibe-delete-denied-'));
   const denied = join(root, 'denied');
   await mkdir(denied);
-  const encodedPath = Buffer.from(denied, 'utf16le').toString('base64');
-  const aclScript = (remove) => {
-    const operation = remove
-      ? '$acl.RemoveAccessRuleSpecific($rule) | Out-Null'
-      : '$acl.AddAccessRule($rule)';
-    return `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}')); $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [Security.AccessControl.FileSystemRights]::Delete, [Security.AccessControl.AccessControlType]::Deny); $acl = Get-Acl -LiteralPath $path; ${operation}; Set-Acl -LiteralPath $path -AclObject $acl`;
-  };
-  let denyApplied = false;
+  const encodePath = (path) => Buffer.from(path, 'utf16le').toString('base64');
+  const rootPath = encodePath(root);
+  const deniedPath = encodePath(denied);
+  const captureDacl = (encodedPath) => spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}')); $acl = Get-Acl -LiteralPath $path; [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)))`], {
+    encoding: 'utf8', windowsHide: true, timeout: 15000,
+  });
+  const restoreScript = (encodedPath, originalDacl) => `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}')); $sddl = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${originalDacl}')); $acl = Get-Acl -LiteralPath $path; $acl.SetSecurityDescriptorSddlForm($sddl, [Security.AccessControl.AccessControlSections]::Access); Set-Acl -LiteralPath $path -AclObject $acl`;
+  const captureRoot = captureDacl(rootPath);
+  const captureDenied = captureDacl(deniedPath);
+  if (captureRoot.status !== 0 || captureDenied.status !== 0 || !String(captureRoot.stdout || '').trim() || !String(captureDenied.stdout || '').trim()) {
+    await rm(root, { recursive: true, force: true });
+    assert.fail(captureRoot.stderr || captureDenied.stderr || captureRoot.stdout || captureDenied.stdout || 'failed to capture fixture ACLs');
+  }
+  const originalRootDacl = String(captureRoot.stdout).trim();
+  const originalDeniedDacl = String(captureDenied.stdout).trim();
+  const applyDeny = (encodedPath, rights) => spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}')); $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User; $rights = [Security.AccessControl.FileSystemRights]::${rights}; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, $rights, [Security.AccessControl.AccessControlType]::Deny); $acl = Get-Acl -LiteralPath $path; $acl.AddAccessRule($rule); Set-Acl -LiteralPath $path -AclObject $acl`], {
+    encoding: 'utf8', windowsHide: true, timeout: 15000,
+  });
+  const readbackScript = `$root = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${rootPath}')); $denied = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${deniedPath}')); $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User; $sid = $identity.Value; $account = $identity.Translate([Security.Principal.NTAccount]).Value; $delete = [int][Security.AccessControl.FileSystemRights]::Delete; $deleteChild = [int][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles; function Read-Acl($path, $delete, $deleteChild, $sid) { $acl = Get-Acl -LiteralPath $path; $rules = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Deny' -and $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid } | ForEach-Object { [pscustomobject]@{ rights = [int]$_.FileSystemRights; inherited = [bool]$_.IsInherited; inheritanceFlags = [string]$_.InheritanceFlags } }); $mask = 0; foreach ($entry in $rules) { $mask = $mask -bor $entry.rights }; [pscustomobject]@{ path = $path; rules = $rules; deniesDelete = (($mask -band $delete) -ne 0); deniesDeleteChild = (($mask -band $deleteChild) -ne 0); icacls = @(& icacls.exe $path /c 2>&1 | ForEach-Object { [string]$_ }) } }; $rootAcl = Read-Acl $root $delete $deleteChild $sid; $deniedAcl = Read-Acl $denied $delete $deleteChild $sid; $parentIcacls = @(& icacls.exe (Split-Path -Parent $root) /c 2>&1 | ForEach-Object { [string]$_ }); $privileges = @(& whoami.exe /priv /fo csv /nh 2>&1 | ForEach-Object { [string]$_ }); $whoami = @(& whoami.exe /user /fo csv /nh 2>&1 | ForEach-Object { [string]$_ }); [pscustomobject]@{ sid = $sid; account = $account; whoami = $whoami; privileges = $privileges; root = $rootAcl; denied = $deniedAcl; parentIcacls = $parentIcacls } | ConvertTo-Json -Compress -Depth 5`;
+  let rootDenyAttempted = false;
+  let deniedDenyAttempted = false;
   try {
-    const applied = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', aclScript(false)], {
+    rootDenyAttempted = true;
+    const rootApplied = applyDeny(rootPath, 'DeleteSubdirectoriesAndFiles');
+    assert.equal(rootApplied.status, 0, rootApplied.stderr || rootApplied.stdout || 'failed to deny parent FILE_DELETE_CHILD on the fixture root');
+    deniedDenyAttempted = true;
+    const deniedApplied = applyDeny(deniedPath, 'Delete');
+    assert.equal(deniedApplied.status, 0, deniedApplied.stderr || deniedApplied.stdout || 'failed to deny DELETE on the nested fixture directory');
+
+    const readback = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', readbackScript], {
       encoding: 'utf8', windowsHide: true, timeout: 15000,
     });
-    assert.equal(applied.status, 0, applied.stderr || applied.stdout || 'failed to apply temporary deny ACL');
-    denyApplied = true;
+    assert.equal(readback.status, 0, readback.stderr || readback.stdout || 'failed to read back temporary deny ACL');
+    const acl = JSON.parse(readback.stdout.trim());
+    const diagnostic = JSON.stringify(acl);
+    const rootRules = Array.isArray(acl.root?.rules) ? acl.root.rules : [acl.root?.rules].filter(Boolean);
+    const deniedRules = Array.isArray(acl.denied?.rules) ? acl.denied.rules : [acl.denied?.rules].filter(Boolean);
+    const rootIcacls = Array.isArray(acl.root?.icacls) ? acl.root.icacls : [acl.root?.icacls].filter(Boolean);
+    const deniedIcacls = Array.isArray(acl.denied?.icacls) ? acl.denied.icacls : [acl.denied?.icacls].filter(Boolean);
+    const whoamiLines = Array.isArray(acl.whoami) ? acl.whoami : [acl.whoami].filter(Boolean);
+    assert.ok(acl.sid, `current token SID missing from readback: ${diagnostic}`);
+    assert.ok(whoamiLines.some((line) => line.includes(acl.sid)), `whoami /user SID does not match the ACL principal: ${diagnostic}`);
+    assert.ok(acl.privileges?.length > 0, `whoami /priv did not report token privileges: ${diagnostic}`);
+    assert.ok(acl.root?.deniesDeleteChild, `explicit current-token FILE_DELETE_CHILD deny missing on fixture parent: ${diagnostic}`);
+    assert.ok(acl.denied?.deniesDelete, `explicit current-token DELETE deny missing on nested directory: ${diagnostic}`);
+    assert.ok(rootRules.some((rule) => !rule.inherited), `no explicit parent deny ACE for the current token: ${diagnostic}`);
+    assert.ok(deniedRules.some((rule) => !rule.inherited), `no explicit child deny ACE for the current token: ${diagnostic}`);
+    assert.ok(rootIcacls.some((line) => (line.includes(acl.sid) || line.includes(acl.account)) && /\(DENY\)/.test(line) && /\bDC\b/.test(line)), `icacls did not confirm FILE_DELETE_CHILD deny on fixture parent: ${diagnostic}`);
+    assert.ok(deniedIcacls.some((line) => (line.includes(acl.sid) || line.includes(acl.account)) && /\(DENY\)/.test(line) && /\bD\b/.test(line)), `icacls did not confirm DELETE deny on nested directory: ${diagnostic}`);
+
     const result = probeWindowsDirectoryDeleteSafety(root);
-    assert.equal(result.safe, false, JSON.stringify(result));
-    assert.equal(result.reason, 'access-denied');
+    assert.equal(result.safe, false, `${JSON.stringify(result)}; ACL readback: ${diagnostic}`);
+    assert.equal(result.reason, 'access-denied', `${JSON.stringify(result)}; ACL readback: ${diagnostic}`);
   } finally {
-    if (denyApplied) {
-      const restored = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', aclScript(true)], {
+    if (deniedDenyAttempted) {
+      const restored = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', restoreScript(deniedPath, originalDeniedDacl)], {
         encoding: 'utf8', windowsHide: true, timeout: 15000,
       });
-      assert.equal(restored.status, 0, restored.stderr || restored.stdout || 'failed to restore temporary ACL');
+      assert.equal(restored.status, 0, restored.stderr || restored.stdout || 'failed to restore nested fixture ACL');
+    }
+    if (rootDenyAttempted) {
+      const restored = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', restoreScript(rootPath, originalRootDacl)], {
+        encoding: 'utf8', windowsHide: true, timeout: 15000,
+      });
+      assert.equal(restored.status, 0, restored.stderr || restored.stdout || 'failed to restore fixture-parent ACL');
     }
     await rm(root, { recursive: true, force: true });
   }
