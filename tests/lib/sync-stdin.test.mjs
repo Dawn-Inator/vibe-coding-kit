@@ -17,9 +17,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readStdinSync } from '../../src/lib/sync-stdin.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const KIT = join(HERE, '..');
-const MODULE_URL = pathToFileURL(join(HERE, 'sync-stdin.mjs')).href;
-const STALL_CLI = join(KIT, 'agent-supervision', 'detect-announcement-stall.mjs');
+const KIT = join(HERE, '..', '..');
+const MODULE_URL = pathToFileURL(join(KIT, 'src', 'lib', 'sync-stdin.mjs')).href;
+const STALL_CLI = join(KIT, 'src', 'supervision', 'detect-announcement-stall.mjs');
 
 // Spawn with a stdin pipe whose payload arrives only after `delayMs`, like a hook runner that
 // starts the process before it writes the JSON.
@@ -88,7 +88,7 @@ function kitSources(dir) {
 }
 
 test('class guard: no kit source reads stdin with readFileSync(0) or /dev/stdin', () => {
-  const offenders = kitSources(KIT)
+  const offenders = kitSources(join(KIT, 'src'))
     .filter((path) =>
       readFileSync(path, 'utf8')
         .split('\n')

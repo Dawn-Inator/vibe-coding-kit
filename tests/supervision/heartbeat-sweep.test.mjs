@@ -18,7 +18,7 @@ import { ageWorktreeReflogs } from '../support/worktree-age.mjs';
 after(cleanupTempDirs);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CLI = join(HERE, 'heartbeat-sweep.mjs');
+const CLI = join(HERE, '..', '..', 'src', 'supervision', 'heartbeat-sweep.mjs');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GIT_ENV = isolatedFixtureGitEnv();
 

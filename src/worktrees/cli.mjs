@@ -25,6 +25,8 @@ import { checkOtherAiActivity } from './ai-idle-check.mjs';
 import { detectAiParent } from './process-provenance.mjs';
 import { reclaimStaleWorktrees, recentWorktreeActivity } from './reclaim-stale.mjs';
 import { makeOwnedTreeWritable } from './writable-tree.mjs';
+import { assertKitSafeToRemove, checkKit, prepareKit } from '../dependencies/submodule.mjs';
+import { runProjectHook } from '../contracts/project-adapter.mjs';
 import { ensureNodeDepsMatchLockfile } from './node-deps-integrity.mjs';
 import { hasFirstParentMerge, isAncestor, listFirstParentMerges, redoMergesOnTip } from './merge-topology.mjs';
 import {
@@ -61,6 +63,75 @@ import {
   findSuspiciousDanglingStashCommits,
   findStashReflogValueMismatch,
 } from './worktree-core.mjs';
+
+/**
+ * Remove a worktree only after the registered kit has independently proved safe to delete.
+ * No-kit projects keep their existing cleanup behavior because the proof returns non-applicable.
+ * @param {{projectRoot:string, worktreePath:string, primaryPath:string, force?:boolean, env?:NodeJS.ProcessEnv, deleteBranch?:string, runGit?:typeof git, beforeRemove?:()=>void}} options
+ */
+export function removeWorktreeSafely({
+  projectRoot,
+  worktreePath,
+  primaryPath,
+  force = false,
+  env,
+  deleteBranch,
+  runGit = git,
+  beforeRemove,
+}) {
+  const proof = assertKitSafeToRemove({ projectRoot });
+  beforeRemove?.();
+  const args = ['worktree', 'remove', ...(force ? ['--force'] : []), worktreePath];
+  runGit(args, primaryPath, { allowFailure: false, ...(env ? { env } : {}) });
+  if (deleteBranch) {
+    runGit(['branch', '-D', deleteBranch], primaryPath, {
+      allowFailure: true,
+      ...(env ? { env } : {}),
+    });
+  }
+  return proof;
+}
+
+function prepareAndCheckKit(projectRoot) {
+  const prepared = prepareKit({ projectRoot });
+  if (prepared.applicable) checkKit({ projectRoot });
+  return prepared;
+}
+
+function candidateSnapshot(projectRoot) {
+  const status = git(['status', '--porcelain=v1', '--untracked-files=all'], projectRoot).stdout;
+  const kit = checkKit({ projectRoot });
+  return {
+    head: gitText(['rev-parse', 'HEAD'], projectRoot),
+    status,
+    kitPin: kit.applicable ? kit.commit : null,
+  };
+}
+
+async function runStableLifecycleHook(projectRoot, phase, context, { requireClean = false } = {}) {
+  const before = candidateSnapshot(projectRoot);
+  if (requireClean && before.status) {
+    throw new Error(`refusing ${phase}: candidate worktree is not clean before the adapter hook`);
+  }
+  await runProjectHook({
+    projectRoot,
+    phase,
+    context: {
+      ...context,
+      ...before,
+      candidateSha: before.head,
+      pin: before.kitPin,
+    },
+  });
+  const after = candidateSnapshot(projectRoot);
+  if (JSON.stringify(after) !== JSON.stringify(before)) {
+    throw new Error(`project adapter hook ${phase} changed HEAD, worktree cleanliness, or kit pin; candidate is invalid`);
+  }
+  if (requireClean && after.status) {
+    throw new Error(`project adapter hook ${phase} left the candidate worktree dirty; candidate is invalid`);
+  }
+  return after;
+}
 
 // ---------------------------------------------------------------------------
 // §1 argv parsing (spec-mandated exact algorithm -- do not "improve" this)
@@ -440,7 +511,7 @@ function commandStatus(flags, config) {
   return 0;
 }
 
-function commandCreate(flags, positional, config) {
+async function commandCreate(flags, positional, config) {
   if (flags.worker && flags.install) {
     throw new Error(
       'refusing to combine --worker and --install: worker worktrees must not run a post-create install command',
@@ -535,11 +606,31 @@ function commandCreate(flags, positional, config) {
   try {
     git(['worktree', 'add', '-b', branchName, worktreePath, effectiveBaseRef], repo.topLevel, { allowFailure: false });
   } catch (error) {
-    // Don't leave a half-created worktree behind.
-    git(['worktree', 'remove', '--force', worktreePath], repo.topLevel, { allowFailure: true });
+    // Only remove partial state when a registered kit proves its own checkout is safe.
+    // If proof or removal fails, retain the path for inspection instead of risking local kit data.
+    try {
+      removeWorktreeSafely({
+        projectRoot: worktreePath,
+        worktreePath,
+        primaryPath: repo.topLevel,
+        force: true,
+      });
+    } catch (cleanupError) {
+      throw new Error(
+        `worktree creation failed; cleanup was not proven or completed for ${worktreePath}; inspect any remaining partial state: `
+        + `${cleanupError.message}; original error: ${error.message}`,
+      );
+    }
     throw new Error(`worktree creation failed, cleaned up partial state: ${error.message}`);
   } finally {
     removeBypassMarker(marker);
+  }
+
+  try {
+    // Consumer hooks and later CLI imports must see the exact parent gitlink pin.
+    prepareAndCheckKit(worktreePath);
+  } catch (error) {
+    throw new Error(`worktree exists at ${worktreePath}, but its registered kit could not be prepared and verified; inspect it before use: ${error.message}`);
   }
 
   writeWorktreeMetadata(worktreePath, {
@@ -593,6 +684,17 @@ function commandCreate(flags, positional, config) {
     if (installResult.status !== 0) {
       console.error(`[worktree-guard] warning: post-create install command exited with status ${installResult.status}`);
     }
+  }
+
+  await runProjectHook({
+    projectRoot: worktreePath,
+    phase: 'afterCreate',
+    context: { worktreePath, branch: branchName, baseRef: normalizedBaseRef, baseSha },
+  });
+  try {
+    prepareAndCheckKit(worktreePath);
+  } catch (error) {
+    throw new Error(`afterCreate completed, but the registered kit is no longer prepared and safe at ${worktreePath}: ${error.message}`);
   }
 
   if (flags.withDeps) {
@@ -680,6 +782,14 @@ function assertNodeDepsMatchLockfile(cwd, config) {
   if (deps.status === 'failed') throw new Error(deps.message);
 }
 
+async function finalizeIntegration(cwd, config, remoteRef, mode, sources) {
+  // Reconcile a changed gitlink only after Git has produced the integrated parent tree.
+  prepareAndCheckKit(cwd);
+  assertNodeDepsMatchLockfile(cwd, config);
+  await runStableLifecycleHook(cwd, 'verifyCandidate', { remoteRef, mode, sources }, { requireClean: true });
+  return { mode, sources };
+}
+
 /**
  * Bring HEAD onto the freshly fetched `remoteRef`.
  *
@@ -719,8 +829,7 @@ async function integrateOntoRemote(lock, repo, config, remoteRef) {
     }
     reauthorUnpushedCommitsToAiIdentity(cwd, remoteRef, config);
     const sources = listFirstParentMerges(cwd, `${remoteRef}..HEAD`).flatMap((merge) => merge.parents.slice(1));
-    assertNodeDepsMatchLockfile(cwd, config);
-    return { mode: 'preserve-merges', sources };
+    return finalizeIntegration(cwd, config, remoteRef, 'preserve-merges', sources);
   }
 
   const rebaseResult = await lockedGit(
@@ -741,8 +850,7 @@ async function integrateOntoRemote(lock, repo, config, remoteRef) {
     );
   }
   reauthorUnpushedCommitsToAiIdentity(cwd, remoteRef, config);
-  assertNodeDepsMatchLockfile(cwd, config);
-  return { mode: 'rebase', sources: [] };
+  return finalizeIntegration(cwd, config, remoteRef, 'rebase', []);
 }
 
 async function commandFinish(flags, positional, config) {
@@ -767,6 +875,11 @@ async function commandFinish(flags, positional, config) {
   }
   if (!message) message = 'chore: worktree-guard finish';
 
+  await runProjectHook({
+    projectRoot: repo.topLevel,
+    phase: 'beforeCandidate',
+    context: { branch: repo.branchShort, baseBranch },
+  });
   const statusResult = git(['status', '--porcelain'], repo.topLevel);
   if (statusResult.stdout) {
     git(['add', '-A'], repo.topLevel, { allowFailure: false });
@@ -833,6 +946,14 @@ async function commandFinish(flags, positional, config) {
     let pushed = false;
     let lastError;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await runStableLifecycleHook(repo.topLevel, 'beforePush', {
+        remote: remoteName,
+        baseBranch,
+        remoteRef,
+        attempt,
+        integrationMode: integration.mode,
+        mergedSources: integration.sources,
+      }, { requireClean: true });
       const res = await lockedGit(
         lock,
         ['push', remoteName, `HEAD:refs/heads/${baseBranch}`],
@@ -882,8 +1003,18 @@ async function commandFinish(flags, positional, config) {
       );
     }
 
+    try {
+      await runStableLifecycleHook(repo.topLevel, 'afterLand', {
+        remote: remoteName,
+        baseBranch,
+        remoteRef,
+        head: gitText(['rev-parse', 'HEAD'], repo.topLevel),
+      }, { requireClean: true });
+    } catch (error) {
+      throw new Error(`push DID land on ${remoteRef}, but afterLand hook failed; worktree and branch are preserved for inspection: ${error.message}`);
+    }
+
     setPhase('cleanup');
-    writeWorktreeMetadata(repo.topLevel, { lifecycle: 'merged' }, config);
 
     // These two writes happen with cwd = the PRIMARY worktree (the worker
     // worktree itself is being removed, so they can't run from inside it):
@@ -893,8 +1024,15 @@ async function commandFinish(flags, positional, config) {
     // the sanctioned cleanup half of a `finish` the CLI already validated
     // above, not a raw ad hoc git command.
     const bypassEnv = primaryLockBypassEnv(config);
-    git(['worktree', 'remove', '--force', repo.topLevel], repo.primaryWorktree.path, { allowFailure: true, env: bypassEnv });
-    git(['branch', '-D', repo.branchShort], repo.primaryWorktree.path, { allowFailure: true, env: bypassEnv });
+    removeWorktreeSafely({
+      projectRoot: repo.topLevel,
+      worktreePath: repo.topLevel,
+      primaryPath: repo.primaryWorktree.path,
+      force: true,
+      env: bypassEnv,
+      deleteBranch: repo.branchShort,
+      beforeRemove: () => writeWorktreeMetadata(repo.topLevel, { lifecycle: 'merged' }, config),
+    });
 
     console.log(`[worktree-guard] finished and pushed to ${remoteName}/${baseBranch}. Remember to run: worktree-guard sync-primary`);
     return 0;
@@ -1052,9 +1190,17 @@ async function commandCleanup(flags, config) {
           continue;
         }
       }
-      makeOwnedTreeWritable(w.path); // a killed test run may have left read-only dirs behind
-      const res = git(['worktree', 'remove', w.path], repo.primaryWorktree.path, { allowFailure: true });
-      if (res.status === 0) cleaned += 1;
+      try {
+        removeWorktreeSafely({
+          projectRoot: w.path,
+          worktreePath: w.path,
+          primaryPath: repo.primaryWorktree.path,
+          beforeRemove: () => makeOwnedTreeWritable(w.path),
+        });
+        cleaned += 1;
+      } catch (error) {
+        console.error(`[worktree-guard] cleanup-skipped:${w.path} (${error.message})`);
+      }
     }
   }
   console.log(`[worktree-guard] cleaned up ${cleaned} merged worktree(s).`);
@@ -1192,7 +1338,7 @@ export async function main(argv, deps = {}) {
   try {
     const config = loadConfig(flags.config);
     if (command === 'status') return commandStatus(flags, config);
-    if (command === 'create' || command === 'begin') return commandCreate(flags, positional, config);
+    if (command === 'create' || command === 'begin') return await commandCreate(flags, positional, config);
     if (command === 'finish' || command === 'end') return await commandFinish(flags, positional, config);
     if (command === 'sync-primary') return commandSyncPrimary(flags, config, deps);
     if (command === 'cleanup') return await commandCleanup(flags, config);

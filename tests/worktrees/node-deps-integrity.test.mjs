@@ -245,7 +245,10 @@ function makeProject() {
   run(['push', 'origin', 'HEAD:refs/heads/main'], primaryDir);
   run(['branch', '--set-upstream-to=origin/main', 'main'], primaryDir);
   const configPath = join(root, 'wtg.json');
-  const writeConfig = (nodeDeps) => writeFileSync(configPath, JSON.stringify({ nodeDeps }));
+  const writeConfig = (nodeDeps) => writeFileSync(configPath, JSON.stringify({
+    nodeDeps,
+    identity: { name: 'Synthetic Worktree Bot', email: 'worker@worktree-kit.test' },
+  }));
   writeConfig({ lockfile: 'package-lock.json', installCommand: FAKE_INSTALL });
   return { root, remoteDir, primaryDir, configPath, writeConfig, worktreeRoot: join(root, 'worktrees') };
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   gitOut,
   gitResult,
@@ -11,11 +11,13 @@ import {
   isolatedFixtureGitEnv,
 } from '../support/git-fixture.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
+import { isMainModule } from '../../src/lib/main-module.mjs';
 
 after(cleanupTempDirs);
 
 const cliSource = fileURLToPath(new URL('../../src/contracts/cli.mjs', import.meta.url));
 const cliSourceDirectory = fileURLToPath(new URL('../../src/contracts', import.meta.url));
+const libSourceDirectory = fileURLToPath(new URL('../../src/lib', import.meta.url));
 const testSupportSource = fileURLToPath(new URL('../support', import.meta.url));
 
 function repoFixture() {
@@ -54,7 +56,9 @@ test('copied kit install emits a complete, conservative manifest for untracked a
   const root = repoFixture();
   const copiedCli = join(root, 'engineering', 'automation', 'agent-preflight', 'cli.mjs');
   mkdirSync(join(root, 'engineering', 'automation', 'agent-preflight'), { recursive: true });
+  mkdirSync(join(root, 'engineering', 'automation', 'lib'), { recursive: true });
   cpSync(cliSource, copiedCli);
+  cpSync(join(libSourceDirectory, 'main-module.mjs'), join(root, 'engineering', 'automation', 'lib', 'main-module.mjs'));
   gitOut(['mv', 'base.txt', 'renamed.txt'], root);
   writeFileSync(join(root, 'new-file.txt'), 'new\n');
   const nested = join(root, 'nested dir');
@@ -67,6 +71,7 @@ test('copied kit install emits a complete, conservative manifest for untracked a
   assert.deepEqual(result.json.files, [
     'base.txt',
     'engineering/automation/agent-preflight/cli.mjs',
+    'engineering/automation/lib/main-module.mjs',
     'new-file.txt',
     'renamed.txt',
   ]);
@@ -170,7 +175,9 @@ test('copied CLI classifies staged and untracked files on an unborn branch with 
   const root = unbornRepoFixture();
   const copiedCli = join(root, 'engineering', 'automation', 'agent-preflight', 'cli.mjs');
   mkdirSync(join(root, 'engineering', 'automation', 'agent-preflight'), { recursive: true });
+  mkdirSync(join(root, 'engineering', 'automation', 'lib'), { recursive: true });
   cpSync(cliSource, copiedCli);
+  cpSync(join(libSourceDirectory, 'main-module.mjs'), join(root, 'engineering', 'automation', 'lib', 'main-module.mjs'));
   writeFileSync(join(root, 'staged.txt'), 'staged\n');
   gitOut(['add', 'engineering/automation/agent-preflight/cli.mjs', 'staged.txt'], root);
   writeFileSync(join(root, 'untracked.txt'), 'untracked\n');
@@ -184,6 +191,7 @@ test('copied CLI classifies staged and untracked files on an unborn branch with 
   assert.equal(result.json.headState, 'unborn');
   assert.deepEqual(result.json.files, [
     'engineering/automation/agent-preflight/cli.mjs',
+    'engineering/automation/lib/main-module.mjs',
     'staged.txt',
     'untracked.txt',
   ]);
@@ -209,6 +217,7 @@ test('copied test file runs from a copied kit tree whose path contains spaces', 
   mkdirSync(copiedRoot, { recursive: true });
   cpSync(fileURLToPath(new URL('.', import.meta.url)), copiedRoot, { recursive: true });
   cpSync(cliSourceDirectory, join(installRoot, 'src', 'contracts'), { recursive: true });
+  cpSync(libSourceDirectory, join(installRoot, 'src', 'lib'), { recursive: true });
   cpSync(testSupportSource, join(installRoot, 'tests', 'support'), {
     recursive: true,
   });
@@ -231,4 +240,16 @@ test('copied test file runs from a copied kit tree whose path contains spaces', 
   assert.equal(result.signal, null, `node was terminated by ${result.signal}`);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout + result.stderr, /fail 0/u);
+});
+
+test('main-module detection canonicalizes symlinks and refuses a dead entrypoint', () => {
+  const root = mkdtempTracked('starter main-module ');
+  const source = join(root, 'entry.mjs');
+  const alias = join(root, 'entry-alias.mjs');
+  writeFileSync(source, '');
+  symlinkSync(source, alias);
+  const moduleUrl = pathToFileURL(source).href;
+  assert.equal(isMainModule(moduleUrl, alias), true);
+  assert.equal(isMainModule(moduleUrl, join(root, 'missing.mjs')), false);
+  assert.equal(isMainModule(moduleUrl, ''), false);
 });

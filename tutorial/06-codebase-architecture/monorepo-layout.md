@@ -51,12 +51,10 @@
   也是一种沟通,应该主动避免误导。
 - AI 工具的技能库目录被明确定位成"执行入口",不是"知识源头"——真正的规范内容住在 `doc/`
   里,技能库只是路由。这避免了同一份规范被复制到两个地方、然后逐渐漂移出两份不一致的版本。
-- `engineering/automation/` 这个位置本身就是这套 starter kit 的可运行部分(`kit/`)直接安装
-  进去的地方,不是巧合的同名——一个刚起步、还没有自己密钥系统/部署流水线的小项目,跟 Nova 这样
-  已经在 `engineering/automation/agent-worktrees/` 里长出一整套生产设施的成熟项目,用的是**同一个
-  目录名字和组织方式**,区别只是里面代码的多少。小项目不需要为了"以后会长大"而提前搭一套自己
-  发明的目录结构,再指望以后能顺利迁移到 Nova 这种成熟形态——直接从第一天就用同一套命名,后面
-  只是往同一个目录里加代码,没有"挪地方"这一步。
+- `engineering/automation/` 是 Nova 项目放置可运行自动化的目录。采用本 kit 时,初始化只在
+  `engineering/automation/vibe-coding/` 生成项目自有的薄 bootstrap / adapter;可复用 runtime 仍留在
+  `.vibe-coding/kit/` 子模块里。新项目可以按自己的规模决定自动化目录和薄 adapter 的组织方式,
+  不需要把 kit runtime 拷贝进项目。
 
 ## Nova 案例:一次性脚本单独开一个根目录,不混进 app 自己的 `script/`
 

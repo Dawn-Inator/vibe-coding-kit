@@ -26,8 +26,8 @@ import {
 after(cleanupTempDirs);
 delete process.env.HEARTBEAT_LEDGER_RE; // keep the in-process parseArgs tests hermetic
 
-const CHECKER = join(dirname(fileURLToPath(import.meta.url)), 'check-heartbeat-ledger.mjs');
-const CLI = join(dirname(fileURLToPath(import.meta.url)), 'heartbeat-arm.mjs');
+const CHECKER = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/check-heartbeat-ledger.mjs');
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/heartbeat-arm.mjs');
 const LEDGER_REL = '.workspace/2026-01-01-demo/heartbeat.md';
 
 function wakeSection(time) {
@@ -223,7 +223,7 @@ test('sources template: the skill\'s tokens, in the skill\'s order, with the bac
     SOURCES_TEMPLATE,
     'sources: sweep(✓) landings(✓) reports(✓) drift-matrix(✓) memory/handoff(✓ at resume) external-backlog(✓ <timestamp>) worker-health(✓)',
   );
-  const skill = readFileSync(join(dirname(CHECKER), '..', '..', 'vibe-coding', 'skills', 'agent-task-supervision', 'SKILL.md'), 'utf8');
+  const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills', 'agent-task-supervision', 'SKILL.md'), 'utf8');
   for (const token of ['sweep(✓)', 'landings(✓)', 'reports(✓)', 'drift-matrix(✓)', 'memory/handoff(✓ at resume)', 'worker-health(✓)']) {
     assert.ok(skill.includes(token) && SOURCES_TEMPLATE.includes(token), token);
   }

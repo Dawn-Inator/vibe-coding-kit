@@ -201,6 +201,6 @@ target as reachable means revise the skill before relying on it again.
 After editing this file, sync the generated per-tool projections and confirm they match:
 
 ```bash
-pnpm skills:sync
-pnpm check:skills
+node .vibe-coding/kit/cli.mjs skills sync
+node .vibe-coding/kit/cli.mjs skills check
 ```

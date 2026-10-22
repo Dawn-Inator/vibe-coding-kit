@@ -25,6 +25,12 @@ The kit is invoked from its Git checkout with Node. It is not currently distribu
 
 The kit provides reusable mechanisms and examples. Each consuming project defines its own branches, environments, gate commands, authorization rules, deployment policy, and business constraints through project-owned configuration and adapters. No single project's production or gate policy becomes a default for every consumer. Existing integrations, including the LingoFly bridge, may keep thin project-owned bootstrap and adapter wrappers; the wrapper supplies project policy and delegates reusable operations to the pinned kit.
 
+## Project lifecycle hooks
+
+The project adapter is a project-owned ES module selected by `.vibe-coding/project.config.json`. The initializer creates a valid adapter with an empty hook map, so a fresh setup uses the kit's default behavior without running project-defined hooks. Projects opt into named exports for `afterCreate`, `beforeCandidate`, `verifyCandidate`, `beforePush`, and `afterLand`; see the [adapter schema](schemas/adapter.schema.json) and [project config schema](schemas/project-config.schema.json).
+
+Hooks run at distinct lifecycle points: `afterCreate` follows worktree creation; `beforeCandidate` runs before finish prepares the candidate; `verifyCandidate` checks the integrated candidate; `beforePush` runs before each push attempt; `afterLand` runs after a successful push. A thrown error, `false`, `{ ok: false }`, or `{ skip: true }` rejects the hook. Failures before the push prevent it. Candidate verification and pre-push hooks must leave the candidate's `HEAD`, working-tree status, and kit pin unchanged. An `afterCreate` failure leaves the created worktree for inspection. An `afterLand` failure is reported after the remote push has succeeded; it cannot undo that push, and the local worktree and branch are preserved for inspection.
+
 ## Installation
 
 See [INSTALL.md](INSTALL.md) for the submodule layout, the direct Node CLI, and the distinction between initialization and routine preparation.

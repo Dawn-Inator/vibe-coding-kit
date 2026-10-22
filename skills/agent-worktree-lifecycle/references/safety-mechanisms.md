@@ -49,12 +49,12 @@ interfere with tooling that legitimately uses a short-lived internal stash of it
 `WTG_STASH_GUARD_ALLOW=1` before invoking the real git hook; the reference-transaction
 hook trusts that env var. A worker's own interactive `git stash` never has it set.
 
-`pnpm worktree:guard -- stash-audit` (run from inside a worktree) is the fallback
+`node .vibe-coding/kit/cli.mjs worktree stash-audit` (run from inside a worktree) is the fallback
 detector for a worktree created before this hook existed, or a deliberate bypass: it
 flags any dangling stash-shaped commit object naming a branch other than the current
 one, and prints the exact `git stash apply <sha>` recovery command.
-`pnpm worktree:guard -- stash-guard` reports whether the hook is currently installed and
-intact (read-only, safe anytime); `pnpm worktree:guard -- stash-guard repair`
+`node .vibe-coding/kit/cli.mjs worktree stash-guard` reports whether the hook is currently installed and
+intact (read-only, safe anytime); `node .vibe-coding/kit/cli.mjs worktree stash-guard repair`
 (re)installs it — idempotent, safe to run as a periodic health check. Both refuse (with
 an explanation, not an error) on the primary worktree or a non-managed worktree — the
 guard is never installed there by design.
@@ -62,7 +62,7 @@ guard is never installed there by design.
 ### Primary-worktree lock
 
 The same hook can also install on the **primary** worktree itself
-(`pnpm worktree:guard -- primary-lock`; `worktree:begin`/`create` re-installs/repairs it
+(`node .vibe-coding/kit/cli.mjs worktree primary-lock`; `worktree:begin`/`create` re-installs/repairs it
 best-effort every time it touches primary). Installed there, it aborts any ref change —
 `checkout`/`switch`/`commit`/`reset`/`merge`/`rebase`, anything that moves `HEAD`,
 `refs/heads/*`, or the checkout/rebase bookkeeping refs (`ORIG_HEAD`, `MERGE_HEAD`,
@@ -78,7 +78,7 @@ independent signals decide that:
 
 A plain human shell, IDE, or GUI git client is unaffected either way. Every attempted
 ref change on primary — allowed or blocked — is appended to a forensic audit log
-(`primary-audit`, readable with `pnpm worktree:guard -- primary-audit`) with a
+(`primary-audit`, readable with `node .vibe-coding/kit/cli.mjs worktree primary-audit`) with a
 timestamp, the ref, old→new value, the parent-process chain, and the decision.
 
 Two escape valves exist, both audited, both meant for a human or an orchestrator, never

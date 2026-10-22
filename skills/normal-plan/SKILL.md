@@ -68,8 +68,8 @@ Markdown,标题固定如下顺序:
 
 | 项 | 结论 | 依据 / 命令 | 不适用原因与剩余风险 |
 | --- | --- | --- | --- |
-| Worktree / base | 目标 base、`pnpm worktree:begin -- --name "<scope goal>"`(共享 base 加 `--allow-shared-base`)、预期临时分支与路径 | [agent-worktree-lifecycle](../agent-worktree-lifecycle/SKILL.md) | — |
-| 文档影响 | 需新建 / 修改的文档与生成物;改了 skill 或 `.vibe-coding/loading.md` 必含 `pnpm skills:sync` | 你项目的文档影响检查(如有) | 无 doc/ 影响,原因:…;剩余风险:… |
+| Worktree / base | 目标 base、`node .vibe-coding/kit/cli.mjs worktree begin --name "<scope goal>"`(如果项目已启用 kit worktree runtime)、预期临时分支与路径 | [agent-worktree-lifecycle](../agent-worktree-lifecycle/SKILL.md) | — |
+| 文档影响 | 需新建 / 修改的文档与生成物;改了 skill 或 `.vibe-coding/loading.md` 后按项目约定同步,若采用 kit package scripts 可用 `pnpm skills:sync` | 你项目的文档影响检查(如有) | 无 doc/ 影响,原因:…;剩余风险:… |
 | SQL 迁移 | 每个迁移脚本:路径、状态(待执行 / 已执行)、执行入口、目标环境 | 只走你项目自动化的迁移入口,不安排 AI 用数据库客户端手动执行原始 SQL;规则见 [migration-downpath](../migration-downpath/SKILL.md) | 无 SQL 迁移脚本,原因:… |
 | 测试 spec 变更 | 需新建 / 修改的测试脚本、fixture、契约测试及覆盖目标;bugfix 写「原自动化覆盖缺口 / 逃逸原因」与两层「回归覆盖路径」(本处回归 + 同类防线) | [bugfix-regression-tests](../bugfix-regression-tests/SKILL.md) | 无测试脚本 / spec 变更,原因:…;原自动化覆盖缺口 / 逃逸原因:…;回归覆盖路径缺失原因:…;剩余风险:… |
 | 验证命令 | 按弹窗选择与影响面列精确命令,每条注明在哪跑(本机 / 远端)及依据 | [test-gate-router](../test-gate-router/SKILL.md) | 用户选择不跑,风险:… |
@@ -128,13 +128,11 @@ Subagent 派发(默认单 agent,写明不派原因)与维护性风险门禁(无�
 | 目标分支与收尾 | | | |
 ````
 
-## 执行完成报告
+## 可选示例:执行完成报告
 
-报告沿用「一图看懂」的纯文本路径图，禁止 Mermaid（Owner 2026-10-21）。无计划按实际步骤补画；旧图先转文本；HTML 用内联 SVG。
+如果项目希望使用固定的完成报告格式,可以参考下面的模板并按本项目习惯调整。示例中的图使用纯文本;它不是本 kit 强制的报告政策。
 
-全部执行完毕后,最终回复必须以 `# 执行完成报告` 开头并按下列标题顺序输出,不得只说"已完成"或改成自由
-摘要。报告与计划**对称**:用同一张图看偏差,用同一张闭环清单填实际结果。经历上下文压缩 / resume 或不确定
-模板是否还在上下文时,回复前重新打开本段核对。
+采用该模板时,计划与完成报告保持对应关系;具体标题和内容以项目自己的报告要求为准。
 
 ````markdown
 # 执行完成报告

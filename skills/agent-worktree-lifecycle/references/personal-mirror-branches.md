@@ -17,7 +17,7 @@ currently checked out to**, not a hardcoded assumption:
 
 | Primary is currently on | `--base` for a new worktree | `finish` target |
 | --- | --- | --- |
-| A shared branch (e.g. `develop`) | That shared branch, with `--allow-shared-base` | Same shared branch |
+| A shared branch (e.g. `develop`) | That shared branch, if permitted by your project configuration | Same shared branch |
 | A personal mirror branch (e.g. `<name>/develop`) | That personal branch | Same personal branch |
 
 Syncing a personal branch's accumulated work into the shared branch is a distinct, manual

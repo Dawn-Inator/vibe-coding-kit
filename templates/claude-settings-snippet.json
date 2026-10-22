@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.vibe-coding/kit/src/worktrees/primary-write-guard-hook.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking primary-checkout write guard..."
+          }
+        ]
+      }
+    ]
+  }
+}

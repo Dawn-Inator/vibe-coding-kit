@@ -33,6 +33,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { makeOwnedTreeWritable } from './writable-tree.mjs';
+import { assertKitSafeToRemove } from '../dependencies/submodule.mjs';
 // eslint-disable-next-line lf/no-bare-pid-probe -- legacy bare pid probe (lock root cure RC4); migrate to lease-lock recordedPidLive/inspectLease
 import { acquireFinishLockQueued, finishLockPath, finishQueueDir, pidIsAlive, releaseFinishLock } from './finish-lock.mjs';
 import {
@@ -499,6 +500,14 @@ function recheckUnderLock(v, stateDir) {
 }
 
 function removeReclaimable(v, result, { primaryPath, gitOptions, out }) {
+  try {
+    assertKitSafeToRemove({ projectRoot: v.path });
+  } catch (error) {
+    const reason = `kit cleanup proof failed: ${error.message}`;
+    out(`${LOG_PREFIX} could not reclaim ${v.path}: ${reason}`);
+    result.blocked.push({ ...v, removable: false, reasons: [reason] });
+    return;
+  }
   // A killed test run can leave read-only (0555) directories behind; only this
   // verified candidate's own directories get u+rwx back.
   makeOwnedTreeWritable(v.path);

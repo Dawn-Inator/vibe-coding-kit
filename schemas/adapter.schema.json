@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/adapter.schema.json",
   "title": "Vibe Coding Kit project adapter contract",
+  "description": "Consumer lifecycle hooks are named module exports; the kit invokes them without shell evaluation.",
   "type": "object",
   "required": ["schemaVersion", "hooks"],
   "properties": {
@@ -9,11 +10,11 @@
     "hooks": {
       "type": "object",
       "properties": {
-        "afterCreate": { "type": "string" },
-        "beforeCandidate": { "type": "string" },
-        "verifyCandidate": { "type": "string" },
-        "beforePush": { "type": "string" },
-        "afterLand": { "type": "string" }
+        "afterCreate": { "type": "string", "minLength": 1 },
+        "beforeCandidate": { "type": "string", "minLength": 1 },
+        "verifyCandidate": { "type": "string", "minLength": 1 },
+        "beforePush": { "type": "string", "minLength": 1 },
+        "afterLand": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }

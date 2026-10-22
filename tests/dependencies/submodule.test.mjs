@@ -51,6 +51,38 @@ test('fails closed for a registered but uninitialized kit and for URL/config dis
   assert.throws(() => checkKit({ projectRoot: missing.project }), /Required project config is missing/);
 });
 
+test('cleanup proof rejects private remotes and upstreams without changing kit state', () => {
+  const fixture = makeProject();
+  const child = join(fixture.project, '.vibe-coding/kit');
+  git(child, ['remote', 'add', 'private', `file://${fixture.source}`]);
+  git(child, ['fetch', 'private']);
+  git(child, ['branch', 'private-tracked']);
+  git(child, ['config', 'branch.private-tracked.remote', 'private']);
+  git(child, ['config', 'branch.private-tracked.merge', 'refs/heads/main']);
+  const beforeHead = git(child, ['rev-parse', 'HEAD']).stdout.trim();
+  const beforeStatus = git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
+  const beforeRefs = git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout;
+
+  assert.throws(() => assertKitSafeToRemove({ projectRoot: fixture.project }), /unapproved remotes/);
+  assert.equal(git(child, ['rev-parse', 'HEAD']).stdout.trim(), beforeHead);
+  assert.equal(git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout, beforeStatus);
+  assert.equal(git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout, beforeRefs);
+});
+
+test('cleanup proof rejects a tampered origin URL without changing the kit checkout', () => {
+  const fixture = makeProject();
+  const child = join(fixture.project, '.vibe-coding/kit');
+  git(child, ['remote', 'set-url', 'origin', `file://${fixture.root}/private.git`]);
+  const beforeHead = git(child, ['rev-parse', 'HEAD']).stdout.trim();
+  const beforeStatus = git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
+  const beforeRefs = git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout;
+
+  assert.throws(() => assertKitSafeToRemove({ projectRoot: fixture.project }), /origin URL does not match the registered kit URL/);
+  assert.equal(git(child, ['rev-parse', 'HEAD']).stdout.trim(), beforeHead);
+  assert.equal(git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout, beforeStatus);
+  assert.equal(git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout, beforeRefs);
+});
+
 test('old fixtures with no registered kit remain inapplicable without requiring config', () => {
   const project = join(mkdtempTracked('vibe-kit-legacy-test-'), 'legacy');
   mkdirSync(project);

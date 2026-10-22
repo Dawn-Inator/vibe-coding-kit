@@ -1,7 +1,7 @@
 // rot-gate: static-guard pattern=/(active instructions|class guard|copied installation)/ (recursive retired-consumer scan and portable installation contract)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -14,12 +14,22 @@ const GUARDRAILS_SKILL = 'agent-orchestration-guardrails';
 function findLayout(modulePath) {
   let ancestor = dirname(modulePath);
   while (true) {
-    const bundled = join(ancestor, 'vibe-coding', 'skills');
-    const installed = join(ancestor, '.vibe-coding', 'skills');
-    if (existsSync(join(bundled, GUARDRAILS_SKILL, 'SKILL.md')))
-      return { root: ancestor, skillsRoot: bundled, vibeRoot: join(ancestor, 'vibe-coding') };
-    if (existsSync(join(installed, GUARDRAILS_SKILL, 'SKILL.md')))
-      return { root: ancestor, skillsRoot: installed, vibeRoot: join(ancestor, '.vibe-coding') };
+    const publicRoot = join(ancestor, 'skills');
+    if (existsSync(join(publicRoot, GUARDRAILS_SKILL, 'SKILL.md')))
+      return {
+        root: ancestor,
+        skillsRoot: publicRoot,
+        publicSkillsRoot: publicRoot,
+        loadingPath: join(ancestor, 'templates', 'loading.md'),
+      };
+    const installedKit = join(ancestor, '.vibe-coding', 'kit', 'skills');
+    if (existsSync(join(installedKit, GUARDRAILS_SKILL, 'SKILL.md')))
+      return {
+        root: ancestor,
+        skillsRoot: installedKit,
+        publicSkillsRoot: installedKit,
+        loadingPath: join(ancestor, '.vibe-coding', 'loading.md'),
+      };
     const parent = dirname(ancestor);
     if (parent === ancestor) throw new Error(`Cannot locate ${GUARDRAILS_SKILL} from ${modulePath}`);
     ancestor = parent;
@@ -27,7 +37,7 @@ function findLayout(modulePath) {
 }
 
 const layout = findLayout(fileURLToPath(import.meta.url));
-const loadingPath = join(layout.vibeRoot, 'loading.md');
+const loadingPath = layout.loadingPath;
 
 function markdownFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -49,8 +59,7 @@ function staleRoutingConsumer(text) {
 
 test('retired startup model-routing skill is absent from both discoverable source trees', () => {
   assert.equal(existsSync(join(layout.skillsRoot, RETIRED_SKILL)), false);
-  const kitSkills = join(layout.root, 'vibe-coding', 'skills');
-  if (existsSync(kitSkills)) assert.equal(existsSync(join(kitSkills, RETIRED_SKILL)), false);
+  assert.equal(existsSync(join(layout.publicSkillsRoot, RETIRED_SKILL)), false);
 });
 
 test('active instructions cannot route through the retired skill or require its startup pause', () => {
@@ -61,7 +70,6 @@ test('active instructions cannot route through the retired skill or require its 
 
 test('dispatch-only model choice remains in the existing orchestration authority', () => {
   const guardrails = readFileSync(join(layout.skillsRoot, GUARDRAILS_SKILL, 'SKILL.md'), 'utf8');
-  const loading = readFileSync(loadingPath, 'utf8');
   assert.match(guardrails, /Keep the developer-selected model and effort/);
   assert.doesNotMatch(guardrails, /Session-start model advice is optional|Session-start routing is optional/);
   assert.match(guardrails, /Every dispatch sets `model` explicitly/);
@@ -70,7 +78,6 @@ test('dispatch-only model choice remains in the existing orchestration authority
   assert.match(guardrails, /Haiku read-only only; Sonnet for every write-capable task/);
   assert.match(guardrails, /Luna is the default executor/);
   assert.match(guardrails, /Terra is the fallback/);
-  assert.match(loading, /派发任一 subagent \/ worker[^\n]*agent-orchestration-guardrails/);
 });
 
 test('class guard catches stale consumers in arbitrary paths and allows historical prose', () => {
@@ -85,21 +92,39 @@ test('class guard catches stale consumers in arbitrary paths and allows historic
   assert.equal(staleRoutingConsumer('Keep the developer-selected model and effort.'), false);
 });
 
-test('copied installation finds retired-entry and dispatch rules without cwd or git', () => {
+test('copied installation finds retired-entry and dispatch rules without cwd or git', async () => {
   const fixture = mkdtempTracked('routing-retirement-installed-');
   const project = join(fixture, 'project');
   const installedVibe = join(project, '.vibe-coding');
-  const automation = join(project, 'engineering', 'automation');
-  const sourceKit = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const kitRoot = join(installedVibe, 'kit');
   mkdirSync(project, { recursive: true });
-  cpSync(layout.vibeRoot, installedVibe, { recursive: true });
-  mkdirSync(automation, { recursive: true });
-  for (const directory of ['agent-skills', 'testing-support'])
-    cpSync(join(sourceKit, directory), join(automation, directory), { recursive: true });
+  mkdirSync(join(kitRoot, 'skills'), { recursive: true });
+  cpSync(layout.publicSkillsRoot, join(kitRoot, 'skills'), { recursive: true });
+  mkdirSync(join(installedVibe, 'skills'), { recursive: true });
+  cpSync(join(layout.root, 'templates', 'loading.md'), join(installedVibe, 'loading.md'));
+  const config = JSON.parse(readFileSync(join(layout.root, 'templates', 'project.config.json'), 'utf8'));
+  config.identity = { name: 'Fixture Owner', email: 'fixture@example.test' };
+  config.skills.skills = Object.fromEntries(
+    readdirSync(layout.publicSkillsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => [entry.name, { mode: 'adopt' }]),
+  );
+  writeFileSync(join(installedVibe, 'project.config.json'), `${JSON.stringify(config, null, 2)}\n`);
+  const { syncProjectSkills } = await import('../../src/skills/project-sync.mjs');
+  syncProjectSkills({ projectRoot: project, kitRoot });
+  const projected = readFileSync(join(project, '.agents', 'skills', GUARDRAILS_SKILL, 'SKILL.md'), 'utf8');
+  assert.match(projected, /Every dispatch sets `model` explicitly/);
+  const claudeProjection = readFileSync(join(project, '.claude', 'skills', GUARDRAILS_SKILL, 'SKILL.md'), 'utf8');
+  assert.match(claudeProjection, /Workers never run package-level\/full tests/);
+
+  const installedTests = join(project, 'tests');
+  mkdirSync(join(installedTests, 'skills'), { recursive: true });
+  cpSync(new URL('./routing-contract.test.mjs', import.meta.url), join(installedTests, 'skills/routing-contract.test.mjs'));
+  cpSync(new URL('../support/', import.meta.url), join(installedTests, 'support'), { recursive: true });
 
   const childEnv = { ...process.env };
   delete childEnv.NODE_TEST_CONTEXT;
-  const installedTest = join(automation, 'agent-skills', 'routing-contract.test.mjs');
+  const installedTest = join(installedTests, 'skills', 'routing-contract.test.mjs');
   const result = spawnSync(
     process.execPath,
     [

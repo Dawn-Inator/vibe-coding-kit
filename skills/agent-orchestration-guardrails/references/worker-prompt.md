@@ -21,8 +21,8 @@ When delegating implementation or workflow worker tasks, explicitly say:
   worktree with an install flag — missing dependencies are reported, not repaired by installing.
   **Pre-create the worker's worktree with the per-client dependency lane** (`agent-worktree-lifecycle`'s
   `--with-deps=<client>`/`=all` plus a `client-check` command): `--worker --with-deps=<client>`, and name
-  the exact verification command in its packet — e.g. `pnpm worktree:client-check -- --app <client> <the
-  files you touched>` and `pnpm worktree:client-check -- --app <client> --typecheck` — rather than leaving
+  the exact verification command in its packet — e.g. `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> <the
+  files you touched>` and `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> --typecheck` — rather than leaving
   the worker to guess whether it may run its own install/test/typecheck commands. That named command is the
   one sanctioned exception to the heavy-process ban below, not a general license to run other heavy commands.
 - **Every worker writes its own temp files (commit messages, logs, monitor output) under its own

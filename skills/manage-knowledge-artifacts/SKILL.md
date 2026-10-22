@@ -94,7 +94,7 @@ gate, it is a Doc. The full table lives in the starter kit's README, "知识产�
    destructive retirement ambiguity, or a missing user decision that changes intent.
 4. Route the write exactly as the Card declares:
    - Use the managed tracked worktree for Skill, Doc, History, loading, code, config, and tests.
-   - Resolve the primary worktree path via your worktree tool's status command (e.g. `pnpm worktree:status`)
+   - Resolve the primary worktree path via your worktree tool's status command (e.g. `node .vibe-coding/kit/cli.mjs worktree status`)
      and write transient work only to your own session directory in that primary worktree —
      `.workspace/task/<yyyy-mm-dd>-<topic-slug>/` (executing now; drafts in its `drafts/`) — or to `.todolist/`
      (deferred); never stage `.workspace`, never modify another session's directory (record the author as
@@ -116,20 +116,21 @@ gate, it is a Doc. The full table lives in the starter kit's README, "知识产�
      exposes secret/PII, or would become another active truth.
 5. Apply whatever type-specific skill or convention your project has for the artifact type: a
    skill-authoring convention for Skill work, a history/decision-log convention for History, and this kit's
-   worktree-guard commands (`pnpm worktree:begin` / `pnpm worktree:end`, see the worktree-guard tool this
-   starter kit ships) for tracked implementation. Keep Doc as authority for a combined `skill+doc` case.
+   worktree commands (`node .vibe-coding/kit/cli.mjs worktree begin` / `finish`) for tracked implementation
+   when the project has enabled the worktree runtime. Keep Doc as authority for a combined `skill+doc` case.
    For `memory`, follow your project's memory-authoring convention if you have one (this starter kit ships
-   the sync commands `memory:index`/`check:memory` but not an authoring workflow — write your own, or skip
+   the runtime modules `src/knowledge/memory/memory-index.mjs` but not an authoring workflow — write your own, or skip
    memory entirely and fold corrections into the relevant Doc). Apply a co-location test before writing to
    memory: if exactly one Doc is necessarily already open when the mistake gets made, the correction belongs
-   in that Doc's prose, not in memory. Run `pnpm memory:index` after writing to memory. The same co-location
+   in that Doc's prose, not in memory. If using the kit memory index, run
+   `node .vibe-coding/kit/src/knowledge/memory/memory-index.mjs sync` after writing to memory. The same co-location
    test governs rejected-suggestion records — see below.
 6. Update required loading/index/ownership/generated projections once at the orchestrator boundary, run
    the Card's light validations, and review the real diff for duplicate current truth. Generation and
    promotion of any generated projection are local/manual only, reusing the existing knowledge-artifact
    validation channel. Do not add a generation workflow, schedule, or automatic PR behavior without a
    separate governance decision. Adding a new Doc means giving it whatever frontmatter your doc-index
-   convention expects and running `pnpm docs:index` to regenerate your generated doc index — never
+   convention expects and running `node .vibe-coding/kit/src/knowledge/docs/docs-index.mjs sync` to regenerate your generated doc index — never
    hand-maintain a doc list inside a Skill or `.vibe-coding/loading.md`.
 7. **After touching a Skill, `.vibe-coding/loading.md`, or a governance Doc, check whether your project's
    upstream starter-kit template and its tutorial need the same update.** If your project was bootstrapped
@@ -178,15 +179,15 @@ project-level Skills and loading rules. Any generated projections your tools rea
 a top-level `AGENTS.md`, or a top-level `CLAUDE.md`) are generated — never hand-edit them, even though they
 may stay committed so a fresh `git clone` gives every AI tool working Skills immediately.
 
-After adding or changing a Skill or `.vibe-coding/loading.md`, edit only `.vibe-coding/*` and then run:
+After adding or changing a Skill or `.vibe-coding/loading.md`, edit only `.vibe-coding/*` and then run the kit CLI (or its generated package alias):
 
 ```bash
-pnpm skills:sync
-pnpm check:skills
+node .vibe-coding/kit/cli.mjs skills sync
+node .vibe-coding/kit/cli.mjs skills check
 ```
 
 Wire up whatever your project's equivalent of a unified "did doc-class content change" entry point is (if
-you build one) to run `check:skills` and `check:history` internally; don't hand-maintain two separate
+you build one) to run the relevant skill and history checks internally; don't hand-maintain separate
 invocations at every call site. Do not add substantial explanatory content directly into
 `.vibe-coding/loading.md` or your top-level project-instructions file — route it through the Artifact
 Decision Card to a Doc or a Skill instead, and keep `loading.md` limited to triggers, hard rules, and

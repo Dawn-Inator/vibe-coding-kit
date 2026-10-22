@@ -5,10 +5,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkKit, getKitRegistration, inspectKit, prepareKit } from './src/dependencies/submodule.mjs';
 import { syncProjectSkills } from './src/skills/project-sync.mjs';
-import { sync as syncLocalSkills } from './src/skills/sync-skills.mjs';
+import { isMainModule } from './src/lib/main-module.mjs';
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://github.com/Dawn-Inator/vibe-coding-kit.git';
+const MIRROR_IGNORE_BEGIN = '# BEGIN vibe-coding-kit local skill mirrors';
+const MIRROR_IGNORE_END = '# END vibe-coding-kit local skill mirrors';
+const MIRROR_IGNORE_BLOCK = `${MIRROR_IGNORE_BEGIN}\n/.agents/skills/\n/.claude/skills/\n${MIRROR_IGNORE_END}\n`;
 
 function parseArgs(argv) {
   const [command = 'help', ...rest] = argv;
@@ -25,6 +28,7 @@ function parseArgs(argv) {
         index += 1;
         continue;
       }
+      if (value === '--offline') { options.offline = true; continue; }
       if (value.startsWith('--project-root=')) {
         options.projectRoot = value.slice('--project-root='.length);
         if (!options.projectRoot) throw new Error('Option --project-root requires a value');
@@ -64,8 +68,11 @@ function plannedInitFiles(root, options) {
   configTemplate.kit.url = options.url || DEFAULT_URL;
   configTemplate.identity.name = options.identityName || '';
   configTemplate.identity.email = options.identityEmail || '';
+  const mirrorPolicy = options.mirrorPolicy || 'local';
+  if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
+  configTemplate.skills = { ...configTemplate.skills, mirrorPolicy, skills: {} };
   const selected = new Map();
-  if (options.skill.length) {
+  {
     const commonSkills = resolve(REPO_ROOT, 'skills');
     const commonNames = (awaitlessReaddir(commonSkills));
     const localRoot = resolve(root, '.vibe-coding/skills');
@@ -82,7 +89,8 @@ function plannedInitFiles(root, options) {
       selected.set(name, decision);
     }
     for (const name of commonNames) {
-      if (selected.has(name) || localNames.includes(name)) continue;
+      if (selected.has(name)) continue;
+      if (localNames.includes(name)) continue;
       selected.set(name, { mode: 'exclude', rationale: 'Not selected for this project during initialization.' });
     }
     configTemplate.skills.skills = Object.fromEntries(selected);
@@ -97,6 +105,12 @@ function plannedInitFiles(root, options) {
     { path: bootstrapPath, content: readFileSync(resolve(REPO_ROOT, 'templates/bootstrap.mjs'), 'utf8') },
     { path: loadingPath, content: readFileSync(resolve(REPO_ROOT, 'templates/loading.md'), 'utf8') },
   ];
+  const gitignorePath = resolve(root, '.gitignore');
+  const currentGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
+  const mergedGitignore = mergeMirrorIgnoreBlock(currentGitignore, mirrorPolicy);
+  if (existsSync(gitignorePath) || mergedGitignore) {
+    entries.push({ path: gitignorePath, content: mergedGitignore, mergeExisting: true });
+  }
   for (const [name, decision] of selected) {
     if (decision.mode !== 'extend') continue;
     entries.push({
@@ -115,6 +129,9 @@ function plannedInitFiles(root, options) {
       'skills:check': 'node engineering/automation/vibe-coding/bootstrap.mjs skills check',
       'worktree:begin': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree begin',
       'worktree:end': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree finish',
+      'worktree:status': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree status',
+      'worktree:cleanup': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree cleanup',
+      'worktree:sync-primary': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree sync-primary',
     };
     packageJson.scripts = packageJson.scripts && typeof packageJson.scripts === 'object' && !Array.isArray(packageJson.scripts)
       ? packageJson.scripts : {};
@@ -140,6 +157,30 @@ function plannedInitFiles(root, options) {
     conflicts.push('identity.name and identity.email (pass --identity-name and --identity-email)');
   }
   return { entries, writes, conflicts, config: configTemplate };
+}
+
+function mergeMirrorIgnoreBlock(current, policy) {
+  const beginAt = current.indexOf(MIRROR_IGNORE_BEGIN);
+  const endAt = current.indexOf(MIRROR_IGNORE_END);
+  if ((beginAt < 0) !== (endAt < 0) || (beginAt >= 0 && current.indexOf(MIRROR_IGNORE_BEGIN, beginAt + 1) >= 0)
+      || (endAt >= 0 && current.indexOf(MIRROR_IGNORE_END, endAt + 1) >= 0)) {
+    throw new Error('Cannot merge malformed or duplicated vibe-coding-kit mirror block in .gitignore');
+  }
+  let base = current;
+  if (beginAt >= 0) {
+    const lineStart = beginAt === 0 || current[beginAt - 1] === '\n';
+    const endLine = endAt + MIRROR_IGNORE_END.length;
+    const lineEnd = endLine === current.length || current[endLine] === '\n' || current.slice(endLine, endLine + 2) === '\r\n';
+    if (!lineStart || !lineEnd || endAt < beginAt) throw new Error('Cannot merge malformed vibe-coding-kit mirror block in .gitignore');
+    let after = endLine;
+    if (current.slice(after, after + 2) === '\r\n') after += 2;
+    else if (current[after] === '\n') after += 1;
+    base = `${current.slice(0, beginAt)}${current.slice(after)}`;
+  }
+  if (policy === 'tracked') return base;
+  if (beginAt >= 0) return `${base.slice(0, beginAt)}${MIRROR_IGNORE_BLOCK}${base.slice(beginAt)}`;
+  if (!base) return MIRROR_IGNORE_BLOCK;
+  return `${base}${base.endsWith('\n') ? '\n' : '\n\n'}${MIRROR_IGNORE_BLOCK}`;
 }
 
 function awaitlessReaddir(path) {
@@ -175,12 +216,9 @@ function init(root, options) {
     mkdirSync(dirname(entry.path), { recursive: true });
     writeFileSync(entry.path, entry.content, entry.mergeExisting ? undefined : { flag: 'wx' });
   }
+  prepareKit({ projectRoot: root });
   mkdirSync(resolve(root, '.vibe-coding/skills'), { recursive: true });
-  if (options.skill.length) {
-    syncProjectSkills({ projectRoot: root, kitRoot: resolve(root, '.vibe-coding/kit') });
-  } else {
-    syncLocalSkills({ root });
-  }
+  syncProjectSkills({ projectRoot: root, kitRoot: resolve(root, '.vibe-coding/kit') });
   console.log('Initialization complete. No package.json or business dependencies were created.');
 }
 
@@ -223,6 +261,9 @@ function main() {
     }
     case 'worktree':
     case 'worktrees': {
+      const prepared = prepareKit({ projectRoot: root, allowNetwork: !options.offline });
+      if (!prepared.applicable) throw new Error('Worktree commands require a registered .vibe-coding/kit submodule');
+      checkKit({ projectRoot: root });
       const forwarded = options.forwarded;
       const command = forwarded[0] || 'status';
       const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'src/worktrees/cli.mjs'), command, ...forwarded.slice(1)], {
@@ -234,11 +275,13 @@ function main() {
       return;
     }
     case 'help':
-      console.log('Usage: node cli.mjs <init|check|prepare|inspect|skills|worktree> --project-root <path> [options]');
+      console.log('Usage: node cli.mjs <init|check|prepare|inspect|skills|worktree> --project-root <path> [options]\nInit: --mirror-policy local (default) or tracked');
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }
 }
 
-try { main(); }
-catch (error) { console.error(`[vibe-coding-kit] ${error.message}`); process.exitCode = 1; }
+if (isMainModule(import.meta.url)) {
+  try { main(); }
+  catch (error) { console.error(`[vibe-coding-kit] ${error.message}`); process.exitCode = 1; }
+}

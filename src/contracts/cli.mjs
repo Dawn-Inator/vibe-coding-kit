@@ -3,8 +3,7 @@
 // `full`: a consuming project may replace it with a complete project-aware
 // classifier before claiming a smaller tier.
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { isMainModule } from '../lib/main-module.mjs';
 
 function parseArgs(argv) {
   const options = { base: undefined, head: undefined, help: false };
@@ -155,7 +154,7 @@ export function main(argv = process.argv.slice(2), io = console) {
     const options = parseArgs(argv);
     if (options.help) {
       io.log(
-        'Usage: node engineering/automation/agent-preflight/cli.mjs [--base <ref> [--head <ref>]]',
+        'Usage: node .vibe-coding/kit/src/contracts/cli.mjs [--base <ref> [--head <ref>]]',
       );
       io.log(
         'Without --base, classifies staged, unstaged, and untracked files. Output is JSON; profile is always full.',
@@ -178,5 +177,5 @@ export function main(argv = process.argv.slice(2), io = console) {
   }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isMainModule(import.meta.url))
   process.exitCode = main();

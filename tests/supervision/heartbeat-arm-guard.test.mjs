@@ -16,7 +16,7 @@ import {
 
 after(cleanupTempDirs);
 
-const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'heartbeat-arm-guard-hook.mjs');
+const HOOK = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/heartbeat-arm-guard-hook.mjs');
 const ARM = 'pnpm heartbeat:arm -- --ledger .workspace/2026-01-01-demo/heartbeat.md';
 
 const toolUse = (name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
@@ -34,7 +34,7 @@ function transcript(...lines) {
 test('command recognition: the arm entry only; plain sleeps are untouched', () => {
   assert.ok(isHeartbeatArmCommand(ARM));
   assert.ok(isHeartbeatArmCommand('cd repo && pnpm run heartbeat:arm -- --probe'));
-  assert.ok(isHeartbeatArmCommand('node engineering/automation/agent-supervision/heartbeat-arm.mjs --probe'));
+  assert.ok(isHeartbeatArmCommand('node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --probe'));
   assert.ok(!isHeartbeatArmCommand('pnpm heartbeat:armed'));
   assert.ok(!isHeartbeatArmCommand('git log'));
   assert.ok(isHandRolledHeartbeat('sleep 1200; echo "HEARTBEAT due"'));

@@ -223,7 +223,7 @@ check-root-layout.mjs`(随 kit 一起复制进你项目,见 INSTALL.md),做的�
 4. 维护一份 `RETIRED_ROOT_DIRECTORIES`(旧路径 → 新路径),已退役的目录一旦回流,报错直接
    指向该去的地方,而不是笼统地说"未分类"。
 
-把 `pnpm check:root-layout` 接进你的测试/CI 流程,新增一个不属于任何已声明分类的根目录,就会在
+如果项目实现了根目录分类检查器,把它接进测试/CI 流程,新增一个不属于任何已声明分类的根目录,就会在
 提交前被挡下来,而不是等到项目变得杂乱无章之后才有人想起来整理。这份校验脚本只是起点——你项目
 真正的根目录分类清单,还是要写进一份长期维护的文档里(参考 `.vibe-coding/tutorial/
 06-codebase-architecture/monorepo-layout.md` 的 Nova 案例),脚本只负责把文档里的声明变成

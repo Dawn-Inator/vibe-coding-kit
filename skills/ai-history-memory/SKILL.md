@@ -74,15 +74,13 @@ Never write plaintext secrets, tokens, cookies, passwords, private keys, full co
 
 Monthly `index.md` files are navigational aids and may be regenerated. Keep manual index edits minimal: title, date, category, status, and links are enough. Treat `README.md` and `**/index.md` as non-entry files.
 
-If your project wired up this starter kit's history-index tooling (`engineering/automation/agent-history/history-index.mjs`), keep the index in sync with:
+If your project uses the kit's history-index module, keep the index in sync with:
 
 ```bash
-pnpm history:index   # regenerate the README/index.md navigational aids
-pnpm check:history   # verify the index is up to date; fails on drift
+node .vibe-coding/kit/src/knowledge/history/history-index.mjs sync   # regenerate navigation indexes
+node .vibe-coding/kit/src/knowledge/history/history-index.mjs check  # verify the indexes
 ```
 
-(equivalent direct calls if you have not added the `package.json` script aliases:
-`node engineering/automation/agent-history/history-index.mjs sync` /
-`node engineering/automation/agent-history/history-index.mjs check`)
+`init` does not add package-script aliases for history indexing; projects may add their own wrappers.
 
 As the project progresses, `.vibe-coding/history/` will accumulate entries across many months — keep using the monthly folder structure (`YYYY-MM/DD-slug.md`) rather than one flat directory, so search and indexing stay fast as it grows.

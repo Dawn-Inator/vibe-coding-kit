@@ -5,9 +5,10 @@ description: Use before creating, editing, finishing, or cleaning managed agent 
 
 # Agent Worktree Lifecycle
 
-Agent-facing entry for this repository's agent worktree lifecycle. The mechanics live in
-`engineering/automation/agent-worktrees/`; read the script for exact behavior, and expect it to print the
-repair command when it refuses. Detail, rationale and runbooks are in `references/` (index at the bottom).
+Agent-facing entry for projects that manage agent worktrees. The reusable runtime lives in the pinned kit
+at `.vibe-coding/kit/src/worktrees/`; invoke its supported CLI through
+`node .vibe-coding/kit/cli.mjs worktree ...`. The project owns its adapter, branches, identity, and release
+rules. Detail and optional integration recipes are in `references/` (index at the bottom).
 
 ## When To Use
 
@@ -20,40 +21,54 @@ repair command when it refuses. Detail, rationale and runbooks are in `reference
 
 - **Never switch branches, commit, merge or reset in the primary worktree** (the one a human works in). Agent work happens in a managed worktree.
 - **Never run `git stash` in a managed worktree** (including `apply` / `pop` / `show`): `refs/stash` is one ref shared by every worktree. Save with `git diff > patch`, discard with `git restore`.
-- **Never `rm -rf` a worktree**; remove it with `pnpm worktree:cleanup` or let `worktree:end` do it.
-- **Never push the temporary `claude/*` / `codex/*` branch**; `worktree:end` pushes only its recorded base and deletes the temp branch.
+- **Never `rm -rf` a managed worktree**; finish it with the lifecycle CLI or use its `cleanup` command for eligible worktrees.
+- **Never push a temporary agent branch**; `finish` pushes to the recorded base and removes the temporary branch.
 - **Never resolve conflicts one-sidedly** (`-X theirs`, `-X ours`, `-s ours`) and never `git reset --hard origin/<base>` on a shared branch to "get clean". Abort and resolve by hand.
-- **Do not leave finished work unlanded**: commit and `worktree:end` before reporting a task done; "kept local waiting for validation" is not a terminal state.
-- **Session closeout reclaims leftovers**: `pnpm worktree:status`, then `pnpm worktree:cleanup -- --reclaim-stale --stale-days 14` (dry run), then `--apply` once nobody else is active.
+- **Do not leave finished work unlanded**: use `finish` according to the project's integration policy before reporting a task done.
+- **Session closeout checks leftovers**: use `status`, then `cleanup --reclaim-stale --stale-days 14` to inspect candidates. Reclamation is a dry run unless `--apply` is supplied; apply it only when the project authorizes cleanup and the candidates are safe.
 - Env-var escape hatches (`WTG_PRIMARY_LOCK_ALLOW`, `WTG_SYNC_PRIMARY_APPROVED_BY`, ...) are deliberate human/orchestrator decisions, never a reflex after a refusal. See `references/environment-variables.md`.
 
 ## Main path
 
 ```bash
 git status --short --branch
-pnpm worktree:begin -- --name "<scope goal>"     # fork from freshly fetched upstream; prints the path
+node .vibe-coding/kit/cli.mjs worktree begin --name "<scope goal>" # prints the new worktree path
 cd <printed path>                                 # edit only there
-pnpm worktree:end -- --message "type(scope): summary"   # alias of worktree:finish: commit, rebase, push, clean up
-pnpm worktree:status                              # list managed worktrees, age, stale-uncommitted markers
-pnpm worktree:cleanup                             # removes lifecycle=merged worktrees (not a dry run); -- --reclaim-stale for abandoned ones
-pnpm worktree:sync-primary                        # only thing allowed to advance primary's local base branch
+node .vibe-coding/kit/cli.mjs worktree finish --message "type(scope): summary"
+node .vibe-coding/kit/cli.mjs worktree status
+node .vibe-coding/kit/cli.mjs worktree cleanup
+node .vibe-coding/kit/cli.mjs worktree sync-primary
 ```
 
-- `worktree:begin` (alias of `create`) makes `<agent-prefix>/<slug>` under the tool's managed root and records guard
-  metadata. Same slug gets `-2`, `-3`. Pass `--base <branch>` when primary is on a shared branch, plus
-  `--allow-shared-base` when forking from a branch your team pushes to directly. `--offline` skips the pre-branch fetch.
+When a `package.json` exists, the initializer adds `worktree:begin`, `worktree:end`, `worktree:status`,
+`worktree:cleanup`, and `worktree:sync-primary` package-script aliases. It does not create aliases for the
+other commands; use the direct Node invocation above or add project-owned wrappers. Review the project
+configuration and adapter before enabling worktree operations.
+
+## Project adapter hooks
+
+The configured project adapter is a project-owned module with named lifecycle hooks; the generated empty
+hook map is a valid no-op. Projects may opt into `afterCreate`, `beforeCandidate`, `verifyCandidate`,
+`beforePush`, and `afterLand`. A thrown error, `false`, `{ ok: false }`, or `{ skip: true }` rejects that
+hook. Failures before a push stop it; `verifyCandidate` and `beforePush` also reject changes to candidate
+`HEAD`, working-tree status, or kit pin. `afterCreate` failure leaves the new worktree for inspection.
+`afterLand` runs after a successful push, so its failure cannot undo the remote change; the local worktree
+and branch are kept for inspection. Enable only the checks your project defines in its adapter module.
+
+- `begin` (alias of `create`) makes a branch and worktree under the configured managed root and records guard
+  metadata. Pass `--base <branch>` to choose a base explicitly. `--offline` skips the pre-branch fetch.
 - A spawned sub-agent's worktree is created by the orchestrator with `--worker`; a worker never adds `--install` or installs dependencies on its own. A fresh worktree without `--install` has no dependencies; a missing-module error there is expected state, not a bug.
 - **Branch-context rule**: `begin` defaults the base to the primary worktree's current branch; if that branch is not the one you intend to land on, pass `--base` explicitly instead of guessing, and read cross-session state from an explicit ref, not from primary's working tree (another session may have switched it).
-- `worktree:end` commits dirty changes, fetches the base, rebases (a branch carrying its own merge is merged instead), then pushes the worktree's own `HEAD` to `origin/<base>`. A rebase conflict aborts with nothing pushed; a push that never succeeds leaves the worktree intact, so re-run it. Primary is not touched.
-- The completion report cites the terminal output of the real `worktree:end` run (command, exit status, pushed SHA, cleanup result). Guard metadata and thread IDs are attribution only, not proof of completion.
-- `worktree:end` can queue behind `finish.lock`: run it detached and wait on the log event-driven; do not block a foreground call or hand-roll `sleep` loops. `cd` into your own worktree before finishing.
+- `finish` commits dirty changes, fetches the base, rebases (a branch carrying its own merge is merged instead), then pushes the worktree's own `HEAD` to its configured upstream. A rebase conflict aborts with nothing pushed; a push that never succeeds leaves the worktree intact, so re-run it. Primary is not advanced.
+- The completion report cites the terminal output of the real `finish` run (command, exit status, pushed SHA, cleanup result). Guard metadata and thread IDs are attribution only, not proof of completion.
+- `finish` may wait on its lock: run it detached according to the project's process policy and wait on the log event-driven. `cd` into your own worktree before finishing.
 
 <!-- BEGIN: claude-only -->
-Claude Code: start `worktree:end` with the Bash tool's `run_in_background: true`, redirected to a log, and wait with one `Monitor` until-loop (or the completion notification). A dispatched worker uses `nohup ... & disown` plus one foreground `Monitor` instead.
+Claude Code: start the project's configured finish command with the Bash tool's `run_in_background: true`, redirected to a log, and wait with one `Monitor` until-loop (or the completion notification).
 <!-- END: claude-only -->
 
 <!-- BEGIN: agent-only -->
-Codex and other runtimes without `Monitor`: `nohup pnpm worktree:end -- ... > log 2>&1 & disown`, then poll the log in bounded bursts spaced a few minutes apart.
+Codex and other runtimes without `Monitor`: run the project's configured finish command detached, redirect output to a log, then poll the log in bounded bursts spaced a few minutes apart.
 <!-- END: agent-only -->
 
 ## Worker takeover
@@ -68,7 +83,7 @@ cherry-pick recoverable commits. Follow [recovery-notes](references/recovery-not
 | Symptom | Read |
 | --- | --- |
 | Why worktrees at all | `references/why-worktrees.md` |
-| Which `pnpm worktree:*` script does what | `references/command-reference.md` |
+| Which direct CLI command does what | `references/command-reference.md` |
 | `begin` flags, stale base, `--worker`, `--install`, `--with-deps` | `references/begin-flags.md`, `references/dependency-stamp.md` |
 | Personal mirror branches | `references/personal-mirror-branches.md` |
 | stash blocked by hook, primary lock, write guard | `references/safety-mechanisms.md` |

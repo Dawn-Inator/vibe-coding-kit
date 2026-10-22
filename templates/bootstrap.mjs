@@ -2,7 +2,7 @@
 // Minimal pre-hydration entrypoint. Once the gitlink exists, safety and
 // lifecycle decisions belong to the pinned public runtime.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 function git(root, args, { allowFailure = false } = {}) {
@@ -20,8 +20,76 @@ function findRoot(start) {
 
 function isInitializedSubmodule(root, path) {
   const target = resolve(root, path);
+  // `git -C` requires the directory to exist. A cold clone may have only the
+  // gitlink in its index, so treat an absent or empty target as uninitialized.
+  let info;
+  try { info = lstatSync(target); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  if (!info.isDirectory() || info.isSymbolicLink()) return false;
   const result = git(target, ['rev-parse', '--show-toplevel'], { allowFailure: true });
   return result.status === 0 && resolve(result.stdout.trim()) === target;
+}
+
+function assertHydrationTargetSafe(root, path) {
+  const target = resolve(root, path);
+  let info;
+  try { info = lstatSync(target); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`Cannot hydrate kit into ${path}: target exists and is not a directory; move it aside and retry`);
+  }
+  if (isInitializedSubmodule(root, path)) return;
+  if (readdirSync(target).length > 0) {
+    throw new Error(`Cannot hydrate kit into non-empty uninitialized directory ${path}; preserve or move its contents aside, then retry`);
+  }
+}
+
+function hydrationMarkerPath(root) {
+  const path = git(root, ['rev-parse', '--git-path', 'vibe-coding-kit-bootstrap.json']).stdout.trim();
+  return resolve(root, path);
+}
+
+function targetPin(root, path) {
+  const result = git(root, ['ls-files', '--stage', '--', path], { allowFailure: true });
+  const match = /^160000 ([0-9a-f]+) 0\t/m.exec(result.stdout);
+  if (result.status !== 0 || !match) throw new Error(`Cannot determine the staged gitlink pin for ${path}`);
+  return match[1];
+}
+
+function readHydrationMarker(root, path) {
+  const markerPath = hydrationMarkerPath(root);
+  if (!existsSync(markerPath)) return null;
+  let marker;
+  try { marker = JSON.parse(readFileSync(markerPath, 'utf8')); }
+  catch { throw new Error('A previous bootstrap prepare left an invalid recovery marker; inspect Git state before retrying'); }
+  if (marker?.path !== path || marker?.pin !== targetPin(root, path)) {
+    throw new Error('A previous bootstrap prepare marker does not match the current kit pin; inspect Git state before retrying');
+  }
+  return markerPath;
+}
+
+function hydrate(root, path, allowNetwork, { recoverIncomplete = false } = {}) {
+  assertHydrationTargetSafe(root, path);
+  const marker = readHydrationMarker(root, path);
+  if (recoverIncomplete && isInitializedSubmodule(root, path)) {
+    const status = git(resolve(root, path), ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], { allowFailure: true });
+    const interruptedCheckout = status.stdout.trim().split(/\r?\n/).filter(Boolean).every((line) => /^D  /.test(line));
+    if (!marker || status.status !== 0 || !interruptedCheckout) {
+      throw new Error(`Cannot recover incomplete initialized kit ${path}: no matching bootstrap recovery marker or the checkout contains other changes; inspect Git state before retrying`);
+    }
+  }
+  const markerPath = marker || hydrationMarkerPath(root);
+  if (!marker) writeFileSync(markerPath, `${JSON.stringify({ path, pin: targetPin(root, path), startedAt: new Date().toISOString() })}\n`, { flag: 'wx' });
+  const updateArgs = ['submodule', 'update', '--init', '--checkout'];
+  if (!allowNetwork) updateArgs.push('--no-fetch');
+  updateArgs.push('--', path);
+  try {
+    git(root, updateArgs);
+  } catch (error) {
+    const mode = allowNetwork ? 'with network access' : 'offline';
+    throw new Error(`Kit hydration failed ${mode}; no local files were removed. Resolve the reported Git error, then rerun bootstrap prepare. Original error: ${error.message}`);
+  }
+  if (existsSync(resolve(root, path, 'src/dependencies/submodule.mjs'))) unlinkSync(markerPath);
 }
 
 async function main() {
@@ -53,12 +121,9 @@ async function main() {
 
   if (command === 'prepare') {
     if (!isInitializedSubmodule(root, config.kit.path)) {
-      const updateArgs = ['submodule', 'update', '--init', '--checkout'];
-      if (!allowNetwork) updateArgs.push('--no-fetch');
-      updateArgs.push('--', config.kit.path);
-      git(root, updateArgs);
+      hydrate(root, config.kit.path, allowNetwork);
     } else if (!existsSync(runtimePath)) {
-      throw new Error('The initialized kit checkout is incomplete; refusing to update it without its safety runtime');
+      hydrate(root, config.kit.path, allowNetwork, { recoverIncomplete: true });
     }
     if (!existsSync(runtimePath)) throw new Error('The pinned kit checkout is incomplete; rerun bootstrap prepare');
     const { prepareKit, checkKit } = await import(runtimePath);
@@ -70,12 +135,9 @@ async function main() {
 
   if (!['skills', 'worktree', 'worktrees'].includes(command)) throw new Error(`Unknown bootstrap command: ${command}`);
   if (!isInitializedSubmodule(root, config.kit.path)) {
-    const updateArgs = ['submodule', 'update', '--init', '--checkout'];
-    if (!allowNetwork) updateArgs.push('--no-fetch');
-    updateArgs.push('--', config.kit.path);
-    git(root, updateArgs);
+    hydrate(root, config.kit.path, allowNetwork);
   } else if (!existsSync(runtimePath)) {
-    throw new Error('The initialized kit checkout is incomplete; refusing to update it without its safety runtime');
+    hydrate(root, config.kit.path, allowNetwork, { recoverIncomplete: true });
   }
   if (!existsSync(runtimePath)) throw new Error('The pinned kit checkout is incomplete; rerun bootstrap prepare');
   const { prepareKit } = await import(runtimePath);

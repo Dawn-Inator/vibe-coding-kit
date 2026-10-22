@@ -27,6 +27,8 @@ node .vibe-coding/kit/cli.mjs init --project-root . \
 
 `--skill` may be repeated. Supported decisions are `adopt`, `extend`, `replace:<reason>`, and `exclude:<reason>` for public skills; `local` is for a project-only skill. When any public skill is selected, public skills omitted from the command are initially recorded as excluded. `extend` creates a project-owned `EXTENSION.md` starter; `replace` requires an existing local `SKILL.md` and a reason. Edit `.vibe-coding/project.config.json` to adjust these decisions after setup.
 
+The example skills provide guidance, not a preconfigured workflow. `agent-worktree-lifecycle` uses the public worktree CLI directly; review the project's worktree settings and add project-owned wrappers for any desired commands beyond the generated worktree aliases. `coding-gate-preflight` describes a process and points to the kit's conservative classifier, but `init` does not create a preflight script or adapter. Only adopt these skills after reviewing how they fit the consuming project's rules.
+
 `init` requires a registered `vibe-coding-kit` submodule whose path and URL match the project config. It creates `.vibe-coding/project.config.json`, `.vibe-coding/loading.md`, the project-owned bootstrap and adapter, and any requested extension starters. If the project already has a `package.json`, it merges the kit scripts listed below; conflicting script names are reported and left unchanged. It does not create a business `package.json`, install application dependencies, deploy, create cloud resources, or commit changes. Existing files with different contents are reported as conflicts and are left untouched. Review and commit generated files and the submodule gitlink as part of the project.
 
 ### Existing projects and integrations
@@ -54,12 +56,35 @@ When a `package.json` exists, `init` merges these scripts unless a different com
 | `skills:check` | Bootstrap, prepare the pinned kit, then check skill projections |
 | `worktree:begin` | Bootstrap, prepare the pinned kit, then run worktree `begin` |
 | `worktree:end` | Bootstrap, prepare the pinned kit, then run worktree `finish` |
+| `worktree:status` | Bootstrap, prepare the pinned kit, then run worktree `status` |
+| `worktree:cleanup` | Bootstrap, prepare the pinned kit, then run worktree `cleanup` |
+| `worktree:sync-primary` | Bootstrap, prepare the pinned kit, then run worktree `sync-primary` |
 
 Without a `package.json`, invoke the bootstrap or top-level CLI directly with Node; the installer does not add a placeholder package manifest.
 
 ### Current implementation boundaries
 
-The CLI does not add the submodule; add it with the registered name and path shown above. `init` currently generates the default `.vibe-coding/` and `engineering/automation/vibe-coding/` layout and the four script names in the table. It does not discover or migrate an existing bridge, choose alternate adapter/bootstrap paths, or resolve file and script conflicts automatically. Existing integrations must keep and adapt their project-owned wiring. Do not treat `inspect` output or undocumented flags as a stable interface; check the current CLI help and project integration before depending on them.
+The CLI does not add the submodule; add it with the registered name and path shown above. `init` currently generates the default `.vibe-coding/` and `engineering/automation/vibe-coding/` layout and the seven package-script names in the table when `package.json` exists. It does not discover or migrate an existing bridge, choose alternate adapter/bootstrap paths, or resolve file and script conflicts automatically. Existing integrations must keep and adapt their project-owned wiring. Do not treat `inspect` output or undocumented flags as a stable interface; check the current CLI help and project integration before depending on them.
+
+### Project lifecycle hooks
+
+`init` creates `engineering/automation/vibe-coding/project-adapter.mjs` with an empty hook map. That is a valid no-op adapter; no project-defined hooks run until the project opts in. The `adapter` field in `.vibe-coding/project.config.json` names this module relative to the project root. Add hook names to its `adapterContract` and export matching functions, for example:
+
+```js
+export const adapterContract = {
+  schemaVersion: 1,
+  hooks: { verifyCandidate: 'verifyReleaseCandidate' },
+};
+
+export async function verifyReleaseCandidate(context) {
+  // Apply this project's candidate checks.
+  // Return normally to accept; throw or return false to reject.
+}
+```
+
+The contract permits `afterCreate`, `beforeCandidate`, `verifyCandidate`, `beforePush`, and `afterLand`. Each handler receives a context object with `projectRoot` and `phase`, plus phase-specific lifecycle values. The kit imports and calls the named module export directly; it does not evaluate a shell command. A thrown error, `false`, `{ ok: false }`, or `{ skip: true }` rejects that hook. Rejection before a push stops the push. `verifyCandidate` and `beforePush` require a clean candidate and reject any hook that changes its `HEAD`, working-tree status, or kit pin.
+
+`afterCreate` runs after the worktree has been created, so a failure reports an error but leaves that worktree for inspection. `afterLand` runs only after the push succeeds. If it fails, the remote change is already landed and cannot be rolled back by the hook; the local worktree and branch are preserved for inspection. These hooks are project-owned policy points, not default LingoFly or kit release rules. See the [adapter schema](schemas/adapter.schema.json).
 
 The generated project bootstrap is the small project-owned entry point used before importing the submodule runtime. It can prepare or check the registered submodule without installing a global tool:
 

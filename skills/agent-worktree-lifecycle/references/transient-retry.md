@@ -24,7 +24,7 @@ work itself), never invoke it as a single blocking foreground call in an environ
 with a foreground command timeout. Launch it detached and poll the log instead:
 
 ```bash
-nohup pnpm worktree:end -- --message-file /tmp/commit-msg.txt > /tmp/worktree-end.log 2>&1 &
+nohup node .vibe-coding/kit/cli.mjs worktree finish --message-file /tmp/commit-msg.txt > /tmp/worktree-end.log 2>&1 &
 disown
 # repeat until the log shows push success/failure or a fatal error:
 timeout 110 sh -c 'tail -5 /tmp/worktree-end.log; sleep 60'

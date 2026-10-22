@@ -62,7 +62,7 @@ AI 在规划任务时就能靠语义匹配自己判断要不要打开它。这�
 
 ## Nova 案例参考
 
-Nova 的 `doc/README.md` 本身就是一份"生成的、非规范的投影",由 `pnpm docs:index`(化名的具体实现)
+Nova 的 `doc/README.md` 本身就是一份"生成的、非规范的投影",由 Nova 项目自有脚本 `pnpm docs:index`
 从每篇 `doc/*.md` 的 frontmatter 扫描生成,`authority: hard` 目前用在 CI/CD 规则、密钥治理等少数
 几篇文档上。这是 Nova 按自己项目的实际风险点做的具体取舍;新项目应该重新盘点自己领域里"不读就会
 出大问题"的文档有哪些,再决定哪些该标 `hard`——核心可复用的是"三字段驱动生成索引 + 硬约定单独分组"

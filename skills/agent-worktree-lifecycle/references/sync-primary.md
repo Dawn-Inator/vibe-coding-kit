@@ -10,8 +10,8 @@ thing meant to catch it back up — run explicitly from the primary worktree, wh
 actually need primary's checkout to reflect the latest merged work:
 
 ```bash
-pnpm worktree:sync-primary
-pnpm worktree:sync-primary -- --dry-run
+node .vibe-coding/kit/cli.mjs worktree sync-primary
+node .vibe-coding/kit/cli.mjs worktree sync-primary --dry-run
 ```
 
 It fetches the primary branch's upstream and fast-forwards (`git merge --ff-only`)
@@ -36,7 +36,7 @@ primary onto it. Two hard rules, by design:
   past this; only an orchestrator/human shell exporting
   `WTG_SYNC_PRIMARY_APPROVED_BY=<identity>` overrides it, and every attempt — refused or
   allowed — is written to the same audit log the primary-lock hook uses. Every dispatch
-  instruction for a worker should say outright: do not run `pnpm worktree:sync-primary`.
+  instruction for a worker should say outright: do not run `node .vibe-coding/kit/cli.mjs worktree sync-primary`.
 
 ### Idle self-authorization (default on)
 

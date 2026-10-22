@@ -1,5 +1,6 @@
 [
   "contracts/cli.test.mjs",
+  "contracts/project-adapter.test.mjs",
   "dependencies/submodule.test.mjs",
   "install/bootstrap.test.mjs",
   "install/init.test.mjs",
@@ -37,6 +38,7 @@
   "worktrees/primary-write-guard-hook.test.mjs",
   "worktrees/primary-write-guard.test.mjs",
   "worktrees/process-provenance.test.mjs",
+  "worktrees/project-lifecycle.test.mjs",
   "worktrees/reclaim-stale.test.mjs",
   "worktrees/submodule-cleanup-safety.test.mjs",
   "worktrees/submodule-lifecycle.test.mjs",

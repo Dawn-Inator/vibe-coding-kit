@@ -99,15 +99,34 @@ function inspect(projectRoot, { requireConfig = true } = {}) {
   return { applicable: true, path, commit, initialized };
 }
 
-function workingTreeSafety(submodulePath) {
+function assertRemoteProvenance(submodulePath, approvedUrl) {
+  if (typeof approvedUrl !== 'string' || !approvedUrl) throw new Error('Cannot prove the approved kit remote URL');
+  const remotes = git(submodulePath, ['remote'], { allowFailure: true });
+  if (remotes.status !== 0) throw new Error('Cannot inspect kit remotes');
+  const names = remotes.stdout.trim().split(/\r?\n/).filter(Boolean);
+  if (names.length !== 1 || names[0] !== 'origin') {
+    throw new Error(`Refusing to change kit with unapproved remotes: ${names.join(', ') || '(none)'}`);
+  }
+  const urls = git(submodulePath, ['config', '--get-all', 'remote.origin.url'], { allowFailure: true });
+  if (urls.status !== 0 || urls.stdout.trim().split(/\r?\n/).filter(Boolean).length !== 1 || urls.stdout.trim() !== approvedUrl) {
+    throw new Error('Refusing to change kit: origin URL does not match the registered kit URL');
+  }
+  const remoteRefs = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/remotes'], { allowFailure: true });
+  if (remoteRefs.status !== 0) throw new Error('Cannot inspect remote-tracking kit refs');
+  const refs = remoteRefs.stdout.trim().split(/\r?\n/).filter(Boolean);
+  if (refs.some((ref) => !ref.startsWith('refs/remotes/origin/'))) {
+    throw new Error('Refusing to change kit with remote-tracking refs outside refs/remotes/origin');
+  }
+  return refs;
+}
+
+function workingTreeSafety(submodulePath, approvedUrl) {
   const status = git(submodulePath, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], { allowFailure: true });
   if (status.status !== 0) throw new Error('Cannot establish submodule working-tree cleanliness');
   if (status.stdout.trim()) throw new Error(`Refusing to change dirty submodule ${submodulePath}:\n${status.stdout.trim()}`);
+  const remoteRefs = assertRemoteProvenance(submodulePath, approvedUrl);
   const refs = git(submodulePath, ['for-each-ref', '--format=%(refname) %(objectname)'], { allowFailure: true });
   if (refs.status !== 0) throw new Error('Cannot inspect local submodule refs');
-  const remotes = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/remotes'], { allowFailure: true });
-  if (remotes.status !== 0) throw new Error('Cannot inspect remote-tracking submodule refs');
-  const remoteRefs = remotes.stdout.trim().split(/\r?\n/).filter(Boolean);
   for (const line of refs.stdout.split(/\r?\n/).filter(Boolean)) {
     const [ref, object] = line.split(' ');
     if (ref.startsWith('refs/remotes/') || ref === 'refs/stash' || ref.startsWith('refs/stash/')) continue;
@@ -118,6 +137,9 @@ function workingTreeSafety(submodulePath) {
       const merge = git(submodulePath, ['config', '--get', `branch.${branch}.merge`], { allowFailure: true });
       if (remote.status !== 0 || merge.status !== 0 || !remote.stdout.trim() || !merge.stdout.trim()) {
         throw new Error(`Refusing to change submodule with a local branch lacking an upstream: ${ref}`);
+      }
+      if (remote.stdout.trim() !== 'origin') {
+        throw new Error(`Refusing to change submodule with a branch tracking an unapproved remote: ${ref}`);
       }
       const upstream = `refs/remotes/${remote.stdout.trim()}/${merge.stdout.trim().replace(/^refs\/heads\//, '')}`;
       allowedRemoteRefs = remoteRefs.includes(upstream) ? [upstream] : [];
@@ -153,7 +175,7 @@ export function checkKit({ projectRoot } = {}) {
   if (!result.initialized) throw new Error(`Kit submodule is not initialized: ${result.path}; run the project bootstrap prepare command`);
   const current = git(result.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (current !== result.commit) throw new Error(`Kit checkout ${current} does not match parent gitlink ${result.commit}`);
-  workingTreeSafety(result.path);
+  workingTreeSafety(result.path, getKitRegistration({ projectRoot }).url);
   return result;
 }
 
@@ -163,7 +185,7 @@ export function prepareKit({ projectRoot, allowNetwork = true } = {}) {
   const target = inspect(root);
   if (!target.applicable || target.initialized) {
     if (target.initialized) {
-      workingTreeSafety(target.path);
+      workingTreeSafety(target.path, getKitRegistration({ projectRoot: root }).url);
       const current = git(target.path, ['rev-parse', 'HEAD']).stdout.trim();
       if (current === target.commit) return target;
     }
@@ -177,7 +199,7 @@ export function prepareKit({ projectRoot, allowNetwork = true } = {}) {
   if (!prepared.initialized) throw new Error(`Submodule prepare completed without initializing ${prepared.path}`);
   const actual = git(prepared.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (actual !== prepared.commit) throw new Error(`Prepared kit commit ${actual} does not match parent gitlink ${prepared.commit}`);
-  workingTreeSafety(prepared.path);
+  workingTreeSafety(prepared.path, getKitRegistration({ projectRoot: root }).url);
   return { ...prepared, initialized: true };
 }
 
@@ -192,7 +214,7 @@ export function assertKitSafeToRemove({ projectRoot } = {}) {
   if (!committedPin || stagedPin !== committedPin || committedPin !== result.commit) {
     throw new Error('Cannot remove kit: parent HEAD and index do not agree on the registered gitlink');
   }
-  workingTreeSafety(result.path);
+  workingTreeSafety(result.path, getKitRegistration({ projectRoot: root }).url);
   const actual = git(result.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (actual !== committedPin) throw new Error(`Cannot remove kit at ${actual}; parent gitlink is ${committedPin}`);
   const nested = git(result.path, ['submodule', 'status', '--recursive'], { allowFailure: true });

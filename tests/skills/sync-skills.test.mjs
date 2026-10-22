@@ -87,6 +87,7 @@ test('sync generates .agents/skills, .claude/skills, AGENTS.md, CLAUDE.md', () =
   assert.ok(agentsAlpha.includes('GENERATED FILE - DO NOT EDIT.'));
   assert.ok(agentsAlpha.includes('Source: .vibe-coding/skills/alpha/SKILL.md'));
   assert.ok(claudeAlpha.includes('Source: .vibe-coding/skills/alpha/SKILL.md'));
+  assert.ok(agentsAlpha.includes('Run `pnpm skills:sync` after editing source files.'));
   assert.ok(agentsMd.includes('Source: .vibe-coding/loading.md'));
   assert.ok(claudeMd.includes('Source: .vibe-coding/loading.md'));
 

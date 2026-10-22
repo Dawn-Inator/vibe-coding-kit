@@ -151,7 +151,7 @@ PreToolUse hook:**当一个会话第一次运行 `heartbeat:arm` 时,检查对�
 所以每次需要决策的唤醒(定时器到点、worker 落地或最终汇报、人类来消息;不含只有中间进展的通知)都先跑:
 
 ```
-pnpm heartbeat:sweep -- --ledger <账本路径>
+node .vibe-coding/kit/src/supervision/heartbeat-sweep.mjs --ledger <账本路径>
 ```
 
 它只读、不联网(从不 `git fetch`;要新鲜的远端引用,调用前自己拉一次),对登记表里**还没有覆盖**的候选各

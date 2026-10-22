@@ -8,7 +8,7 @@ When implementation is complete, review the real diff, then finish through the
 explicit command:
 
 ```bash
-pnpm worktree:end -- --message "type(scope): summary"
+node .vibe-coding/kit/cli.mjs worktree finish --message "type(scope): summary"
 ```
 
 `worktree:end`/`finish` commits any dirty changes (a commit failure aborts finish before
@@ -21,7 +21,7 @@ fetch → integrate → push a bounded number of times before giving up. A rebas
 aborts the rebase, lists the conflicting files, and exits non-zero with nothing pushed. The
 worktree and its branch are removed **only after the push actually succeeds** — a push
 that never succeeds after retries leaves the worktree, branch, and commits exactly where
-they were, so nothing is lost; just re-run `pnpm worktree:end`.
+they were, so nothing is lost; just re-run `node .vibe-coding/kit/cli.mjs worktree finish`.
 
 Primary's own local base branch is **not** advanced by finish — it can fall behind
 `origin/<base>` as other tasks finish directly. `sync-primary` (below) is the only thing
@@ -77,14 +77,8 @@ Flags:
 
 - `--message "<text>"` — commit message for the fallback auto-commit of any leftover
   dirty changes. Fine for a short, punctuation-free one-liner.
-- `--message-file <path>` (or `--message -` for stdin) — **use this instead of
-  `--message` for anything containing a backtick, a `$(...)`, or a real newline.**
-  `pnpm run <script> -- <args>`-style invocations (which is what these `pnpm worktree:*`
-  scripts are) re-serialize forwarded `--` arguments through a shell a second time; a
-  message containing shell-meaningful characters can get partially executed or have its
-  newlines flattened even inside an outer single-quoted heredoc, because the danger is
-  in the package manager's own re-shelling layer, not your original shell. Passing the
-  message as a file sidesteps this entirely — only a path crosses the unsafe channel.
+- `--message-file <path>` (or `--message -` for stdin) — use this for a multi-line
+  message or whenever passing the message as a file is more reliable in your shell.
 - `--no-push` — commit and rebase (or merge-preserve) locally without pushing. The worktree is **not**
   removed in this case, since nothing has landed anywhere shared yet.
 - `--allow-mass-deletion` — required to proceed when the mass-deletion guard (below)
@@ -104,7 +98,7 @@ Rules:
   risks two people re-fixing the same thing and leaves half-finished code on a shared
   branch.
 - A push failure after retries are exhausted leaves the worktree, branch, and commits
-  untouched — resolve the conflict and re-run `pnpm worktree:end`.
+  untouched — resolve the conflict and re-run `node .vibe-coding/kit/cli.mjs worktree finish`.
 - If finish is blocked by an unresolved conflict, an unclear base, a failed commit, or
   the mass-deletion guard, report the worktree path, branch, failing command, and
   current status rather than working around it silently.

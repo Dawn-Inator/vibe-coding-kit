@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { readSkill, skillRoot } from '../../src/skills/entry-contract.mjs';
+const SKILLS_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills');
+const readSkill = (name) => readFileSync(join(SKILLS_ROOT, name, 'SKILL.md'), 'utf8');
 
 function assertDispatchBoundary(entry, recovery) {
   assert.match(entry, /spawn_agent.*shares the current directory/);
@@ -24,7 +26,7 @@ function assertDispatchBoundary(entry, recovery) {
 test('Codex dispatch and takeover protect actual writers, not lifecycle status', () => {
   const entry = readSkill('agent-orchestration-guardrails');
   const recovery = readFileSync(
-    join(skillRoot(), 'agent-orchestration-guardrails/references/ownership-and-recovery.md'),
+    join(SKILLS_ROOT, 'agent-orchestration-guardrails/references/ownership-and-recovery.md'),
     'utf8',
   );
   assertDispatchBoundary(entry, recovery);

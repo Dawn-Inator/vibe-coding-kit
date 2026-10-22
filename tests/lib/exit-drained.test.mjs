@@ -16,8 +16,8 @@ import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const KIT = join(HERE, '..');
-const MODULE_URL = pathToFileURL(join(HERE, 'exit-drained.mjs')).href;
+const KIT = join(HERE, '..', '..');
+const MODULE_URL = pathToFileURL(join(KIT, 'src', 'lib', 'exit-drained.mjs')).href;
 
 function runChild(source) {
   return spawnSync(process.execPath, ['--input-type=module', '-e', source], {
@@ -73,7 +73,7 @@ function kitSources(dir) {
 
 test('class guard: no kit source exits with a bare process.exit (use exitDrained, or mark a signal exit)', () => {
   const offenders = [];
-  for (const path of kitSources(KIT)) {
+  for (const path of kitSources(join(KIT, 'src'))) {
     readFileSync(path, 'utf8')
       .split('\n')
       .forEach((line, i) => {

@@ -21,7 +21,7 @@ import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 
 after(cleanupTempDirs);
 
-const hook = join(dirname(fileURLToPath(import.meta.url)), 'primary-write-guard-hook.mjs');
+const hook = join(dirname(fileURLToPath(import.meta.url)), '../../src/worktrees/primary-write-guard-hook.mjs');
 const env = isolatedFixtureGitEnv();
 
 function git(cwd, ...args) {

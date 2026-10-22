@@ -5,11 +5,11 @@
 ## Status And Cleanup
 
 ```bash
-pnpm worktree:status
-pnpm worktree:status -- --stale
-pnpm worktree:status -- --stale --stale-minutes 20
-pnpm worktree:status -- --json
-pnpm worktree:cleanup
+node .vibe-coding/kit/cli.mjs worktree status
+node .vibe-coding/kit/cli.mjs worktree status --stale
+node .vibe-coding/kit/cli.mjs worktree status --stale --stale-minutes 20
+node .vibe-coding/kit/cli.mjs worktree status --json
+node .vibe-coding/kit/cli.mjs worktree cleanup
 ```
 
 `worktree:status` lists every managed worktree with its branch and current state — plain
@@ -35,8 +35,8 @@ A session that crashed or switched away leaves a registered worktree that no `en
 ever finish. Reclaim them explicitly:
 
 ```bash
-pnpm worktree:cleanup -- --reclaim-stale --stale-days 14            # dry run, lists candidates
-pnpm worktree:cleanup -- --reclaim-stale --stale-days 14 --apply    # remove them
+node .vibe-coding/kit/cli.mjs worktree cleanup --reclaim-stale --stale-days 14            # dry run, lists candidates
+node .vibe-coding/kit/cli.mjs worktree cleanup --reclaim-stale --stale-days 14 --apply    # remove them
 ```
 
 - `--stale-days <n>` is required on every run (no config can supply an implicit age);
@@ -84,7 +84,7 @@ cannot by itself distinguish an idle worktree from another session's active one 
 the active-recent floor. Confirm with `worktree:status` first, or check with the team,
 before running it (or `--reclaim-stale --apply`) while other sessions might be active.
 
-Never remove a git worktree with `rm -rf`. Use `pnpm worktree:end`/`worktree:finish` for
-a worktree you're done with, or `pnpm worktree:cleanup` for ones already finished
+Never remove a git worktree with `rm -rf`. Use `node .vibe-coding/kit/cli.mjs worktree finish` (or the generated `worktree:end` alias) for
+a worktree you're done with, or `node .vibe-coding/kit/cli.mjs worktree cleanup` for ones already finished
 (`--reclaim-stale` for abandoned ones); use plain `git worktree remove <path>` only for a
 manual, non-guard-managed worktree.

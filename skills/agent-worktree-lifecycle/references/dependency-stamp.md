@@ -14,7 +14,7 @@ stamp means stale. The check is off while `nodeDeps.lockfile` is empty.
   worktree stays on disk and the output prints the repair command.
 - `end` checks after the final rebase/merge and before the push (only if dependencies
   were ever provisioned there); a failed repair stops finish before anything is pushed.
-- `pnpm worktree:deps-sync`, run inside a worktree, repairs on demand and fails closed.
+- `node .vibe-coding/kit/cli.mjs worktree deps-sync`, run inside a worktree, repairs on demand and fails closed.
 - **A plain `--worker` never installs.** It gets a `WARN` naming the repair command; the
   orchestrator recreates the worktree with `--with-deps` or repairs it. A worker given
   `--with-deps` is checked like any other role.

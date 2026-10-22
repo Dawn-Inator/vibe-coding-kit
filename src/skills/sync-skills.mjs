@@ -146,7 +146,7 @@ function generatedNotice(sourceRel) {
     '<!--',
     GENERATED_MARKER,
     `Source: ${sourceRel}`,
-    'Run `node engineering/automation/agent-skills/sync-skills.mjs sync` after editing source files.',
+    'Run `pnpm skills:sync` after editing source files.',
     '-->',
     '',
     '',
@@ -154,7 +154,7 @@ function generatedNotice(sourceRel) {
 }
 
 const GENERATED_NOTICE_RE =
-  /<!--\nGENERATED FILE - DO NOT EDIT\.\nSource: [^\n]*\nRun `node engineering\/automation\/agent-skills\/sync-skills\.mjs sync` after editing source files\.\n-->\n\n/;
+  /<!--\nGENERATED FILE - DO NOT EDIT\.\nSource: [^\n]*\nRun `pnpm skills:sync` after editing source files\.\n-->\n\n/;
 
 export function stripGeneratedNotice(text) {
   if (text.startsWith('---\n')) {
@@ -345,15 +345,18 @@ function docFileMode() {
 
 function buildExpectedOutputs(config) {
   const expected = new Map();
+  let projectConfig = null;
+  if (config.composedSource) {
+    const projectConfigPath = join(config.REPO_ROOT, '.vibe-coding', 'project.config.json');
+    if (existsSync(projectConfigPath)) projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf8'));
+  }
 
   const skillFiles = walkFiles(config.SOURCE_SKILLS_DIR);
   for (const fullPath of skillFiles) {
     const relPath = toPosix(relative(config.SOURCE_SKILLS_DIR, fullPath));
-    const sourceRel = config.composedSource
-      ? `.vibe-coding/skills/${relPath}`
-      : toPosix(relative(config.REPO_ROOT, fullPath));
-    const srcMode = statSync(fullPath).mode & 0o777;
     const { name: skillName, inner: innerPath } = splitSkillRel(relPath, '/');
+    const sourceRel = sourceLocation(config, projectConfig, skillName, innerPath, fullPath);
+    const srcMode = statSync(fullPath).mode & 0o777;
     for (const output of config.OUTPUTS) {
       const outPath = join(skillName ? mirrorRootFor(output, skillName) : output.root, relPath);
       if (isMarkdownPath(relPath)) {
@@ -396,6 +399,24 @@ function buildExpectedOutputs(config) {
   }
 
   return expected;
+}
+
+function sourceLocation(config, projectConfig, skillName, innerPath, fullPath) {
+  if (!config.composedSource || !projectConfig) return toPosix(relative(config.REPO_ROOT, fullPath));
+  const localRoot = '.vibe-coding/skills';
+  const localPath = `${localRoot}/${skillName}/${innerPath}`;
+  const kitRoot = projectConfig.kit?.path || '.vibe-coding/kit';
+  const commonPath = `${kitRoot}/skills/${skillName}/${innerPath}`;
+  const definition = projectConfig.skills?.skills?.[skillName];
+  if (definition?.mode === 'adopt') return commonPath;
+  if (definition?.mode === 'extend') {
+    if (innerPath === 'SKILL.md') return `${commonPath} + ${localRoot}/${skillName}/EXTENSION.md`;
+    const hasLocal = existsSync(join(config.REPO_ROOT, localPath));
+    const hasCommon = existsSync(join(config.REPO_ROOT, commonPath));
+    if (hasLocal && hasCommon) return `${commonPath} + ${localPath}`;
+    return hasCommon ? commonPath : localPath;
+  }
+  return localPath;
 }
 
 // ---------------------------------------------------------------------------

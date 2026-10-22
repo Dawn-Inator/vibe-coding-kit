@@ -8,7 +8,7 @@ From the local primary worktree, before editing files, run:
 
 ```bash
 git status --short --branch
-pnpm worktree:begin -- --name "<scope goal>"
+node .vibe-coding/kit/cli.mjs worktree begin --name "<scope goal>"
 ```
 
 `worktree:begin` creates a new Git worktree under this tool's managed-worktrees root
@@ -29,11 +29,7 @@ Key flags:
 
 - `--name "<scope goal>"` — required. Used to derive the branch slug.
 - `--base <branch>` — pick the branch to fork from. Defaults to the primary worktree's
-  current branch. If primary is on a shared branch (see below), pass this explicitly.
-- `--allow-shared-base` — required in addition to `--base` when creating from a shared
-  branch your team pushes directly to (e.g. `main`/`develop`), so that basing a
-  throwaway task branch off a shared branch is always a deliberate choice, not an
-  accident.
+  current branch. Choose an explicit base according to your project's branch policy.
 - `--offline` — skip the pre-branch fetch described above and base directly on the
   local branch, with a warning that it may be stale relative to the remote.
 - `--worker` — marks the new worktree as belonging to a spawned sub-agent rather than
@@ -59,7 +55,7 @@ Key flags:
   into the CLI. Refused together with `--install`.
 
 After `--with-deps=<client>`, the worker's only sanctioned heavy command for that client
-is `pnpm worktree:client-check -- --app <client> [--typecheck] <files...>`, which runs
+is `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> [--typecheck] <files...>`, which runs
 that client's registered `testCommand` (or `typecheckCommand` with `--typecheck`) against
 the given files. It refuses a client not registered in `config.clients` and a worktree
 whose deps for that client were never installed — a worktree missing a client's deps is
@@ -70,8 +66,8 @@ rules governing what a worker may and may not run.
 
 Rules:
 
-- Creating from a shared branch (`main`, `develop`, or equivalent) always requires
-  `--allow-shared-base`.
+- Check your project's configuration and branch policy before creating a worktree from
+  a shared branch.
 - If the same slug is already in use, the CLI allocates `<prefix>/<slug>-2`,
   `<prefix>/<slug>-3`, and so on rather than colliding.
 - Move into the path printed by `worktree:begin` before editing files. Do not keep

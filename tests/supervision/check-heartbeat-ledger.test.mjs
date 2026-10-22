@@ -11,8 +11,8 @@ import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateIt
 after(cleanupTempDirs);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CLI = join(HERE, 'check-heartbeat-ledger.mjs');
-const SKILL = join(HERE, '..', '..', 'vibe-coding', 'skills', 'agent-task-supervision', 'SKILL.md');
+const CLI = join(HERE, '..', '..', 'src', 'supervision', 'check-heartbeat-ledger.mjs');
+const SKILL = join(HERE, '..', '..', 'skills', 'agent-task-supervision', 'SKILL.md');
 
 const GOOD = {
   1: '(1a) in-flight w1; (1b) empty -- `ls .todolist` shows nothing free',

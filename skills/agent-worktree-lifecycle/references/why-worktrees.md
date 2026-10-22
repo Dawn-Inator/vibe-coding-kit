@@ -26,7 +26,7 @@ worktree means:
 - Commits made by an agent can be tagged with a distinct identity, so they're never
   mistaken for — or accidentally committed as — a real person.
 
-The `worktree-guard` CLI (invoked through the `pnpm worktree:*` scripts below) automates
+The public worktree CLI (invoked through `node .vibe-coding/kit/cli.mjs worktree ...`) automates
 creating, finishing, and cleaning up these task-scoped worktrees, and installs git-level
 guardrails so that the isolation these worktrees are supposed to provide can't be
 accidentally defeated by an ordinary git command run in the wrong place.

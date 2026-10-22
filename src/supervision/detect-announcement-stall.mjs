@@ -5,6 +5,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readStdinSync } from '../lib/sync-stdin.mjs';
 
 const BACKGROUND_WAIT_PATTERNS = [
   /\b(background|backgrounded|nohup|disowned|run_in_background|monitor tool|polling|waiting for (its|the|a) notification|detached)\b/i,
@@ -64,7 +65,7 @@ function readInput(argv) {
   }
   const positional = argv.find((arg) => arg !== '--' && !arg.startsWith('--'));
   if (positional) return positional;
-  return readFileSync(0, 'utf8') || null;
+  return readStdinSync() || null;
 }
 
 if (isMainModule(import.meta.url)) {

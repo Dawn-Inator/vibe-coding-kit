@@ -28,6 +28,8 @@ export function makeProject() {
   const project = join(root, 'project');
   mkdirSync(source);
   mkdirSync(project);
+  mkdirSync(join(source, 'skills'));
+  writeFileSync(join(source, 'skills', '.gitkeep'), '');
   git(source, ['init', '-q', '--initial-branch=main']);
   writeFileSync(join(source, 'README.md'), 'public kit fixture\n');
   writeFileSync(join(source, '.gitignore'), 'ignored.txt\n');
