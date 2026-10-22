@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
@@ -65,23 +65,23 @@ test('cold bootstrap hydrates an empty target directory', () => {
 test('bootstrap offline hydration passes no-lazy-fetch and no-prompt to the update process', () => {
   const fixture = runtimeProject();
   rmSync(fixture.child, { recursive: true, force: true });
-  const wrapperDir = join(fixture.root, 'git-wrapper');
-  mkdirSync(wrapperDir);
-  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
-  const capture = join(fixture.root, 'git-environment.log');
-  const wrapper = join(wrapperDir, 'git');
-  writeFileSync(wrapper, '#!/bin/sh\nprintf "%s|%s|%s\\n" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_NO_LAZY_FETCH-unset}" "$*" >> "$GIT_CAPTURE_LOG"\nexec "$REAL_GIT" "$@"\n');
-  chmodSync(wrapper, 0o755);
+  const trace = join(fixture.root, 'git-trace2.json');
   const result = runBootstrap(fixture.project, installBootstrap(fixture.project), ['prepare', '--offline'], {
-    PATH: [wrapperDir, process.env.PATH].join(delimiter),
-    REAL_GIT: realGit,
-    GIT_CAPTURE_LOG: capture,
+    GIT_TRACE2_EVENT: trace,
+    GIT_TRACE2_ENV_VARS: 'GIT_NO_LAZY_FETCH,GIT_TERMINAL_PROMPT',
     GIT_TERMINAL_PROMPT: '1',
     GIT_NO_LAZY_FETCH: '0',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  const update = readFileSync(capture, 'utf8').split(/\r?\n/).find((line) => line.includes('submodule update --init --checkout --no-fetch'));
-  assert.match(update, /^0\|1\|submodule update --init --checkout --no-fetch/);
+  const events = readFileSync(trace, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  const bySession = new Map();
+  for (const event of events) bySession.set(event.sid, [...(bySession.get(event.sid) || []), event]);
+  const update = [...bySession.values()].find((group) => group.some((event) => event.event === 'start'
+    && event.argv?.some((arg, index, argv) => arg === 'submodule' && argv[index + 1] === 'update')));
+  assert.ok(update, 'Git trace must include the actual submodule update process');
+  const parameters = new Map(update.filter((event) => event.event === 'def_param').map((event) => [event.param, event.value]));
+  assert.equal(parameters.get('GIT_NO_LAZY_FETCH'), '1');
+  assert.equal(parameters.get('GIT_TERMINAL_PROMPT'), '0');
 });
 
 test('cold bootstrap preserves a non-empty uninitialized target and gives recovery guidance', () => {

@@ -338,12 +338,13 @@ function writeListenerOrderChildScript(dir, body) {
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 
+const observedRelativePath = ${observedRelativePath.toString()};
 const seen = [];
 const realOpenSync = fs.openSync;
 fs.openSync = function (path, flags, ...rest) {
   if (flags === 'wx') {
     seen.push({
-      file: String(path).split('/').slice(-2).join('/'),
+      file: observedRelativePath(path),
       sigterm: process.listenerCount('SIGTERM'),
       sigint: process.listenerCount('SIGINT'),
     });
@@ -360,6 +361,10 @@ process.exit(0);
 `;
   writeFileSync(scriptPath, code);
   return scriptPath;
+}
+
+function observedRelativePath(value) {
+  return String(value).split(/[\\/]/u).slice(-2).join('/');
 }
 
 async function runListenerOrderChild(stateDir, body) {
@@ -381,6 +386,7 @@ async function runListenerOrderChild(stateDir, body) {
 }
 
 test('acquireFinishLockQueued: SIGTERM/SIGINT handlers already exist when the ticket file is created', async () => {
+  assert.equal(observedRelativePath('C:\\temp\\finish.queue\\ticket.json'), 'finish.queue/ticket.json');
   const stateDir = mkTempStateDir();
   try {
     const seen = await runListenerOrderChild(

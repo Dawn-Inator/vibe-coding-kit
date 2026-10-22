@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
 import { assertKitSafeToRemove, checkKit, inspectKit, prepareKit } from '../../src/dependencies/submodule.mjs';
@@ -77,29 +77,29 @@ test('offline prepare accepts a deinitialized checkout when its pinned commit is
 test('offline prepare passes no-lazy-fetch and no-prompt to the update process', () => {
   const fixture = makeProject();
   git(fixture.project, ['submodule', 'deinit', '-f', '--', '.vibe-coding/kit']);
-  const wrapperDir = join(fixture.root, 'git-wrapper');
-  mkdirSync(wrapperDir);
-  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
-  const capture = join(fixture.root, 'git-environment.log');
-  const wrapper = join(wrapperDir, 'git');
-  writeFileSync(wrapper, '#!/bin/sh\nprintf "%s|%s|%s\\n" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_NO_LAZY_FETCH-unset}" "$*" >> "$GIT_CAPTURE_LOG"\nexec "$REAL_GIT" "$@"\n');
-  chmodSync(wrapper, 0o755);
+  const trace = join(fixture.root, 'git-trace2.json');
   const script = `import { prepareKit } from ${JSON.stringify(new URL('../../src/dependencies/submodule.mjs', import.meta.url).href)}; prepareKit({ projectRoot: process.env.KIT_ROOT, allowNetwork: false });`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
       ...process.env,
       KIT_ROOT: fixture.project,
-      PATH: [wrapperDir, process.env.PATH].join(delimiter),
-      REAL_GIT: realGit,
-      GIT_CAPTURE_LOG: capture,
+      GIT_TRACE2_EVENT: trace,
+      GIT_TRACE2_ENV_VARS: 'GIT_NO_LAZY_FETCH,GIT_TERMINAL_PROMPT',
       GIT_TERMINAL_PROMPT: '1',
       GIT_NO_LAZY_FETCH: '0',
     },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  const update = readFileSync(capture, 'utf8').split(/\r?\n/).find((line) => line.includes('submodule update --init --checkout --no-fetch'));
-  assert.match(update, /^0\|1\|submodule update --init --checkout --no-fetch/);
+  const events = readFileSync(trace, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  const bySession = new Map();
+  for (const event of events) bySession.set(event.sid, [...(bySession.get(event.sid) || []), event]);
+  const update = [...bySession.values()].find((group) => group.some((event) => event.event === 'start'
+    && event.argv?.some((arg, index, argv) => arg === 'submodule' && argv[index + 1] === 'update')));
+  assert.ok(update, 'Git trace must include the actual submodule update process');
+  const parameters = new Map(update.filter((event) => event.event === 'def_param').map((event) => [event.param, event.value]));
+  assert.equal(parameters.get('GIT_NO_LAZY_FETCH'), '1');
+  assert.equal(parameters.get('GIT_TERMINAL_PROMPT'), '0');
 });
 
 test('offline prepare rejects a pin missing from a warm cache before invoking any remote helper', () => {
@@ -141,8 +141,14 @@ test('cleanup proof rejects a kit path whose gitfile points at another worktree'
   const otherHead = git(otherWorktree, ['rev-parse', 'HEAD']).stdout.trim();
   const sourceHead = git(fixture.source, ['rev-parse', 'HEAD']).stdout.trim();
   const gitfile = join(child, '.git');
-  chmodSync(gitfile, 0o666);
-  writeFileSync(gitfile, `gitdir: ${otherGitDir}\n`);
+  const replacement = `gitdir: ${otherGitDir}\n`;
+  const fd = openSync(gitfile, 'r+');
+  try {
+    writeSync(fd, replacement, 0, 'utf8');
+    ftruncateSync(fd, Buffer.byteLength(replacement));
+  } finally {
+    closeSync(fd);
+  }
   const otherStatus = git(otherWorktree, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
   const parentStatus = git(fixture.project, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
 

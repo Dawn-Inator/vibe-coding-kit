@@ -13,6 +13,7 @@ import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { main as worktreeCli } from '../../src/worktrees/cli.mjs';
 import { discoverRepo } from '../../src/worktrees/worktree-core.mjs';
 import { checkItems, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
+import { discoverWorktrees } from '../../src/supervision/heartbeat-sweep-worktrees.mjs';
 import { ageWorktreeReflogs } from '../support/worktree-age.mjs';
 
 after(cleanupTempDirs);
@@ -288,6 +289,30 @@ test('worktrees: a tracked worktree row suppresses its candidate until the row i
   assert.deepEqual(sweep(fx, args).rows, []);
   writeLedger(fx, '| I-1 | sweep:worktrees:claude/old | reclaim | done | `x` |');
   assert.deepEqual(sources(sweep(fx, args)), ['sweep:worktrees:claude/old']);
+});
+
+test('worktrees: Windows unknown cwd records use the directory safety probe', async () => {
+  const fx = makeRepo();
+  const path = await createWorktree(fx, 'unknown-cwd');
+  landByCherryPick(fx, commitIn(path, 'unknown-cwd'), path);
+  age(path, 30);
+
+  const liveCwds = new Set();
+  Object.defineProperty(liveCwds, 'unknownPids', { value: [42] });
+  const probed = [];
+  const result = discoverWorktrees(fx.primary, {
+    staleDays: 14,
+    worktreeRoot: fx.worktreeRoot,
+    platform: 'win32',
+    getLiveProcessCwds: () => liveCwds,
+    probeDirectoryDeleteSafety: (candidate, options) => {
+      probed.push({ candidate, options });
+      return { safe: true, reason: 'safe', checked: 1 };
+    },
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => candidate.source), ['sweep:worktrees:claude/unknown-cwd']);
+  assert.deepEqual(probed, [{ candidate: path, options: { platform: 'win32' } }]);
 });
 
 test('worktrees: a spent time budget stops the pass after the oldest tree and says how many were left', async () => {

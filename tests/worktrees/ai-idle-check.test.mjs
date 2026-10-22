@@ -20,6 +20,7 @@ import { checkOtherAiActivity, resolveProcessCwds } from '../../src/worktrees/ai
 import { loadConfig } from '../../src/worktrees/config.mjs';
 import { finishLockPath, finishQueueDir, writeQueueTicketFile } from '../../src/worktrees/finish-lock.mjs';
 import { discoverRepo } from '../../src/worktrees/worktree-core.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 
 after(cleanupTempDirs);
 
@@ -66,10 +67,10 @@ function callerTree(extra = []) {
   ];
 }
 
-function seams({ processes = callerTree(), cwds = {}, now = Date.now() + HOUR_MS, platform } = {}) {
+function seams({ processes = callerTree(), cwds = {}, now = Date.now() + HOUR_MS, platform = 'linux' } = {}) {
   return {
     selfPid: SELF,
-    ...(platform ? { platform } : {}),
+    platform,
     now: () => now,
     listProcesses: () => processes,
     resolveCwds: (pids) => new Map(pids.map((pid) => [pid, cwds[pid] ?? null])),
@@ -202,7 +203,13 @@ test('(d) uncommitted or untracked files in a linked worktree => busy', () => {
   writeFileSync(join(fx.linked[1], 'f1.txt'), 'edited\n');
   const modified = scan(fx);
   assert.equal(modified.busy, true);
-  assert.ok(modified.reasons.some((r) => r.includes(fx.linked[1]) && r.includes('uncommitted')), modified.reasons.join('\n'));
+  const dirtyReason = modified.reasons.find((reason) => reason.endsWith(' has uncommitted changes'));
+  assert.ok(dirtyReason, modified.reasons.join('\n'));
+  assert.equal(
+    samePathIdentity(dirtyReason.slice(0, -' has uncommitted changes'.length), fx.linked[1]),
+    true,
+    dirtyReason,
+  );
 
   git(['checkout', '--', 'f1.txt'], fx.linked[1]);
   assert.equal(scan(fx).busy, false);

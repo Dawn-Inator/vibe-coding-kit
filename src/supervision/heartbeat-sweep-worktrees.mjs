@@ -7,6 +7,7 @@ import { lstatSync } from 'node:fs';
 import { basename, isAbsolute, resolve } from 'node:path';
 
 import { samePathIdentity } from '../lib/path-identity.mjs';
+import { probeWindowsDirectoryDeleteSafety } from '../lib/windows-process.mjs';
 import { loadConfig } from '../worktrees/config.mjs';
 import {
   assessReclaimCandidate,
@@ -42,7 +43,14 @@ function stateDirOf(repo, config) {
   return resolve(repo.commonGitDir, config.stateDir.replace(/^\.git[\\/]?/, ''));
 }
 
-export function discoverWorktrees(cwd, { staleDays, worktreeRoot, configPath }) {
+export function discoverWorktrees(cwd, {
+  staleDays,
+  worktreeRoot,
+  configPath,
+  platform = process.platform,
+  getLiveProcessCwds = liveProcessCwds,
+  probeDirectoryDeleteSafety = probeWindowsDirectoryDeleteSafety,
+}) {
   const notes = [];
   let repo;
   try {
@@ -70,7 +78,9 @@ export function discoverWorktrees(cwd, { staleDays, worktreeRoot, configPath }) 
     usePatchId: true,
     nowMs: Date.now(),
     livePaths: livePathsFromFinishQueue(stateDir),
-    liveCwds: liveProcessCwds(),
+    platform,
+    probeDirectoryDeleteSafety,
+    liveCwds: getLiveProcessCwds({ platform }),
   };
   if (!ctx.liveCwds) notes.push('worktrees: lsof unavailable, live-process check skipped (clean, landed and idle gates still apply)');
 

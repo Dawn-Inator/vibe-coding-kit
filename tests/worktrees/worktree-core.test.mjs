@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import {
   isolatedFixtureGitEnv,
@@ -126,7 +126,7 @@ describe('git / gitText wrappers', () => {
 describe('discoverRepo', () => {
   test('resolves primary worktree as the first entry and lists linked worktrees', () => {
     const primary = initRepo();
-    const linkedPath = join(primary, '..', `${primary.split('/').pop()}-linked`);
+    const linkedPath = join(primary, '..', `${basename(primary)}-linked`);
     run(['worktree', 'add', linkedPath, '-b', 'feature/test-branch'], primary);
     tempDirs.push(linkedPath);
 

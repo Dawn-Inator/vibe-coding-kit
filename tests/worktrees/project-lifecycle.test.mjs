@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test, { after } from 'node:test';
 
 import { main } from '../../src/worktrees/cli.mjs';
+import { isPathWithin, samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
@@ -110,14 +111,20 @@ async function createWorktree(fixture) {
   ]));
   assert.equal(code, 0);
   const listed = git(fixture.project, ['worktree', 'list', '--porcelain']).stdout;
-  const path = listed.split(/\n/u).find((line) => line.startsWith('worktree ') && line.includes(fixture.worktreeRoot))?.slice('worktree '.length);
+  const path = listed.split(/\n/u)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length))
+    .find((candidate) => isPathWithin(fixture.worktreeRoot, candidate));
   assert.ok(path, 'create must register and hand out the prepared worktree');
   return path;
 }
 
 function assertWorktreeAndBranchRetained(fixture, worktreePath) {
   const listing = git(fixture.project, ['worktree', 'list', '--porcelain']).stdout;
-  const block = listing.split(/\n\n/u).find((entry) => entry.startsWith(`worktree ${worktreePath}\n`));
+  const block = listing.split(/\n\n/u).find((entry) => {
+    const pathLine = entry.split(/\n/u).find((line) => line.startsWith('worktree '));
+    return pathLine && samePathIdentity(pathLine.slice('worktree '.length), worktreePath);
+  });
   assert.ok(block, 'failed candidate worktree must remain registered');
   const branch = block.match(/^branch refs\/heads\/(.+)$/mu)?.[1];
   assert.ok(branch, 'failed candidate must keep its branch registered');

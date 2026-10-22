@@ -33,6 +33,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isPathWithin, samePathIdentity } from '../lib/path-identity.mjs';
+import { probeWindowsDirectoryDeleteSafety } from '../lib/windows-process.mjs';
 
 import { makeOwnedTreeWritable } from './writable-tree.mjs';
 import { assertKitSafeToRemove } from '../dependencies/submodule.mjs';
@@ -303,6 +304,9 @@ export function liveProcessCwds({ platform = process.platform, listProcesses = l
     const cwds = new Set();
     const unknownPids = [];
     for (const process of processes) {
+      // PID 0 is the Windows System Idle Process pseudo-record, which has no
+      // process CWD and cannot own a live directory handle.
+      if (process.pid === 0 || process.cwdStatus === 'excluded') continue;
       if (process.cwdStatus === 'readable' && process.cwd) cwds.add(canonical(process.cwd));
       else if (process.cwdStatus !== 'exited') unknownPids.push(process.pid);
     }
@@ -405,7 +409,17 @@ export function assessReclaimCandidate(entry, ctx) {
   if (samePathIdentity(ctx.primaryPath, path)) reasons.push('primary worktree');
   if (samePathIdentity(ctx.currentPath, path)) reasons.push('the worktree this command is running from');
   if (ctx.liveCwds?.unknownPids?.length) {
-    reasons.push(`cannot verify working directories of ${ctx.liveCwds.unknownPids.length} process(es)`);
+    let deletionIsSafe = false;
+    if (ctx.platform === 'win32' && typeof ctx.probeDirectoryDeleteSafety === 'function') {
+      try {
+        deletionIsSafe = ctx.probeDirectoryDeleteSafety(path, { platform: 'win32' })?.safe === true;
+      } catch {
+        deletionIsSafe = false;
+      }
+    }
+    if (!deletionIsSafe) {
+      reasons.push(`cannot verify working directories of ${ctx.liveCwds.unknownPids.length} process(es)`);
+    }
   }
   const prefixes = Object.values(config.tools || {}).map((tool) => tool.prefix);
   if (!detached && !prefixes.some((prefix) => branch.startsWith(prefix))) {
@@ -505,13 +519,29 @@ export function assessReclaimCandidate(entry, ctx) {
  *
  * @returns {string} '' when still safe, else the reason to skip
  */
-function recheckUnderLock(v, stateDir) {
+function recheckUnderLock(v, stateDir, { liveCwds, platform, probeDirectoryDeleteSafety } = {}) {
   if (!existsSync(v.path)) return 'checkout directory disappeared';
   const tip = git(['rev-parse', 'HEAD'], v.path);
   if (tip.status !== 0 || tip.stdout !== v.tip) return `tip moved since classification (${v.tip.slice(0, 10)} -> ${tip.stdout.slice(0, 10) || '?'})`;
   const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], v.path);
   if (status.status !== 0 || parsePorcelainPaths(status.stdout).length > 0) return 'worktree is no longer clean';
-  if (livePathsFromFinishQueue(stateDir).has(v.path)) return 'a live finish ticket now names this worktree';
+  if ([...livePathsFromFinishQueue(stateDir)].some((livePath) => samePathIdentity(livePath, v.path))) {
+    return 'a live finish ticket now names this worktree';
+  }
+  if (liveCwds?.unknownPids?.length) {
+    let deletionIsSafe = false;
+    if (platform === 'win32' && typeof probeDirectoryDeleteSafety === 'function') {
+      try {
+        deletionIsSafe = probeDirectoryDeleteSafety(v.path, { platform: 'win32' })?.safe === true;
+      } catch {
+        deletionIsSafe = false;
+      }
+    }
+    if (!deletionIsSafe) return `cannot verify working directories of ${liveCwds.unknownPids.length} process(es)`;
+  }
+  if (liveCwds && [...liveCwds].some((cwd) => isSameOrUnder(cwd, v.path))) {
+    return 'a running process has this worktree as its working directory';
+  }
   return '';
 }
 
@@ -573,7 +603,9 @@ function removeReclaimable(v, result, { primaryPath, gitOptions, out }) {
  *   staleDays: unknown, apply?: boolean, allowRecent?: boolean, usePatchId?: boolean,
  *   worktreeRoot?: string|true, stateDir: string, env?: NodeJS.ProcessEnv,
  *   now?: () => number, liveCwds?: Set<string>|null, out?: (line: string) => void,
- *   acquireLock?: typeof acquireFinishLockQueued,
+ *   acquireLock?: typeof acquireFinishLockQueued, platform?: string,
+ *   getLiveProcessCwds?: (options: {platform: string}) => Set<string>|null,
+ *   probeDirectoryDeleteSafety?: typeof probeWindowsDirectoryDeleteSafety,
  * }} options
  * @returns {Promise<{exitCode: number, refused: boolean,
  *   reclaimed: string[], blocked: ReclaimVerdict[], removable: ReclaimVerdict[]}>}
@@ -602,10 +634,17 @@ export async function reclaimStaleWorktrees(repo, config, options) {
   }
 
   const primaryPath = repo.primaryWorktree?.path || repo.topLevel;
+  const platform = options.platform ?? process.platform;
+  const loadLiveCwds = options.getLiveProcessCwds
+    ? () => options.getLiveProcessCwds({ platform })
+    : () => (options.liveCwds !== undefined ? options.liveCwds : liveProcessCwds({ platform }));
+  const probeDirectoryDeleteSafetyForPath = options.probeDirectoryDeleteSafety ?? probeWindowsDirectoryDeleteSafety;
   const ctx = {
     config,
     primaryPath,
     currentPath: repo.topLevel,
+    platform,
+    probeDirectoryDeleteSafety: probeDirectoryDeleteSafetyForPath,
     roots: managedWorktreeRoots(config, options),
     staleDays,
     allowRecent,
@@ -616,7 +655,7 @@ export async function reclaimStaleWorktrees(repo, config, options) {
     patchIdDeadlineMs: now() + Number(config.reclaim?.patchIdBudgetSeconds ?? 120) * 1000,
     patchIdBudgetSkipped: 0,
     livePaths: livePathsFromFinishQueue(stateDir),
-    liveCwds: options.liveCwds !== undefined ? options.liveCwds : liveProcessCwds(),
+    liveCwds: loadLiveCwds(),
   };
 
   const candidates = repo.worktrees.filter((w) => !samePathIdentity(w.path, primaryPath));
@@ -654,7 +693,22 @@ export async function reclaimStaleWorktrees(repo, config, options) {
     try {
       while (pending.length > 0) {
         const v = pending.shift();
-        const skip = recheckUnderLock(v, stateDir);
+        let liveCwds;
+        let skip = '';
+        if (platform === 'win32') {
+          try {
+            liveCwds = loadLiveCwds();
+          } catch (error) {
+            skip = `could not refresh Windows process CWD inventory under lock: ${error.message}`;
+          }
+        }
+        if (!skip) {
+          skip = recheckUnderLock(v, stateDir, {
+            liveCwds,
+            platform,
+            probeDirectoryDeleteSafety: probeDirectoryDeleteSafetyForPath,
+          });
+        }
         if (skip) {
           out(`${LOG_PREFIX} reclaim-skipped-under-lock:${v.path} (${skip}) -- left on disk`);
           result.blocked.push({ ...v, removable: false, reasons: [skip] });

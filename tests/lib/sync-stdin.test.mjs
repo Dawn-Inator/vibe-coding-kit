@@ -49,6 +49,20 @@ process.stdout.write(JSON.stringify(await readStdin({ timeoutMs: 5000 })));
   assert.equal(JSON.parse(result.out), '{"tool_name":"Bash"}');
 });
 
+test('readStdin accepts fd 0 when Windows reports no POSIX stat file type', async () => {
+  const result = await runWithDelayedStdin(
+    ['--input-type=module', '-e', `
+import { readStdin } from ${JSON.stringify(MODULE_URL)};
+void process.stdin.isTTY;
+const stat = { isFIFO: () => false, isSocket: () => false, isFile: () => false, isCharacterDevice: () => false };
+process.stdout.write(JSON.stringify(await readStdin({ timeoutMs: 5000, deps: { isatty: () => false, fstat: () => stat } })));
+`],
+    '{"late":true}',
+  );
+  assert.equal(result.code, 0, result.err);
+  assert.equal(JSON.parse(result.out), '{"late":true}');
+});
+
 test('detect-announcement-stall reads a late piped payload instead of exiting with usage', async () => {
   const result = await runWithDelayedStdin([STALL_CLI], 'Checked the config.\nNext, I\'ll update the tests.\n');
   assert.equal(result.code, 1, result.err);
@@ -94,6 +108,13 @@ test('readStdinSync returns "" for an unusable fd and honours its deadline on an
   });
   assert.equal(text, '');
   assert.ok(clock >= 50);
+});
+
+test('readStdin keeps TTY and closed descriptors as immediate empty input', async () => {
+  let statCalls = 0;
+  assert.equal(await readStdin({ deps: { isatty: () => true, fstat: () => { statCalls += 1; throw new Error('should not stat a TTY'); } } }), '');
+  assert.equal(statCalls, 0);
+  assert.equal(await readStdin({ deps: { isatty: () => false, fstat: () => { throw new Error('closed fd'); } } }), '');
 });
 
 function kitSources(dir) {

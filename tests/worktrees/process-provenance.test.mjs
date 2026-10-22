@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   matchesAiParentProcess,
@@ -12,7 +17,7 @@ import {
   DEFAULT_ANCESTOR_DEPTH,
   listProcessCommands,
 } from '../../src/worktrees/process-provenance.mjs';
-import { listWindowsProcesses } from '../../src/lib/windows-process.mjs';
+import { listWindowsProcesses, probeWindowsDirectoryDeleteSafety } from '../../src/lib/windows-process.mjs';
 import { DEFAULT_CONFIG } from '../../src/worktrees/config.mjs';
 
 const config = DEFAULT_CONFIG;
@@ -374,11 +379,38 @@ test('listWindowsProcesses: invokes built-in PowerShell CIM probe and normalizes
   assert.match(nativeSource, /catch \{[\s\S]*status = 'unknown'/);
   assert.match(nativeSource, /new IntPtr\(\(long\)\(uint\)BitConverter\.ToInt32/);
   assert.match(nativeSource, /wow64Peb\.ToInt64\(\) & 0xffffffffL/);
+  assert.match(nativeSource, /processId == 0[\s\S]*status = "excluded"/);
   assert.equal(invocation.options.windowsHide, true);
   assert.deepEqual(rows, [{
     pid: 12, ppid: 3, executablePath: 'C:\\Tools\\claude.exe',
     commandLine: 'claude.exe --resume', cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5,
   }]);
+});
+
+test('listWindowsProcesses: filters the PID-zero System Idle placeholder from realistic CIM-shaped rows', () => {
+  const rows = listWindowsProcesses({
+    platform: 'win32',
+    spawn: () => ({
+      status: 0,
+      stdout: JSON.stringify([
+        { pid: 0, ppid: 0, executablePath: null, commandLine: null, cwd: null, cwdStatus: 'excluded', cwdErrorCode: 0 },
+        { pid: 4, ppid: 0, executablePath: 'C:\\Windows\\System32\\smss.exe', commandLine: 'smss.exe', cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5 },
+      ]),
+    }),
+  });
+  assert.deepEqual(rows, [{
+    pid: 4, ppid: 0, executablePath: 'C:\\Windows\\System32\\smss.exe', commandLine: 'smss.exe',
+    cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5,
+  }]);
+
+  assert.throws(
+    () => listWindowsProcesses({
+      platform: 'win32',
+      spawn: () => ({ status: 0, stdout: JSON.stringify([{ pid: 0, ppid: 1 }]) }),
+    }),
+    /invalid PID record/,
+    'only the known PID 0 / PPID 0 system placeholder is excluded',
+  );
 });
 
 test('listWindowsProcesses: spawn, PowerShell, and malformed inventory failures throw', () => {
@@ -394,8 +426,127 @@ test('listWindowsProcesses: spawn, PowerShell, and malformed inventory failures 
     () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 0, stdout: '{bad json' }) }),
     /invalid JSON/,
   );
-  assert.throws(
-    () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 0, stdout: '{"pid":"x","ppid":1}' }) }),
-    /invalid PID record/,
-  );
+  for (const row of [
+    { pid: 'x', ppid: 1 },
+    { pid: -1, ppid: 1 },
+    { pid: 1.5, ppid: 1 },
+    { ppid: 1 },
+    { pid: 1 },
+    { pid: 1, ppid: -1 },
+    { pid: 1, ppid: 1.5 },
+  ]) {
+    assert.throws(
+      () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 0, stdout: JSON.stringify([row]) }) }),
+      /invalid PID record/,
+      JSON.stringify(row),
+    );
+  }
+});
+
+test('probeWindowsDirectoryDeleteSafety: unknown, denied, and incomplete results fail closed', () => {
+  const probeWith = (response) => probeWindowsDirectoryDeleteSafety('C:\\repo\\candidate', {
+    platform: 'win32', spawn: () => response,
+  });
+  assert.deepEqual(probeWith({ status: 0, stdout: '{"safe":false,"reason":"access-denied","checked":2}' }), {
+    safe: false, reason: 'access-denied', checked: 2,
+  });
+  assert.deepEqual(probeWith({ status: 0, stdout: '{"safe":false,"reason":"unknown","checked":1}' }), {
+    safe: false, reason: 'unknown', checked: 1,
+  });
+  assert.equal(probeWith({ status: 0, stdout: '{"safe":true,"reason":"unknown","checked":1}' }).safe, false);
+  assert.equal(probeWith({ status: 0, stdout: '{"safe":true,"reason":"safe","checked":0}' }).safe, false);
+  assert.equal(probeWith({ status: 0, stdout: 'not json' }).reason, 'invalid-probe-result');
+  assert.equal(probeWith({ status: 1, stderr: 'failed' }).reason, 'probe-failed');
+  assert.equal(probeWith({ error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }).reason, 'timeout');
+});
+
+test('probeWindowsDirectoryDeleteSafety: bounded PowerShell scan rejects unsafe entries before returning safe', () => {
+  let invocation;
+  const result = probeWindowsDirectoryDeleteSafety('C:\\repo\\candidate', {
+    platform: 'win32', timeoutMs: 12000, maxEntries: 500, maxDepth: 12,
+    spawn: (command, args, options) => {
+      invocation = { command, args, options };
+      return { status: 0, stdout: '{"safe":false,"reason":"reparse-point","checked":1}' };
+    },
+  });
+  const script = invocation.args.at(-1);
+  assert.equal(result.reason, 'reparse-point');
+  assert.equal(invocation.command, 'powershell.exe');
+  assert.equal(invocation.options.timeout, 17000);
+  assert.match(script, /CreateFileW/);
+  assert.match(script, /DELETE = 0x00010000/);
+  assert.match(script, /SHARE_ALL = 0x00000007/);
+  assert.match(script, /OPEN_EXISTING = 3/);
+  assert.match(script, /BACKUP_SEMANTICS = 0x02000000/);
+  assert.match(script, /OPEN_REPARSE_POINT = 0x00200000/);
+  assert.match(script, /FILE_ATTRIBUTE_REPARSE_POINT/);
+  assert.match(script, /GetFileInformationByHandle/);
+  assert.doesNotMatch(script, /FILE_FLAG_DELETE_ON_CLOSE|DeleteFile\(|RemoveDirectory\(/);
+  assert.doesNotMatch(script, /__MAX_ENTRIES__/);
+  assert.ok(script.includes(', 500, 12, 12000)'));
+});
+
+test('probeWindowsDirectoryDeleteSafety: live Windows child CWD blocks its nested directory, then succeeds after exit', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vibe-delete-probe-'));
+  const nested = join(root, 'nested', 'deeper');
+  await mkdir(nested, { recursive: true });
+  const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'], {
+    cwd: nested,
+    stdio: ['pipe', 'ignore', 'ignore'],
+    windowsHide: true,
+  });
+  let whileLive;
+  let afterExit;
+  try {
+    await once(child, 'spawn');
+    whileLive = probeWindowsDirectoryDeleteSafety(root);
+    assert.equal(whileLive.safe, false, JSON.stringify(whileLive));
+    assert.ok(whileLive.checked >= 1);
+    child.stdin.end();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+    afterExit = probeWindowsDirectoryDeleteSafety(root);
+    assert.equal(afterExit.safe, true, JSON.stringify(afterExit));
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await once(child, 'exit');
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('probeWindowsDirectoryDeleteSafety: Windows DELETE denial is reported unsafe and ACL is restored', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vibe-delete-denied-'));
+  const denied = join(root, 'denied');
+  await mkdir(denied);
+  const encodedPath = Buffer.from(denied, 'utf16le').toString('base64');
+  const aclScript = (remove) => {
+    const operation = remove
+      ? '$acl.RemoveAccessRuleSpecific($rule) | Out-Null'
+      : '$acl.AddAccessRule($rule)';
+    return `$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}')); $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [Security.AccessControl.FileSystemRights]::Delete, [Security.AccessControl.AccessControlType]::Deny); $acl = Get-Acl -LiteralPath $path; ${operation}; Set-Acl -LiteralPath $path -AclObject $acl`;
+  };
+  let denyApplied = false;
+  try {
+    const applied = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', aclScript(false)], {
+      encoding: 'utf8', windowsHide: true, timeout: 15000,
+    });
+    assert.equal(applied.status, 0, applied.stderr || applied.stdout || 'failed to apply temporary deny ACL');
+    denyApplied = true;
+    const result = probeWindowsDirectoryDeleteSafety(root);
+    assert.equal(result.safe, false, JSON.stringify(result));
+    assert.equal(result.reason, 'access-denied');
+  } finally {
+    if (denyApplied) {
+      const restored = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', aclScript(true)], {
+        encoding: 'utf8', windowsHide: true, timeout: 15000,
+      });
+      assert.equal(restored.status, 0, restored.stderr || restored.stdout || 'failed to restore temporary ACL');
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });

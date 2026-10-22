@@ -14,6 +14,7 @@ import {
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
@@ -128,7 +129,7 @@ test('createWorktree fixture is deterministic and covers both supported agent pr
   const fx = makeFixtureRepo();
   for (const tool of ['claude', 'codex']) {
     const path = await createWorktree(fx, `${tool}-prefix`, tool);
-    const entry = discoverRepo(fx.primaryDir).worktrees.find((w) => w.path === path);
+    const entry = discoverRepo(fx.primaryDir).worktrees.find((w) => samePathIdentity(w.path, path));
     assert.equal(entry.branch, `${tool}/${tool}-prefix`);
     assert.equal(readWorktreeMetadata(path, config)['created-by'], tool);
   }
@@ -217,7 +218,10 @@ test('dry run lists what would be reclaimed and removes nothing; --apply removes
   const dry = await reclaim(fx, ['--stale-days', '14']);
   assert.equal(dry.result, 0, dry.errors.join('\n'));
   assert.ok(dry.logs.some((line) => /would be reclaimed/.test(line)), dry.logs.join('\n'));
-  assert.ok(dry.logs.some((line) => line.includes(path) && /via patch-id/.test(line)), dry.logs.join('\n'));
+  const patchIdLine = dry.logs.find((line) => /via patch-id/.test(line));
+  assert.ok(patchIdLine, dry.logs.join('\n'));
+  const listedPath = patchIdLine.match(/^\s*-\s+(.*?)\s+\(idle/u)?.[1];
+  assert.equal(samePathIdentity(listedPath, path), true, patchIdLine);
   assert.ok(dry.logs.some((line) => /dry run; pass --apply/.test(line)));
   assert.ok(existsSync(path), 'dry run must not remove anything');
   assert.ok(branchExists(fx, 'claude/abandoned'));
@@ -499,12 +503,13 @@ test('Windows process CWD inventory preserves readable, unreadable, and exited s
   const cwds = liveProcessCwds({
     platform: 'win32',
     listProcesses: () => [
+      { pid: 0, cwd: null, cwdStatus: 'unknown' },
       { pid: 201, cwd: processCwd, cwdStatus: 'readable' },
       { pid: 202, cwd: null, cwdStatus: 'unreadable' },
       { pid: 203, cwd: null, cwdStatus: 'exited' },
     ],
   });
-  assert.ok(cwds.has(realpathSync(processCwd)));
+  assert.ok([...cwds].some((cwd) => samePathIdentity(cwd, realpathSync(processCwd))));
   assert.deepEqual(cwds.unknownPids, [202]);
 });
 
@@ -532,6 +537,43 @@ test('unknown Windows CWDs fail closed for reclamation without turning processes
   });
   assert.equal(result.removable, false);
   assert.ok(result.reasons.includes('cannot verify working directories of 1 process(es)'));
+});
+
+test('Windows delete proof is repeated under lock before unknown-CWD reclaim', async () => {
+  const fx = makeFixtureRepo();
+  const path = await landedIdleWorktree(fx, 'unknown-cwd-recheck');
+  const repo = discoverRepo(fx.primaryDir);
+  const unknownCwds = () => {
+    const cwds = new Set();
+    Object.defineProperty(cwds, 'unknownPids', { value: [205] });
+    return cwds;
+  };
+  let inventoryReads = 0;
+  let deleteProofs = 0;
+  const result = await reclaimStaleWorktrees(repo, config, {
+    staleDays: 14,
+    apply: true,
+    worktreeRoot: fx.worktreeRoot,
+    stateDir: join(fx.primaryDir, '.git', 'worktree-guard-state'),
+    platform: 'win32',
+    getLiveProcessCwds: () => {
+      inventoryReads += 1;
+      return unknownCwds();
+    },
+    probeDirectoryDeleteSafety: (candidate, options) => {
+      assert.equal(options.platform, 'win32');
+      assert.equal(samePathIdentity(candidate, path), true);
+      deleteProofs += 1;
+      return { safe: deleteProofs === 1, reason: deleteProofs === 1 ? 'safe' : 'busy', checked: 1 };
+    },
+    out: () => {},
+    acquireLock: async () => ({ release() {} }),
+  });
+  assert.equal(inventoryReads, 2, 'read a fresh Windows process inventory after acquiring the lock');
+  assert.equal(deleteProofs, 2, 'repeat the non-destructive delete-handle proof under the lock');
+  assert.ok(result.blocked.some((entry) => samePathIdentity(entry.path, path) && /cannot verify working directories/.test(entry.reasons.join(';'))));
+  assert.equal(result.reclaimed.length, 0);
+  assert.ok(existsSync(path), 'a failed locked proof leaves the worktree intact');
 });
 
 test('class guard: reclaim removes worktrees only from inside the finish.lock turn', () => {

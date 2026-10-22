@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
 import { assertKitSafeToRemove } from '../../src/dependencies/submodule.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { removeWorktreeSafely } from '../../src/worktrees/cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
@@ -19,7 +20,11 @@ function makeKitWorktree() {
 }
 
 function assertStillRegistered({ project, branch, worktreePath }) {
-  assert.equal(git(project, ['worktree', 'list', '--porcelain']).stdout.includes(worktreePath), true);
+  const paths = git(project, ['worktree', 'list', '--porcelain']).stdout
+    .split(/\n/u)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length));
+  assert.equal(paths.some((path) => samePathIdentity(path, worktreePath)), true);
   assert.equal(git(project, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { allowFailure: true }).status, 0);
 }
 

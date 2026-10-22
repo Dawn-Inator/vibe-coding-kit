@@ -4,6 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function git(root, args, { allowFailure = false, env = process.env } = {}) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env });
@@ -138,7 +139,7 @@ async function main() {
     if (!isInitializedSubmodule(root, config.kit.path) || !existsSync(runtimePath)) {
       throw new Error('The pinned kit checkout is not initialized; run bootstrap prepare first');
     }
-    const { checkKit } = await import(runtimePath);
+    const { checkKit } = await import(pathToFileURL(runtimePath).href);
     const result = checkKit({ projectRoot: root });
     console.log(`vibe-coding-kit ${result.commit} check OK`);
     return;
@@ -151,7 +152,7 @@ async function main() {
       hydrate(root, config.kit.path, allowNetwork, { recoverIncomplete: true });
     }
     if (!existsSync(runtimePath)) throw new Error('The pinned kit checkout is incomplete; rerun bootstrap prepare');
-    const { prepareKit, checkKit } = await import(runtimePath);
+    const { prepareKit, checkKit } = await import(pathToFileURL(runtimePath).href);
     await prepareKit({ projectRoot: root, allowNetwork });
     const result = checkKit({ projectRoot: root });
     console.log(`vibe-coding-kit ${result.commit} prepare OK`);
@@ -165,7 +166,7 @@ async function main() {
     hydrate(root, config.kit.path, allowNetwork, { recoverIncomplete: true });
   }
   if (!existsSync(runtimePath)) throw new Error('The pinned kit checkout is incomplete; rerun bootstrap prepare');
-  const { prepareKit } = await import(runtimePath);
+  const { prepareKit } = await import(pathToFileURL(runtimePath).href);
   await prepareKit({ projectRoot: root, allowNetwork });
   const delegateArgs = [resolve(kitRoot, 'cli.mjs'), command, ...args.filter((argument) => argument !== '--offline'), '--project-root', root];
   const delegated = spawnSync(process.execPath, delegateArgs, { cwd: root, stdio: 'inherit' });

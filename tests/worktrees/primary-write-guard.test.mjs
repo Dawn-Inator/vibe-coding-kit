@@ -18,6 +18,7 @@ import {
   withFixtureCommitIdentity,
 } from '../support/isolated-git-env.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import {
   GUARDED_TOOL_NAMES,
   DEFAULT_ALLOW_PREFIXES,
@@ -82,7 +83,7 @@ test('a path inside a linked worktree is allowed, from either cwd', () => {
   const { primary, sibling } = fixture();
   assert.equal(write(join(sibling, 'a.txt'), sibling).allow, true);
   assert.equal(write(join(sibling, 'a.txt'), primary).allow, true);
-  assert.equal(resolvePrimaryRoot(sibling), primary);
+  assert.equal(samePathIdentity(resolvePrimaryRoot(sibling), primary), true);
 });
 
 test('a worktree nested under the primary directory is not primary-owned', () => {
@@ -121,7 +122,7 @@ test('a symlinked path to the primary is still recognised, even for a new file',
   const { primary, sibling, viaLink } = fixture();
   assert.equal(write(join(viaLink, 'new-dir', 'a.txt'), sibling).allow, false);
   assert.equal(write(join(viaLink, 'a.txt'), viaLink).allow, false);
-  assert.equal(resolvePrimaryRoot(viaLink), primary);
+  assert.equal(samePathIdentity(resolvePrimaryRoot(viaLink), primary), true);
 });
 
 test('Windows drive/case aliases still resolve to the protected primary tree', { skip: process.platform !== 'win32' && 'Windows path alias behavior' }, () => {

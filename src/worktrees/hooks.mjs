@@ -289,7 +289,10 @@ while [ -n "$pid" ] && [ "$depth" -lt 8 ] && [ "$ancestor_tested" -lt 3 ]; do
   if [ -z "$chain" ]; then chain="$line"; else chain="$chain <- $line"; fi
   first_word=$(printf '%s' "$line" | awk '{print $1}')
   case "$first_word" in
-    git|*/git)
+    # Git for Windows reports the executable suffix in its process command;
+    # skip it just like the POSIX git parent so the same ancestor budget is
+    # available to inspect the launching AI CLI.
+    git|git.exe|*/git|*/git.exe)
       ;;
     *)
       ancestor_tested=$((ancestor_tested + 1))

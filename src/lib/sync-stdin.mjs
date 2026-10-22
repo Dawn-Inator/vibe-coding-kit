@@ -96,7 +96,12 @@ export function readStdin({ fd = 0, timeoutMs = DEFAULT_SYNC_STDIN_TIMEOUT_MS, e
   try {
     if (tty(fd)) return Promise.resolve('');
     const stat = fstat(fd);
-    if (!stat.isFIFO() && !stat.isSocket() && !stat.isFile() && !stat.isCharacterDevice()) return Promise.resolve('');
+    // Windows anonymous pipes can have an fstat mode that does not identify
+    // them as any of the POSIX file types above. For fd 0, the live stdin
+    // stream is the authoritative reader; a successful fstat is enough to
+    // distinguish it from a closed descriptor. Keep the stricter type gate
+    // for caller-supplied descriptors, where we cannot assume process.stdin.
+    if (fd !== 0 && !stat.isFIFO() && !stat.isSocket() && !stat.isFile() && !stat.isCharacterDevice()) return Promise.resolve('');
   } catch {
     return Promise.resolve('');
   } finally {
