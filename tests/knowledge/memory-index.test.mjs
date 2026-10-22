@@ -183,7 +183,7 @@ test('check passes a wikilink that resolves to a real stem', () => {
 // 4. superseded rendering
 // ---------------------------------------------------------------------------
 
-test('superseded notes render with strikethrough in MEMORY.md and a marker in CATALOG.md', () => {
+test('superseded notes stay in CATALOG.md but are absent from the boot MEMORY.md', () => {
   const { repoRoot, memoryRoot } = makeRepo();
   try {
     writeNote(memoryRoot, 'general', 'project_old_note', {
@@ -194,10 +194,70 @@ test('superseded notes render with strikethrough in MEMORY.md and a marker in CA
     runSync(memoryRoot);
 
     const bootIndex = readFileSync(join(memoryRoot, BOOT_INDEX_NAME), 'utf8');
-    assert.match(bootIndex, /~~old_note~~/);
+    assert.doesNotMatch(bootIndex, /old_note/);
+    assert.match(bootIndex, /共 0 条，分布在 0 个模块/);
 
     const catalog = readFileSync(join(memoryRoot, CATALOG_NAME), 'utf8');
     assert.match(catalog, /\[project_old_note\]\(general\/project_old_note\.md\) ⚠️ superseded \|/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('missing and blank statuses default to active in both projections', () => {
+  const { repoRoot, memoryRoot } = makeRepo();
+  try {
+    writeNote(memoryRoot, 'general', 'project_missing_status', {
+      frontmatter: { status: undefined },
+    });
+    writeNote(memoryRoot, 'workflow', 'feedback_blank_status', {
+      frontmatter: { status: '' },
+    });
+
+    runSync(memoryRoot);
+    const bootIndex = readFileSync(join(memoryRoot, BOOT_INDEX_NAME), 'utf8');
+    assert.match(bootIndex, /共 2 条，分布在 2 个模块/);
+    assert.match(bootIndex, /missing_status/);
+    assert.match(bootIndex, /blank_status/);
+
+    const catalog = readFileSync(join(memoryRoot, CATALOG_NAME), 'utf8');
+    assert.match(catalog, /\[project_missing_status\]/);
+    assert.match(catalog, /\[feedback_blank_status\]/);
+    assert.equal(runCheck(memoryRoot).ok, true);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('unsupported nonempty statuses fail closed in sync before any file write', () => {
+  const { repoRoot, memoryRoot } = makeRepo();
+  try {
+    writeNote(memoryRoot, 'general', 'project_invalid_status', {
+      frontmatter: { status: 'archived' },
+    });
+    const bootPath = join(memoryRoot, BOOT_INDEX_NAME);
+    const catalogPath = join(memoryRoot, CATALOG_NAME);
+    writeFileSync(bootPath, 'previous boot index\n');
+    writeFileSync(catalogPath, 'previous catalogue\n');
+
+    assert.throws(() => runSync(memoryRoot), /status must be one of active \| superseded/);
+    assert.equal(readFileSync(bootPath, 'utf8'), 'previous boot index\n');
+    assert.equal(readFileSync(catalogPath, 'utf8'), 'previous catalogue\n');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('unsupported nonempty statuses are rejected by check as well as sync', () => {
+  const { repoRoot, memoryRoot } = makeRepo();
+  try {
+    writeNote(memoryRoot, 'general', 'project_invalid_status', {
+      frontmatter: { status: 'archived' },
+    });
+
+    const result = runCheck(memoryRoot);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes('status must be one of active | superseded')));
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
