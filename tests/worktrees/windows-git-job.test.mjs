@@ -241,7 +241,7 @@ test('native cancellation contains a parent-exited descendant and preserves unre
   const parentCode = [
     "const { spawn } = require('node:child_process');",
     "const fs = require('node:fs');",
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { cwd: ${JSON.stringify(root)}, stdio: 'inherit', windowsHide: true });`,
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { cwd: ${JSON.stringify(root)}, stdio: 'inherit', windowsHide: true, detached: true });`,
     'child.unref();',
     `const ready = ${JSON.stringify(ready)}; const until = Date.now() + 10000; while (!fs.existsSync(ready) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);`,
     'if (!fs.existsSync(ready)) process.exit(12);',
