@@ -13,9 +13,23 @@ export const NATIVE_CASES = Object.freeze([
   'native setup and assignment failures never resume the requested command',
 ]);
 const PATTERN = `^(?:${NATIVE_CASES.map(escapeRegExp).join('|')})$`;
+const MAX_TRANSCRIPT_STREAM_BYTES = 12 * 1024;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function boundedStream(label, value) {
+  const text = String(value ?? '');
+  if (text.length === 0) return `${label}: (empty)`;
+  const bytes = Buffer.from(text);
+  if (bytes.length <= MAX_TRANSCRIPT_STREAM_BYTES) return `${label}:\n${text}`;
+  const excerpt = bytes.subarray(0, MAX_TRANSCRIPT_STREAM_BYTES).toString('utf8').replace(/\uFFFD$/u, '');
+  return `${label} (first ${MAX_TRANSCRIPT_STREAM_BYTES} of ${bytes.length} bytes; truncated):\n${excerpt}\n...[${bytes.length - MAX_TRANSCRIPT_STREAM_BYTES} bytes omitted]`;
+}
+
+function childTranscript(result) {
+  return [boundedStream('stdout (TAP)', result.stdout), boundedStream('stderr', result.stderr)].join('\n');
 }
 
 export function nativeProofOutputVerdict(output) {
@@ -46,13 +60,13 @@ export function runNativeProof({ platform = process.platform, spawn = spawnSync,
   ];
   const result = spawn(process.execPath, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.error || result.status !== 0 || result.signal) {
-    error(`[windows-native-proof] node --test failed: ${result.error?.message || result.signal || `exit ${result.status}`}`);
+    error(`[windows-native-proof] node --test failed: ${result.error?.message || result.signal || `exit ${result.status}`}\n${childTranscript(result)}`);
     return 1;
   }
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const verdict = nativeProofOutputVerdict(output);
   if (!verdict.ok) {
-    error(`[windows-native-proof] expected exactly one passed result for each native case; missing/duplicate=${verdict.missingOrDuplicate.join(' | ') || '(none)'}; failed/skipped=${verdict.notPassed.join(' | ') || '(none)'}`);
+    error(`[windows-native-proof] expected exactly one passed result for each native case; missing/duplicate=${verdict.missingOrDuplicate.join(' | ') || '(none)'}; failed/skipped=${verdict.notPassed.join(' | ') || '(none)'}\n${childTranscript(result)}`);
     return 1;
   }
   log(`[windows-native-proof] all ${NATIVE_CASES.length} native process-safety cases passed exactly once`);

@@ -81,9 +81,27 @@ test('native proof executes only its fixed Windows command and propagates child 
   assert.ok(calls[0].args.some((arg) => arg.startsWith('--test-name-pattern=')));
 
   assert.equal(runNativeProof([], { platform: 'win32', spawn: () => ({ status: 1, stdout: passingTap, stderr: '' }), error: (message) => errors.push(message) }), 1);
+  assert.match(errors[0], /stdout \(TAP\):\nTAP version 13/u, 'the failed child TAP transcript remains visible');
   assert.equal(runNativeProof([], { platform: 'linux', spawn: () => { throw new Error('must not spawn'); }, error: (message) => errors.push(message) }), 1);
   assert.equal(runNativeProof(['node', 'arbitrary'], { platform: 'win32', spawn: () => { throw new Error('must not spawn'); }, error: (message) => errors.push(message) }), 2);
   assert.equal(errors.length, 3);
+});
+
+test('native proof preserves bounded child stdout and stderr when results fail validation', () => {
+  const errors = [];
+  const stdout = `TAP version 13\n${NATIVE_CASES.slice(1).map((name, index) => `ok ${index + 1} - ${name}`).join('\n')}\n${'extra transcript line\n'.repeat(2000)}`;
+  const stderr = `native stderr diagnostic\n${'detail\n'.repeat(2000)}`;
+  const status = runNativeProof([], {
+    platform: 'win32',
+    spawn: () => ({ status: 0, stdout, stderr }),
+    error: (message) => errors.push(message),
+  });
+  assert.equal(status, 1);
+  assert.match(errors[0], /stdout \(TAP\) \(first 12288 of .* bytes; truncated\):/u);
+  assert.match(errors[0], /stderr \(first 12288 of .* bytes; truncated\):/u);
+  assert.match(errors[0], /native job|probeWindowsDirectoryDeleteSafety/u);
+  assert.match(errors[0], /native stderr diagnostic/u);
+  assert.ok(Buffer.byteLength(errors[0]) < 30 * 1024, 'diagnostics are bounded across both child streams');
 });
 
 test('Windows diagnostic groups partition the complete registered test manifest', () => {
