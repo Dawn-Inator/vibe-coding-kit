@@ -33,6 +33,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 
 import { loadConfig } from './config.mjs';
 import { isPathWithin, samePathIdentity } from '../lib/path-identity.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 // The PreToolUse `matcher` in claude-settings-snippet.json must list exactly these
 // names; primary-write-guard.test.mjs asserts the two stay in sync.
@@ -42,7 +43,7 @@ export const GUARDED_TOOL_NAMES = Object.freeze(['Edit', 'Write', 'NotebookEdit'
 export const DEFAULT_ALLOW_PREFIXES = Object.freeze(['.workspace/']);
 
 function git(cwd, args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: sanitizedGitEnv() });
   return r.status === 0 ? r.stdout : null;
 }
 

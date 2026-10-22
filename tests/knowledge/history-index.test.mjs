@@ -298,6 +298,36 @@ test('getGitTrackedPaths failure (non-repo) surfaces as an error, not a silently
   }
 });
 
+test('tracked-file lookup stays inside its explicit repo when the caller inherits another Git context', () => {
+  const primary = makeGitRepo();
+  const foreign = mkdtempSync(join(tmpdir(), 'history-index-foreign-git-'));
+  const selectionKeys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_CEILING_DIRECTORIES'];
+  const previous = Object.fromEntries(selectionKeys.map((key) => [key, process.env[key]]));
+  try {
+    git(foreign, ['init', '-q']);
+    writeFileSync(join(foreign, 'foreign-only.md'), '# foreign\n');
+    git(foreign, ['add', 'foreign-only.md']);
+    writeEntry(primary.historyRoot, '2026-01', '2026-01-15-foreign-context.md');
+    runSync(primary.historyRoot, ['2026-01']);
+
+    process.env.GIT_DIR = join(foreign, '.git');
+    process.env.GIT_WORK_TREE = foreign;
+    process.env.GIT_INDEX_FILE = join(foreign, '.git', 'index');
+    process.env.GIT_COMMON_DIR = join(foreign, '.git');
+    process.env.GIT_PREFIX = 'foreign-prefix/';
+    process.env.GIT_CEILING_DIRECTORIES = foreign;
+    const result = runCheck(primary.historyRoot, ['2026-01']);
+    assert.equal(result.ok, true, `explicit primary repo files must be used: ${JSON.stringify(result.errors)}`);
+  } finally {
+    for (const key of selectionKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    rmSync(primary.repoRoot, { recursive: true, force: true });
+    rmSync(foreign, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 4. secret scanning
 // ---------------------------------------------------------------------------

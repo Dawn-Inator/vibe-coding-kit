@@ -7,6 +7,7 @@
 // is listed as contiguous ranges, one candidate each.
 
 import { execFileSync } from 'node:child_process';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 const GIT_TIMEOUT_MS = 10_000;
 const MAX_SCAN = 2000;
@@ -14,7 +15,7 @@ const SHA_TOKEN = /^[0-9a-f]{7,40}$/i;
 
 export function git(cwd, args) {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, { cwd, env: sanitizedGitEnv(), encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     // A missing ref or an odd repo state means "not found", never a crash: every caller treats null as absent.
     return null;

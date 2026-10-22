@@ -23,6 +23,31 @@ test('inspects and checks an initialized kit against the parent gitlink', () => 
   assert.equal(assertKitSafeToRemove({ projectRoot: fixture.project }).safeToRemove, true);
 });
 
+test('dependency probes ignore foreign inherited repository selectors', () => {
+  const fixture = makeProject();
+  const foreign = makeProject();
+  const names = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_CEILING_DIRECTORIES', 'git_dir', 'Git_Work_Tree'];
+  const previous = new Map([...names, 'GH_TOKEN'].map((name) => [name, process.env[name]]));
+  try {
+    process.env.GIT_DIR = join(foreign.project, '.git');
+    process.env.GIT_WORK_TREE = foreign.project;
+    process.env.GIT_INDEX_FILE = join(foreign.project, '.git', 'index');
+    process.env.GIT_COMMON_DIR = join(foreign.project, '.git');
+    process.env.GIT_PREFIX = 'foreign/';
+    process.env.GIT_CEILING_DIRECTORIES = foreign.project;
+    process.env.git_dir = join(foreign.project, '.git');
+    process.env.Git_Work_Tree = foreign.project;
+    process.env.GH_TOKEN = 'synthetic-preserved-auth';
+    assert.equal(inspectKit({ projectRoot: fixture.project }).commit, fixture.sourceCommit);
+    assert.equal(checkKit({ projectRoot: fixture.project }).commit, fixture.sourceCommit);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('prepare follows the parent index pin and refuses dirty, ignored, and local-ref state', () => {
   const fixture = makeProject();
   writeFileSync(join(fixture.source, 'second.txt'), 'second pin\n');

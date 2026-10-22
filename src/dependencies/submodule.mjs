@@ -2,12 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { samePathIdentity } from '../lib/path-identity.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 const CONFIG_PATH = '.vibe-coding/project.config.json';
 const DEFAULT_KIT_PATH = '.vibe-coding/kit';
 
 function git(projectRoot, args, { allowFailure = false, env = process.env } = {}) {
-  const result = spawnSync('git', args, { cwd: projectRoot, encoding: 'utf8', env });
+  const result = spawnSync('git', args, { cwd: projectRoot, encoding: 'utf8', env: sanitizedGitEnv(env) });
   if (result.error) throw result.error;
   if (!allowFailure && result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`);

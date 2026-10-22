@@ -4,6 +4,7 @@
 // classifier before claiming a smaller tier.
 import { spawnSync } from 'node:child_process';
 import { isMainModule } from '../lib/main-module.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 function parseArgs(argv) {
   const options = { base: undefined, head: undefined, help: false };
@@ -23,7 +24,7 @@ function parseArgs(argv) {
 }
 
 function gitResult(args, cwd) {
-  return spawnSync('git', args, { cwd, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 });
+  return spawnSync('git', args, { cwd, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024, env: sanitizedGitEnv() });
 }
 
 function git(args, cwd) {

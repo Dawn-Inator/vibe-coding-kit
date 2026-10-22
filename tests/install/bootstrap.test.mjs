@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
+import { GIT_REPOSITORY_SELECTION_ENV } from '../../src/git-environment.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
@@ -12,15 +13,26 @@ after(cleanupTempDirs);
 const template = new URL('../../templates/bootstrap.mjs', import.meta.url);
 const depsRuntime = fileURLToPath(new URL('../../src/dependencies/submodule.mjs', import.meta.url));
 const pathIdentityRuntime = fileURLToPath(new URL('../../src/lib/path-identity.mjs', import.meta.url));
+const gitEnvironmentRuntime = fileURLToPath(new URL('../../src/git-environment.mjs', import.meta.url));
+
+test('standalone bootstrap keeps repository-selector scrubbing aligned with the trusted runtime', () => {
+  const source = readFileSync(fileURLToPath(template), 'utf8');
+  const match = /const GIT_REPOSITORY_SELECTION_ENV = Object\.freeze\(\[([\s\S]*?)\]\);/u.exec(source);
+  assert.ok(match, 'bootstrap must keep an explicit self-contained list');
+  const templateKeys = [...match[1].matchAll(/'([^']+)'/gu)].map((item) => item[1]);
+  assert.deepEqual(templateKeys, GIT_REPOSITORY_SELECTION_ENV);
+});
 
 function runtimeProject() {
   const fixture = makeProject();
   const runtime = join(fixture.source, 'src/dependencies/submodule.mjs');
   const identity = join(fixture.source, 'src/lib/path-identity.mjs');
+  const gitEnvironment = join(fixture.source, 'src/git-environment.mjs');
   mkdirSync(join(fixture.source, 'src/dependencies'), { recursive: true });
   mkdirSync(join(fixture.source, 'src/lib'), { recursive: true });
   cpSync(depsRuntime, runtime);
   cpSync(pathIdentityRuntime, identity);
+  cpSync(gitEnvironmentRuntime, gitEnvironment);
   const pin = commit(fixture.source, 'add real public dependency runtime');
   const child = join(fixture.project, '.vibe-coding/kit');
   git(child, ['fetch', 'origin', pin]);
@@ -52,6 +64,24 @@ test('cold bootstrap hydrates an absent target from its cached pin and preserves
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(git(join(fixture.project, '.vibe-coding/kit'), ['rev-parse', 'HEAD']).stdout.trim(), fixture.pin);
   assert.equal(readFileSync(join(fixture.project, 'unrelated-parent-change.txt'), 'utf8'), 'keep me\n');
+});
+
+test('cold bootstrap ignores foreign inherited Git repository selectors', () => {
+  const fixture = runtimeProject();
+  rmSync(fixture.child, { recursive: true, force: true });
+  const foreign = makeProject().project;
+  const result = runBootstrap(fixture.project, installBootstrap(fixture.project), ['prepare', '--offline'], {
+    GIT_DIR: join(foreign, '.git'),
+    GIT_WORK_TREE: foreign,
+    GIT_INDEX_FILE: join(foreign, '.git', 'index'),
+    GIT_COMMON_DIR: join(foreign, '.git'),
+    GIT_PREFIX: 'foreign/',
+    GIT_CEILING_DIRECTORIES: foreign,
+    git_dir: join(foreign, '.git'),
+    Git_Work_Tree: foreign,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(git(fixture.child, ['rev-parse', 'HEAD']).stdout.trim(), fixture.pin);
 });
 test('cold bootstrap hydrates an empty target directory', () => {
   const fixture = runtimeProject();

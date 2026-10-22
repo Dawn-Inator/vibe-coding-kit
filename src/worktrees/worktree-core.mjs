@@ -15,6 +15,7 @@ import * as fsModule from 'node:fs';
 import { join } from 'node:path';
 
 import { assertNoForbiddenMergeStrategy } from './forbid-auto-resolve-strategy.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 // ---------------------------------------------------------------------------
 // Transient-failure retry (closed set)
@@ -169,7 +170,7 @@ export function git(args, cwd, options = {}) {
   const spawnOptions = {
     cwd,
     encoding: 'utf8',
-    env: env ?? process.env,
+    env: sanitizedGitEnv(env ?? process.env),
     ...rest,
   };
   if (timeoutMs !== undefined && timeoutMs > 0) {
@@ -294,6 +295,7 @@ export async function gitAsync(args, cwd, options = {}) {
     log = (message) => console.error(message), timeoutMs, signal,
     ...rest
   } = options;
+  const commandEnv = sanitizedGitEnv(env ?? process.env);
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
   const startWindowsJob = process.platform === 'win32'
     ? (await import('./windows-git-job.mjs')).startWindowsJob
@@ -378,7 +380,7 @@ export async function gitAsync(args, cwd, options = {}) {
           if (process.platform === 'win32') {
             windowsJob = startWindowsJob('git.exe', args, {
               cwd,
-              env: env ?? process.env,
+              env: commandEnv,
               maxOutputBytes,
               ...(Number.isFinite(budget) ? { timeoutMs: Math.max(1, Math.floor(budget)) } : {}),
             });
@@ -412,7 +414,7 @@ export async function gitAsync(args, cwd, options = {}) {
             return;
           } else {
             child = spawn('git', args, {
-              cwd, env: env ?? process.env, ...rest,
+              cwd, env: commandEnv, ...rest,
               stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true,
             });
           }
@@ -1069,6 +1071,7 @@ function patchIdMapFromText(cwd, text) {
   if (!String(text || '').trim()) return map;
   const result = spawnSync('git', ['patch-id', '--stable'], {
     cwd,
+    env: sanitizedGitEnv(),
     input: text,
     encoding: 'utf8',
     maxBuffer: PATCH_TEXT_MAX_BUFFER,

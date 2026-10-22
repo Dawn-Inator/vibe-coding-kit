@@ -17,6 +17,7 @@ import { mkdir } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { sanitizedGitEnv } from '../../git-environment.mjs';
 
 // The caller owns root selection. CWD is the standalone CLI default; this
 // module never infers a consumer root from its own import.meta.url.
@@ -89,7 +90,7 @@ export function configureHistoryIndex({ repoRoot, historyRoot, trackedFiles: tra
 
 function trackedFiles({ rootDir }) {
   if (configuredTrackedFiles) return configuredTrackedFiles({ rootDir });
-  const result = spawnSync('git', ['ls-files'], { cwd: rootDir, encoding: 'utf8' });
+  const result = spawnSync('git', ['ls-files'], { cwd: rootDir, encoding: 'utf8', env: sanitizedGitEnv() });
   if (result.error || result.status !== 0) {
     const detail = result.error ? result.error.message : `exit code ${result.status}, stderr: ${result.stderr}`;
     throw new Error(`git ls-files failed: ${detail}`);

@@ -39,6 +39,7 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { basename, dirname, resolve } from 'node:path';
 
+import { sanitizedGitEnv } from '../git-environment.mjs';
 import { findBlockedProofTag, waitsOnUnlandedBranch } from './heartbeat-blocked-reason.mjs';
 
 const GIT_TIMEOUT_MS = 10_000;
@@ -53,7 +54,7 @@ const STATUS_HEAD_RE = /^blocked\s*(?:←|<-|:|—|-)?\s*/i;
 const TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?/g;
 
 function git(cwd, args) {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  const res = spawnSync('git', args, { cwd, env: sanitizedGitEnv(), encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
   // A missing ref, odd repo state, a timeout, or `merge-base --is-ancestor` exit 1 means "no / not", never a crash: callers treat null as absent.
   if (res.error || res.status !== 0) return null;
   return String(res.stdout).trim();
@@ -64,7 +65,7 @@ const DAY_MS = 24 * 3600e3;
 const BIG_GIT_TIMEOUT_MS = 60_000;
 
 function gitRaw(cwd, args, input) {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: BIG_GIT_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'] });
+  const res = spawnSync('git', args, { cwd, env: sanitizedGitEnv(), encoding: 'utf8', timeout: BIG_GIT_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'] });
   // Same contract as git(): a failed query is "unknown", callers fail closed (not landed / not resolvable).
   if (res.error || res.status !== 0) return null;
   return String(res.stdout);
@@ -139,7 +140,7 @@ export function createGitIndex(repoDir) {
     const worker = async () => {
       for (let args = queue.shift(); args !== undefined; args = queue.shift()) {
         const result = await new Promise((done) => {
-          execFile('git', args, { cwd: repoDir, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => done(err ? null : stdout.trim()));
+          execFile('git', args, { cwd: repoDir, env: sanitizedGitEnv(), encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => done(err ? null : stdout.trim()));
         });
         cache.set(args.join('\u0000'), result);
       }

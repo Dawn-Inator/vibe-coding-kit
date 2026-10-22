@@ -6,8 +6,28 @@ import { existsSync, lstatSync, readFileSync, readdirSync, unlinkSync, writeFile
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// Keep this list in sync with src/git-environment.mjs. This entrypoint must
+// remain self-contained until the pinned kit has been hydrated and validated.
+const GIT_REPOSITORY_SELECTION_ENV = Object.freeze([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_PREFIX',
+  'GIT_CEILING_DIRECTORIES',
+]);
+
+function sanitizedGitEnv(env = process.env) {
+  const result = { ...env };
+  const blocked = new Set(GIT_REPOSITORY_SELECTION_ENV);
+  for (const key of Object.keys(result)) {
+    if (blocked.has(key.toUpperCase())) delete result[key];
+  }
+  return result;
+}
+
 function git(root, args, { allowFailure = false, env = process.env } = {}) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env });
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: sanitizedGitEnv(env) });
   if (result.error) throw result.error;
   if (!allowFailure && result.status !== 0) throw new Error((result.stderr || result.stdout).trim());
   return result;

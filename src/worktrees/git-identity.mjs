@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 
 import { hasFirstParentMerge, listUnpublishedCommitsTopo, readCommitObject } from './merge-topology.mjs';
 import { assertNoForbiddenMergeStrategy } from './forbid-auto-resolve-strategy.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 /**
  * Build the `git -c user.name=... -c user.email=...` args used to make a
@@ -37,7 +38,7 @@ export function gitIdentityArgs(config) {
  */
 export function gitIdentityEnv(config, base = process.env) {
   return {
-    ...base,
+    ...sanitizedGitEnv(base),
     GIT_AUTHOR_NAME: config.identity.name,
     GIT_AUTHOR_EMAIL: config.identity.email,
     GIT_COMMITTER_NAME: config.identity.name,
@@ -72,7 +73,7 @@ export function readLocalGitIdentityPair(cwd) {
   const result = spawnSync(
     'git',
     ['config', '--local', '--get-regexp', '^user\\.(name|email)$'],
-    { cwd, encoding: 'utf8' },
+    { cwd, encoding: 'utf8', env: sanitizedGitEnv() },
   );
 
   const pair = { name: '', email: '' };
@@ -134,7 +135,7 @@ export function assertNoFixtureGitIdentity(cwd, config) {
 export function reauthorUnpushedCommitsToAiIdentity(cwd, baseRef, config) {
   const range = `${baseRef}..HEAD`;
 
-  const revList = spawnSync('git', ['rev-list', range], { cwd, encoding: 'utf8' });
+  const revList = spawnSync('git', ['rev-list', range], { cwd, encoding: 'utf8', env: sanitizedGitEnv() });
   const shas = (revList.stdout || '')
     .split('\n')
     .map((line) => line.trim())
@@ -152,7 +153,7 @@ export function reauthorUnpushedCommitsToAiIdentity(cwd, baseRef, config) {
   const log = spawnSync(
     'git',
     ['log', range, '--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce'],
-    { cwd, encoding: 'utf8' },
+    { cwd, encoding: 'utf8', env: sanitizedGitEnv() },
   );
 
   const rows = (log.stdout || '')
@@ -210,7 +211,7 @@ export function reauthorUnpushedCommitsToAiIdentity(cwd, baseRef, config) {
   );
 
   if (rebase.status !== 0) {
-    spawnSync('git', ['rebase', '--abort'], { cwd });
+    spawnSync('git', ['rebase', '--abort'], { cwd, env: sanitizedGitEnv() });
     throw new Error(
       `git rebase --exec reauthor failed for range ${range} (exit ${rebase.status}): ` +
       `${rebase.stderr || rebase.stdout || ''}`,
@@ -289,7 +290,7 @@ export function reauthorRangePreservingMerges(cwd, baseRef, config) {
     const created = spawnSync(
       'git',
       [...gitIdentityArgs(config), 'commit-tree', commit.tree, ...parents.flatMap((parent) => ['-p', parent]), '-F', '-'],
-      { cwd, encoding: 'utf8', input: commit.message, env },
+      { cwd, encoding: 'utf8', input: commit.message, env: sanitizedGitEnv(env) },
     );
     if (created.status !== 0) {
       throw new Error(`merge-preserving reauthor of ${commit.sha.slice(0, 10)} failed: ${(created.stderr || '').trim()}`);
@@ -298,7 +299,7 @@ export function reauthorRangePreservingMerges(cwd, baseRef, config) {
     rewrittenCount += 1;
   }
 
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).stdout.trim();
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', env: sanitizedGitEnv() }).stdout.trim();
   const newHead = remap.get(head) || head;
   if (newHead !== head) {
     const reset = spawnSync('git', ['reset', '--hard', newHead], { cwd, encoding: 'utf8', env: gitIdentityEnv(config) });

@@ -16,6 +16,7 @@ import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { checkItems, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import { parseArgs, sweep as runSweep } from '../../src/supervision/heartbeat-sweep.mjs';
 import { discoverWorktrees } from '../../src/supervision/heartbeat-sweep-worktrees.mjs';
+import { discoverLandings } from '../../src/supervision/heartbeat-sweep-landings.mjs';
 import { ageWorktreeReflogs } from '../support/worktree-age.mjs';
 
 after(cleanupTempDirs);
@@ -235,6 +236,36 @@ test('landings: a commit reachable from two tracked bases is proposed once', () 
   writeLedger(fx);
   const out = sweep(fx, ['--base', 'origin/main', '--base', 'main']);
   assert.equal(out.cells.filter((row) => row.source.startsWith('landing:')).length, 1);
+});
+
+test('landings Git queries stay in the explicit repo under a foreign inherited Git context', () => {
+  const fx = makeRepo();
+  land(fx, 'context-isolation');
+  const foreign = mkdtempTracked('hb-sweep-foreign-git-');
+  git(['init', '--quiet', '--initial-branch=main'], foreign);
+  writeFileSync(join(foreign, 'foreign-only.txt'), 'foreign\n');
+  git(['add', '-A'], foreign);
+  git(['commit', '-m', 'foreign repo'], foreign);
+
+  const selectionKeys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_CEILING_DIRECTORIES'];
+  const previous = Object.fromEntries(selectionKeys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.GIT_DIR = join(foreign, '.git');
+    process.env.GIT_WORK_TREE = foreign;
+    process.env.GIT_INDEX_FILE = join(foreign, '.git', 'index');
+    process.env.GIT_COMMON_DIR = join(foreign, '.git');
+    process.env.GIT_PREFIX = 'foreign-prefix/';
+    process.env.GIT_CEILING_DIRECTORIES = foreign;
+
+    const result = discoverLandings(fx.primary, 'origin/main', [], { maxRows: 10 });
+    assert.equal(result.candidates.length, 1, `landing query must inspect the explicit primary repo: ${JSON.stringify(result)}`);
+    assert.match(result.candidates[0].item, /context-isolation/);
+  } finally {
+    for (const key of selectionKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
 });
 
 // ---- worktrees -------------------------------------------------------------------------------

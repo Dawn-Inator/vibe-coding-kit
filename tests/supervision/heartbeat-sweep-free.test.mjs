@@ -70,6 +70,39 @@ test('landing-stage and load resources are FREE candidates with the row item as 
   assert.equal(r.blocked.length, 0);
 });
 
+test('Git index queries and async warm stay in the explicit repo under a foreign inherited Git context', async () => {
+  const fx = makeRepo();
+  const foreign = join(dirname(fx.repo), 'foreign');
+  mkdirSync(foreign);
+  git(foreign, ['init', '--quiet', '--initial-branch=main']);
+  commitFiles(foreign, { 'foreign-only.md': 'foreign\n' }, 'foreign repo');
+  const primaryHead = git(fx.repo, ['rev-parse', 'HEAD']);
+  const selectionKeys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_CEILING_DIRECTORIES'];
+  const previous = Object.fromEntries(selectionKeys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.GIT_DIR = join(foreign, '.git');
+    process.env.GIT_WORK_TREE = foreign;
+    process.env.GIT_INDEX_FILE = join(foreign, '.git', 'index');
+    process.env.GIT_COMMON_DIR = join(foreign, '.git');
+    process.env.GIT_PREFIX = 'foreign-prefix/';
+    process.env.GIT_CEILING_DIRECTORIES = foreign;
+
+    const syncIndex = createGitIndex(fx.repo);
+    assert.equal(syncIndex.q(['rev-parse', 'HEAD']), primaryHead, 'spawnSync query must use cwd repo');
+    assert.equal(syncIndex.commit(primaryHead), primaryHead, 'raw batch query must use cwd repo');
+    assert.ok(syncIndex.reachable('HEAD')?.has(primaryHead), 'raw reachability query must use cwd repo');
+
+    const asyncIndex = createGitIndex(fx.repo);
+    await asyncIndex.warm([['rev-parse', 'HEAD']]);
+    assert.equal(asyncIndex.q(['rev-parse', 'HEAD']), primaryHead, 'execFile warm query must use cwd repo');
+  } finally {
+    for (const key of selectionKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
 test('write set without paths is FREE; with paths it uses git diff of the named in-flight branch', () => {
   const fx = makeRepo();
   const r = run([

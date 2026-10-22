@@ -18,6 +18,7 @@ after(cleanupTempDirs);
 const cliSource = fileURLToPath(new URL('../../src/contracts/cli.mjs', import.meta.url));
 const cliSourceDirectory = fileURLToPath(new URL('../../src/contracts', import.meta.url));
 const libSourceDirectory = fileURLToPath(new URL('../../src/lib', import.meta.url));
+const gitEnvironmentSource = fileURLToPath(new URL('../../src/git-environment.mjs', import.meta.url));
 const testSupportSource = fileURLToPath(new URL('../support', import.meta.url));
 
 function repoFixture() {
@@ -40,11 +41,11 @@ function unbornRepoFixture() {
   return root;
 }
 
-function invoke(cliPath, cwd, args = []) {
+function invoke(cliPath, cwd, args = [], extraEnv = {}) {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
     encoding: 'utf8',
-    env: isolatedFixtureGitEnv(),
+    env: { ...isolatedFixtureGitEnv(), ...extraEnv },
   });
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.signal, null, `node was terminated by ${result.signal}`);
@@ -59,6 +60,7 @@ test('copied kit install emits a complete, conservative manifest for untracked a
   mkdirSync(join(root, 'engineering', 'automation', 'lib'), { recursive: true });
   cpSync(cliSource, copiedCli);
   cpSync(join(libSourceDirectory, 'main-module.mjs'), join(root, 'engineering', 'automation', 'lib', 'main-module.mjs'));
+  cpSync(gitEnvironmentSource, join(root, 'engineering', 'automation', 'git-environment.mjs'));
   gitOut(['mv', 'base.txt', 'renamed.txt'], root);
   writeFileSync(join(root, 'new-file.txt'), 'new\n');
   const nested = join(root, 'nested dir');
@@ -71,6 +73,7 @@ test('copied kit install emits a complete, conservative manifest for untracked a
   assert.deepEqual(result.json.files, [
     'base.txt',
     'engineering/automation/agent-preflight/cli.mjs',
+    'engineering/automation/git-environment.mjs',
     'engineering/automation/lib/main-module.mjs',
     'new-file.txt',
     'renamed.txt',
@@ -86,6 +89,22 @@ test('empty working tree is valid and reported as empty with full profile', () =
   assert.equal(result.json.status, 'empty');
   assert.deepEqual(result.json.files, []);
   assert.equal(result.json.fileCount, 0);
+});
+
+test('CLI Git probes stay bound to cwd when inherited repository selectors point elsewhere', () => {
+  const root = repoFixture();
+  const foreign = repoFixture();
+  const result = invoke(cliSource, root, [], {
+    GIT_DIR: join(foreign, '.git'),
+    GIT_WORK_TREE: foreign,
+    GIT_INDEX_FILE: join(foreign, '.git', 'index'),
+    GIT_COMMON_DIR: join(foreign, '.git'),
+    GIT_PREFIX: 'wrong-prefix/',
+    GIT_CEILING_DIRECTORIES: foreign,
+    GH_TOKEN: 'synthetic-token',
+  });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.json.status, 'empty');
 });
 
 test('invalid refs and unknown options fail closed with machine-readable errors', () => {
@@ -178,8 +197,9 @@ test('copied CLI classifies staged and untracked files on an unborn branch with 
   mkdirSync(join(root, 'engineering', 'automation', 'lib'), { recursive: true });
   cpSync(cliSource, copiedCli);
   cpSync(join(libSourceDirectory, 'main-module.mjs'), join(root, 'engineering', 'automation', 'lib', 'main-module.mjs'));
+  cpSync(gitEnvironmentSource, join(root, 'engineering', 'automation', 'git-environment.mjs'));
   writeFileSync(join(root, 'staged.txt'), 'staged\n');
-  gitOut(['add', 'engineering/automation/agent-preflight/cli.mjs', 'staged.txt'], root);
+  gitOut(['add', 'engineering/automation/agent-preflight/cli.mjs', 'engineering/automation/git-environment.mjs', 'staged.txt'], root);
   writeFileSync(join(root, 'untracked.txt'), 'untracked\n');
 
   const result = invoke(copiedCli, root);
@@ -191,6 +211,7 @@ test('copied CLI classifies staged and untracked files on an unborn branch with 
   assert.equal(result.json.headState, 'unborn');
   assert.deepEqual(result.json.files, [
     'engineering/automation/agent-preflight/cli.mjs',
+    'engineering/automation/git-environment.mjs',
     'engineering/automation/lib/main-module.mjs',
     'staged.txt',
     'untracked.txt',
@@ -218,6 +239,7 @@ test('copied test file runs from a copied kit tree whose path contains spaces', 
   cpSync(fileURLToPath(new URL('.', import.meta.url)), copiedRoot, { recursive: true });
   cpSync(cliSourceDirectory, join(installRoot, 'src', 'contracts'), { recursive: true });
   cpSync(libSourceDirectory, join(installRoot, 'src', 'lib'), { recursive: true });
+  cpSync(gitEnvironmentSource, join(installRoot, 'src', 'git-environment.mjs'));
   cpSync(testSupportSource, join(installRoot, 'tests', 'support'), {
     recursive: true,
   });

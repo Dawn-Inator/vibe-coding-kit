@@ -37,6 +37,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { samePathIdentity } from '../lib/path-identity.mjs';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 // ---------------------------------------------------------------------------
 // Small git/process helpers (deliberately self-contained -- this module does
@@ -55,7 +56,7 @@ function runGit(args, cwd, options = {}) {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: options.env || process.env,
+    env: sanitizedGitEnv(options.env || process.env),
   });
   const stdout = (result.stdout || '').trim();
   const stderr = (result.stderr || '').trim();

@@ -4,12 +4,14 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { sanitizedGitEnv } from '../git-environment.mjs';
 
 export function trackedFiles(projectRoot = process.cwd()) {
   const result = execFileSync('git', ['ls-files', '-z'], {
     cwd: resolve(projectRoot),
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    env: sanitizedGitEnv(),
   });
   const files = result.split('\0').filter(Boolean);
   if (files.length === 0) {

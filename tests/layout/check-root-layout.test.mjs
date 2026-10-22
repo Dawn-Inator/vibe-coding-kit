@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
+import { gitOut } from '../support/git-fixture.mjs';
 
 after(cleanupTempDirs);
 
@@ -9,6 +12,7 @@ import {
   layoutViolations,
   presentTrackedFiles,
   rootDirectories,
+  trackedFiles,
 } from '../../src/layout/check-root-layout.mjs';
 
 const ALLOWED_ROOT_DIRECTORIES = new Set([
@@ -61,10 +65,39 @@ test('every allowed directory passes with no violations', () => {
 });
 
 test('tracked-file filtering resolves against an explicit project root', async () => {
-  const { mkdirSync, writeFileSync } = await import('node:fs');
-  const { join } = await import('node:path');
   const projectRoot = mkdtempTracked('root-layout-');
   mkdirSync(join(projectRoot, 'apps'), { recursive: true });
   writeFileSync(join(projectRoot, 'apps', 'present.txt'), 'ok');
   assert.deepEqual(presentTrackedFiles(['apps/present.txt', 'apps/deleted.txt'], { projectRoot }), ['apps/present.txt']);
+});
+
+test('trackedFiles stays bound to the explicit project when hook Git env selects another repository', () => {
+  const projectRoot = mkdtempTracked('root-layout-project-');
+  const foreignRoot = mkdtempTracked('root-layout-foreign-');
+  mkdirSync(join(projectRoot, 'apps'), { recursive: true });
+  mkdirSync(join(foreignRoot, 'foreign'), { recursive: true });
+  writeFileSync(join(projectRoot, 'apps', 'project.txt'), 'project\n');
+  writeFileSync(join(foreignRoot, 'foreign', 'other.txt'), 'foreign\n');
+  for (const root of [projectRoot, foreignRoot]) {
+    gitOut(['init', '-q', '--initial-branch=main'], root);
+    gitOut(['add', '.'], root);
+    gitOut(['commit', '-qm', 'fixture'], root);
+  }
+
+  const names = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_CEILING_DIRECTORIES'];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  try {
+    process.env.GIT_DIR = join(foreignRoot, '.git');
+    process.env.GIT_WORK_TREE = foreignRoot;
+    process.env.GIT_INDEX_FILE = join(foreignRoot, '.git', 'index');
+    process.env.GIT_COMMON_DIR = join(foreignRoot, '.git');
+    process.env.GIT_PREFIX = 'foreign/';
+    process.env.GIT_CEILING_DIRECTORIES = foreignRoot;
+    assert.deepEqual(trackedFiles(projectRoot), ['apps/project.txt']);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
