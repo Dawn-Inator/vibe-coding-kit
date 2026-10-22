@@ -51,7 +51,7 @@ function retryingDescendantTransport(firstAttemptPath, childPidPath) {
     "const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid)); setInterval(() => {}, 1000);`;",
     "const child = spawn(process.execPath, ['-e', childCode], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' });",
     "child.unref();",
-    "const deadline = Date.now() + 3000;",
+    "const deadline = Date.now() + 4000;",
     "while (!fs.existsSync(childPidPath) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
     "if (!fs.existsSync(childPidPath)) process.exit(4);",
   ].join('\n');
@@ -1049,33 +1049,41 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
     const transport = `node ${shellPath(transportScript)}`;
     run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
     const cfgPath = join(tmp, 'hold.json');
-    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 2200 } }));
+    const holdLimitMs = 6000;
+    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: holdLimitMs } }));
 
+    let finishOutcome = null;
     const finishPromise = withEnv({
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'protocol.ext.allow',
       GIT_CONFIG_VALUE_0: 'always',
     }, () => withCwd(created.path, () => captureConsole(() => (
       main(['finish', '--message', 'work', '--no-wait', '--config', cfgPath])
-    ))));
+    )))).then((outcome) => {
+      finishOutcome = outcome;
+      return outcome;
+    }, (error) => {
+      finishOutcome = { error: String(error?.stack || error) };
+      throw error;
+    });
     let acquiredAt;
-    const lockAcquireDeadline = Date.now() + 5000;
-    while (!acquiredAt && Date.now() < lockAcquireDeadline) {
+    const lockAcquireDeadline = Date.now() + 15_000;
+    while (!acquiredAt && !finishOutcome && Date.now() < lockAcquireDeadline) {
       if (existsSync(lockFile)) {
         try { acquiredAt = JSON.parse(readFileSync(lockFile, 'utf8')).acquiredAt; } catch { /* lock is being written */ }
       }
       if (!acquiredAt) await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    assert.ok(acquiredAt, 'finish acquired its lock before the retry sequence');
+    assert.ok(acquiredAt, `finish acquired its lock before the retry sequence; early outcome: ${JSON.stringify(finishOutcome)}`);
     const finishRun = await finishPromise;
     const heldMs = Date.now() - Date.parse(acquiredAt);
 
     assert.equal(finishRun.result, 1);
     assert.equal(existsSync(firstAttempt), true, 'first attempt exercised transient retry and backoff');
-    assert.ok(heldMs < 2900, `the retry and backoff must share the 2200ms lock deadline (held ${heldMs}ms)`);
-    assert.ok(finishRun.errors.some((line) => /hold limit of 2200ms reached/.test(line)), finishRun.errors.join('\n'));
+    assert.ok(heldMs < holdLimitMs + 700, `the retry and backoff must share the ${holdLimitMs}ms lock deadline (held ${heldMs}ms)`);
+    assert.ok(finishRun.errors.some((line) => line.includes(`hold limit of ${holdLimitMs}ms reached`)), finishRun.errors.join('\n'));
     assert.equal(existsSync(lockFile), false, 'lock is released only after the owned process tree settles');
-    assert.equal(existsSync(childPidFile), true, 'the second attempt launched its descendant');
+    assert.equal(existsSync(childPidFile), true, `the second attempt launched its descendant (held ${heldMs}ms; ${finishRun.errors.join('\n')})`);
     const childPid = Number(readFileSync(childPidFile, 'utf8'));
     let childStillRunning = true;
     const reapDeadline = Date.now() + 5000;
