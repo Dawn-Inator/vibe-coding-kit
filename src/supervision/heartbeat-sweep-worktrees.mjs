@@ -78,6 +78,17 @@ export function discoverWorktrees(cwd, {
       notes: [`worktrees: process CWD inventory failed (${detail}); suppressing worktree reclaim suggestions this wake`],
     };
   }
+  const directoryProbes = [];
+  const probeForCandidate = (path, options) => {
+    try {
+      const result = probeDirectoryDeleteSafety(path, options);
+      directoryProbes.push({ path, result });
+      return result;
+    } catch (error) {
+      directoryProbes.push({ path, error });
+      throw error;
+    }
+  };
   const ctx = {
     config,
     primaryPath,
@@ -89,7 +100,7 @@ export function discoverWorktrees(cwd, {
     nowMs: Date.now(),
     livePaths: livePathsFromFinishQueue(stateDir),
     platform,
-    probeDirectoryDeleteSafety,
+    probeDirectoryDeleteSafety: probeForCandidate,
     liveCwds,
   };
   if (!ctx.liveCwds) notes.push('worktrees: lsof unavailable, live-process check skipped (clean, landed and idle gates still apply)');
@@ -102,7 +113,18 @@ export function discoverWorktrees(cwd, {
     if (assessed > 0 && Date.now() > deadline) break;
     assessed += 1;
     const verdict = assessReclaimCandidate(entry, ctx);
-    if (!verdict.removable) continue;
+    if (!verdict.removable) {
+      const pathProbe = directoryProbes.find((probe) => samePathIdentity(probe.path, entry.path));
+      const probeDetail = pathProbe
+        ? pathProbe.error
+          ? `; Windows directory safety probe failed: ${String(pathProbe.error.message || pathProbe.error).split('\n')[0]}`
+          : pathProbe.result?.safe === false
+            ? `; Windows directory safety probe: ${pathProbe.result.reason || 'unsafe'} (${pathProbe.result.checked ?? 0} directories checked)`
+            : ''
+        : '';
+      notes.push(`worktrees: not suggesting ${entry.path}: ${verdict.reasons.join('; ')}${probeDetail}`);
+      continue;
+    }
     candidates.push({
       source: `sweep:worktrees:${(verdict.branch || basename(verdict.path)).replace(/[^\w./-]/g, '_')}`,
       item: `reclaim idle landed worktree ${verdict.path} (${verdict.branch || 'detached'})`,

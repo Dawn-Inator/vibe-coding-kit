@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [action, ...args] = process.argv.slice(2);
 if (action === 'install') {
@@ -14,6 +15,23 @@ if (action === 'install') {
   appendFileSync('package-lock.json', 'tampered\n');
 } else if (action === 'snapshot') {
   writeFileSync(args[1], readFileSync(args[0]));
+} else if (action === 'hang-and-record-pid') {
+  writeFileSync(args[0], String(process.pid));
+  setInterval(() => {}, 1000);
+} else if (action === 'retry-once-then-hang') {
+  const { existsSync } = await import('node:fs');
+  if (!existsSync(args[0])) {
+    writeFileSync(args[0], 'first attempt\n');
+    process.stderr.write('Could not resolve host: injected transient failure\n');
+    process.exitCode = 1;
+  } else {
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'hang-and-record-pid', args[1]], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.unref();
+  }
 } else {
   process.stderr.write(`unknown cross-platform fixture action: ${action}\n`);
   process.exitCode = 2;

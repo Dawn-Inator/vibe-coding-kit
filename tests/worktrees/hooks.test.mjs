@@ -119,6 +119,25 @@ function cleanup(...dirs) {
 const FAKE_PS_SCRIPT = `#!/bin/sh
 field="$2"
 target="$4"
+if [ -n "$WTG_FAKE_PS_CHAIN" ]; then
+  state_file="$PWD/.wtg-fake-ps-chain-state"
+  if [ "$field" = "command=" ]; then
+    index=$(cat "$state_file" 2>/dev/null || printf '0')
+    index=$((index + 1))
+    printf '%s\\n' "$index" > "$state_file"
+    case "$index" in
+      1) printf '%s\\n' 'C:\\Program Files\\Git\\mingw64\\bin\\git.exe commit' ;;
+      2) printf '%s\\n' 'C:\\Program Files\\Git\\usr\\bin\\sh.exe -c hook' ;;
+      3) printf '%s\\n' 'C:\\Program Files\\Git\\usr\\bin\\bash.exe -c hook' ;;
+      4) printf '%s\\n' 'C:\\Windows\\System32\\conhost.exe --headless' ;;
+      5) printf '%s\\n' 'C:\\Windows\\System32\\cmd.exe /d /c hook' ;;
+      6) printf '%s\\n' "$WTG_FAKE_PS_CHAIN_FINAL" ;;
+    esac
+  elif [ "$field" = "ppid=" ]; then
+    printf '%s\\n' "$((target + 1))"
+  fi
+  exit 0
+fi
 if [ "$1" = "-o" ] && [ "$3" = "-p" ] && [ -n "$WTG_FAKE_PS_PID" ] && [ "$target" = "$WTG_FAKE_PS_PID" ]; then
   case "$field" in
     command=) printf '%s\\n' "$WTG_FAKE_PS_COMMAND" ;;
@@ -155,6 +174,10 @@ function setupFakePs() {
 
 const FAKE_PS = setupFakePs();
 
+function resetFakePsChain(repo) {
+  writeFileSync(join(repo, '.wtg-fake-ps-chain-state'), '0\n');
+}
+
 /**
  * Build an env for a primary-lock-hook-triggering git invocation, with the
  * fake-ps harness wired in and every relevant env var explicitly controlled
@@ -171,6 +194,13 @@ function primaryLockEnv(config, overrides = {}) {
   env.WTG_FAKE_PS_PID = String(process.pid);
   env.WTG_FAKE_PS_COMMAND = overrides.fakeCommand ?? '/usr/bin/some-human-shell -i';
   env.WTG_FAKE_PS_PPID = overrides.fakePpid ?? '';
+  if (overrides.fakeChain) {
+    env.WTG_FAKE_PS_CHAIN = '1';
+    env.WTG_FAKE_PS_CHAIN_FINAL = overrides.fakeChainFinal;
+  } else {
+    delete env.WTG_FAKE_PS_CHAIN;
+    delete env.WTG_FAKE_PS_CHAIN_FINAL;
+  }
 
   if (overrides.role !== undefined) env[config.envVars.workerRole] = overrides.role;
   if (overrides.primaryLockAllow !== undefined) {
@@ -426,6 +456,51 @@ test('primary-lock: multi-layer ancestor directory-segment walk matches process-
       missResult.status,
       0,
       `expected allowed -- a substring-only match must never block: ${missResult.stderr}`,
+    );
+  } finally {
+    cleanup(dirHit, dirMiss);
+  }
+});
+
+test('primary-lock: Windows process paths survive launcher layers and exact directory matching', () => {
+  const config = cloneConfig();
+  const windowsExe = String.raw`C:\Program Files\nodejs\node.exe`;
+  const windowsAiScript = String.raw`C:\Users\RUNNER~1\AppData\Roaming\npm\node_modules\claude-code\.claude\local\cli.js`;
+  const windowsMissScript = String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\claude-scratch-lane-abc123\local\cli.js`;
+  const hitCommand = `"${windowsExe}" "${windowsAiScript}"`;
+  const missCommand = `"${windowsExe}" "${windowsMissScript}"`;
+
+  // Exercise the JS matcher with its reliable-executable form, which carries
+  // the full executable separately from its command-line arguments.
+  assert.equal(matchesAiParentProcess(`${windowsExe}\u0000${windowsAiScript}`, config), true);
+  assert.equal(matchesAiParentProcess(`${windowsExe}\u0000${windowsMissScript}`, config), false);
+
+  const dirHit = tempDir('wtg-primary-windows-ancestor-hit-');
+  const dirMiss = tempDir('wtg-primary-windows-ancestor-miss-');
+  try {
+    initRepo(dirHit);
+    installPrimaryLockHook(dirHit, 'test-owner', config);
+    resetFakePsChain(dirHit);
+    const hitResult = git(
+      ['commit', '--allow-empty', '-q', '-m', 'windows ancestor hit'],
+      dirHit,
+      primaryLockEnv(config, { fakeChain: true, fakeChainFinal: hitCommand }),
+    );
+    assert.notEqual(hitResult.status, 0, `Windows AI script ancestor must block through launcher processes: ${hitResult.stderr}`);
+    assert.match(hitResult.stderr, /BLOCKED/);
+
+    initRepo(dirMiss);
+    installPrimaryLockHook(dirMiss, 'test-owner', config);
+    resetFakePsChain(dirMiss);
+    const missResult = git(
+      ['commit', '--allow-empty', '-q', '-m', 'windows ancestor miss'],
+      dirMiss,
+      primaryLockEnv(config, { fakeChain: true, fakeChainFinal: missCommand }),
+    );
+    assert.equal(
+      missResult.status,
+      0,
+      `Windows substring-only directory must remain allowed: ${missResult.stderr}`,
     );
   } finally {
     cleanup(dirHit, dirMiss);

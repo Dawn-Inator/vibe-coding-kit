@@ -798,6 +798,111 @@ test('explicit IPC cancellation releases direct and queued held-lock resources',
   assert.deepEqual(queued.tickets, []);
 });
 
+function writeSignalDrainChildScript(dir) {
+  const scriptPath = join(dir, 'signal-drain-child.mjs');
+  writeFileSync(scriptPath, `
+import { existsSync } from 'node:fs';
+import { acquireFinishLockQueued } from ${JSON.stringify(moduleUrl)};
+
+const [, , stateDir, mode] = process.argv;
+const lockPath = ${JSON.stringify(finishLockPath('__STATE_DIR__'))}.replace('__STATE_DIR__', stateDir);
+let continueDrain;
+const drain = new Promise((resolve) => { continueDrain = resolve; });
+let handle;
+process.on('message', (message) => {
+  if (message?.type === 'signal') {
+    void handle.exitFromSignal('SIGTERM');
+    handle.release(); // model a caller finally block racing the async drain
+  }
+  if (message?.type === 'continue') continueDrain();
+});
+handle = await acquireFinishLockQueued(stateDir, {
+  worktree: 'slow-drain',
+  config: { queue: { pollIntervalMs: 10 } },
+  beforeSignalReleaseTimeoutMs: mode === 'timeout' ? 60 : 5000,
+  beforeSignalRelease: async () => {
+    process.stdout.write('DRAIN_START ' + existsSync(lockPath) + '\\n');
+    if (mode === 'failure') throw new Error('drain refused');
+    if (mode === 'timeout') await new Promise(() => {});
+    else await drain;
+  },
+});
+process.stdout.write('HELD\\n');
+setInterval(() => {}, 1000);
+`);
+  return scriptPath;
+}
+
+async function runSignalDrainScenario(mode) {
+  const stateDir = mkTempStateDir();
+  let child;
+  try {
+    const scriptPath = writeSignalDrainChildScript(stateDir);
+    child = spawn(process.execPath, [scriptPath, stateDir, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const childExit = new Promise((resolve) => child.once('exit', (exitCode) => resolve(exitCode)));
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    await waitFor(() => stdout.includes('HELD'), { timeoutMs: 5000 });
+    child.send({ type: 'signal' });
+    await waitFor(() => stdout.includes('DRAIN_START'), { timeoutMs: 5000 });
+    assert.match(stdout, /DRAIN_START true/u, 'lock must remain held while the callback is running');
+    if (mode === 'success') child.send({ type: 'continue' });
+    const code = await childExit;
+    child = undefined;
+    let directReacquireError = '';
+    let queuedReacquireError = '';
+    if (code === 1) {
+      try {
+        acquireFinishLock(stateDir, { worktree: 'retry-direct' });
+      } catch (error) {
+        directReacquireError = error.message;
+      }
+      try {
+        await acquireFinishLockQueued(stateDir, {
+          worktree: 'retry-queued',
+          timeoutMs: 1000,
+          pollMs: 10,
+        });
+      } catch (error) {
+        queuedReacquireError = error.message;
+      }
+    }
+    return {
+      code,
+      lockExists: existsSync(finishLockPath(stateDir)),
+      lockData: existsSync(finishLockPath(stateDir)) ? JSON.parse(readFileSync(finishLockPath(stateDir), 'utf8')) : null,
+      directReacquireError,
+      queuedReacquireError,
+      stdout,
+      stderr,
+    };
+  } finally {
+    if (child) child.kill('SIGKILL');
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
+test('held-lock signal waits for async cleanup before releasing the lock and exiting', async () => {
+  const result = await runSignalDrainScenario('success');
+  assert.equal(result.code, 143);
+  assert.equal(result.lockExists, false);
+  assert.match(result.stdout, /DRAIN_START true/u);
+});
+
+test('held-lock signal fails closed when async cleanup rejects or times out', async () => {
+  for (const mode of ['failure', 'timeout']) {
+    const result = await runSignalDrainScenario(mode);
+    assert.equal(result.code, 1, `${mode}: cleanup failure must exit unsuccessfully`);
+    assert.equal(result.lockExists, true, `${mode}: the lock must remain as a recovery barrier`);
+    assert.equal(result.lockData.recoveryRequired, true, `${mode}: recovery state must survive holder exit`);
+    assert.match(result.directReacquireError, /explicit recovery/u);
+    assert.match(result.queuedReacquireError, /explicit recovery/u);
+    assert.match(result.stderr, mode === 'failure' ? /drain refused/u : /timed out/u);
+  }
+});
+
 test('release(): removes the signal handlers it installed, is idempotent, and tolerates a vanished lock file', () => {
   const stateDir = mkTempStateDir();
   try {

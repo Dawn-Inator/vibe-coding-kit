@@ -972,8 +972,13 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
   const tmp = mkdtempSync(join(tmpdir(), 'wtg-hold-hang-'));
   try {
     const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'hold hang');
-    // From now on "fetching origin" runs `sleep 4` as the transport, i.e. hangs.
-    run('git', ['remote', 'set-url', 'origin', 'ext::sleep 4'], primaryDir);
+    // The ext transport launches a real descendant that records its PID then
+    // stays alive. Timeout must reap that child tree before returning, or its
+    // inherited CWD still pins the worktree on Windows.
+    const childPidFile = join(tmp, 'transport-child.pid');
+    const shellPath = (path) => path.replaceAll('\\', '/');
+    const transport = `node ${shellPath(CROSS_PLATFORM_COMMAND)} hang-and-record-pid ${shellPath(childPidFile)}`;
+    run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
     const cfgPath = join(tmp, 'hold.json');
     writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 1500 } }));
 
@@ -985,16 +990,82 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
       main(['finish', '--message', 'work', '--no-wait', '--config', cfgPath])
     ))));
 
-    // Not asserting wall-clock: spawnSync returns only once every process holding
-    // git's output pipes has exited, and the `sleep` transport outlives the killed
-    // git. Only the hold-limit message can come from the timeout path; an ordinary
-    // failed fetch reports git's own error instead.
     assert.equal(finishRun.result, 1);
     assert.ok(
       finishRun.errors.some((l) => /hold limit of 1500ms reached during `git fetch/.test(l)),
       finishRun.errors.join('\n'),
     );
     assert.equal(existsSync(lockFile), false);
+    assert.ok(existsSync(childPidFile), 'the transport descendant started before timeout');
+    const childPid = Number(readFileSync(childPidFile, 'utf8'));
+    assert.ok(Number.isSafeInteger(childPid) && childPid > 1, 'the fixture recorded its process id');
+    let childStillRunning = true;
+    const reapDeadline = Date.now() + 5000;
+    while (childStillRunning && Date.now() < reapDeadline) {
+      try {
+        process.kill(childPid, 0);
+      } catch (error) {
+        if (error?.code === 'ESRCH') childStillRunning = false;
+        else throw error;
+      }
+      if (childStillRunning) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(childStillRunning, false, `timed-out transport descendant pid=${childPid} must be gone`);
+    assert.equal(existsSync(created.path), true, 'timeout preserves the worker worktree');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('finish: retry backoff consumes the same hold deadline and parent-exit descendants are reaped', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wtg-retry-deadline-'));
+  try {
+    const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'retry deadline');
+    const firstAttempt = join(tmp, 'first-attempt.marker');
+    const childPidFile = join(tmp, 'transport-child.pid');
+    const shellPath = (path) => path.replaceAll('\\', '/');
+    const transport = `node ${shellPath(CROSS_PLATFORM_COMMAND)} retry-once-then-hang ${shellPath(firstAttempt)} ${shellPath(childPidFile)}`;
+    run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
+    const cfgPath = join(tmp, 'hold.json');
+    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 2200 } }));
+
+    const finishPromise = withEnv({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'protocol.ext.allow',
+      GIT_CONFIG_VALUE_0: 'always',
+    }, () => withCwd(created.path, () => captureConsole(() => (
+      main(['finish', '--message', 'work', '--no-wait', '--config', cfgPath])
+    ))));
+    let acquiredAt;
+    const lockAcquireDeadline = Date.now() + 5000;
+    while (!acquiredAt && Date.now() < lockAcquireDeadline) {
+      if (existsSync(lockFile)) {
+        try { acquiredAt = JSON.parse(readFileSync(lockFile, 'utf8')).acquiredAt; } catch { /* lock is being written */ }
+      }
+      if (!acquiredAt) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(acquiredAt, 'finish acquired its lock before the retry sequence');
+    const finishRun = await finishPromise;
+    const heldMs = Date.now() - Date.parse(acquiredAt);
+
+    assert.equal(finishRun.result, 1);
+    assert.equal(existsSync(firstAttempt), true, 'first attempt exercised transient retry and backoff');
+    assert.ok(heldMs < 2900, `the retry and backoff must share the 2200ms lock deadline (held ${heldMs}ms)`);
+    assert.ok(finishRun.errors.some((line) => /hold limit of 2200ms reached/.test(line)), finishRun.errors.join('\n'));
+    assert.equal(existsSync(lockFile), false, 'lock is released only after the owned process tree settles');
+    assert.equal(existsSync(childPidFile), true, 'the second attempt launched its descendant');
+    const childPid = Number(readFileSync(childPidFile, 'utf8'));
+    let childStillRunning = true;
+    const reapDeadline = Date.now() + 5000;
+    while (childStillRunning && Date.now() < reapDeadline) {
+      try { process.kill(childPid, 0); } catch (error) {
+        if (error?.code === 'ESRCH') childStillRunning = false;
+        else throw error;
+      }
+      if (childStillRunning) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(childStillRunning, false, `retry descendant pid=${childPid} must be gone before cleanup`);
+    assert.equal(existsSync(created.path), true, 'timeout preserves the worker worktree');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

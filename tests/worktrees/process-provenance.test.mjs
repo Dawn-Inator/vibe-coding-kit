@@ -456,7 +456,13 @@ test('probeWindowsDirectoryDeleteSafety: unknown, denied, and incomplete results
   assert.equal(probeWith({ status: 0, stdout: '{"safe":true,"reason":"unknown","checked":1}' }).safe, false);
   assert.equal(probeWith({ status: 0, stdout: '{"safe":true,"reason":"safe","checked":0}' }).safe, false);
   assert.equal(probeWith({ status: 0, stdout: 'not json' }).reason, 'invalid-probe-result');
-  assert.equal(probeWith({ status: 1, stderr: 'failed' }).reason, 'probe-failed');
+  const failed = probeWindowsDirectoryDeleteSafety('C:\\repo\\candidate', {
+    platform: 'win32',
+    spawn: () => ({ status: 1, stderr: `C:\\repo\\candidate Add-Type compile error ${'x'.repeat(400)}` }),
+  });
+  assert.equal(failed.reason, 'probe-failed');
+  assert.equal(failed.diagnostic.length, 300);
+  assert.doesNotMatch(failed.diagnostic, /C:\\repo\\candidate/);
   assert.equal(probeWith({ error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }).reason, 'timeout');
 });
 
@@ -481,6 +487,7 @@ test('probeWindowsDirectoryDeleteSafety: bounded PowerShell scan rejects unsafe 
   assert.match(script, /OPEN_REPARSE_POINT = 0x00200000/);
   assert.match(script, /FILE_ATTRIBUTE_REPARSE_POINT/);
   assert.match(script, /GetFileInformationByHandle/);
+  assert.match(script, /@checked = checkedCount/);
   assert.doesNotMatch(script, /FILE_FLAG_DELETE_ON_CLOSE|DeleteFile\(|RemoveDirectory\(/);
   assert.doesNotMatch(script, /__MAX_ENTRIES__/);
   assert.ok(script.includes(', 500, 12, 12000)'));

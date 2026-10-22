@@ -9,7 +9,7 @@
 //
 // Node built-ins only, zero third-party dependencies, ESM.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as fsModule from 'node:fs';
 import { join } from 'node:path';
@@ -214,6 +214,197 @@ export function git(args, cwd, options = {}) {
     );
   }
 
+  return output;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const activeGitOperations = new Set();
+
+/** Cancel and await every Git operation owned by this process. A lock holder
+ * must await this before releasing the finish lock on a signal. */
+export async function settleActiveGitOperations({ reason = 'finish interrupted' } = {}) {
+  const operations = [...activeGitOperations];
+  const outcomes = await Promise.allSettled(operations.map((operation) => operation.cancel(reason)));
+  const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+  if (failed) throw failed.reason;
+  await Promise.all(operations.map((operation) => operation.settled));
+}
+
+function remaining(deadline) {
+  return deadline === Infinity ? Infinity : Math.max(0, deadline - Date.now());
+}
+
+/** Async Git runner with one absolute time budget covering launch, all retries,
+ * and backoff. Each operation is registered until its owned process container
+ * is confirmed empty and its stdio is closed. */
+export async function gitAsync(args, cwd, options = {}) {
+  assertNoForbiddenMergeStrategy(args);
+  const {
+    allowFailure = true, env, trim = true, retry = true,
+    log = (message) => console.error(message), timeoutMs, signal,
+    ...rest
+  } = options;
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+  const startWindowsJob = process.platform === 'win32'
+    ? (await import('./windows-git-job.mjs')).startWindowsJob
+    : null;
+  let output;
+  let attempts = 0;
+  for (;;) {
+    if (signal?.aborted) throw signal.reason ?? new Error('Git operation cancelled');
+    const budget = remaining(deadline);
+    if (budget <= 0) {
+      output = { status: null, stdout: '', stderr: '', signal: null, timedOut: true };
+      break;
+    }
+    attempts += 1;
+    const operation = { cancel: null, settled: null };
+    let cleanupUnconfirmed = false;
+    let resolveSettled;
+    operation.settled = new Promise((resolve) => { resolveSettled = resolve; });
+    activeGitOperations.add(operation);
+    try {
+      output = await new Promise((resolve, reject) => {
+        let child;
+        let windowsJob;
+        let spawnError = null;
+        let timedOut = false;
+        let cancelPromise;
+        let cancelRequested;
+        let cancelImplementation;
+        let timer;
+        let abortHandler;
+        const stdout = [];
+        const stderr = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        const maxOutputBytes = 32 * 1024 * 1024;
+        const collect = (chunks, count, chunk) => {
+          if (count >= maxOutputBytes) return count;
+          const kept = chunk.length > maxOutputBytes - count ? chunk.subarray(0, maxOutputBytes - count) : chunk;
+          chunks.push(kept);
+          return count + kept.length;
+        };
+        const onData = (chunks, key) => (chunk) => { if (key === 'stdout') stdoutBytes = collect(chunks, stdoutBytes, chunk); else stderrBytes = collect(chunks, stderrBytes, chunk); };
+        const finish = async (status, childSignal) => {
+          if (timer) clearTimeout(timer);
+          if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+          if (cancelPromise) await cancelPromise;
+          resolve({
+            error: spawnError, status,
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+            signal: childSignal ?? null, timedOut,
+          });
+        };
+        operation.cancel = async (reason = 'cancelled') => {
+          cancelRequested = reason;
+          if (!cancelImplementation) return;
+          return cancelImplementation(reason);
+        };
+        cancelImplementation = async (reason = 'cancelled') => {
+          if (cancelPromise) return cancelPromise;
+          timedOut ||= reason === 'timeout';
+          cancelPromise = (async () => {
+            if (windowsJob) {
+              await windowsJob.cancel(reason);
+              return;
+            }
+            if (!child?.pid) return;
+            try { process.kill(-child.pid, 'SIGTERM'); } catch { /* no group remains */ }
+            await delay(100);
+            try { process.kill(-child.pid, 'SIGKILL'); } catch { /* no group remains */ }
+          })();
+          return cancelPromise;
+        };
+        try {
+          if (process.platform === 'win32') {
+            windowsJob = startWindowsJob('git.exe', args, {
+              cwd,
+              env: env ?? process.env,
+              maxOutputBytes,
+              ...(Number.isFinite(budget) ? { timeoutMs: Math.max(1, Math.floor(budget)) } : {}),
+            });
+            cancelImplementation = (reason) => windowsJob.cancel(reason);
+            if (cancelRequested) void cancelImplementation(cancelRequested);
+            timer = Number.isFinite(deadline) ? setTimeout(() => {
+              timedOut = true;
+              void operation.cancel('timeout').then(() => windowsJob.result).then((result) => {
+                resolve({ ...result, timedOut: true });
+              }, (error) => {
+                cleanupUnconfirmed = true;
+                const failure = new Error(`Windows Git Job Object cleanup could not be confirmed: ${error?.message ?? error}`);
+                failure.code = 'GIT_JOB_UNCONFIRMED';
+                reject(failure);
+              });
+            }, Math.max(1, remaining(deadline))) : null;
+            abortHandler = () => { void operation.cancel(signal.reason ?? 'cancelled'); };
+            signal?.addEventListener('abort', abortHandler, { once: true });
+            windowsJob.result.then((result) => {
+              if (timer) clearTimeout(timer);
+              if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+              resolve({ ...result, timedOut: Boolean(result.timedOut || timedOut) });
+            }, (error) => {
+              if (timer) clearTimeout(timer);
+              if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+              cleanupUnconfirmed = true;
+              const failure = new Error(`Windows Git Job Object cleanup could not be confirmed: ${error?.message ?? error}`);
+              failure.code = 'GIT_JOB_UNCONFIRMED';
+              reject(failure);
+            });
+            return;
+          } else {
+            child = spawn('git', args, {
+              cwd, env: env ?? process.env, ...rest,
+              stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true,
+            });
+          }
+        } catch (error) {
+          spawnError = error;
+          resolve({ error, status: null, stdout: '', stderr: '', signal: null, timedOut: false });
+          return;
+        }
+        child.stdout?.on('data', onData(stdout, 'stdout'));
+        child.stderr?.on('data', onData(stderr, 'stderr'));
+        child.once('error', (error) => { spawnError = error; });
+        timer = Number.isFinite(deadline) ? setTimeout(() => { timedOut = true; void operation.cancel('timeout'); }, Math.max(1, remaining(deadline))) : null;
+        abortHandler = () => { void operation.cancel(signal.reason ?? 'cancelled'); };
+        signal?.addEventListener('abort', abortHandler, { once: true });
+        child.once('close', (status, childSignal) => { void finish(status, childSignal); });
+        if (cancelRequested) void cancelImplementation(cancelRequested);
+
+      });
+    } finally {
+      if (!cleanupUnconfirmed) {
+        activeGitOperations.delete(operation);
+        resolveSettled();
+      }
+    }
+
+    output = {
+      status: output.status,
+      stdout: trim ? String(output.stdout || '').trim() : String(output.stdout || ''),
+      stderr: trim ? String(output.stderr || '').trim() : String(output.stderr || ''),
+      signal: output.signal ?? null,
+      timedOut: Boolean(output.timedOut || output.error?.code === 'ETIMEDOUT'),
+      attempts,
+    };
+    if (output.status === 0 || output.timedOut || !retry || attempts >= GIT_RETRY_MAX_ATTEMPTS) break;
+    const transientClass = classifyTransientGitFailure(args, output.stderr);
+    if (!transientClass) break;
+    const wait = Math.min(GIT_RETRY_BACKOFF_MS[attempts - 1] ?? GIT_RETRY_BACKOFF_MS.at(-1), remaining(deadline));
+    if (wait <= 0) { output.timedOut = true; break; }
+    log(`[worktree-guard] git ${gitSubcommand(args)} hit a transient error (${transientClass}, attempt ${attempts}/${GIT_RETRY_MAX_ATTEMPTS}); retrying in ${wait}ms`);
+    await delay(wait);
+  }
+
+  if (allowFailure === false && output.status !== 0) {
+    if (output.timedOut) throw new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms and was terminated`);
+    throw new Error(`git ${args.join(' ')} failed (exit ${output.status}): ${output.stderr || output.stdout}`);
+  }
   return output;
 }
 

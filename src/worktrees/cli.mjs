@@ -46,6 +46,8 @@ import {
   FinishLockHoldTimeoutError,
 } from './finish-lock.mjs';
 import {
+  gitAsync,
+  settleActiveGitOperations,
   git,
   gitRaw,
   gitText,
@@ -238,7 +240,17 @@ function yieldToEventLoop() {
 async function lockedGit(lock, args, cwd, options = {}) {
   await yieldToEventLoop();
   if (lock.holdExpired()) throw new FinishLockHoldTimeoutError(lock.maxHoldMs, `git ${args[0]}`);
-  const result = git(args, cwd, { ...options, allowFailure: true, timeoutMs: lock.remainingHoldMs() });
+  let result;
+  try {
+    result = await gitAsync(args, cwd, { ...options, allowFailure: true, timeoutMs: lock.remainingHoldMs() });
+  } catch (error) {
+    if (error?.code === 'GIT_JOB_UNCONFIRMED') {
+      // Force the lock owner's durable recovery fence. A worker whose Windows
+      // Job Object did not confirm empty must never release a reusable lock.
+      await lock.exitFromSignal('SIGTERM');
+    }
+    throw error;
+  }
   if (result.timedOut) {
     // A killed rebase leaves the worktree mid-rebase; put it back.
     if (args.includes('rebase')) git(['rebase', '--abort'], cwd, { allowFailure: true, retry: false });
@@ -943,11 +955,15 @@ async function commandFinish(flags, positional, config) {
 
   const stateDir = config.stateDirAbs ?? resolveStateDirAbs(repo, config);
   const lock = flags.noWait
-    ? acquireFinishLock(stateDir, { dryRun: flags.dryRun, worktree: repo.branchShort, config })
+    ? acquireFinishLock(stateDir, {
+      dryRun: flags.dryRun, worktree: repo.branchShort, config,
+      beforeSignalRelease: () => settleActiveGitOperations({ reason: 'finish interrupted by signal' }),
+    })
     : await acquireFinishLockQueued(stateDir, {
       worktree: repo.branchShort,
       timeoutMs: flags.waitTimeoutMin ? Number(flags.waitTimeoutMin) * 60000 : undefined,
       config,
+      beforeSignalRelease: () => settleActiveGitOperations({ reason: 'finish interrupted by signal' }),
     });
   let heartbeat;
   try {

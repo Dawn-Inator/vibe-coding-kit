@@ -191,7 +191,7 @@ public static class VibeDirectoryDeleteProbe {
   }
 
   private static object Result(bool safe, string reason, int checkedCount) {
-    return new { safe = safe, reason = reason, checked = checkedCount };
+    return new { safe = safe, reason = reason, @checked = checkedCount };
   }
 
   private static bool IsWithinRoot(string root, string candidate) {
@@ -369,6 +369,16 @@ function unsafeDirectoryProbe(reason, checked = 0) {
   return { safe: false, reason, checked: Number.isSafeInteger(checked) && checked >= 0 ? checked : 0 };
 }
 
+function boundedProbeDiagnostic(value, root) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  let detail = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (typeof root === 'string' && root) {
+    const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    detail = detail.replace(new RegExp(escapedRoot, 'gi'), '<root>');
+  }
+  return detail.slice(0, 300);
+}
+
 /**
  * Check whether every real directory below `root` can be opened with DELETE
  * access while allowing read/write/delete sharing. A live process current
@@ -379,7 +389,7 @@ function unsafeDirectoryProbe(reason, checked = 0) {
  *
  * @param {string} root
  * @param {{platform?: string, spawn?: typeof spawnSync, timeoutMs?: number, maxEntries?: number, maxDepth?: number}} [options]
- * @returns {{safe: boolean, reason: string, checked: number}}
+ * @returns {{safe: boolean, reason: string, checked: number, diagnostic?: string}}
  */
 export function probeWindowsDirectoryDeleteSafety(root, {
   platform = process.platform,
@@ -410,10 +420,20 @@ export function probeWindowsDirectoryDeleteSafety(root, {
       { encoding: 'utf8', windowsHide: true, timeout: timeoutMs + 5000, maxBuffer: 1024 * 1024 },
     );
   } catch (error) {
-    return unsafeDirectoryProbe(error?.code === 'ETIMEDOUT' ? 'timeout' : 'probe-unavailable');
+    const failure = unsafeDirectoryProbe(error?.code === 'ETIMEDOUT' ? 'timeout' : 'probe-unavailable');
+    const diagnostic = boundedProbeDiagnostic(error?.message || String(error), root);
+    return diagnostic ? { ...failure, diagnostic } : failure;
   }
-  if (result.error) return unsafeDirectoryProbe(result.error.code === 'ETIMEDOUT' ? 'timeout' : 'probe-unavailable');
-  if (result.status !== 0) return unsafeDirectoryProbe('probe-failed');
+  if (result.error) {
+    const failure = unsafeDirectoryProbe(result.error.code === 'ETIMEDOUT' ? 'timeout' : 'probe-unavailable');
+    const diagnostic = boundedProbeDiagnostic(result.error.message, root);
+    return diagnostic ? { ...failure, diagnostic } : failure;
+  }
+  if (result.status !== 0) {
+    const failure = unsafeDirectoryProbe('probe-failed');
+    const diagnostic = boundedProbeDiagnostic(result.stderr || result.stdout, root);
+    return diagnostic ? { ...failure, diagnostic } : failure;
+  }
 
   try {
     const value = JSON.parse(String(result.stdout || '').trim());
@@ -426,6 +446,8 @@ export function probeWindowsDirectoryDeleteSafety(root, {
     if (!value.safe && value.reason === 'safe') return unsafeDirectoryProbe('invalid-probe-result', value.checked);
     return { safe: value.safe, reason: value.reason, checked: value.checked };
   } catch {
-    return unsafeDirectoryProbe('invalid-probe-result');
+    const failure = unsafeDirectoryProbe('invalid-probe-result');
+    const diagnostic = boundedProbeDiagnostic(result.stderr || result.stdout, root);
+    return diagnostic ? { ...failure, diagnostic } : failure;
   }
 }

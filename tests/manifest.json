@@ -1,6 +1,7 @@
 [
   "contracts/cli.test.mjs",
   "contracts/project-adapter.test.mjs",
+  "contracts/windows-diagnostic-workflow.test.mjs",
   "dependencies/submodule.test.mjs",
   "install/bootstrap.test.mjs",
   "install/init.test.mjs",
@@ -44,5 +45,6 @@
   "worktrees/submodule-cleanup-safety.test.mjs",
   "worktrees/submodule-lifecycle.test.mjs",
   "worktrees/worktree-core.test.mjs",
-  "worktrees/writable-tree.test.mjs"
+  "worktrees/writable-tree.test.mjs",
+  "worktrees/windows-git-job.test.mjs"
 ]

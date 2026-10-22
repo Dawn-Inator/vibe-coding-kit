@@ -282,21 +282,24 @@ pid="$PPID"
 depth=0
 chain=""
 is_ai_ancestor=0
-ancestor_tested=0
-while [ -n "$pid" ] && [ "$depth" -lt 8 ] && [ "$ancestor_tested" -lt 3 ]; do
+while [ -n "$pid" ] && [ "$depth" -lt 8 ]; do
   line=$(ps -o command= -p "$pid" 2>/dev/null | cut -c1-200)
   [ -z "$line" ] && break
   if [ -z "$chain" ]; then chain="$line"; else chain="$chain <- $line"; fi
-  first_word=$(printf '%s' "$line" | awk '{print $1}')
-  case "$first_word" in
-    # Git for Windows reports the executable suffix in its process command;
-    # skip it just like the POSIX git parent so the same ancestor budget is
-    # available to inspect the launching AI CLI.
-    git|git.exe|*/git|*/git.exe)
+  # Handle both POSIX command lines and Windows process paths. Git for Windows
+  # reports backslash-separated paths, which POSIX basename/dirname otherwise
+  # treat as a single filename. Quoted executable and script paths preserve
+  # spaces in common Windows command-line output.
+  executable=$(printf '%s\n' "$line" | sed -n 's/^"\\([^"]*\\)".*/\\1/p')
+  [ -n "$executable" ] || executable=$(printf '%s\n' "$line" | awk '{print $1}')
+  executable_path=$(printf '%s' "$executable" | tr '\\' '/')
+  exe_base=$(basename "$executable_path" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/\\.exe$//')
+  case "$exe_base" in
+    # Git is a transport wrapper rather than the user process whose context
+    # determines the policy. Ignore it without consuming the bounded walk.
+    git)
       ;;
     *)
-      ancestor_tested=$((ancestor_tested + 1))
-      exe_base=$(basename "$first_word" 2>/dev/null | tr '[:upper:]' '[:lower:]')
       case "$exe_base" in
         @@AI_CLI_PATTERN@@)
           is_ai_ancestor=1
@@ -313,7 +316,15 @@ while [ -n "$pid" ] && [ "$depth" -lt 8 ] && [ "$ancestor_tested" -lt 3 ]; do
           # MUST stay behaviorally identical to matchesAiParentProcess() in
           # process-provenance.mjs, which performs the same whole-segment
           # walk over every dirname() component of the script path.
-          second_word=$(printf '%s' "$line" | awk '{print $2}')
+          quoted_executable=$(printf '"%s"' "$executable")
+          case "$line" in
+            "$quoted_executable"*) args=\${line#"$quoted_executable"} ;;
+            *) args=$(printf '%s\n' "$line" | sed 's/^[^[:space:]]*[[:space:]]*//') ;;
+          esac
+          args=$(printf '%s\n' "$args" | sed 's/^[[:space:]]*//')
+          second_word=$(printf '%s\n' "$args" | sed -n 's/^"\\([^"]*\\)".*/\\1/p')
+          [ -n "$second_word" ] || second_word=$(printf '%s\n' "$args" | awk '{print $1}')
+          second_word=$(printf '%s' "$second_word" | tr '\\' '/')
           walk_dir=$(dirname "$second_word" 2>/dev/null)
           walked=0
           while [ -n "$walk_dir" ] && [ "$walk_dir" != "/" ] && [ "$walk_dir" != "." ] && [ "$walked" -lt 10 ]; do

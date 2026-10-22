@@ -12,6 +12,7 @@ import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/iso
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { main as worktreeCli } from '../../src/worktrees/cli.mjs';
 import { discoverRepo } from '../../src/worktrees/worktree-core.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { checkItems, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import { parseArgs, sweep as runSweep } from '../../src/supervision/heartbeat-sweep.mjs';
 import { discoverWorktrees } from '../../src/supervision/heartbeat-sweep-worktrees.mjs';
@@ -313,7 +314,19 @@ test('worktrees: Windows unknown cwd records use the directory safety probe', as
   });
 
   assert.deepEqual(result.candidates.map((candidate) => candidate.source), ['sweep:worktrees:claude/unknown-cwd']);
-  assert.deepEqual(probed, [{ candidate: path, options: { platform: 'win32' } }]);
+  assert.equal(probed.length, 1);
+  assert.equal(samePathIdentity(probed[0].candidate, path), true);
+  assert.deepEqual(probed[0].options, { platform: 'win32' });
+
+  const blocked = discoverWorktrees(fx.primary, {
+    staleDays: 14,
+    worktreeRoot: fx.worktreeRoot,
+    platform: 'win32',
+    getLiveProcessCwds: () => liveCwds,
+    probeDirectoryDeleteSafety: () => ({ safe: false, reason: 'directory-in-use', checked: 1 }),
+  });
+  assert.deepEqual(blocked.candidates, [], 'an unsafe native proof must keep the worktree');
+  assert.match(blocked.notes.join('\n'), /not suggesting .*cannot verify working directories of 1 process\(es\).*Windows directory safety probe: directory-in-use/);
 });
 
 test('worktrees: process inventory failure suppresses reclaim rows but preserves other sweep results', async () => {

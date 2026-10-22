@@ -95,6 +95,10 @@ function makeBackmergeFixture() {
   const primaryDir = join(root, 'primary');
   run(['init', '--bare', '--initial-branch=main', remoteDir], root);
   run(['clone', '--shared', remoteDir, primaryDir], root);
+  // Runtime worktree Git calls inherit the host's Git config, while fixture commands
+  // use an isolated empty global config. Pin line-ending behavior locally so the
+  // runtime checkout and fixture assertions interpret the same bytes on Windows.
+  run(['config', 'core.autocrlf', 'false'], primaryDir);
   commit(primaryDir, 'shared.txt', 'base\n', 'initial commit');
   run(['push', 'origin', 'HEAD:refs/heads/main'], primaryDir);
   run(['branch', '-M', 'main'], primaryDir);

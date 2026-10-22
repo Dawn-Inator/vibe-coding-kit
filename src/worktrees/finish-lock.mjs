@@ -18,8 +18,9 @@
 //
 // While the lock is HELD (not just while queued) the handle keeps four
 // promises:
-//   - a SIGINT/SIGTERM releases the lock and exits 130/143, so a killed finish
-//     does not leave a lock behind for the next session to time out on;
+//   - a SIGINT/SIGTERM runs an optional async drain before releasing the lock;
+//     a failed/timed-out drain exits unsuccessfully and retains the lock for
+//     explicit recovery;
 //   - an optional AbortSignal provides a catchable cancellation path on hosts
 //     where process signals hard-terminate instead of reaching JS handlers;
 //   - the lock file records who holds it and in which phase, so a waiter can
@@ -124,6 +125,40 @@ function writeNewLockFile(path, info) {
   }
 }
 
+function recoveryRequiredError(path, detail = 'async signal cleanup did not complete') {
+  return new Error(
+    `finish lock at ${path} requires explicit recovery (${detail}); inspect owned git operations and remove the lock only after confirming they have stopped`
+  );
+}
+
+function persistRecoveryRequired(path, cause) {
+  let data = {};
+  try {
+    data = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    // Replacing malformed contents below still makes the lock non-reclaimable.
+  }
+  const recoveryData = {
+    ...data,
+    recoveryRequired: true,
+    recoveryReason: String(cause?.message ?? cause ?? 'async signal cleanup did not complete'),
+    recoveryMarkedAt: new Date().toISOString(),
+  };
+  try {
+    const tmp = `${path}.${process.pid}.recovery.tmp`;
+    writeFileSync(tmp, JSON.stringify(recoveryData, null, 2) + '\n');
+    renameSync(tmp, path);
+  } catch {
+    // Keep an unreadable/corrupt lock fail-closed if atomic replacement fails;
+    // attemptAcquireFinishLockFile treats a lock without a parseable pid as held.
+    try {
+      writeFileSync(path, JSON.stringify(recoveryData, null, 2) + '\n');
+    } catch {
+      // Best effort under filesystem failure; callers still refuse to unlink.
+    }
+  }
+}
+
 /**
  * Try to atomically create the finish-lock file. Never throws for "someone
  * else holds it" -- that's reported via the return value; it only throws for
@@ -148,12 +183,18 @@ export function attemptAcquireFinishLockFile(path, info = {}) {
     // Lock already exists. Read out the holder pid and decide whether it can
     // be reclaimed.
     let holderPid;
+    let recoveryRequired = false;
     try {
       const data = JSON.parse(readFileSync(path, 'utf8'));
       holderPid = Number.isInteger(data.pid) && data.pid > 0 ? data.pid : undefined;
+      recoveryRequired = data.recoveryRequired === true;
     } catch {
       // Can't parse a pid out of it -- treat conservatively as held-live,
       // don't attempt to reclaim.
+    }
+
+    if (recoveryRequired) {
+      return { acquired: false, holderPid, reason: 'recovery-required' };
     }
 
     // eslint-disable-next-line lf/no-bare-pid-probe -- legacy bare pid probe (lock root cure RC4); migrate to lease-lock recordedPidLive/inspectLease
@@ -217,10 +258,12 @@ function lockOwnedByMe(path) {
 /**
  * Wrap a freshly acquired lock file in a handle. Installs SIGINT/SIGTERM
  * handlers and optionally releases on `signal` abort. An AbortSignal releases
- * the lock; its caller must also stop or cancel its in-flight work.
+ * the lock; its caller must also stop or cancel its in-flight work. On an OS
+ * signal, `beforeSignalRelease` may asynchronously drain owned operations. If
+ * it fails or times out, the process exits unsuccessfully and keeps the lock.
  *
  * @param {string} path lock file path
- * @param {{ maxHoldMs?: number, now?: () => number, exit?: (code: number) => void, signal?: AbortSignal }} [options]
+ * @param {{ maxHoldMs?: number, now?: () => number, exit?: (code: number) => void, signal?: AbortSignal, beforeSignalRelease?: (context: { signal: 'SIGINT'|'SIGTERM', reason: 'SIGINT'|'SIGTERM', path: string }) => Promise<void>|void, beforeSignalReleaseTimeoutMs?: number }} [options]
  *   `exit` is injectable for tests; defaults to process.exit.
  * @returns {{
  *   path: string,
@@ -230,7 +273,7 @@ function lockOwnedByMe(path) {
  *   remainingHoldMs: () => number,
  *   holdExpired: () => boolean,
  *   maxHoldMs: number,
- *   exitFromSignal: (signal: 'SIGINT'|'SIGTERM') => void,
+ *   exitFromSignal: (signal: 'SIGINT'|'SIGTERM') => void|Promise<void>,
  * }}
  */
 export function createHeldLockHandle(path, options = {}) {
@@ -246,14 +289,68 @@ export function createHeldLockHandle(path, options = {}) {
  * hit Node's default action and leave the file behind. `abandon()` drops the
  * handlers without touching the file (for an acquire that lost the race).
  */
-function prepareHeldLockHandle(path, { maxHoldMs = DEFAULT_MAX_HOLD_MS, now = Date.now, exit = process.exit } = {}) {
+function prepareHeldLockHandle(path, {
+  maxHoldMs = DEFAULT_MAX_HOLD_MS,
+  now = Date.now,
+  exit = process.exit,
+  beforeSignalRelease,
+  beforeSignalReleaseTimeoutMs = 120_000,
+} = {}) {
   const budget = createHoldBudget(maxHoldMs, now);
   const cleanups = [];
   let released = false;
+  let signalDrainInProgress = false;
+  let releaseBlockedByRecovery = false;
+  let signalExitPromise;
+  if (beforeSignalRelease !== undefined && typeof beforeSignalRelease !== 'function') {
+    throw new TypeError('beforeSignalRelease must be a function');
+  }
+  if (beforeSignalRelease && (
+    !Number.isFinite(beforeSignalReleaseTimeoutMs)
+    || beforeSignalReleaseTimeoutMs <= 0
+    || beforeSignalReleaseTimeoutMs > 2_147_483_647
+  )) {
+    throw new RangeError('beforeSignalReleaseTimeoutMs must be a positive Node timer duration');
+  }
 
   const exitFromSignal = (signal) => {
-    release();
-    exit(signal === 'SIGINT' ? 130 : 143);
+    const exitCode = signal === 'SIGINT' ? 130 : 143;
+    if (typeof beforeSignalRelease !== 'function') {
+      release();
+      exit(exitCode);
+      return;
+    }
+    if (signalExitPromise) return signalExitPromise;
+    signalDrainInProgress = true;
+    signalExitPromise = (async () => {
+      let timeout;
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => beforeSignalRelease({ signal, reason: signal, path })),
+          new Promise((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error(`beforeSignalRelease timed out after ${beforeSignalReleaseTimeoutMs}ms`)),
+              beforeSignalReleaseTimeoutMs
+            );
+          }),
+        ]);
+        signalDrainInProgress = false;
+        release();
+        exit(exitCode);
+      } catch (error) {
+        // Persist the fence before exiting: a dead pid alone is not proof that
+        // its git descendants stopped. Explicit release calls from caller
+        // finally blocks must also preserve this lock.
+        releaseBlockedByRecovery = true;
+        persistRecoveryRequired(path, error);
+        signalDrainInProgress = false;
+        console.error(`[worktree-guard] ${error?.message ?? error}`);
+        exit(1);
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+    return signalExitPromise;
   };
   const onSigint = () => exitFromSignal('SIGINT');
   const onSigterm = () => exitFromSignal('SIGTERM');
@@ -261,6 +358,7 @@ function prepareHeldLockHandle(path, { maxHoldMs = DEFAULT_MAX_HOLD_MS, now = Da
   process.on('SIGTERM', onSigterm);
 
   function release() {
+    if (signalDrainInProgress || releaseBlockedByRecovery) return;
     if (released) return;
     released = true;
     process.removeListener('SIGINT', onSigint);
@@ -331,7 +429,15 @@ function configuredMaxHoldMs(config, override) {
  * @param {{ dryRun?: boolean, worktree?: string, config?: any, maxHoldMs?: number, signal?: AbortSignal }} [options]
  * @returns {ReturnType<typeof createHeldLockHandle>}
  */
-export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldMs, signal } = {}) {
+export function acquireFinishLock(stateDir, {
+  dryRun,
+  worktree,
+  config,
+  maxHoldMs,
+  signal,
+  beforeSignalRelease,
+  beforeSignalReleaseTimeoutMs,
+} = {}) {
   throwIfAborted(signal);
   const path = finishLockPath(stateDir);
 
@@ -354,6 +460,8 @@ export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldM
   // signal handler.
   const { handle, abandon } = prepareHeldLockHandle(path, {
     maxHoldMs: configuredMaxHoldMs(config, maxHoldMs),
+    beforeSignalRelease,
+    beforeSignalReleaseTimeoutMs,
   });
   let result;
   try {
@@ -364,6 +472,7 @@ export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldM
   }
   if (!result.acquired) {
     abandon(); // the lock is someone else's; never release() it from here
+    if (result.reason === 'recovery-required') throw recoveryRequiredError(path);
     throw new Error(`finish lock already exists at ${path}; another process is finishing`);
   }
   bindAbortSignal(handle, signal);
@@ -529,7 +638,7 @@ function sleepAsync(ms, signal) {
  */
 export async function acquireFinishLockQueued(
   stateDir,
-  { worktree, timeoutMs, pollMs, config, signal } = {}
+  { worktree, timeoutMs, pollMs, config, signal, beforeSignalRelease, beforeSignalReleaseTimeoutMs } = {}
 ) {
   throwIfAborted(signal);
   const lockPath = finishLockPath(stateDir);
@@ -607,10 +716,16 @@ export async function acquireFinishLockQueued(
           removeTicket();
           // Swap the waiting-phase handlers for held-phase ones. Both are
           // installed/removed synchronously, so there is no unhandled window.
-          const handle = createHeldLockHandle(lockPath, { maxHoldMs: configuredMaxHoldMs(config), signal });
+          const handle = createHeldLockHandle(lockPath, {
+            maxHoldMs: configuredMaxHoldMs(config),
+            signal,
+            beforeSignalRelease,
+            beforeSignalReleaseTimeoutMs,
+          });
           removeSignalHandlers();
           return handle;
         }
+        if (result.reason === 'recovery-required') throw recoveryRequiredError(lockPath);
         // Still held-live, possibly by a caller that acquired outside the
         // queue (--no-wait). Fall through and keep polling.
       }
