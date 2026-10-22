@@ -144,6 +144,7 @@ $WarningPreference = 'SilentlyContinue'
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -161,6 +162,25 @@ public static class VibeDirectoryDeleteProbe {
   private const int ERROR_PATH_NOT_FOUND = 3;
   private const int ERROR_ACCESS_DENIED = 5;
   private const int ERROR_SHARING_VIOLATION = 32;
+  private const int ERROR_NOT_ALL_ASSIGNED = 1300;
+  private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+  private const uint TOKEN_QUERY = 0x0008;
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Luid {
+    public uint LowPart;
+    public int HighPart;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct LuidAndAttributes {
+    public Luid Luid;
+    public uint Attributes;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct TokenPrivileges {
+    public uint PrivilegeCount;
+    public LuidAndAttributes Privileges;
+  }
 
   [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
   private static extern IntPtr CreateFile(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
@@ -183,6 +203,88 @@ public static class VibeDirectoryDeleteProbe {
   private static extern bool GetFileInformationByHandle(IntPtr handle, out ByHandleFileInformation information);
   [DllImport("kernel32.dll", EntryPoint = "CloseHandle", ExactSpelling = true, SetLastError = true)]
   private static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", EntryPoint = "GetCurrentProcess", ExactSpelling = true)]
+  private static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", EntryPoint = "SetLastError", ExactSpelling = true)]
+  private static extern void SetLastErrorCode(uint error);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  private static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out IntPtr token);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern bool LookupPrivilegeValue(string systemName, string name, out Luid luid);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAllPrivileges, ref TokenPrivileges newState, uint bufferLength, out TokenPrivileges previousState, out uint returnLength);
+
+  // Opening directories requires FILE_FLAG_BACKUP_SEMANTICS. Elevated CI tokens
+  // may have SeBackupPrivilege / SeRestorePrivilege enabled; those can bypass
+  // the DACL during a backup-intent open and make a denied DELETE look safe.
+  // Disable just these privileges in this short-lived PowerShell process while
+  // proving ordinary DELETE access, then restore their exact prior states.
+  private sealed class DisableBackupRestorePrivileges : IDisposable {
+    private readonly IntPtr token;
+    private readonly List<TokenPrivileges> previousStates = new List<TokenPrivileges>();
+    private bool disposed;
+
+    private DisableBackupRestorePrivileges(IntPtr token) { this.token = token; }
+
+    public static DisableBackupRestorePrivileges Create() {
+      IntPtr token;
+      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, out token)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "could not open process token to neutralize backup/restore privileges");
+      }
+      DisableBackupRestorePrivileges scope = new DisableBackupRestorePrivileges(token);
+      try {
+        scope.Disable("SeBackupPrivilege");
+        scope.Disable("SeRestorePrivilege");
+        return scope;
+      } catch {
+        scope.Dispose();
+        throw;
+      }
+    }
+
+    private void Disable(string name) {
+      Luid luid;
+      if (!LookupPrivilegeValue(null, name, out luid)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "could not resolve " + name);
+      }
+      TokenPrivileges requested = new TokenPrivileges();
+      requested.PrivilegeCount = 1;
+      requested.Privileges = new LuidAndAttributes { Luid = luid, Attributes = 0 };
+      TokenPrivileges previous;
+      uint returned;
+      SetLastErrorCode(0);
+      if (!AdjustTokenPrivileges(token, false, ref requested, (uint)Marshal.SizeOf(typeof(TokenPrivileges)), out previous, out returned)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "could not disable " + name);
+      }
+      int error = Marshal.GetLastWin32Error();
+      if (error == ERROR_NOT_ALL_ASSIGNED) return; // this token does not carry the privilege
+      if (previous.PrivilegeCount > 0) previousStates.Add(previous);
+      if (error != 0) throw new Win32Exception(error, "could not disable " + name);
+    }
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      Exception failure = null;
+      for (int index = previousStates.Count - 1; index >= 0; index--) {
+        TokenPrivileges previous = previousStates[index];
+        TokenPrivileges ignored;
+        uint returned;
+        SetLastErrorCode(0);
+        // AdjustTokenPrivileges requires BufferLength to describe the output
+        // PreviousState buffer whenever it is non-null. Passing zero here can
+        // fail with ERROR_INSUFFICIENT_BUFFER and leave the privilege disabled.
+        if (!AdjustTokenPrivileges(token, false, ref previous, (uint)Marshal.SizeOf(typeof(TokenPrivileges)), out ignored, out returned)) {
+          if (failure == null) failure = new Win32Exception(Marshal.GetLastWin32Error(), "could not restore a token privilege after directory access check");
+        } else {
+          int error = Marshal.GetLastWin32Error();
+          if (error != 0 && failure == null) failure = new Win32Exception(error, "could not restore a token privilege after directory access check");
+        }
+      }
+      CloseHandle(token);
+      if (failure != null) throw failure;
+    }
+  }
 
   private sealed class DirectoryNode {
     public string Path;
@@ -220,6 +322,7 @@ public static class VibeDirectoryDeleteProbe {
     try {
       string root = Path.GetFullPath(rootPath);
       if (String.IsNullOrWhiteSpace(root)) return Result(false, "invalid-root", checkedCount);
+      using (DisableBackupRestorePrivileges.Create()) {
       Stopwatch stopwatch = Stopwatch.StartNew();
 
       // Reject reparse points in the candidate path itself and its ancestors.
@@ -294,6 +397,7 @@ public static class VibeDirectoryDeleteProbe {
         }
       }
       return Result(true, "safe", checkedCount);
+      }
     } catch (UnauthorizedAccessException) {
       return Result(false, "access-denied", checkedCount);
     } catch (IOException) {

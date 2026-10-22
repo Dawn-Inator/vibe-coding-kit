@@ -48,7 +48,7 @@ export function nativeProofOutputVerdict(output) {
   return { ok: missingOrDuplicate.length === 0 && notPassed.length === 0, missingOrDuplicate, notPassed };
 }
 
-export function runNativeProof({ platform = process.platform, spawn = spawnSync, cwd = root, log = console.log, error = console.error } = {}) {
+export function runNativeProof({ platform = process.platform, spawn = spawnSync, cwd = root, env = process.env, log = console.log, error = console.error } = {}) {
   if (platform !== 'win32') {
     error(`[windows-native-proof] requires Windows; got ${platform}`);
     return 1;
@@ -61,7 +61,12 @@ export function runNativeProof({ platform = process.platform, spawn = spawnSync,
     'tests/worktrees/process-provenance.test.mjs',
     'tests/worktrees/windows-git-job.test.mjs',
   ];
-  const result = spawn(process.execPath, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const result = spawn(process.execPath, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...env, VIBE_KIT_REQUIRE_PRIVILEGED_DELETE_PROOF: '1' },
+  });
   if (result.error || result.status !== 0 || result.signal) {
     error(`[windows-native-proof] node --test failed: ${result.error?.message || result.signal || `exit ${result.status}`}\n${childTranscript(result)}`);
     return 1;

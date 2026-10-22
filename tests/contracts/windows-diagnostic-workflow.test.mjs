@@ -70,7 +70,12 @@ test('native proof executes only its fixed Windows command and propagates child 
     calls.push({ executable, args, options });
     return { status: 0, stdout: passingTap, stderr: '' };
   };
-  assert.equal(runNativeProof([], { platform: 'win32', spawn, error: (message) => errors.push(message) }), 0);
+  assert.equal(runNativeProof([], {
+    platform: 'win32',
+    spawn,
+    env: { PATH: 'proof-path', PROOF_TEST_SENTINEL: 'preserved', VIBE_KIT_REQUIRE_PRIVILEGED_DELETE_PROOF: '0' },
+    error: (message) => errors.push(message),
+  }), 0);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].executable, process.execPath);
   assert.match(calls[0].args[0], /--test/u);
@@ -79,6 +84,9 @@ test('native proof executes only its fixed Windows command and propagates child 
   assert.ok(calls[0].args.includes('tests/worktrees/process-provenance.test.mjs'));
   assert.ok(calls[0].args.includes('tests/worktrees/windows-git-job.test.mjs'));
   assert.ok(calls[0].args.some((arg) => arg.startsWith('--test-name-pattern=')));
+  assert.equal(calls[0].options.env.VIBE_KIT_REQUIRE_PRIVILEGED_DELETE_PROOF, '1');
+  assert.equal(calls[0].options.env.PROOF_TEST_SENTINEL, 'preserved');
+  assert.equal(calls[0].options.env.PATH, 'proof-path');
 
   assert.equal(runNativeProof([], { platform: 'win32', spawn: () => ({ status: 1, stdout: passingTap, stderr: '' }), error: (message) => errors.push(message) }), 1);
   assert.match(errors[0], /stdout \(TAP\):\nTAP version 13/u, 'the failed child TAP transcript remains visible');

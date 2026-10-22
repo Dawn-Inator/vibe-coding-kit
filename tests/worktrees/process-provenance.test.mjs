@@ -481,6 +481,12 @@ test('probeWindowsDirectoryDeleteSafety: bounded PowerShell scan rejects unsafe 
   assert.equal(invocation.options.timeout, 17000);
   assert.match(script, /CreateFileW/);
   assert.match(script, /DELETE = 0x00010000/);
+  assert.match(script, /AdjustTokenPrivileges/);
+  assert.match(script, /SeBackupPrivilege/);
+  assert.match(script, /SeRestorePrivilege/);
+  assert.match(script, /if \(error == ERROR_NOT_ALL_ASSIGNED\) return/, 'ordinary tokens without these optional privileges must remain eligible for the ACL check');
+  assert.match(script, /AdjustTokenPrivileges\(token, false, ref previous, \(uint\)Marshal\.SizeOf\(typeof\(TokenPrivileges\)\), out ignored, out returned\)/, 'restore call must provide the PreviousState buffer size required by AdjustTokenPrivileges');
+  assert.ok(script.indexOf('using (DisableBackupRestorePrivileges.Create())') < script.indexOf('CreateFile(fullPath'), 'neutralize backup/restore privileges before opening directories for DELETE');
   assert.match(script, /SHARE_ALL = 0x00000007/);
   assert.match(script, /OPEN_EXISTING = 3/);
   assert.match(script, /BACKUP_SEMANTICS = 0x02000000/);
@@ -572,9 +578,15 @@ test('probeWindowsDirectoryDeleteSafety: Windows DELETE denial is reported unsaf
     const rootIcacls = Array.isArray(acl.root?.icacls) ? acl.root.icacls : [acl.root?.icacls].filter(Boolean);
     const deniedIcacls = Array.isArray(acl.denied?.icacls) ? acl.denied.icacls : [acl.denied?.icacls].filter(Boolean);
     const whoamiLines = Array.isArray(acl.whoami) ? acl.whoami : [acl.whoami].filter(Boolean);
+    const privilegeLines = Array.isArray(acl.privileges) ? acl.privileges : [acl.privileges].filter(Boolean);
     assert.ok(acl.sid, `current token SID missing from readback: ${diagnostic}`);
     assert.ok(whoamiLines.some((line) => line.includes(acl.sid)), `whoami /user SID does not match the ACL principal: ${diagnostic}`);
-    assert.ok(acl.privileges?.length > 0, `whoami /priv did not report token privileges: ${diagnostic}`);
+    const backupEnabled = privilegeLines.some((line) => /"SeBackupPrivilege".*"Enabled"/.test(line));
+    const restoreEnabled = privilegeLines.some((line) => /"SeRestorePrivilege".*"Enabled"/.test(line));
+    if (process.env.VIBE_KIT_REQUIRE_PRIVILEGED_DELETE_PROOF === '1') {
+      assert.ok(backupEnabled, `native proof requires enabled SeBackupPrivilege to exercise the bypass regression: ${diagnostic}`);
+      assert.ok(restoreEnabled, `native proof requires enabled SeRestorePrivilege to exercise the bypass regression: ${diagnostic}`);
+    }
     assert.ok(acl.root?.deniesDeleteChild, `explicit current-token FILE_DELETE_CHILD deny missing on fixture parent: ${diagnostic}`);
     assert.ok(acl.denied?.deniesDelete, `explicit current-token DELETE deny missing on nested directory: ${diagnostic}`);
     assert.ok(rootRules.some((rule) => !rule.inherited), `no explicit parent deny ACE for the current token: ${diagnostic}`);

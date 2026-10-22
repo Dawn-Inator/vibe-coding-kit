@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
@@ -47,6 +47,15 @@ function fakeController({
   };
   if (emitReady) queueMicrotask(() => child.stdout.write('{"protocol":1,"event":"ready"}\n'));
   return child;
+}
+
+function nativeChildEnvironment() {
+  const environment = { ...process.env };
+  // `node --test` marks its file workers with this internal variable. The
+  // native descendants here are ordinary Node programs, not nested test
+  // workers; keep the harness marker out of these process-lifetime fixtures.
+  delete environment.NODE_TEST_CONTEXT;
+  return environment;
 }
 
 test('Windows Job Object contract rejects unsupported platforms before spawning', async () => {
@@ -106,6 +115,24 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
   assert.equal(result.status, 0);
   assert.equal(result.signal, 'SIGTERM');
   assert.equal(result.timedOut, false);
+});
+
+test('an omitted working directory is sent to CreateProcess as an absolute path', async () => {
+  let controller;
+  const job = startWindowsJob('anything.exe', [], {
+    platform: 'win32',
+    resolveExecutable: () => 'C:\\tools\\anything.exe',
+    spawn() {
+      controller = fakeController();
+      return controller;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const config = JSON.parse(controller.stdinData.split('\n')[0]);
+  assert.equal(config.cwd, path.win32.resolve(process.cwd()));
+  assert.ok(config.cwd.length > 0);
+  controller.finish();
+  await job.result;
 });
 
 test('controller cleanup response without ActiveProcesses zero proof fails closed', async () => {
@@ -180,7 +207,10 @@ test('deadline cancellation is represented as a timeout after controller confirm
 const windowsOnly = { skip: process.platform === 'win32' ? false : 'requires native Windows PowerShell and Job Objects' };
 
 test('native job captures stdout, stderr, and exit status', windowsOnly, async () => {
-  const job = startWindowsJob(process.execPath, ['-e', "process.stdout.write('out'); process.stderr.write('err'); process.exit(7)"], { timeoutMs: 20_000 });
+  const job = startWindowsJob(process.execPath, ['-e', "process.stdout.write('out'); process.stderr.write('err'); process.exit(7)"], {
+    env: nativeChildEnvironment(),
+    timeoutMs: 20_000,
+  });
   const result = await job.result;
   assert.equal(result.status, 7, JSON.stringify(result));
   assert.equal(result.stdout, 'out');
@@ -191,7 +221,11 @@ test('native job captures stdout, stderr, and exit status', windowsOnly, async (
 
 test('native job enforces a combined output-byte cap while continuing to drain pipes', windowsOnly, async () => {
   const code = "process.stdout.write('x'.repeat(100000)); process.stderr.write('y'.repeat(100000))";
-  const result = await startWindowsJob(process.execPath, ['-e', code], { timeoutMs: 20_000, maxOutputBytes: 17 }).result;
+  const result = await startWindowsJob(process.execPath, ['-e', code], {
+    env: nativeChildEnvironment(),
+    timeoutMs: 20_000,
+    maxOutputBytes: 17,
+  }).result;
   assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 17);
   assert.equal(result.status, 0, JSON.stringify(result));
 });
@@ -199,7 +233,11 @@ test('native job enforces a combined output-byte cap while continuing to drain p
 test('native cancellation contains a parent-exited descendant and preserves unrelated processes', windowsOnly, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'windows-git-job-cwd-'));
   const ready = path.join(root, 'child-ready');
-  const childCode = `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000)`;
+  const stop = path.join(root, 'child-stop');
+  const childCode = [
+    `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));`,
+    `setInterval(() => { if (fs.existsSync(${JSON.stringify(stop)})) process.exit(0); }, 20);`,
+  ].join('\n');
   const parentCode = [
     "const { spawn } = require('node:child_process');",
     "const fs = require('node:fs');",
@@ -209,22 +247,51 @@ test('native cancellation contains a parent-exited descendant and preserves unre
     'if (!fs.existsSync(ready)) process.exit(12);',
     'process.exit(0);',
   ].join('\n');
-  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const isolatedEnvironment = nativeChildEnvironment();
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+    windowsHide: true,
+    env: isolatedEnvironment,
+  });
   let job;
+  let childPid = null;
   t.after(async () => {
     if (job) await job.cancel('test cleanup').catch(() => {});
     if (unrelated.exitCode === null) unrelated.kill();
+    if (childPid !== null) {
+      await writeFile(stop, 'stop').catch(() => {});
+      const childDeadline = Date.now() + 2000;
+      while (Date.now() < childDeadline) {
+        try { process.kill(childPid, 0); } catch (error) { if (error.code !== 'EPERM') break; }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
     await rm(root, { recursive: true, force: true });
   });
 
-  job = startWindowsJob(process.execPath, ['-e', parentCode], { cwd: root, timeoutMs: 20_000 });
+  job = startWindowsJob(process.execPath, ['-e', parentCode], {
+    cwd: root,
+    env: isolatedEnvironment,
+    timeoutMs: 20_000,
+    testHooks: { traceProcessLifecycle: true },
+  });
   const resultObserved = job.result.then((result) => ({ result }), (error) => ({ error }));
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try { await readFile(ready); break; } catch { await new Promise((resolve) => setTimeout(resolve, 20)); }
   }
-  await readFile(ready);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  childPid = Number(await readFile(ready, 'utf8'));
+  assert.ok(Number.isInteger(childPid) && childPid > 0, 'descendant must publish its process ID');
+  try {
+    process.kill(childPid, 0);
+  } catch (error) {
+    if (error.code !== 'EPERM') throw new Error(`descendant exited before cancellation: ${error.message}`);
+  }
+  const beforeCancel = await Promise.race([
+    resultObserved.then((outcome) => ({ completed: outcome })),
+    new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 100)),
+  ]);
+  assert.equal(beforeCancel.pending, true, `job completed while its descendant was live: ${JSON.stringify(beforeCancel.completed)}`);
   await job.cancel('terminate descendant holding CWD and pipes');
   const outcome = await resultObserved;
   if (outcome.error) throw outcome.error;
@@ -237,9 +304,16 @@ test('native cancellation contains a parent-exited descendant and preserves unre
 });
 
 test('native timeout terminates all job members but leaves unrelated process alive', windowsOnly, async (t) => {
-  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+    windowsHide: true,
+    env: nativeChildEnvironment(),
+  });
   t.after(() => { if (unrelated.exitCode === null) unrelated.kill(); });
-  const job = startWindowsJob(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 2500 });
+  const job = startWindowsJob(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    env: nativeChildEnvironment(),
+    timeoutMs: 2500,
+  });
   const result = await job.result;
   assert.equal(result.timedOut, true, JSON.stringify(result));
   assert.equal(result.signal, 'SIGTERM', JSON.stringify(result));
@@ -254,6 +328,7 @@ test('native setup and assignment failures never resume the requested command', 
   for (const failAt of ['create-job', 'create-process', 'assign']) {
     const job = startWindowsJob(process.execPath, ['-e', code], {
       cwd: root,
+      env: nativeChildEnvironment(),
       timeoutMs: 10_000,
       testHooks: { failAt },
     });
@@ -269,7 +344,11 @@ test('native immediate cancellation before controller readiness never runs the t
   const marker = path.join(root, 'executed');
   t.after(() => rm(root, { recursive: true, force: true }));
   const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
-  const job = startWindowsJob(process.execPath, ['-e', code], { cwd: root, timeoutMs: 20_000 });
+  const job = startWindowsJob(process.execPath, ['-e', code], {
+    cwd: root,
+    env: nativeChildEnvironment(),
+    timeoutMs: 20_000,
+  });
   const resultObserved = job.result.then((result) => ({ result }), (error) => ({ error }));
   await job.cancel('cancel before controller readiness');
   const outcome = await resultObserved;
@@ -286,6 +365,7 @@ test('native expired startup deadline cancels before the target entry point', wi
   const code = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
   const job = startWindowsJob(process.execPath, ['-e', code], {
     cwd: root,
+    env: nativeChildEnvironment(),
     timeoutMs: 100,
     testHooks: { delayControllerMs: 300 },
   });

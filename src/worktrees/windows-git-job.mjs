@@ -276,8 +276,13 @@ public static class VibeWindowsGitJobRunner {
 
   static readonly object controlLock = new object();
   static readonly Queue<string> controlQueue = new Queue<string>();
+  static bool traceProcessLifecycle;
+  static void TraceLifecycle(string message) {
+    if (traceProcessLifecycle) Console.Error.WriteLine("[job-trace] " + message);
+  }
   static void EnqueueControl(string message) {
     lock (controlLock) controlQueue.Enqueue(message);
+    TraceLifecycle("control=" + message);
   }
   static bool TryDequeueControl(out string message) {
     lock (controlLock) {
@@ -314,7 +319,8 @@ public static class VibeWindowsGitJobRunner {
     return CurrentEpochMilliseconds() >= deadlineEpochMs;
   }
 
-  public static VibeWindowsGitJobOutcome Run(string command, string[] args, string cwd, string environmentBase64, int maxOutputBytes, long deadlineEpochMs, string testFailAt) {
+  public static VibeWindowsGitJobOutcome Run(string command, string[] args, string cwd, string environmentBase64, int maxOutputBytes, long deadlineEpochMs, string testFailAt, bool traceLifecycle) {
+    traceProcessLifecycle = traceLifecycle;
     if (args == null) args = new string[0];
     StartControlMonitor();
     bool startRequested = false, ownerCancelled = false, invalidControl = false, readyPublished = false;
@@ -379,12 +385,14 @@ public static class VibeWindowsGitJobRunner {
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT, env, cwd, ref startup, out process)) {
         return Outcome(output, null, false, false, true, Win32Error("CreateProcessW"));
       }
+      TraceLifecycle("created-pid=" + process.dwProcessId.ToString());
       if (testFailAt == "assign") {
         failure = "Injected AssignProcessToJobObject failure.";
       } else if (!AssignProcessToJobObject(job, process.hProcess)) {
         failure = Win32Error("AssignProcessToJobObject");
       } else {
         assigned = true;
+        TraceLifecycle("assigned-pid=" + process.dwProcessId.ToString());
       }
       if (failure != null) {
         if (!TerminateProcess(process.hProcess, TERMINATE_CODE)) failure += " " + Win32Error("TerminateProcess(suspended child)");
@@ -410,6 +418,7 @@ public static class VibeWindowsGitJobRunner {
 
       if (failure == null) {
         readyPublished = true;
+        TraceLifecycle("ready-published");
         Console.Out.WriteLine("{\"protocol\":1,\"event\":\"ready\"}");
         Console.Out.Flush();
         while (!startRequested && !ownerCancelled && !invalidControl && !DeadlineExpired(deadlineEpochMs)) {
@@ -438,6 +447,7 @@ public static class VibeWindowsGitJobRunner {
             TerminateJobObject(job, TERMINATE_CODE);
           } else {
             resumed = true;
+            TraceLifecycle("resume-granted");
           }
         }
         if (!resumed) {
@@ -451,6 +461,7 @@ public static class VibeWindowsGitJobRunner {
         Stopwatch clock = Stopwatch.StartNew();
         bool terminationSent = false;
         long terminationAt = 0;
+        uint lastActive = UInt32.MaxValue;
         while (true) {
           bool ignoredStart = false, inputCancelled = false, badControl = false;
           DrainControls(readyPublished, ref ignoredStart, ref inputCancelled, ref badControl);
@@ -480,12 +491,19 @@ public static class VibeWindowsGitJobRunner {
               if (failure == null) failure = "ActiveProcesses could not be confirmed after bounded job termination.";
               break;
             }
-          } else if (active == 0) {
-            confirmedZero = true;
-            break;
-          } else if (terminationSent && clock.ElapsedMilliseconds - terminationAt >= 5000) {
-            if (failure == null) failure = "ActiveProcesses remained nonzero after bounded job termination.";
-            break;
+          } else {
+            if (lastActive != active) {
+              TraceLifecycle("active-processes=" + active.ToString());
+              lastActive = active;
+            }
+            if (active == 0) {
+              confirmedZero = true;
+              break;
+            }
+            if (terminationSent && clock.ElapsedMilliseconds - terminationAt >= 5000) {
+              if (failure == null) failure = "ActiveProcesses remained nonzero after bounded job termination.";
+              break;
+            }
           }
           Thread.Sleep(10);
         }
@@ -534,7 +552,7 @@ public static class VibeWindowsGitJobRunner {
 '@
   $commandArgs = @()
   if ($null -ne $cfg.args) { $commandArgs = @($cfg.args | ForEach-Object { [string]$_ }) }
-  $outcome = [VibeWindowsGitJobRunner]::Run([string]$cfg.command, [string[]]$commandArgs, $cfg.cwd, [string]$cfg.environmentBase64, [int]$cfg.maxOutputBytes, [long]$cfg.deadlineEpochMs, [string]$cfg.testFailAt)
+  $outcome = [VibeWindowsGitJobRunner]::Run([string]$cfg.command, [string[]]$commandArgs, $cfg.cwd, [string]$cfg.environmentBase64, [int]$cfg.maxOutputBytes, [long]$cfg.deadlineEpochMs, [string]$cfg.testFailAt, [bool]$cfg.traceProcessLifecycle)
   $response = [pscustomobject]@{
     protocol = 1
     status = $outcome.Status
@@ -683,14 +701,21 @@ function makeConfig(command, args, options) {
   if (!Number.isSafeInteger(testDelayControllerMs) || testDelayControllerMs < 0 || testDelayControllerMs > 5000) {
     throw new RangeError('Unsupported internal Windows job controller delay');
   }
+  const traceProcessLifecycle = options.testHooks?.traceProcessLifecycle ?? false;
+  if (typeof traceProcessLifecycle !== 'boolean') throw new TypeError('Unsupported internal Windows job lifecycle tracing option');
+  // Keep CreateProcessW's lpCurrentDirectory non-empty and fully qualified.
+  // PowerShell can coerce a JSON null argument to an empty string when invoking
+  // the embedded .NET method; Win32 rejects that with ERROR_INVALID_NAME (123).
+  const cwd = path.win32.resolve(options.cwd ?? process.cwd());
   return {
-    command: (options.resolveExecutable ?? resolveWindowsExecutable)(command, options.cwd ?? process.cwd(), environment),
+    command: (options.resolveExecutable ?? resolveWindowsExecutable)(command, cwd, environment),
     args,
-    cwd: options.cwd ?? null,
+    cwd,
     environmentBase64: encodeEnvironment(environment),
     timeoutMs,
     maxOutputBytes,
     testDelayControllerMs,
+    traceProcessLifecycle,
     testFailAt: testFailAt ?? null,
   };
 }
@@ -785,6 +810,7 @@ export function startWindowsJob(command, args = [], options = {}) {
       stderr,
       signal: finalRecord.signal ?? (finalRecord.cancelled || finalRecord.timedOut ? 'SIGTERM' : null),
       timedOut: Boolean(finalRecord.timedOut || deadlineTriggered),
+      ...(config.traceProcessLifecycle && stderrText.trim() ? { controllerDiagnostics: stderrText.trim() } : {}),
       ...(finalRecord.error ? { error: String(finalRecord.error) } : {}),
     });
   };
