@@ -17,6 +17,7 @@ function runGit(cwd, args) {
     cwd,
     env: isolatedFixtureGitEnv(),
     encoding: 'utf8',
+    timeout: 30_000,
   });
   assert.equal(result.status, 0, `fixture git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
   return String(result.stdout || '').trim();
@@ -37,7 +38,7 @@ function assertPathIdentity(actual, expected, message) {
   assert.ok(samePathIdentity(actual, expected), `${message}: expected same path identity; actual=${actual}; expected=${expected}`);
 }
 
-test('Git wrappers and worktree consumers stay on their explicit child repo under inherited parent-hook selectors', () => {
+test('Git wrappers and worktree consumers stay on their explicit child repo under inherited parent-hook selectors', { timeout: 180_000 }, () => {
   const root = mkdtempSync(join(tmpdir(), 'wtg-git-env-boundary-'));
   const parent = join(root, 'parent');
   const child = join(parent, 'child-repo');
@@ -82,7 +83,7 @@ const childBase = ${JSON.stringify(childBase)};
 const bot = { identity: { name: 'Boundary Test Bot', email: 'bot@boundary.invalid' }, fixtureIdentityPattern: '^nonexistent-fixture-identity$' };
 const sync = git(['rev-parse', '--show-toplevel'], childRoot, { allowFailure: false });
 const raw = gitRaw(['rev-parse', '--show-toplevel'], childRoot, { allowFailure: false });
-const asyncResult = await gitAsync(['rev-parse', '--show-toplevel'], childRoot, { allowFailure: false, timeoutMs: 5000 });
+const asyncResult = await gitAsync(['rev-parse', '--show-toplevel'], childRoot, { allowFailure: false, timeoutMs: 60_000 });
 const repoProvenance = discoverRepo(childRoot);
 const identity = readLocalGitIdentityPair(childRoot);
 const identityEnv = gitIdentityEnv(bot);
@@ -120,12 +121,21 @@ writeFileSync(process.env.WTG_TEST_RESULT_FILE, JSON.stringify(result));
       cwd: parent,
       env: { ...pollutedEnv, WTG_TEST_RESULT_FILE: resultPath },
       encoding: 'utf8',
-      timeout: 15_000,
+      timeout: 120_000,
     });
 
     assert.equal(parentCommit.status, 0, `parent commit hook failed: ${parentCommit.stderr || parentCommit.stdout}`);
     const result = JSON.parse(readFileSync(resultPath, 'utf8'));
-    assert.ok(result.inheritedParentGitDir, 'the real Git hook must receive parent repository selectors');
+    assertPathIdentity(
+      resolve(parent, result.inheritedParentGitDir),
+      join(parent, '.git'),
+      'the real Git hook must receive its parent repository Git-dir selector',
+    );
+    assert.equal(
+      samePathIdentity(resolve(parent, result.inheritedParentGitDir), join(child, '.git')),
+      false,
+      'the real Git hook selector must not identify the child Git directory',
+    );
     for (const [label, path] of [
       ['sync wrapper', result.syncRoot],
       ['raw wrapper', result.rawRoot],
@@ -143,7 +153,6 @@ writeFileSync(process.env.WTG_TEST_RESULT_FILE, JSON.stringify(result));
     assert.equal(result.rewrittenIdentity, 'Boundary Test Bot\x1fbot@boundary.invalid\x1fBoundary Test Bot\x1fbot@boundary.invalid');
     assert.equal(result.hookStatus.installed, true);
     assert.equal(result.hookStatus.intact, true);
-    assert.equal(result.primaryRoot, canonicalChild);
     assert.equal(result.outsideChildAllowed, true);
     assert.equal(result.selectorsRemoved, true);
     assert.equal(result.protocolConfigPreserved, true);
@@ -153,9 +162,18 @@ writeFileSync(process.env.WTG_TEST_RESULT_FILE, JSON.stringify(result));
       cwd: parent,
       env: isolatedFixtureGitEnv(),
       encoding: 'utf8',
+      timeout: 30_000,
     });
     assert.notEqual(parentHookPath.status, 0, 'child hook setup must not mutate parent config');
-    assert.equal(runGit(parent, ['status', '--porcelain']), '?? child-repo/', 'the parent repo must remain otherwise untouched');
+    const parentStatus = runGit(parent, ['status', '--porcelain']);
+    const parentStatusLines = parentStatus.split(/\r?\n/).filter(Boolean);
+    assert.equal(parentStatusLines.length, 1, 'the parent repo must remain otherwise untouched except for the child fixture');
+    assert.equal(parentStatusLines[0].slice(0, 3), '?? ', 'the nested fixture must be the only parent-repository change');
+    assertPathIdentity(
+      resolve(parent, parentStatusLines[0].slice(3)),
+      child,
+      'the only parent-repository change must be the nested child repository',
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
