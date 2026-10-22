@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/adapter.schema.json",
+  "title": "Vibe Coding Kit project adapter contract",
+  "type": "object",
+  "required": ["schemaVersion", "hooks"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "hooks": {
+      "type": "object",
+      "properties": {
+        "afterCreate": { "type": "string" },
+        "beforeCandidate": { "type": "string" },
+        "verifyCandidate": { "type": "string" },
+        "beforePush": { "type": "string" },
+        "afterLand": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

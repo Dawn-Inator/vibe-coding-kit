@@ -1,0 +1,285 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  matchesAiParentProcess,
+  isAiParentedCommandChain,
+  getAncestorProcessCommands,
+  aiParentEnvMarkers,
+  findAiParentEnvMarker,
+  isAiParentedEnvironment,
+  detectAiParent,
+  DEFAULT_ANCESTOR_DEPTH,
+  listProcessCommands,
+} from '../../src/worktrees/process-provenance.mjs';
+import { DEFAULT_CONFIG } from '../../src/worktrees/config.mjs';
+
+const config = DEFAULT_CONFIG;
+
+test('matchesAiParentProcess: exact executable name match', () => {
+  assert.equal(matchesAiParentProcess('claude', config), true);
+});
+
+test('matchesAiParentProcess: path-prefixed exact basename match', () => {
+  assert.equal(matchesAiParentProcess('/usr/local/bin/claude --flag', config), true);
+});
+
+test('matchesAiParentProcess: regression -- substring in path must not match', () => {
+  assert.equal(
+    matchesAiParentProcess('bash -c "cd /tmp/claude-scratch-lane-abc123 && ls"', config),
+    false,
+  );
+});
+
+test('matchesAiParentProcess: node runtime + script dir named after AI tool matches', () => {
+  assert.equal(
+    matchesAiParentProcess('node /home/user/.claude/local/cli.js', config),
+    true,
+  );
+});
+
+test('matchesAiParentProcess: node runtime + unrelated script dir does not match', () => {
+  assert.equal(
+    matchesAiParentProcess('node /home/user/some-other-tool/cli.js', config),
+    false,
+  );
+});
+
+test('matchesAiParentProcess: node runtime + dir segment merely containing "claude" as a substring does not match', () => {
+  assert.equal(
+    matchesAiParentProcess('node /some/path/claude-scratch-lane-abc123/cli.js', config),
+    false,
+  );
+});
+
+test('matchesAiParentProcess: empty command line returns false without throwing', () => {
+  assert.equal(matchesAiParentProcess('', config), false);
+  assert.equal(matchesAiParentProcess(undefined, config), false);
+});
+
+test('isAiParentedCommandChain: all-non-AI chain returns false', () => {
+  const chain = ['bash -c foo', '/usr/bin/zsh', 'login -pf dawn'];
+  assert.equal(isAiParentedCommandChain(chain, config), false);
+});
+
+test('isAiParentedCommandChain: chain containing one AI match returns true', () => {
+  const chain = ['bash -c foo', '/usr/local/bin/claude --resume', 'login -pf dawn'];
+  assert.equal(isAiParentedCommandChain(chain, config), true);
+});
+
+test('isAiParentedCommandChain: empty array returns false', () => {
+  assert.equal(isAiParentedCommandChain([], config), false);
+});
+
+test('matchesAiParentProcess: reliable-exe (NUL-delimited) form matches even when the executable\'s own path contains a space', () => {
+  // Simulates what getAncestorProcessCommands produces when `ps -o comm=`
+  // resolves an executable path containing a space (real case: a macOS
+  // app-bundle install under "Application Support") -- naive whitespace
+  // splitting of the plain `ps -o command=` line would truncate the
+  // executable path at the first space and fail to match.
+  const comm = '/Users/dawn/Library/Application Support/Claude/claude-code/2.1.260/claude.app/Contents/MacOS/claude';
+  const entry = `${comm}\u0000--output-format stream-json --verbose`;
+  assert.equal(matchesAiParentProcess(entry, config), true);
+});
+
+test('matchesAiParentProcess: reliable-exe form does not fall prey to an unrelated match inside the args', () => {
+  // The reliable-exe path itself is "bash" (not an AI tool); an argument
+  // value happening to mention a path ending in "claude" must not cause a
+  // false positive now that exe resolution is delimiter-based rather than
+  // a line-wide search.
+  const entry = `/bin/bash\u0000-c "echo /opt/claude some-arg"`;
+  assert.equal(matchesAiParentProcess(entry, config), false);
+});
+
+test('matchesAiParentProcess: reliable-exe form still supports the script-runtime + AI-named-directory branch', () => {
+  const entry = `/usr/local/bin/node\u0000/home/user/.claude/local/cli.js`;
+  assert.equal(matchesAiParentProcess(entry, config), true);
+});
+
+test('getAncestorProcessCommands: real walk entries never contain a raw NUL byte artifact when ps -o comm= is unavailable/mismatched', () => {
+  // Best-effort fallback: if `ps -o comm=` fails or doesn't prefix-match the
+  // `command=` line, entries stay as plain strings (the original behavior),
+  // never a malformed partial NUL-delimited string.
+  const result = getAncestorProcessCommands(2, {});
+  for (const entry of result) {
+    assert.equal(typeof entry, 'string');
+  }
+});
+
+test('getAncestorProcessCommands: test override splits on ";" and bypasses real ps walk', () => {
+  const env = { WTG_TEST_PARENT_CHAIN_OVERRIDE: 'bash -c foo;claude --resume;login -pf dawn' };
+  const result = getAncestorProcessCommands(3, env);
+  assert.deepEqual(result, ['bash -c foo', 'claude --resume', 'login -pf dawn']);
+});
+
+test('getAncestorProcessCommands: real walk returns an array without throwing', () => {
+  const result = getAncestorProcessCommands(2, {});
+  assert.equal(Array.isArray(result), true);
+});
+
+// ---------------------------------------------------------------------------
+// Environment markers (depth-independent) and the fake process table seam
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake `ps` over a process table { pid: { ppid, command, comm? } }.
+ * Answers exactly the three queries getAncestorProcessCommands makes.
+ */
+function fakePs(table) {
+  return (args) => {
+    const field = args[1];
+    const entry = table[Number(args[3])];
+    if (!entry) return { status: 1, stdout: '' };
+    if (field === 'command=') return { status: 0, stdout: `${entry.command}\n` };
+    if (field === 'comm=') return { status: 0, stdout: `${entry.comm ?? entry.command.split(' ')[0]}\n` };
+    if (field === 'ppid=') return { status: 0, stdout: `${entry.ppid}\n` };
+    return { status: 1, stdout: '' };
+  };
+}
+
+/** A chain of `wrappers` shell hops (pid 1000 nearest) above an AI CLI, then init. */
+function chainWithAiAtDepth(wrappers) {
+  const table = {};
+  for (let i = 0; i < wrappers; i += 1) {
+    table[1000 + i] = { ppid: 1000 + i + 1, command: `/bin/bash -c wrapper-${i}` };
+  }
+  table[1000 + wrappers] = { ppid: 1, command: '/usr/local/bin/claude --resume' };
+  return table;
+}
+
+test('aiParentEnvMarkers: the union of every tool detectEnv list (one list, not a parallel one)', () => {
+  const markers = aiParentEnvMarkers(config);
+  for (const tool of Object.values(config.tools)) {
+    for (const name of tool.detectEnv) assert.ok(markers.includes(name), name);
+  }
+  assert.ok(markers.includes('CLAUDECODE'));
+  assert.equal(new Set(markers).size, markers.length, 'no duplicates');
+  assert.deepEqual(aiParentEnvMarkers({}), []);
+  assert.deepEqual(aiParentEnvMarkers({ tools: { x: {} } }), []);
+});
+
+test('findAiParentEnvMarker / isAiParentedEnvironment: set and non-empty counts, unset or empty does not', () => {
+  assert.equal(findAiParentEnvMarker({ CLAUDECODE: '1' }, config), 'CLAUDECODE');
+  assert.equal(isAiParentedEnvironment({ CODEX_SANDBOX: 'seatbelt' }, config), true);
+  assert.equal(isAiParentedEnvironment({ CLAUDECODE: '' }, config), false);
+  assert.equal(isAiParentedEnvironment({ PATH: '/bin', HOME: '/home/x' }, config), false);
+  assert.equal(isAiParentedEnvironment(undefined, config), false);
+});
+
+test('marker names are configurable through config.tools[*].detectEnv', () => {
+  const custom = {
+    ...config,
+    tools: { mine: { prefix: 'mine/', home: '.mine', detectEnv: ['MY_AI_SESSION'] } },
+  };
+  assert.equal(isAiParentedEnvironment({ MY_AI_SESSION: 'abc' }, custom), true);
+  assert.equal(isAiParentedEnvironment({ CLAUDECODE: '1' }, custom), false, 'only configured names count');
+});
+
+test('detectAiParent: an env marker proves AI-parenthood even when the ancestry walk finds nothing (deep wrapper chain)', () => {
+  // The AI CLI sits 12 hops above us; the walk is limited to DEFAULT_ANCESTOR_DEPTH, so ancestry alone misses it.
+  const table = chainWithAiAtDepth(12);
+  const ps = fakePs(table);
+  assert.ok(DEFAULT_ANCESTOR_DEPTH < 12);
+  assert.deepEqual(
+    detectAiParent({ env: {}, config, ps, startPid: 1000 }),
+    { aiParented: false, via: null },
+    'old behavior: a chain deeper than the walk limit slips through',
+  );
+  assert.deepEqual(
+    detectAiParent({ env: { CLAUDECODE: '1' }, config, ps, startPid: 1000 }),
+    { aiParented: true, via: 'env:CLAUDECODE' },
+  );
+});
+
+test('detectAiParent: the env marker short-circuits before any ps call', () => {
+  let calls = 0;
+  const ps = () => {
+    calls += 1;
+    return { status: 1, stdout: '' };
+  };
+  const result = detectAiParent({ env: { CODEX_THREAD_ID: 't-1' }, config, ps });
+  assert.equal(result.via, 'env:CODEX_THREAD_ID');
+  assert.equal(calls, 0);
+});
+
+test('detectAiParent: without a marker the ancestry walk is still the second signal', () => {
+  const ps = fakePs(chainWithAiAtDepth(4));
+  assert.deepEqual(detectAiParent({ env: {}, config, ps, startPid: 1000 }), { aiParented: true, via: 'ancestry' });
+});
+
+test('detectAiParent: human shell (no marker, no AI ancestor) is not AI-parented', () => {
+  const table = {
+    1000: { ppid: 1001, command: '/bin/zsh -l' },
+    1001: { ppid: 1002, command: 'login -pf dawn' },
+    1002: { ppid: 1, command: '/usr/libexec/launchd' },
+  };
+  assert.deepEqual(detectAiParent({ env: { PATH: '/bin' }, config, ps: fakePs(table), startPid: 1000 }), {
+    aiParented: false,
+    via: null,
+  });
+});
+
+test('getAncestorProcessCommands: fake process table honours maxDepth and stops at init / missing pids', () => {
+  const ps = fakePs(chainWithAiAtDepth(5));
+  assert.equal(getAncestorProcessCommands(3, {}, { ps, startPid: 1000 }).length, 3);
+  assert.equal(getAncestorProcessCommands(50, {}, { ps, startPid: 1000 }).length, 6);
+  assert.deepEqual(getAncestorProcessCommands(5, {}, { ps: () => ({ status: 1, stdout: '' }), startPid: 1000 }), []);
+});
+
+test('detectAiParent: the test override chain (WTG_TEST_PARENT_CHAIN_OVERRIDE) still feeds the ancestry signal', () => {
+  const env = { WTG_TEST_PARENT_CHAIN_OVERRIDE: 'bash -c foo;claude --resume' };
+  assert.deepEqual(detectAiParent({ env, config }), { aiParented: true, via: 'ancestry' });
+});
+
+// ---------------------------------------------------------------------------
+// listProcessCommands: whole-machine snapshot used by the sync-primary idle scan
+// ---------------------------------------------------------------------------
+
+/** A fake `ps` answering the two full-listing queries listProcessCommands makes. */
+function fakeListingPs({ comms, commands, failOn } = {}) {
+  return (args) => {
+    if (failOn === args[1]) return { status: 1, stdout: '' };
+    if (args[1] === 'pid=,ppid=,comm=') return { status: 0, stdout: comms.join('\n') + '\n' };
+    if (args[1] === 'pid=,command=') return { status: 0, stdout: commands.join('\n') + '\n' };
+    return { status: 1, stdout: '' };
+  };
+}
+
+test('listProcessCommands: joins comm and command by pid and keeps an exe path with spaces matchable', () => {
+  const ps = fakeListingPs({
+    comms: [
+      '  100     1 /Users/x/Library/Application Support/claude/claude',
+      '  200   100 /bin/bash',
+      '  300     1 node',
+    ],
+    commands: [
+      '  100 /Users/x/Library/Application Support/claude/claude --resume',
+      '  200 /bin/bash -c foo',
+      '  300 node /home/x/.claude/local/cli.js',
+    ],
+  });
+  const list = listProcessCommands({ ps });
+  assert.deepEqual(list.map((p) => [p.pid, p.ppid]), [[100, 1], [200, 100], [300, 1]]);
+  assert.equal(matchesAiParentProcess(list[0].commandLine, config), true, 'exe path with a space');
+  assert.equal(matchesAiParentProcess(list[1].commandLine, config), false);
+  assert.equal(matchesAiParentProcess(list[2].commandLine, config), true, 'script runtime under an AI home dir');
+});
+
+test('listProcessCommands: a process missing from the command listing keeps its comm; ps failure throws', () => {
+  const list = listProcessCommands({
+    ps: fakeListingPs({ comms: ['  100     1 claude'], commands: [] }),
+  });
+  assert.equal(matchesAiParentProcess(list[0].commandLine, config), true);
+
+  for (const failOn of ['pid=,command=', 'pid=,ppid=,comm=']) {
+    assert.throws(
+      () => listProcessCommands({ ps: fakeListingPs({ comms: [], commands: [], failOn }) }),
+      /process listing failed/,
+      failOn,
+    );
+  }
+  assert.throws(
+    () => listProcessCommands({ ps: () => ({ status: null, error: new Error('spawn ps ENOENT') }) }),
+    /spawn ps ENOENT/,
+  );
+});

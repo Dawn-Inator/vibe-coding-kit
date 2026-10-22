@@ -1,0 +1,11 @@
+{
+  "name": "vibe-coding-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "check": "node cli.mjs check --project-root ."
+  }
+}

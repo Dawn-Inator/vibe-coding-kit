@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/project-config.schema.json",
+  "title": "Vibe Coding Kit project configuration",
+  "type": "object",
+  "required": ["schemaVersion", "kit", "adapter", "identity"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kit": {
+      "type": "object",
+      "required": ["path", "url"],
+      "properties": {
+        "path": { "const": ".vibe-coding/kit" },
+        "url": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "adapter": { "type": "string", "minLength": 1 },
+    "identity": {
+      "type": "object",
+      "required": ["name", "email"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "email": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "worktrees": { "type": "object" },
+    "skills": { "type": "object" },
+    "knowledge": { "type": "object" },
+    "layout": { "type": "object" },
+    "contracts": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kit": {
+    "path": ".vibe-coding/kit",
+    "url": "https://github.com/Dawn-Inator/vibe-coding-kit.git"
+  },
+  "adapter": "engineering/automation/vibe-coding/project-adapter.mjs",
+  "identity": {
+    "name": "",
+    "email": ""
+  },
+  "worktrees": {},
+  "skills": {},
+  "knowledge": {},
+  "layout": {},
+  "contracts": {}
+}
