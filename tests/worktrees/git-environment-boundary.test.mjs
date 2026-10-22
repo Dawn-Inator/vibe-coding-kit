@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const moduleUrl = (path) => pathToFileURL(join(here, path)).href;
@@ -29,6 +30,11 @@ function initRepo(path, name) {
   writeFileSync(join(path, 'tracked.txt'), `${name}\n`);
   runGit(path, ['add', 'tracked.txt']);
   runGit(path, ['commit', '-q', '-m', `${name} initial`]);
+}
+
+function assertPathIdentity(actual, expected, message) {
+  assert.equal(typeof actual, 'string', `${message}: actual path must be a string`);
+  assert.ok(samePathIdentity(actual, expected), `${message}: expected same path identity; actual=${actual}; expected=${expected}`);
 }
 
 test('Git wrappers and worktree consumers stay on their explicit child repo under inherited parent-hook selectors', () => {
@@ -120,12 +126,18 @@ writeFileSync(process.env.WTG_TEST_RESULT_FILE, JSON.stringify(result));
     assert.equal(parentCommit.status, 0, `parent commit hook failed: ${parentCommit.stderr || parentCommit.stdout}`);
     const result = JSON.parse(readFileSync(resultPath, 'utf8'));
     assert.ok(result.inheritedParentGitDir, 'the real Git hook must receive parent repository selectors');
-    assert.equal(result.syncRoot, canonicalChild);
-    assert.equal(result.rawRoot, canonicalChild);
-    assert.equal(result.asyncRoot, canonicalChild);
-    assert.equal(result.repoTopLevel, canonicalChild);
-    assert.equal(result.repoGitDir, '.git');
-    assert.equal(result.repoCommonGitDir, '.git');
+    for (const [label, path] of [
+      ['sync wrapper', result.syncRoot],
+      ['raw wrapper', result.rawRoot],
+      ['async wrapper', result.asyncRoot],
+      ['repo provenance', result.repoTopLevel],
+      ['primary guard', result.primaryRoot],
+    ]) {
+      assertPathIdentity(path, canonicalChild, `${label} must resolve to the child repository`);
+      assert.equal(samePathIdentity(path, realpathSync(parent)), false, `${label} must not resolve to the parent repository`);
+    }
+    assertPathIdentity(resolve(canonicalChild, result.repoGitDir), join(canonicalChild, '.git'), 'repo Git-dir provenance must identify the child Git dir');
+    assertPathIdentity(resolve(canonicalChild, result.repoCommonGitDir), join(canonicalChild, '.git'), 'repo common-dir provenance must identify the child common Git dir');
     assert.deepEqual(result.identity, { name: 'Child Fixture', email: 'child.fixture@fixture.invalid' });
     assert.equal(result.reauthor.rewritten, true);
     assert.equal(result.rewrittenIdentity, 'Boundary Test Bot\x1fbot@boundary.invalid\x1fBoundary Test Bot\x1fbot@boundary.invalid');

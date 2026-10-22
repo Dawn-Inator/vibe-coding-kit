@@ -34,10 +34,29 @@ test('native-only diagnostic refs run the bounded proof without running or claim
   const groups = workflow.slice(groupsStart);
   assert.match(proof, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-'\)/u);
   assert.match(proof, /run: node tests\/run-windows-native-proof\.mjs/u);
-  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) \}\}/u);
+  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\) \}\}/u);
   assert.match(groups, /needs: windows-native-proof/u);
   assert.match(groups, /node tests\/run-windows-diagnostic\.mjs/u);
   assert.doesNotMatch(proof, /run:.*run-windows-diagnostic|tests\/run\.mjs/u);
+});
+
+test('Git hook context diagnostic runs only its fixed Node 20/22 regressions after native proofs', () => {
+  const proofStart = workflow.indexOf('\n  windows-native-proof:');
+  const hookStart = workflow.indexOf('\n  windows-hook-context:');
+  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
+  assert.ok(proofStart >= 0 && hookStart > proofStart && groupsStart > hookStart, 'the bounded job follows native proof and precedes the full groups');
+
+  const hook = workflow.slice(hookStart, groupsStart);
+  assert.match(hook, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\)/u);
+  assert.match(hook, /needs: windows-native-proof/u);
+  assert.match(hook, /runs-on: windows-latest/u);
+  assert.match(hook, /matrix:\s+node: \['20', '22'\]/u);
+  assert.match(hook, /node --test tests\/contracts\/project-adapter\.test\.mjs tests\/worktrees\/git-environment-boundary\.test\.mjs/u);
+  assert.doesNotMatch(hook, /matrix\.group|run-windows-diagnostic|tests\/run\.mjs|\$\{\{\s*github\.event/u, 'the job accepts no caller-supplied test selection');
+
+  const groups = workflow.slice(groupsStart);
+  assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\)/u);
+  assert.match(groups, /matrix\.group/u);
 });
 
 const passingTap = `TAP version 13\n${NATIVE_CASES.map((name, index) => `ok ${index + 1} - ${name}`).join('\n')}\n`;

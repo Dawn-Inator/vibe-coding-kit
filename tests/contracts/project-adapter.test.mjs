@@ -15,7 +15,20 @@ async function consumer(adapterSource, config = {}) {
   return root;
 }
 
-const close = (root) => rm(root, { recursive: true, force: true });
+async function close(root) {
+  const deadline = Date.now() + 5_000;
+  let attempt = 0;
+  while (true) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EBUSY', 'EPERM'].includes(error.code) || Date.now() >= deadline) throw error;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(50 * (attempt + 1), 300)));
+      attempt += 1;
+    }
+  }
+}
 
 test('projects without config preserve legacy no-op behavior', async () => {
   const root = await mkdtemp(join(tmpdir(), 'vibe-project-legacy-'));
@@ -234,7 +247,9 @@ runProjectHook({ projectRoot, phase: 'verifyCandidate', context: { pidFile } }).
     const descendantPid = await waitForPid(pidFile);
     interruptedParentExit = new Promise((resolvePromise, rejectPromise) => {
       interruptedParent.once('error', rejectPromise);
-      interruptedParent.once('exit', (code, signal) => resolvePromise({ code, signal }));
+      // On Windows, exit may precede close while the OS still owns the process
+      // handle and cwd. Wait for close before removing its project fixture.
+      interruptedParent.once('close', (code, signal) => resolvePromise({ code, signal }));
     });
     interruptedParent.kill(parentSignal);
     const exit = await interruptedParentExit;

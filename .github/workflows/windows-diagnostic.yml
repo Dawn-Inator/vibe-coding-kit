@@ -36,9 +36,41 @@ jobs:
         shell: bash
         run: node tests/run-windows-native-proof.mjs
 
+  windows-hook-context:
+    name: Windows / Node ${{ matrix.node }} / Git hook context
+    if: startsWith(github.ref, 'refs/heads/diagnostic/windows-hook-context-')
+    needs: windows-native-proof
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Record runner versions
+        shell: bash
+        run: |
+          git --version
+          node --version
+          node -p 'process.platform + " " + process.arch'
+
+      - name: Run fixed Git hook context regressions
+        shell: bash
+        run: node --test tests/contracts/project-adapter.test.mjs tests/worktrees/git-environment-boundary.test.mjs
+
   windows-diagnostic:
     name: Windows / Node 22 / group ${{ matrix.group }}
-    if: ${{ !startsWith(github.ref, 'refs/heads/diagnostic/windows-native-') }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/diagnostic/windows-native-') && !startsWith(github.ref, 'refs/heads/diagnostic/windows-hook-context-') }}
     needs: windows-native-proof
     runs-on: windows-latest
     timeout-minutes: 30
