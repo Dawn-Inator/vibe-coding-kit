@@ -2,16 +2,17 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
 const cliPath = new URL('../../cli.mjs', import.meta.url);
+const cliFilePath = fileURLToPath(cliPath);
 after(cleanupTempDirs);
 
 function cli(args) {
-  return spawnSync(process.execPath, [cliPath.pathname, ...args], { encoding: 'utf8' });
+  return spawnSync(process.execPath, [cliFilePath, ...args], { encoding: 'utf8' });
 }
 
 function freshRegisteredProject() {
@@ -37,7 +38,7 @@ test('init check is read-only, init creates minimal files, and reruns are idempo
   const fixture = freshRegisteredProject();
   const args = [
     'init', '--project-root', fixture.project,
-    '--url', `file://${fixture.source}`,
+    '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Fixture User',
     '--identity-email', 'fixture@example.invalid',
   ];
@@ -76,7 +77,7 @@ test('init reports and preserves existing project files that differ from templat
   writeFileSync(adapter, 'export const localAdapter = true;\n');
   const result = cli([
     'init', '--project-root', fixture.project,
-    '--url', `file://${fixture.source}`,
+    '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Fixture User',
     '--identity-email', 'fixture@example.invalid',
   ]);
@@ -92,7 +93,7 @@ test('init merges runtime scripts into an existing JavaScript package without re
   writeFileSync(packagePath, `${JSON.stringify({ name: 'consumer-app', scripts: { test: 'node app-test.mjs' }, dependencies: { example: '1.0.0' } }, null, 2)}\n`);
   const result = cli([
     'init', '--project-root', fixture.project,
-    '--url', `file://${fixture.source}`,
+    '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Fixture User',
     '--identity-email', 'fixture@example.invalid',
   ]);
@@ -115,7 +116,7 @@ test('init merges only its managed mirror ignore block and preserves existing ig
   writeFileSync(ignorePath, original);
   const args = [
     'init', '--project-root', fixture.project,
-    '--url', `file://${fixture.source}`,
+    '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Fixture User',
     '--identity-email', 'fixture@example.invalid',
   ];
@@ -135,7 +136,7 @@ test('init tracked mirror policy omits its managed ignore block and records the 
   const fixture = freshRegisteredProject();
   const result = cli([
     'init', '--project-root', fixture.project,
-    '--url', `file://${fixture.source}`,
+    '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Fixture User',
     '--identity-email', 'fixture@example.invalid',
     '--mirror-policy', 'tracked',

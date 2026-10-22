@@ -36,12 +36,14 @@ import {
   createHoldBudget,
   createHeldLockHandle,
   FinishLockHoldTimeoutError,
+  FinishLockCancelledError,
   DEFAULT_MAX_HOLD_MS,
   describeFinishLockHolder,
   formatHoldDuration,
 } from '../../src/worktrees/finish-lock.mjs';
 
 const moduleUrl = pathToFileURL(fileURLToPath(new URL('../../src/worktrees/finish-lock.mjs', import.meta.url))).href;
+const interruptionName = (signal) => process.platform === 'win32' ? `explicit ${signal} cancellation` : signal;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,12 +64,13 @@ async function waitFor(predicate, { timeoutMs = 3000, intervalMs = 20 } = {}) {
   }
 }
 
-// Spawns a child that exits immediately on its own, waits for it to exit,
-// and returns its pid -- a pid that is now confirmed dead (ESRCH), used to
-// exercise the reclaim path without needing to guess a system pid.
+// Spawns a child and hard-kills it, returning a pid confirmed dead through the
+// same OS process probe used by lock/ticket recovery on POSIX and Windows.
 async function spawnExitedChildPid() {
-  const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  await new Promise((resolve) => child.once('spawn', resolve));
   const pid = child.pid;
+  child.kill('SIGKILL');
   await new Promise((resolve) => child.on('exit', resolve));
   // Small settle delay to reduce (already unlikely) pid-reuse flakiness.
   await sleep(20);
@@ -82,6 +85,10 @@ import { acquireFinishLockQueued, releaseFinishLock } from ${JSON.stringify(modu
 const [, , stateDir, worktree, timeoutMsRaw, pollMsRaw] = process.argv;
 const timeoutMs = Number(timeoutMsRaw) || undefined;
 const pollMs = Number(pollMsRaw) || undefined;
+const controller = new AbortController();
+process.on('message', (message) => {
+  if (message?.type === 'cancel') controller.abort();
+});
 const config = {
   queue: {
     pollIntervalMs: pollMs || 50,
@@ -90,14 +97,20 @@ const config = {
   },
 };
 
-acquireFinishLockQueued(stateDir, { worktree, timeoutMs, pollMs, config })
+acquireFinishLockQueued(stateDir, { worktree, timeoutMs, pollMs, config, signal: controller.signal })
   .then((handle) => {
     console.log('ACQUIRED');
     releaseFinishLock(handle);
     process.exit(0);
   })
   .catch((err) => {
+    if (err?.code === 'FINISH_LOCK_CANCELLED') {
+      process.exitCode = 143;
+      if (process.connected) process.disconnect();
+      return;
+    }
     console.error('ERROR ' + err.message);
+    if (process.connected) process.disconnect();
     process.exit(1);
   });
 `;
@@ -275,7 +288,7 @@ test('acquireFinishLockQueued: three concurrent callers acquire the lock in stri
 
 // --- 5. SIGTERM while only queued cleans up the ticket ------------------
 
-test('acquireFinishLockQueued: SIGTERM while still queued removes the ticket file and exits 143', async () => {
+test(`acquireFinishLockQueued: ${interruptionName('SIGTERM')} while queued removes the ticket file and exits 143`, async () => {
   const stateDir = mkTempStateDir();
   let heldLock;
   let child;
@@ -285,12 +298,15 @@ test('acquireFinishLockQueued: SIGTERM while still queued removes the ticket fil
     heldLock = acquireFinishLock(stateDir);
 
     const scriptPath = writeQueuedChildScript(stateDir);
-    child = spawn(process.execPath, [scriptPath, stateDir, 'queued-then-killed', '30000', '50']);
+    child = spawn(process.execPath, [scriptPath, stateDir, 'queued-then-killed', '30000', '50'], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
 
     const queueDir = finishQueueDir(stateDir);
     await waitFor(() => listLiveQueueTickets(queueDir).length === 1);
 
-    child.kill('SIGTERM');
+    if (process.platform === 'win32') child.send({ type: 'cancel', signal: 'SIGTERM' });
+    else child.kill('SIGTERM');
     const [code] = await new Promise((resolve) => child.on('exit', (c, s) => resolve([c, s])));
     child = undefined;
 
@@ -420,6 +436,48 @@ test('acquireFinishLock: a refused acquire leaves no signal handlers and does no
   }
 });
 
+test('an explicit AbortSignal releases a held lock and runs registered cleanup without process signals', () => {
+  const stateDir = mkTempStateDir();
+  const controller = new AbortController();
+  const marker = join(stateDir, 'cancel-cleanup-ran');
+  try {
+    const handle = acquireFinishLock(stateDir, { signal: controller.signal });
+    handle.addCleanup(() => writeFileSync(marker, 'cleaned'));
+    assert.equal(existsSync(finishLockPath(stateDir)), true);
+    controller.abort();
+    assert.equal(existsSync(finishLockPath(stateDir)), false);
+    assert.equal(readFileSync(marker, 'utf8'), 'cleaned');
+    handle.release();
+    assert.equal(existsSync(finishLockPath(stateDir)), false, 'cancellation and release remain idempotent');
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('an explicit AbortSignal while queued removes its ticket and rejects with a typed cancellation', async () => {
+  const stateDir = mkTempStateDir();
+  let held;
+  try {
+    held = acquireFinishLock(stateDir);
+    const controller = new AbortController();
+    const queued = acquireFinishLockQueued(stateDir, {
+      worktree: 'cancel-while-queued',
+      pollMs: 5000,
+      config: { queue: { pollIntervalMs: 5000 } },
+      signal: controller.signal,
+    });
+    const queueDir = finishQueueDir(stateDir);
+    await waitFor(() => listLiveQueueTickets(queueDir).some((ticket) => ticket.worktree === 'cancel-while-queued'));
+    controller.abort();
+    await assert.rejects(queued, (error) => error instanceof FinishLockCancelledError && error.code === 'FINISH_LOCK_CANCELLED');
+    assert.deepEqual(listLiveQueueTickets(queueDir), []);
+    assert.equal(existsSync(finishLockPath(stateDir)), true, 'cancelling a waiter never releases another process lock');
+  } finally {
+    if (held) releaseFinishLock(held);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 // --- 6. Timeout reports queue position and cleans up the ticket --------
 
 test('acquireFinishLockQueued: times out with position info in the error and removes its ticket', async () => {
@@ -460,7 +518,7 @@ test('acquireFinishLockQueued: times out with position info in the error and rem
 
 // --- 7. listLiveQueueTickets self-cleans dead tickets -------------------
 
-test('listLiveQueueTickets: excludes and deletes tickets for dead pids, keeps live ones in order', async () => {
+test('listLiveQueueTickets: reclaims a hard-killed holder ticket and keeps live ones in FIFO order', async () => {
   const stateDir = mkTempStateDir();
   try {
     const queueDir = finishQueueDir(stateDir);
@@ -624,26 +682,48 @@ import { writeFileSync } from 'node:fs';
 import { acquireFinishLock, acquireFinishLockQueued } from ${JSON.stringify(moduleUrl)};
 
 const [, , stateDir, mode, cleanupMarker] = process.argv;
-const handle = mode === 'queued'
-  ? await acquireFinishLockQueued(stateDir, { worktree: 'held-child', config: { queue: { pollIntervalMs: 20 } } })
-  : acquireFinishLock(stateDir, { worktree: 'held-child' });
-if (cleanupMarker) handle.addCleanup(() => writeFileSync(cleanupMarker, 'cleaned'));
-handle.setPhase('push');
-process.stdout.write('HELD\\n');
-setInterval(() => {}, 1000); // keep the event loop turning so the handler can run
+const controller = new AbortController();
+let handle;
+let ticker;
+let cancelExitCode = 143;
+process.on('message', (message) => {
+  if (message?.type !== 'cancel') return;
+  controller.abort();
+  cancelExitCode = message.signal === 'SIGINT' ? 130 : 143;
+  process.exitCode = cancelExitCode;
+  if (ticker) clearInterval(ticker);
+  if (process.connected) process.disconnect();
+});
+try {
+  handle = mode === 'queued'
+    ? await acquireFinishLockQueued(stateDir, { worktree: 'held-child', config: { queue: { pollIntervalMs: 20 } }, signal: controller.signal })
+    : acquireFinishLock(stateDir, { worktree: 'held-child', signal: controller.signal });
+} catch (error) {
+  if (error?.code !== 'FINISH_LOCK_CANCELLED') throw error;
+  process.exitCode = cancelExitCode;
+  if (process.connected) process.disconnect();
+}
+if (handle) {
+  if (cleanupMarker) handle.addCleanup(() => writeFileSync(cleanupMarker, 'cleaned'));
+  handle.setPhase('push');
+  process.stdout.write('HELD\\n');
+  ticker = setInterval(() => {}, 1000); // keep the event loop turning so handlers can run
+}
 `
   );
   return scriptPath;
 }
 
-async function runHolderUntilSignal(signal, mode, { withCleanupMarker = false } = {}) {
+async function runHolderUntilSignal(signal, mode, { withCleanupMarker = false, useCancellation = process.platform === 'win32' } = {}) {
   const stateDir = mkTempStateDir();
   let child;
   try {
     mkdirSync(stateDir, { recursive: true });
     const marker = join(stateDir, 'cleanup-ran');
     const scriptPath = writeHolderChildScript(stateDir);
-    child = spawn(process.execPath, [scriptPath, stateDir, mode, ...(withCleanupMarker ? [marker] : [])]);
+    child = spawn(process.execPath, [scriptPath, stateDir, mode, ...(withCleanupMarker ? [marker] : [])], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
     let stdout = '';
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
@@ -655,7 +735,8 @@ async function runHolderUntilSignal(signal, mode, { withCleanupMarker = false } 
     const heldContent = JSON.parse(readFileSync(lockPath, 'utf8'));
     assert.equal(heldContent.pid, child.pid);
 
-    child.kill(signal);
+    if (useCancellation || process.platform === 'win32') child.send({ type: 'cancel', signal });
+    else child.kill(signal);
     const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c)));
     child = undefined;
     return {
@@ -672,7 +753,7 @@ async function runHolderUntilSignal(signal, mode, { withCleanupMarker = false } 
   }
 }
 
-test('a process HOLDING the lock (no-wait path) releases it on SIGTERM and exits 143', async () => {
+test(`a process HOLDING the lock (no-wait path) releases it on ${interruptionName('SIGTERM')} and exits 143`, async () => {
   // Regression: only the waiting phase used to handle signals, so a finish killed
   // while holding left finish.lock behind until the next session reclaimed it.
   const result = await runHolderUntilSignal('SIGTERM', 'direct');
@@ -680,23 +761,35 @@ test('a process HOLDING the lock (no-wait path) releases it on SIGTERM and exits
   assert.equal(result.lockExists, false, 'SIGTERM while held must leave no lock file');
 });
 
-test('a process HOLDING the lock (no-wait path) releases it on SIGINT and exits 130', async () => {
+test(`a process HOLDING the lock (no-wait path) releases it on ${interruptionName('SIGINT')} and exits 130`, async () => {
   const result = await runHolderUntilSignal('SIGINT', 'direct');
   assert.equal(result.code, 130);
   assert.equal(result.lockExists, false);
 });
 
-test('a process that acquired through the QUEUE also releases lock and ticket on SIGTERM while held', async () => {
+test(`a process that acquired through the QUEUE also releases lock and ticket on ${interruptionName('SIGTERM')} while held`, async () => {
   const result = await runHolderUntilSignal('SIGTERM', 'queued');
   assert.equal(result.code, 143);
   assert.equal(result.lockExists, false);
   assert.deepEqual(result.tickets, []);
 });
 
-test('cleanups registered on the handle (e.g. stopping the heartbeat) also run when a signal releases the lock', async () => {
+test(`cleanups registered on the handle also run when ${interruptionName('SIGTERM')} releases the lock`, async () => {
   const result = await runHolderUntilSignal('SIGTERM', 'direct', { withCleanupMarker: true });
   assert.equal(result.code, 143);
   assert.equal(result.cleanupRan, true);
+});
+
+test('explicit IPC cancellation releases direct and queued held-lock resources', async () => {
+  const direct = await runHolderUntilSignal('SIGTERM', 'direct', { withCleanupMarker: true, useCancellation: true });
+  assert.equal(direct.code, 143);
+  assert.equal(direct.lockExists, false);
+  assert.equal(direct.cleanupRan, true);
+
+  const queued = await runHolderUntilSignal('SIGINT', 'queued', { useCancellation: true });
+  assert.equal(queued.code, 130);
+  assert.equal(queued.lockExists, false);
+  assert.deepEqual(queued.tickets, []);
 });
 
 test('release(): removes the signal handlers it installed, is idempotent, and tolerates a vanished lock file', () => {

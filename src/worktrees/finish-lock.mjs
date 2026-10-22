@@ -16,10 +16,12 @@
 //      held. Ticket file names are ISO-timestamp-prefixed so lexicographic
 //      sort == enqueue order, with no extra coordination file needed.
 //
-// While the lock is HELD (not just while queued) the handle keeps three
+// While the lock is HELD (not just while queued) the handle keeps four
 // promises:
 //   - a SIGINT/SIGTERM releases the lock and exits 130/143, so a killed finish
 //     does not leave a lock behind for the next session to time out on;
+//   - an optional AbortSignal provides a catchable cancellation path on hosts
+//     where process signals hard-terminate instead of reaching JS handlers;
 //   - the lock file records who holds it and in which phase, so a waiter can
 //     say "held by X, phase push, for 2m10s" instead of just "waiting";
 //   - a hold budget (`queue.maxHoldMs`) that callers apply as a timeout to
@@ -84,6 +86,31 @@ export function pidIsAlive(pid) {
 
 /** Default upper bound on how long one finish may hold the lock. */
 export const DEFAULT_MAX_HOLD_MS = 10 * 60 * 1000;
+
+/** Error raised when an optional AbortSignal cancels a queued or held lock. */
+export class FinishLockCancelledError extends Error {
+  constructor() {
+    super('finish lock acquisition was cancelled');
+    this.name = 'AbortError';
+    this.code = 'FINISH_LOCK_CANCELLED';
+  }
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw new FinishLockCancelledError();
+}
+
+function bindAbortSignal(handle, signal) {
+  if (!signal) return;
+  if (signal.aborted) {
+    handle.release();
+    throw new FinishLockCancelledError();
+  }
+  const onAbort = () => handle.release();
+  signal.addEventListener('abort', onAbort, { once: true });
+  handle.addCleanup(() => signal.removeEventListener('abort', onAbort));
+  if (signal.aborted) onAbort();
+}
 
 function writeNewLockFile(path, info) {
   const fd = openSync(path, 'wx');
@@ -189,10 +216,11 @@ function lockOwnedByMe(path) {
 
 /**
  * Wrap a freshly acquired lock file in a handle. Installs SIGINT/SIGTERM
- * handlers that stay in place until `release()`.
+ * handlers and optionally releases on `signal` abort. An AbortSignal releases
+ * the lock; its caller must also stop or cancel its in-flight work.
  *
  * @param {string} path lock file path
- * @param {{ maxHoldMs?: number, now?: () => number, exit?: (code: number) => void }} [options]
+ * @param {{ maxHoldMs?: number, now?: () => number, exit?: (code: number) => void, signal?: AbortSignal }} [options]
  *   `exit` is injectable for tests; defaults to process.exit.
  * @returns {{
  *   path: string,
@@ -206,7 +234,9 @@ function lockOwnedByMe(path) {
  * }}
  */
 export function createHeldLockHandle(path, options = {}) {
-  return prepareHeldLockHandle(path, options).handle;
+  const prepared = prepareHeldLockHandle(path, options);
+  bindAbortSignal(prepared.handle, options.signal);
+  return prepared.handle;
 }
 
 /**
@@ -298,10 +328,11 @@ function configuredMaxHoldMs(config, override) {
  * immediately (`--no-wait` semantics).
  *
  * @param {string} stateDir
- * @param {{ dryRun?: boolean, worktree?: string, config?: any, maxHoldMs?: number }} [options]
+ * @param {{ dryRun?: boolean, worktree?: string, config?: any, maxHoldMs?: number, signal?: AbortSignal }} [options]
  * @returns {ReturnType<typeof createHeldLockHandle>}
  */
-export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldMs } = {}) {
+export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldMs, signal } = {}) {
+  throwIfAborted(signal);
   const path = finishLockPath(stateDir);
 
   if (dryRun) {
@@ -335,6 +366,7 @@ export function acquireFinishLock(stateDir, { dryRun, worktree, config, maxHoldM
     abandon(); // the lock is someone else's; never release() it from here
     throw new Error(`finish lock already exists at ${path}; another process is finishing`);
   }
+  bindAbortSignal(handle, signal);
   return handle;
 }
 
@@ -468,8 +500,22 @@ export function listLiveQueueTickets(queueDir) {
   return live;
 }
 
-function sleepAsync(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleepAsync(ms, signal) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (signal?.aborted) return rejectPromise(new FinishLockCancelledError());
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener('abort', onAbort);
+      resolvePromise();
+    }
+    function onAbort() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      rejectPromise(new FinishLockCancelledError());
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 /**
@@ -478,13 +524,14 @@ function sleepAsync(ms) {
  * module -- everything else is synchronous.
  *
  * @param {string} stateDir
- * @param {{ worktree?: string, timeoutMs?: number, pollMs?: number, config?: any }} [options]
+ * @param {{ worktree?: string, timeoutMs?: number, pollMs?: number, config?: any, signal?: AbortSignal }} [options]
  * @returns {Promise<ReturnType<typeof createHeldLockHandle>>}
  */
 export async function acquireFinishLockQueued(
   stateDir,
-  { worktree, timeoutMs, pollMs, config } = {}
+  { worktree, timeoutMs, pollMs, config, signal } = {}
 ) {
+  throwIfAborted(signal);
   const lockPath = finishLockPath(stateDir);
   const queueDir = finishQueueDir(stateDir);
 
@@ -537,6 +584,7 @@ export async function acquireFinishLockQueued(
     });
 
     for (;;) {
+      throwIfAborted(signal);
       let tickets = listLiveQueueTickets(queueDir);
       let myIndex = tickets.findIndex((ticket) => ticket.filePath === ticketPath);
 
@@ -559,7 +607,7 @@ export async function acquireFinishLockQueued(
           removeTicket();
           // Swap the waiting-phase handlers for held-phase ones. Both are
           // installed/removed synchronously, so there is no unhandled window.
-          const handle = createHeldLockHandle(lockPath, { maxHoldMs: configuredMaxHoldMs(config) });
+          const handle = createHeldLockHandle(lockPath, { maxHoldMs: configuredMaxHoldMs(config), signal });
           removeSignalHandlers();
           return handle;
         }
@@ -585,7 +633,7 @@ export async function acquireFinishLockQueued(
       const holder = describeFinishLockHolder(stateDir);
       if (holder) console.error(`[worktree-guard] ${holder}`);
 
-      await sleepAsync(effectivePollMs);
+      await sleepAsync(effectivePollMs, signal);
     }
   } finally {
     removeSignalHandlers();

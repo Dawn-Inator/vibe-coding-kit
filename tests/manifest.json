@@ -10,6 +10,7 @@
   "knowledge/memory-index.test.mjs",
   "layout/check-root-layout.test.mjs",
   "lib/exit-drained.test.mjs",
+  "lib/path-identity.test.mjs",
   "lib/sync-stdin.test.mjs",
   "skills/composition.test.mjs",
   "skills/dispatch-contract.test.mjs",

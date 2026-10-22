@@ -20,7 +20,8 @@
 // Node built-ins only, zero third-party dependencies, ESM.
 
 import { spawnSync } from 'node:child_process';
-import { basename, dirname } from 'node:path';
+import { dirname, win32 } from 'node:path';
+import { listWindowsProcesses } from '../lib/windows-process.mjs';
 
 const TEST_PARENT_CHAIN_OVERRIDE_ENV = 'WTG_TEST_PARENT_CHAIN_OVERRIDE';
 
@@ -30,6 +31,15 @@ const TEST_PARENT_CHAIN_OVERRIDE_ENV = 'WTG_TEST_PARENT_CHAIN_OVERRIDE';
 // most one leading dot before comparing.
 function normalizeDirSegment(segment) {
   return String(segment || '').replace(/^\./, '').toLowerCase();
+}
+
+function crossPlatformBasename(path) {
+  return win32.basename(String(path || '')).toLowerCase().replace(/\.exe$/i, '');
+}
+
+function crossPlatformDirname(path) {
+  const value = String(path || '').replace(/^['"]|['"]$/g, '');
+  return value.includes('\\') ? win32.dirname(value) : dirname(value);
 }
 
 /**
@@ -76,7 +86,7 @@ export function matchesAiParentProcess(commandLine, config) {
   const tokens = line.trim().split(/\s+/).filter(Boolean);
   if (!reliableExe && tokens.length === 0) return false;
 
-  const exe = reliableExe ? basename(reliableExe).toLowerCase() : basename(tokens[0]).toLowerCase();
+  const exe = crossPlatformBasename(reliableExe || tokens[0]);
   if (config.aiCliExecutableNames.includes(exe)) return true;
 
   if (config.scriptRuntimeExecutableNames.includes(exe)) {
@@ -87,7 +97,7 @@ export function matchesAiParentProcess(commandLine, config) {
     const scriptArg = reliableExe ? tokens[0] : tokens[1];
     if (!scriptArg) return false;
     const aiNames = new Set(config.aiCliExecutableNames.map((name) => name.toLowerCase()));
-    const dirSegments = dirname(scriptArg).split(/[\\/]+/).filter(Boolean);
+    const dirSegments = crossPlatformDirname(scriptArg).split(/[\\/]+/).filter(Boolean);
     if (dirSegments.some((segment) => aiNames.has(normalizeDirSegment(segment)))) {
       return true;
     }
@@ -179,6 +189,21 @@ export function getAncestorProcessCommands(maxDepth = 3, env = process.env, opti
     return override.split(';').filter(Boolean);
   }
 
+  if ((options.platform ?? process.platform) === 'win32' && !options.ps) {
+    const processes = options.windowsProcessProvider?.() ?? listWindowsProcesses();
+    const byPid = new Map(processes.map((process) => [process.pid, process]));
+    const commands = [];
+    let pid = options.startPid ?? process.ppid;
+    for (let depth = 0; depth < maxDepth; depth += 1) {
+      if (!pid || pid <= 1) break;
+      const parent = byPid.get(pid);
+      if (!parent) break;
+      commands.push(windowsCommandLine(parent));
+      pid = parent.ppid;
+    }
+    return commands;
+  }
+
   const ps = options.ps ?? defaultPs;
   const commands = [];
   let pid = options.startPid ?? process.ppid;
@@ -237,11 +262,19 @@ export const DEFAULT_ANCESTOR_DEPTH = 8;
  * }} params
  * @returns {{aiParented: boolean, via: string|null}} `via` is `env:<NAME>`, `ancestry`, or null
  */
-export function detectAiParent({ env = process.env, config, maxDepth = DEFAULT_ANCESTOR_DEPTH, ps, startPid }) {
+export function detectAiParent({
+  env = process.env,
+  config,
+  maxDepth = DEFAULT_ANCESTOR_DEPTH,
+  ps,
+  startPid,
+  platform,
+  windowsProcessProvider,
+}) {
   const marker = findAiParentEnvMarker(env, config);
   if (marker) return { aiParented: true, via: `env:${marker}` };
 
-  const commands = getAncestorProcessCommands(maxDepth, env, { ps, startPid });
+  const commands = getAncestorProcessCommands(maxDepth, env, { ps, startPid, platform, windowsProcessProvider });
   if (isAiParentedCommandChain(commands, config)) return { aiParented: true, via: 'ancestry' };
 
   return { aiParented: false, via: null };
@@ -259,7 +292,36 @@ export function detectAiParent({ env = process.env, config, maxDepth = DEFAULT_A
  * @param {{ps?: (args: string[]) => {status: number|null, stdout?: string, error?: Error}}} [options]
  * @returns {{pid: number, ppid: number, commandLine: string}[]}
  */
+function windowsCommandLine(process) {
+  const executablePath = process.executablePath;
+  const commandLine = String(process.commandLine || '').trim();
+  if (!executablePath) return commandLine;
+  let args = commandLine;
+  const quotedExe = `"${executablePath}"`;
+  if (commandLine.slice(0, quotedExe.length).toLowerCase() === quotedExe.toLowerCase()) {
+    args = commandLine.slice(quotedExe.length).trim();
+  } else if (
+    commandLine.slice(0, executablePath.length).toLowerCase() === executablePath.toLowerCase() &&
+    (commandLine.length === executablePath.length || /\s/.test(commandLine[executablePath.length]))
+  ) {
+    args = commandLine.slice(executablePath.length).trim();
+  }
+  return `${executablePath}\u0000${args}`;
+}
+
 export function listProcessCommands(options = {}) {
+  if ((options.platform ?? process.platform) === 'win32' && !options.ps) {
+    const processes = options.windowsProcessProvider?.() ?? listWindowsProcesses();
+    return processes.map((process) => ({
+      pid: process.pid,
+      ppid: process.ppid,
+      commandLine: windowsCommandLine(process),
+      cwd: process.cwd ?? null,
+      cwdStatus: process.cwdStatus ?? 'unknown',
+      cwdErrorCode: process.cwdErrorCode ?? null,
+    }));
+  }
+
   const ps = options.ps ?? defaultPs;
   const run = (args) => {
     const result = ps(args);

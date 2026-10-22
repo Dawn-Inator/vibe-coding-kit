@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
 import { assertKitSafeToRemove, checkKit, inspectKit, prepareKit } from '../../src/dependencies/submodule.mjs';
+import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { git, commit, makeProject } from '../support/submodule-fixture.mjs';
 after(cleanupTempDirs);
@@ -138,7 +140,9 @@ test('cleanup proof rejects a kit path whose gitfile points at another worktree'
   const otherGitDir = git(otherWorktree, ['rev-parse', '--absolute-git-dir']).stdout.trim();
   const otherHead = git(otherWorktree, ['rev-parse', 'HEAD']).stdout.trim();
   const sourceHead = git(fixture.source, ['rev-parse', 'HEAD']).stdout.trim();
-  writeFileSync(join(child, '.git'), `gitdir: ${otherGitDir}\n`);
+  const gitfile = join(child, '.git');
+  chmodSync(gitfile, 0o666);
+  writeFileSync(gitfile, `gitdir: ${otherGitDir}\n`);
   const otherStatus = git(otherWorktree, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
   const parentStatus = git(fixture.project, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
 
@@ -170,7 +174,7 @@ test('fails closed for a registered but uninitialized kit and for URL/config dis
 test('cleanup proof rejects private remotes and upstreams without changing kit state', () => {
   const fixture = makeProject();
   const child = join(fixture.project, '.vibe-coding/kit');
-  git(child, ['remote', 'add', 'private', `file://${fixture.source}`]);
+  git(child, ['remote', 'add', 'private', pathToFileURL(fixture.source).href]);
   git(child, ['fetch', 'private']);
   git(child, ['branch', 'private-tracked']);
   git(child, ['config', 'branch.private-tracked.remote', 'private']);
@@ -188,7 +192,7 @@ test('cleanup proof rejects private remotes and upstreams without changing kit s
 test('cleanup proof rejects a tampered origin URL without changing the kit checkout', () => {
   const fixture = makeProject();
   const child = join(fixture.project, '.vibe-coding/kit');
-  git(child, ['remote', 'set-url', 'origin', `file://${fixture.root}/private.git`]);
+  git(child, ['remote', 'set-url', 'origin', pathToFileURL(join(fixture.root, 'private.git')).href]);
   const beforeHead = git(child, ['rev-parse', 'HEAD']).stdout.trim();
   const beforeStatus = git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout;
   const beforeRefs = git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout;
@@ -197,6 +201,13 @@ test('cleanup proof rejects a tampered origin URL without changing the kit check
   assert.equal(git(child, ['rev-parse', 'HEAD']).stdout.trim(), beforeHead);
   assert.equal(git(child, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']).stdout, beforeStatus);
   assert.equal(git(child, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout, beforeRefs);
+});
+
+test('path identity resolves aliases without accepting distinct directories', () => {
+  const fixture = makeProject();
+  const alternateSpelling = process.platform === 'win32' ? fixture.source.toUpperCase() : fixture.source;
+  assert.equal(samePathIdentity(fixture.source, alternateSpelling), true);
+  assert.equal(samePathIdentity(fixture.source, fixture.project), false);
 });
 
 test('old fixtures with no registered kit remain inapplicable without requiring config', () => {

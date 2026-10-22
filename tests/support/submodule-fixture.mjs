@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { fixtureGitIdentityArgs, isolatedFixtureGitEnv } from './isolated-git-env.mjs';
 import { mkdtempTracked } from './temp-dirs.mjs';
 
@@ -34,15 +35,16 @@ export function makeProject() {
   writeFileSync(join(source, 'README.md'), 'public kit fixture\n');
   writeFileSync(join(source, '.gitignore'), 'ignored.txt\n');
   const sourceCommit = commit(source, 'source initial');
+  const sourceUrl = pathToFileURL(source).href;
   git(project, ['init', '-q', '--initial-branch=main']);
   writeFileSync(join(project, 'README.md'), 'consumer fixture\n');
   commit(project, 'project initial');
-  git(project, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'vibe-coding-kit', `file://${source}`, '.vibe-coding/kit']);
+  git(project, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'vibe-coding-kit', sourceUrl, '.vibe-coding/kit']);
   const configPath = join(project, '.vibe-coding/project.config.json');
   mkdirSync(join(project, '.vibe-coding'), { recursive: true });
   writeFileSync(configPath, `${JSON.stringify({
     schemaVersion: 1,
-    kit: { path: '.vibe-coding/kit', url: `file://${source}` },
+    kit: { path: '.vibe-coding/kit', url: sourceUrl },
     adapter: 'engineering/automation/vibe-coding/project-adapter.mjs',
     identity: { name: 'Fixture User', email: 'fixture@example.invalid' },
   })}\n`);

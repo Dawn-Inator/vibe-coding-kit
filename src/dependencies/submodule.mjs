@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { samePathIdentity } from '../lib/path-identity.mjs';
 
 const CONFIG_PATH = '.vibe-coding/project.config.json';
 const DEFAULT_KIT_PATH = '.vibe-coding/kit';
@@ -145,7 +146,7 @@ function workingTreeSafety(projectRoot, submodulePath, registration) {
   let actualRoot;
   try { actualRoot = realpathSync(topLevel.stdout.trim()); }
   catch { throw new Error('Cannot resolve kit checkout top-level'); }
-  if (actualRoot !== expectedRoot) {
+  if (!samePathIdentity(actualRoot, expectedRoot)) {
     throw new Error(`Refusing to change kit path ${expectedRoot}: its Git metadata resolves to another worktree ${actualRoot}`);
   }
   const actualGitDir = git(submodulePath, ['rev-parse', '--absolute-git-dir'], { allowFailure: true, env: localEnv });
@@ -159,7 +160,7 @@ function workingTreeSafety(projectRoot, submodulePath, registration) {
   } catch {
     throw new Error('Cannot resolve registered kit Git directory');
   }
-  if (actualGitDirPath !== expectedGitDirPath) {
+  if (!samePathIdentity(actualGitDirPath, expectedGitDirPath)) {
     throw new Error(`Refusing to change kit path ${expectedRoot}: its Git directory resolves outside registered module ${registration.name}`);
   }
   const status = git(submodulePath, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], { allowFailure: true, env: localEnv });

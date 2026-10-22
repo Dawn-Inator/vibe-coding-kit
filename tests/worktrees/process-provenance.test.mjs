@@ -12,6 +12,7 @@ import {
   DEFAULT_ANCESTOR_DEPTH,
   listProcessCommands,
 } from '../../src/worktrees/process-provenance.mjs';
+import { listWindowsProcesses } from '../../src/lib/windows-process.mjs';
 import { DEFAULT_CONFIG } from '../../src/worktrees/config.mjs';
 
 const config = DEFAULT_CONFIG;
@@ -96,13 +97,26 @@ test('matchesAiParentProcess: reliable-exe form still supports the script-runtim
   assert.equal(matchesAiParentProcess(entry, config), true);
 });
 
-test('getAncestorProcessCommands: real walk entries never contain a raw NUL byte artifact when ps -o comm= is unavailable/mismatched', () => {
-  // Best-effort fallback: if `ps -o comm=` fails or doesn't prefix-match the
-  // `command=` line, entries stay as plain strings (the original behavior),
-  // never a malformed partial NUL-delimited string.
+test('matchesAiParentProcess: Windows executable suffix and backslash script paths are normalized', () => {
+  assert.equal(matchesAiParentProcess('C:\\Program Files\\Claude\\claude.exe\u0000--resume', config), true);
+  assert.equal(
+    matchesAiParentProcess('C:\\Program Files\\node.exe\u0000"C:\\Users\\dawn\\.claude\\local\\cli.js"', config),
+    true,
+  );
+  assert.equal(matchesAiParentProcess('C:\\tools\\claude-scratch-lane-abc123\\bash.exe\u0000-c foo', config), false);
+});
+
+test('getAncestorProcessCommands: real walk entries remain well-formed strings', () => {
+  // POSIX may add a delimiter when `ps -o comm=` gives an unambiguous exe;
+  // Windows uses the same representation with an OS-provided executable path.
   const result = getAncestorProcessCommands(2, {});
+  for (const entry of result) assert.equal(typeof entry, 'string');
   for (const entry of result) {
-    assert.equal(typeof entry, 'string');
+    if (entry.includes('\u0000')) {
+      const [executable, ...remainder] = entry.split('\u0000');
+      assert.ok(executable.length > 0);
+      assert.equal(remainder.length, 1);
+    }
   }
 });
 
@@ -231,6 +245,29 @@ test('detectAiParent: the test override chain (WTG_TEST_PARENT_CHAIN_OVERRIDE) s
   assert.deepEqual(detectAiParent({ env, config }), { aiParented: true, via: 'ancestry' });
 });
 
+test('getAncestorProcessCommands: Windows ancestry uses native PID/PPID records', () => {
+  const windowsProcessProvider = () => [
+    {
+      pid: 1000,
+      ppid: 2000,
+      executablePath: 'C:\\Program Files\\node.exe',
+      commandLine: '"C:\\Program Files\\node.exe" "C:\\Users\\dawn\\.claude\\local\\cli.js"',
+    },
+    {
+      pid: 2000,
+      ppid: 1,
+      executablePath: 'C:\\Program Files\\Claude\\claude.exe',
+      commandLine: '"C:\\Program Files\\Claude\\claude.exe" --resume',
+    },
+  ];
+  const commands = getAncestorProcessCommands(3, {}, {
+    platform: 'win32', startPid: 1000, windowsProcessProvider,
+  });
+  assert.equal(commands.length, 2);
+  assert.equal(isAiParentedCommandChain(commands, config), true);
+  assert.ok(commands[0].includes('\u0000'));
+});
+
 // ---------------------------------------------------------------------------
 // listProcessCommands: whole-machine snapshot used by the sync-primary idle scan
 // ---------------------------------------------------------------------------
@@ -281,5 +318,73 @@ test('listProcessCommands: a process missing from the command listing keeps its 
   assert.throws(
     () => listProcessCommands({ ps: () => ({ status: null, error: new Error('spawn ps ENOENT') }) }),
     /spawn ps ENOENT/,
+  );
+});
+
+test('listProcessCommands: Windows records preserve cwd evidence and unreadable status', () => {
+  const rows = listProcessCommands({
+    platform: 'win32',
+    windowsProcessProvider: () => [
+      {
+        pid: 100, ppid: 1, executablePath: 'C:\\Tools\\claude.exe',
+        commandLine: '"C:\\Tools\\claude.exe" --resume',
+        cwd: 'C:\\repo\\worktree', cwdStatus: 'readable',
+      },
+      {
+        pid: 200, ppid: 1, executablePath: 'C:\\Tools\\codex.exe',
+        commandLine: '"C:\\Tools\\codex.exe"', cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5,
+      },
+    ],
+  });
+  assert.equal(rows[0].commandLine.includes('\u0000'), true);
+  assert.equal(rows[0].cwd, 'C:\\repo\\worktree');
+  assert.equal(rows[0].cwdStatus, 'readable');
+  assert.equal(rows[1].cwd, null);
+  assert.equal(rows[1].cwdStatus, 'unreadable');
+  assert.equal(rows[1].cwdErrorCode, 5);
+});
+
+test('listWindowsProcesses: invokes built-in PowerShell CIM probe and normalizes one-row JSON', () => {
+  let invocation;
+  const rows = listWindowsProcesses({
+    platform: 'win32',
+    spawn: (command, args, options) => {
+      invocation = { command, args, options };
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          pid: 12, ppid: 3, executablePath: 'C:\\Tools\\claude.exe',
+          commandLine: 'claude.exe --resume', cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5,
+        }),
+      };
+    },
+  });
+  assert.equal(invocation.command, 'powershell.exe');
+  assert.ok(invocation.args.includes('-NoProfile'));
+  assert.ok(invocation.args.at(-1).includes('Get-CimInstance -ClassName Win32_Process'));
+  assert.ok(invocation.args.at(-1).includes('NtQueryInformationProcess'));
+  assert.equal(invocation.options.windowsHide, true);
+  assert.deepEqual(rows, [{
+    pid: 12, ppid: 3, executablePath: 'C:\\Tools\\claude.exe',
+    commandLine: 'claude.exe --resume', cwd: null, cwdStatus: 'unreadable', cwdErrorCode: 5,
+  }]);
+});
+
+test('listWindowsProcesses: spawn, PowerShell, and malformed inventory failures throw', () => {
+  assert.throws(
+    () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ error: new Error('ENOENT') }) }),
+    /process inventory failed: ENOENT/,
+  );
+  assert.throws(
+    () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 1, stderr: 'CIM failed' }) }),
+    /process inventory failed \(PowerShell exit 1\): CIM failed/,
+  );
+  assert.throws(
+    () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 0, stdout: '{bad json' }) }),
+    /invalid JSON/,
+  );
+  assert.throws(
+    () => listWindowsProcesses({ platform: 'win32', spawn: () => ({ status: 0, stdout: '{"pid":"x","ppid":1}' }) }),
+    /invalid PID record/,
   );
 });

@@ -44,6 +44,20 @@ test('loads two distinct consumer adapters and forwards lifecycle context', asyn
   } finally { await Promise.all([close(first), close(second)]); }
 });
 
+test('hook runner does not inherit Node test-worker ownership markers', async () => {
+  const root = await consumer(`export const adapterContract = { schemaVersion: 1, hooks: { afterLand: 'readTestContext' } };\nexport async function readTestContext() { return process.env.NODE_TEST_CONTEXT ?? null; }\n`);
+  const previous = process.env.NODE_TEST_CONTEXT;
+  process.env.NODE_TEST_CONTEXT = 'test-worker-private-marker';
+  try {
+    const result = await runProjectHook({ projectRoot: root, phase: 'afterLand' });
+    assert.equal(result.result, null, 'the adapter process is independent of Node test-runner worker ownership');
+  } finally {
+    if (previous === undefined) delete process.env.NODE_TEST_CONTEXT;
+    else process.env.NODE_TEST_CONTEXT = previous;
+    await close(root);
+  }
+});
+
 test('each hook phase executes a fresh transitive module graph', async () => {
   const root = await consumer(`import { policy } from './policy.mjs';\nexport const adapterContract = { schemaVersion: 1, hooks: { beforeCandidate: 'inspectPolicy' } };\nexport async function inspectPolicy() { return policy; }\n`);
   try {
@@ -170,8 +184,9 @@ export async function overflow({ pidFile }) {
     phase: 'verifyCandidate',
     context: { pidFile: timedPidFile },
   });
+  const timedRejection = assert.rejects(timeoutTask, /timed out after 400ms/u);
   const timedPid = await waitForPid(timedPidFile);
-  await assert.rejects(timeoutTask, /timed out after 400ms/u);
+  await timedRejection;
   await assertPidGone(timedPid);
 
   const abortedPidFile = join(abortRoot, 'descendant.pid');
@@ -182,9 +197,10 @@ export async function overflow({ pidFile }) {
     context: { pidFile: abortedPidFile },
     signal: controller.signal,
   });
+  const abortRejection = assert.rejects(abortTask, (error) => error.name === 'AbortError');
   const abortedPid = await waitForPid(abortedPidFile);
   controller.abort();
-  await assert.rejects(abortTask, (error) => error.name === 'AbortError');
+  await abortRejection;
   await assertPidGone(abortedPid);
 
   const overflowPidFile = join(overflowRoot, 'descendant.pid');
@@ -196,8 +212,9 @@ export async function overflow({ pidFile }) {
       phase: 'verifyCandidate',
       context: { pidFile: overflowPidFile },
     });
+    const overflowRejection = assert.rejects(overflowTask, /exceeded its stdout output limit/u);
     const overflowPid = await waitForPid(overflowPidFile);
-    await assert.rejects(overflowTask, /exceeded its stdout output limit/u);
+    await overflowRejection;
     await assertPidGone(overflowPid);
   } finally {
     process.stdout.write = originalWrite;

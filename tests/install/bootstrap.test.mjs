@@ -11,12 +11,16 @@ after(cleanupTempDirs);
 
 const template = new URL('../../templates/bootstrap.mjs', import.meta.url);
 const depsRuntime = fileURLToPath(new URL('../../src/dependencies/submodule.mjs', import.meta.url));
+const pathIdentityRuntime = fileURLToPath(new URL('../../src/lib/path-identity.mjs', import.meta.url));
 
 function runtimeProject() {
   const fixture = makeProject();
   const runtime = join(fixture.source, 'src/dependencies/submodule.mjs');
+  const identity = join(fixture.source, 'src/lib/path-identity.mjs');
   mkdirSync(join(fixture.source, 'src/dependencies'), { recursive: true });
+  mkdirSync(join(fixture.source, 'src/lib'), { recursive: true });
   cpSync(depsRuntime, runtime);
+  cpSync(pathIdentityRuntime, identity);
   const pin = commit(fixture.source, 'add real public dependency runtime');
   const child = join(fixture.project, '.vibe-coding/kit');
   git(child, ['fetch', 'origin', pin]);

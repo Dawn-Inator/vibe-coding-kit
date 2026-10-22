@@ -254,9 +254,15 @@ function abortError() {
 
 function invokeHook(projectRoot, adapterPath, phase, contextText, timeoutMs, signal) {
   return new Promise((resolvePromise, rejectPromise) => {
+    // A hook is a project process, never a nested child test owned by Node's test runner.
+    // Inheriting this private marker makes Node 22 treat signal/exit activity in the
+    // hook tree as part of its worker protocol and can terminate the containing test file.
+    const hookEnv = { ...process.env };
+    delete hookEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--input-type=module', '-e', HOOK_RUNNER,
       adapterPath, phase, contextText], {
       cwd: projectRoot,
+      env: hookEnv,
       detached: true,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'ipc'],
