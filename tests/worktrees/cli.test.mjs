@@ -37,6 +37,26 @@ const CROSS_PLATFORM_COMMAND = fileURLToPath(new URL('./fixtures/cross-platform-
 const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
 const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
 
+function retryingDescendantTransport(firstAttemptPath, childPidPath) {
+  return [
+    "const fs = require('node:fs');",
+    "const { spawn } = require('node:child_process');",
+    `const firstAttemptPath = ${JSON.stringify(firstAttemptPath)};`,
+    `const childPidPath = ${JSON.stringify(childPidPath)};`,
+    "if (!fs.existsSync(firstAttemptPath)) {",
+    "  fs.writeFileSync(firstAttemptPath, 'first attempt\\n');",
+    "  process.stderr.write('Could not resolve host: injected transient failure\\n');",
+    "  process.exit(1);",
+    "}",
+    "const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid)); setInterval(() => {}, 1000);`;",
+    "const child = spawn(process.execPath, ['-e', childCode], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' });",
+    "child.unref();",
+    "const deadline = Date.now() + 3000;",
+    "while (!fs.existsSync(childPidPath) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+    "if (!fs.existsSync(childPidPath)) process.exit(4);",
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // test helpers
 // ---------------------------------------------------------------------------
@@ -1023,8 +1043,10 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
     const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'retry deadline');
     const firstAttempt = join(tmp, 'first-attempt.marker');
     const childPidFile = join(tmp, 'transport-child.pid');
+    const transportScript = join(tmp, 'retry-descendant-transport.cjs');
     const shellPath = (path) => path.replaceAll('\\', '/');
-    const transport = `node ${shellPath(CROSS_PLATFORM_COMMAND)} retry-once-then-hang ${shellPath(firstAttempt)} ${shellPath(childPidFile)}`;
+    writeFileSync(transportScript, retryingDescendantTransport(firstAttempt, childPidFile));
+    const transport = `node ${shellPath(transportScript)}`;
     run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
     const cfgPath = join(tmp, 'hold.json');
     writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 2200 } }));

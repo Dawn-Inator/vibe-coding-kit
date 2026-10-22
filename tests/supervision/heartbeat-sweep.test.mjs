@@ -271,7 +271,8 @@ test('worktrees: only a landed, clean, idle, process-free tree is proposed, with
     assert.equal(out.status, 1, out.stderr);
     const worktrees = out.cells.filter((row) => row.source.startsWith('sweep:worktrees:'));
     assert.deepEqual(worktrees.map((row) => row.source), ['sweep:worktrees:claude/reclaimable']);
-    assert.ok(worktrees[0].item.includes(reclaimable));
+    const itemPath = /^reclaim idle landed worktree (.+) \([^()]+\)$/.exec(worktrees[0].item)?.[1];
+    assert.ok(itemPath && samePathIdentity(itemPath, reclaimable), `candidate must identify the reclaimable worktree by filesystem identity: ${JSON.stringify(worktrees[0])}`);
     assert.ok(worktrees[0].evidence.includes(`pnpm worktree:cleanup -- --reclaim-stale --stale-days 14 --worktree-root ${fx.worktreeRoot}`));
     assert.ok(!worktrees[0].evidence.includes('--apply`'), 'the proposed command is the dry run');
     assert.ok(existsSync(reclaimable), 'the sweep never removes anything');

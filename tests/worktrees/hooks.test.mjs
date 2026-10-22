@@ -443,14 +443,23 @@ test('primary-lock: multi-layer ancestor directory-segment walk matches process-
   try {
     initRepo(dirHit);
     installPrimaryLockHook(dirHit, 'test-owner', config);
-    const hitEnv = primaryLockEnv(config, { fakeCommand: hitCommand });
+    // Script the entire process inventory here instead of replacing only the
+    // test runner PID. On Windows, Git-for-Windows adds several real launcher
+    // processes between the test runner and the hook; inheriting that chain
+    // made this POSIX-command fixture dependent on CIM/ps ancestry details.
+    // The same bounded launcher inventory is used by the Windows-path case
+    // below, while the final ancestor row remains the POSIX command under
+    // test here.
+    resetFakePsChain(dirHit);
+    const hitEnv = primaryLockEnv(config, { fakeChain: true, fakeChainFinal: hitCommand });
     const hitResult = git(['commit', '--allow-empty', '-q', '-m', 'ancestor hit'], dirHit, hitEnv);
     assert.notEqual(hitResult.status, 0, 'expected the multi-layer ancestor match to block');
     assert.match(hitResult.stderr, /BLOCKED/);
 
     initRepo(dirMiss);
     installPrimaryLockHook(dirMiss, 'test-owner', config);
-    const missEnv = primaryLockEnv(config, { fakeCommand: missCommand });
+    resetFakePsChain(dirMiss);
+    const missEnv = primaryLockEnv(config, { fakeChain: true, fakeChainFinal: missCommand });
     const missResult = git(['commit', '--allow-empty', '-q', '-m', 'ancestor miss'], dirMiss, missEnv);
     assert.equal(
       missResult.status,
