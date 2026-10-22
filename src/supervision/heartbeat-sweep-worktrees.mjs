@@ -6,6 +6,7 @@
 import { lstatSync } from 'node:fs';
 import { basename, isAbsolute, resolve } from 'node:path';
 
+import { samePathIdentity } from '../lib/path-identity.mjs';
 import { loadConfig } from '../worktrees/config.mjs';
 import {
   assessReclaimCandidate,
@@ -56,7 +57,7 @@ export function discoverWorktrees(cwd, { staleDays, worktreeRoot, configPath }) 
   }
   const primaryPath = repo.primaryWorktree?.path || repo.topLevel;
   const others = repo.worktrees
-    .filter((entry) => resolve(entry.path) !== resolve(primaryPath))
+    .filter((entry) => !samePathIdentity(entry.path, primaryPath))
     .sort((a, b) => rootMtimeMs(a.path) - rootMtimeMs(b.path));
   if (others.length === 0) return { candidates: [], notes };
   const ctx = {

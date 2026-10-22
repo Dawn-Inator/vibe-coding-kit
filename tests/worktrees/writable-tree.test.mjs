@@ -31,7 +31,7 @@ function sealedTree() {
   return { root, candidate, outside };
 }
 
-test('sealed directories inside the candidate get u+rwx back, group/other bits are not widened', () => {
+test('sealed directories inside the candidate get u+rwx back, group/other bits are not widened', { skip: process.platform === 'win32' && 'Windows uses ACLs, not POSIX mode bits' }, () => {
   const { candidate, outside } = sealedTree();
   const result = makeOwnedTreeWritable(candidate);
   assert.equal(mode(join(candidate, 'snapshot')), 0o755);
@@ -43,7 +43,7 @@ test('sealed directories inside the candidate get u+rwx back, group/other bits a
   chmodSync(outside, 0o755);
 });
 
-test('directories owned by another uid are never touched', () => {
+test('directories owned by another uid are never touched', { skip: process.platform === 'win32' && 'Windows uses ACLs, not POSIX ownership' }, () => {
   const { candidate, outside } = sealedTree();
   const result = makeOwnedTreeWritable(candidate, { uid: -12345 });
   assert.equal(result.chmodded, 0);
@@ -52,7 +52,7 @@ test('directories owned by another uid are never touched', () => {
   for (const dir of [join(candidate, 'snapshot', 'deep'), join(candidate, 'snapshot'), outside]) chmodSync(dir, 0o755);
 });
 
-test('a symlinked root is refused outright and a missing root is a no-op', () => {
+test('a symlinked root is refused outright and a missing root is a no-op', { skip: process.platform === 'win32' && 'POSIX symlink ownership and chmod semantics do not apply to Windows ACLs' }, () => {
   const { root, candidate, outside } = sealedTree();
   const linkRoot = join(root, 'link-root');
   symlinkSync(candidate, linkRoot);
@@ -60,6 +60,13 @@ test('a symlinked root is refused outright and a missing root is a no-op', () =>
   assert.equal(mode(join(candidate, 'snapshot')), 0o555);
   assert.deepEqual(makeOwnedTreeWritable(join(root, 'missing')), { chmodded: 0, foreign: 0, symlinks: 0, errors: 0 });
   for (const dir of [join(candidate, 'snapshot', 'deep'), join(candidate, 'snapshot'), outside]) chmodSync(dir, 0o755);
+});
+
+test('Windows leaves ACL authorization to the OS instead of fabricating POSIX ownership or mode changes', { skip: process.platform !== 'win32' && 'Windows ACL behavior' }, () => {
+  const root = mkdtempTracked('wtg-windows-acl-');
+  mkdirSync(join(root, 'candidate', 'nested'), { recursive: true });
+  const result = makeOwnedTreeWritable(join(root, 'candidate'), { uid: 0 });
+  assert.deepEqual(result, { chmodded: 0, foreign: 0, symlinks: 0, errors: 0, aclProtected: true });
 });
 
 test('class guard: every worktree removal in the kit makes the tree writable first', async () => {

@@ -24,7 +24,7 @@ import {
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 import {
   isolatedFixtureGitEnv,
@@ -130,10 +130,16 @@ exec "$WTG_REAL_PS" "$@"
 `;
 
 function findRealPs() {
+  if (process.platform === 'win32') {
+    const execPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
+    const candidate = resolve((execPath.stdout || '').trim(), '../../../usr/bin/ps.exe');
+    if (existsSync(candidate)) return candidate;
+    throw new Error(`cannot locate Git for Windows ps.exe near ${execPath.stdout || 'git --exec-path'}`);
+  }
   for (const candidate of ['/bin/ps', '/usr/bin/ps']) {
     if (existsSync(candidate)) return candidate;
   }
-  const found = spawnSync('/bin/sh', ['-c', 'command -v ps'], { encoding: 'utf8' });
+  const found = spawnSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' });
   const path = (found.stdout || '').trim();
   if (!path) throw new Error('cannot locate a real ps binary for the fake-ps test harness');
   return path;
@@ -143,7 +149,7 @@ function setupFakePs() {
   const dir = tempDir('wtg-fakebin-');
   const scriptPath = join(dir, 'ps');
   writeFileSync(scriptPath, FAKE_PS_SCRIPT);
-  chmodSync(scriptPath, 0o755);
+  if (process.platform !== 'win32') chmodSync(scriptPath, 0o755);
   return { dir, realPs: findRealPs() };
 }
 
@@ -160,7 +166,7 @@ function primaryLockEnv(config, overrides = {}) {
   delete env[config.envVars.primaryLockAllow];
   delete env[config.envVars.primaryLockBypass];
 
-  env.PATH = `${FAKE_PS.dir}:${env.PATH || ''}`;
+  env.PATH = `${FAKE_PS.dir}${delimiter}${env.PATH || ''}`;
   env.WTG_REAL_PS = FAKE_PS.realPs;
   env.WTG_FAKE_PS_PID = String(process.pid);
   env.WTG_FAKE_PS_COMMAND = overrides.fakeCommand ?? '/usr/bin/some-human-shell -i';
@@ -258,6 +264,10 @@ test('stashGuardStatus reports installed+intact for a guarded worktree, not-inst
     assert.equal(guardedStatus.installed, true);
     assert.equal(guardedStatus.intact, true);
     assert.ok(guardedStatus.hooksPath);
+    if (process.platform === 'win32') {
+      const caseAlias = guarded.replace(/[a-z]/g, (letter, index) => (index % 2 === 0 ? letter.toUpperCase() : letter));
+      assert.equal(stashGuardStatus(caseAlias, config).installed, true, 'drive/path casing cannot make an installed hook disappear');
+    }
 
     initRepo(plain);
     const plainStatus = stashGuardStatus(plain, config);

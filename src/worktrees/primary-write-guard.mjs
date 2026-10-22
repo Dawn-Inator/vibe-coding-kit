@@ -32,6 +32,7 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { loadConfig } from './config.mjs';
+import { isPathWithin, samePathIdentity } from '../lib/path-identity.mjs';
 
 // The PreToolUse `matcher` in claude-settings-snippet.json must list exactly these
 // names; primary-write-guard.test.mjs asserts the two stay in sync.
@@ -47,14 +48,14 @@ function git(cwd, args) {
 
 function realpathOrNull(p) {
   try {
-    return realpathSync(p);
+    return realpathSync.native(p);
   } catch {
     return null;
   }
 }
 
-// realpath of a path that may not exist yet (a Write creating a new file): resolve the
-// deepest existing ancestor and re-append the missing tail.
+// Preserve canonical target paths for allow-prefix classification. Containment
+// itself is delegated to the shared identity helper below.
 function realpathLenient(p) {
   const tail = [];
   let current = resolve(p);
@@ -66,11 +67,6 @@ function realpathLenient(p) {
     tail.push(basename(current));
     current = parent;
   }
-}
-
-function isInside(root, target) {
-  const rel = relative(root, target);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 /** Primary checkout toplevel (realpath), or null when it cannot be resolved. */
@@ -89,7 +85,7 @@ function otherWorktreeRoots(cwd, primaryRoot) {
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
     .map((line) => realpathOrNull(line.slice('worktree '.length).trim()))
-    .filter((root) => root && root !== primaryRoot);
+    .filter((root) => root && !samePathIdentity(root, primaryRoot));
 }
 
 /** `config.primaryWriteGuard.allowPrefixes`, falling back to the default. Never throws. */
@@ -136,8 +132,9 @@ export function decidePrimaryWrite({ toolName, toolInput, cwd, allowPrefixes } =
     if (!primary) return { allow: true };
 
     const target = realpathLenient(isAbsolute(raw) ? raw : resolve(base, raw));
-    if (!target || !isInside(primary, target)) return { allow: true };
-    if (otherWorktreeRoots(base, primary).some((root) => isInside(root, target))) return { allow: true };
+    if (!target) return { allow: true };
+    if (!isPathWithin(primary, target)) return { allow: true };
+    if (otherWorktreeRoots(base, primary).some((root) => isPathWithin(root, target))) return { allow: true };
     if (matchesPrefix(relative(primary, target), allowPrefixes ?? readAllowPrefixes())) return { allow: true };
     return { allow: false, reason: denyReason(target) };
   } catch {

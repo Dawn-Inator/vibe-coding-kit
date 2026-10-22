@@ -129,7 +129,7 @@ test('copied installation finds retired-entry and dispatch rules without cwd or 
     process.execPath,
     [
       '--test',
-      '--test-reporter=spec',
+      '--test-reporter=tap',
       '--test-name-pattern=^(retired startup model-routing skill|active instructions|dispatch-only model choice|class guard)',
       installedTest,
     ],
@@ -137,6 +137,17 @@ test('copied installation finds retired-entry and dispatch rules without cwd or 
   );
   const output = `${result.stdout}\n${result.stderr}`;
   assert.equal(result.status, 0, output);
-  assert.match(output, /tests 4/);
-  assert.match(output, /pass 4/);
+  for (const name of [
+    'retired startup model-routing skill is absent from both discoverable source trees',
+    'active instructions cannot route through the retired skill or require its startup pause',
+    'dispatch-only model choice remains in the existing orchestration authority',
+    'class guard catches stale consumers in arbitrary paths and allows historical prose',
+  ]) {
+    assert.ok(
+      output.split(/\r?\n/).some((line) => /^ok \d+ - /.test(line) && line.endsWith(`- ${name}`)),
+      name,
+    );
+  }
+  assert.match(output, /^# pass 4$/m, output);
+  assert.match(output, /^# fail 0$/m, output);
 });

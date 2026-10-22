@@ -5,7 +5,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readStdinSync } from '../lib/sync-stdin.mjs';
+import { readStdin } from '../lib/sync-stdin.mjs';
 
 const BACKGROUND_WAIT_PATTERNS = [
   /\b(background|backgrounded|nohup|disowned|run_in_background|monitor tool|polling|waiting for (its|the|a) notification|detached)\b/i,
@@ -57,7 +57,7 @@ function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
   }
 }
 
-function readInput(argv) {
+async function readInput(argv) {
   const fileFlag = argv.indexOf('--file');
   if (fileFlag !== -1) {
     const path = argv[fileFlag + 1];
@@ -65,12 +65,12 @@ function readInput(argv) {
   }
   const positional = argv.find((arg) => arg !== '--' && !arg.startsWith('--'));
   if (positional) return positional;
-  return readStdinSync() || null;
+  return (await readStdin()) || null;
 }
 
 if (isMainModule(import.meta.url)) {
   try {
-    const text = readInput(process.argv.slice(2));
+    const text = await readInput(process.argv.slice(2));
     if (text === null || text.trim() === '') {
       process.stderr.write('usage: detect-announcement-stall.mjs "<text>" | echo "<text>" | detect-announcement-stall.mjs | detect-announcement-stall.mjs --file <path>\n');
       process.exitCode = 2;

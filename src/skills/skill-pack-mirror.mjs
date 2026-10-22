@@ -35,8 +35,9 @@ export function mirrorRootFor(output, skillName) {
 
 /** Splits `<skill>/<rest>` (relative to .vibe-coding/skills) into its skill name and in-skill path. */
 export function splitSkillRel(relPath, separator = sep) {
-  const segments = relPath.split(separator);
-  if (segments.length < 2) return { name: null, inner: relPath.split(separator).join('/') };
+  const splitter = separator === '/' || separator === '\\' ? /[\\/]/ : separator;
+  const segments = relPath.split(splitter);
+  if (segments.length < 2) return { name: null, inner: segments.join('/') };
   return { name: segments[0], inner: segments.slice(1).join('/') };
 }
 

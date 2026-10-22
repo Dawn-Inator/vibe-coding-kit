@@ -99,7 +99,7 @@ Projects should route their own scripts and automation through that bootstrap be
 
 For an initialized consumer project, a recursive clone retrieves the pinned kit with the parent project. After a normal clone that left the submodule empty, run the generated bootstrap's `prepare` command from inside the project before invoking a kit-backed script.
 
-The documented command surface reflects the implementation currently in this repository. Alternate-layout discovery and automatic migration of existing integrations are not implemented, and cross-platform Git/worktree compatibility remains unverified. Do not infer those guarantees from the default path examples.
+The documented command surface reflects the implementation currently in this repository. CI targets six OS/Node combinations: Ubuntu, macOS, and Windows on Node 20 and 22. That matrix is the compatibility target; individual platform behavior is only verified when its matrix run passes. Alternate-layout discovery and automatic migration of existing integrations are not implemented. Do not infer those guarantees from the default path examples.
 
 ### Generated skill mirrors
 

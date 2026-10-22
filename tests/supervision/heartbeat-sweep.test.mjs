@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -356,19 +356,27 @@ test('offline: no network git command is ever spawned, even with an unreachable 
   git(['remote', 'set-url', 'origin', join(fx.root, 'does-not-exist.git')], fx.primary);
   writeLedger(fx);
 
-  const shimDir = join(fx.root, 'shim');
-  const log = join(fx.root, 'git-calls.log');
-  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
-  mkdirSync(shimDir);
-  writeFileSync(join(shimDir, 'git'), `#!/bin/sh\necho "$@" >> '${log}'\nexec '${realGit}' "$@"\n`);
-  chmodSync(join(shimDir, 'git'), 0o755);
-
-  const out = sweep(fx, ['--worktree-root', fx.worktreeRoot, '--stale-days', '14'], { env: { PATH: `${shimDir}:${process.env.PATH}` } });
+  const trace = join(fx.root, 'git-trace.jsonl');
+  const out = sweep(fx, ['--worktree-root', fx.worktreeRoot, '--stale-days', '14'], { env: { GIT_TRACE2_EVENT: trace } });
   assert.equal(out.status, 1, out.stderr);
   assert.ok(out.cells.some((row) => row.source.startsWith('sweep:worktrees:')), 'the worktree is still found offline');
-  const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-  assert.ok(calls.length > 0, 'the shim saw the sweep run git');
-  assert.deepEqual(calls.filter((call) => /^(fetch|pull|push|clone|ls-remote|remote update)\b/.test(call)), []);
+  const events = readFileSync(trace, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const starts = events.filter((event) => event.event === 'start' && Array.isArray(event.argv));
+  assert.ok(starts.length > 0, 'Git Trace2 observed the sweep run git');
+  const gitCommand = (argv) => {
+    const args = argv[0] === 'git' ? argv.slice(1) : argv;
+    let index = 0;
+    const withValue = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
+    while (index < args.length) {
+      if (withValue.has(args[index])) { index += 2; continue; }
+      if (args[index].startsWith('-')) { index += 1; continue; }
+      break;
+    }
+    return args.slice(index, index + 2).join(' ');
+  };
+  const networkCommands = starts.map(({ argv }) => gitCommand(argv))
+    .filter((command) => /^(fetch|pull|push|clone|ls-remote|remote update)\b/.test(command));
+  assert.deepEqual(networkCommands, []);
 });
 
 // ---- free candidates -------------------------------------------------------------------------

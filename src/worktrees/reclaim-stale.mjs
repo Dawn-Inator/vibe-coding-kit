@@ -30,11 +30,13 @@
 
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isPathWithin, samePathIdentity } from '../lib/path-identity.mjs';
 
 import { makeOwnedTreeWritable } from './writable-tree.mjs';
 import { assertKitSafeToRemove } from '../dependencies/submodule.mjs';
+import { listProcessCommands } from './process-provenance.mjs';
 // eslint-disable-next-line lf/no-bare-pid-probe -- legacy bare pid probe (lock root cure RC4); migrate to lease-lock recordedPidLive/inspectLease
 import { acquireFinishLockQueued, finishLockPath, finishQueueDir, pidIsAlive, releaseFinishLock } from './finish-lock.mjs';
 import {
@@ -70,16 +72,14 @@ const LOG_PREFIX = '[worktree-guard]';
 /** realpath when the path exists (macOS reports /private/var for /var). */
 function canonical(path) {
   try {
-    return realpathSync(resolve(path));
+    return realpathSync.native(resolve(path));
   } catch {
     return resolve(path);
   }
 }
 
 function isSameOrUnder(path, root) {
-  const p = canonical(path);
-  const r = canonical(root);
-  return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
+  return isPathWithin(root, path);
 }
 
 /**
@@ -297,7 +297,19 @@ function procProcessCwds() {
   return cwds;
 }
 
-export function liveProcessCwds() {
+export function liveProcessCwds({ platform = process.platform, listProcesses = listProcessCommands } = {}) {
+  if (platform === 'win32') {
+    const processes = listProcesses({ platform });
+    const cwds = new Set();
+    const unknownPids = [];
+    for (const process of processes) {
+      if (process.cwdStatus === 'readable' && process.cwd) cwds.add(canonical(process.cwd));
+      else if (process.cwdStatus !== 'exited') unknownPids.push(process.pid);
+    }
+    if (unknownPids.length > 0) Object.defineProperty(cwds, 'unknownPids', { value: unknownPids });
+    return cwds;
+  }
+
   const result = spawnSync('lsof', ['-d', 'cwd', '-Fpn'], {
     encoding: 'utf8',
     timeout: 15_000,
@@ -390,8 +402,11 @@ export function assessReclaimCandidate(entry, ctx) {
   if (!ctx.roots.some((root) => isSameOrUnder(path, root))) {
     reasons.push('not under a managed worktree root (pass --worktree-root if create used one)');
   }
-  if (canonical(ctx.primaryPath) === path) reasons.push('primary worktree');
-  if (canonical(ctx.currentPath) === path) reasons.push('the worktree this command is running from');
+  if (samePathIdentity(ctx.primaryPath, path)) reasons.push('primary worktree');
+  if (samePathIdentity(ctx.currentPath, path)) reasons.push('the worktree this command is running from');
+  if (ctx.liveCwds?.unknownPids?.length) {
+    reasons.push(`cannot verify working directories of ${ctx.liveCwds.unknownPids.length} process(es)`);
+  }
   const prefixes = Object.values(config.tools || {}).map((tool) => tool.prefix);
   if (!detached && !prefixes.some((prefix) => branch.startsWith(prefix))) {
     reasons.push(`branch ${branch} does not use a managed prefix (${prefixes.join(', ')})`);
@@ -441,7 +456,7 @@ export function assessReclaimCandidate(entry, ctx) {
   if (ctx.liveCwds && [...ctx.liveCwds].some((cwd) => isSameOrUnder(cwd, path))) {
     reasons.push('a running process has this worktree as its working directory');
   }
-  if (ctx.livePaths.has(path)) reasons.push('a live finish ticket names this worktree');
+  if ([...ctx.livePaths].some((livePath) => samePathIdentity(livePath, path))) reasons.push('a live finish ticket names this worktree');
 
   let landed = null;
   if (baseRef && !/^[0-9a-f]{7,40}$/i.test(baseRef) && !dirty) {
@@ -512,6 +527,9 @@ function removeReclaimable(v, result, { primaryPath, gitOptions, out }) {
   }
   // A killed test run can leave read-only (0555) directories behind; only this
   // verified candidate's own directories get u+rwx back.
+  // Windows pins the parent's current directory and refuses to delete it.
+  // Leave the process in the surviving primary after this removal.
+  process.chdir(primaryPath);
   makeOwnedTreeWritable(v.path);
   // An initialized submodule requires Git's force flag even after its own
   // safety proof. Scope that flag to the exact candidate whose kit passed it;
@@ -601,7 +619,7 @@ export async function reclaimStaleWorktrees(repo, config, options) {
     liveCwds: options.liveCwds !== undefined ? options.liveCwds : liveProcessCwds(),
   };
 
-  const candidates = repo.worktrees.filter((w) => canonical(w.path) !== canonical(primaryPath));
+  const candidates = repo.worktrees.filter((w) => !samePathIdentity(w.path, primaryPath));
   const verdicts = candidates.map((entry) => assessReclaimCandidate(entry, ctx));
   result.removable = verdicts.filter((v) => v.removable);
   result.blocked = verdicts.filter((v) => !v.removable);

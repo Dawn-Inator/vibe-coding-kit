@@ -14,7 +14,7 @@ import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { readStdinSync } from '../../src/lib/sync-stdin.mjs';
+import { readStdin, readStdinSync } from '../../src/lib/sync-stdin.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KIT = join(HERE, '..', '..');
@@ -36,12 +36,12 @@ function runWithDelayedStdin(args, payload, delayMs = 200) {
   });
 }
 
-test('readStdinSync gets a late payload even after process.stdin.isTTY was touched', async () => {
+test('readStdin gets a late payload even after process.stdin.isTTY was touched', async () => {
   const result = await runWithDelayedStdin(
     ['--input-type=module', '-e', `
-import { readStdinSync } from ${JSON.stringify(MODULE_URL)};
+import { readStdin } from ${JSON.stringify(MODULE_URL)};
 void process.stdin.isTTY;
-process.stdout.write(JSON.stringify(readStdinSync({ timeoutMs: 5000 })));
+process.stdout.write(JSON.stringify(await readStdin({ timeoutMs: 5000 })));
 `],
     '{"tool_name":"Bash"}',
   );
@@ -53,6 +53,25 @@ test('detect-announcement-stall reads a late piped payload instead of exiting wi
   const result = await runWithDelayedStdin([STALL_CLI], 'Checked the config.\nNext, I\'ll update the tests.\n');
   assert.equal(result.code, 1, result.err);
   assert.equal(JSON.parse(result.out).stall, true);
+});
+
+test('readStdin resolves at its deadline when a pipe stays open without data', async () => {
+  const script = `
+import { readStdin } from ${JSON.stringify(MODULE_URL)};
+process.stdout.write(JSON.stringify(await readStdin({ timeoutMs: 30 })));
+`;
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { err += c; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, out, err }));
+    setTimeout(() => child.stdin.end(), 100);
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(JSON.parse(result.out), '');
 });
 
 test('readStdinSync returns "" for an unusable fd and honours its deadline on an empty pipe', () => {

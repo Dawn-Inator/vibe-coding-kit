@@ -12,6 +12,7 @@ import {
   existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync, lstatSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
@@ -21,7 +22,7 @@ import { ageWorktreeReflogs, worktreeAdminDir } from '../support/worktree-age.mj
 import { main } from '../../src/worktrees/cli.mjs';
 import { loadConfig } from '../../src/worktrees/config.mjs';
 import { discoverRepo, writeWorktreeMetadata, readWorktreeMetadata } from '../../src/worktrees/worktree-core.mjs';
-import { reclaimStaleWorktrees, finishLockIsLive, liveProcessCwds, newestWorktreeActivity, NON_ACTIVITY_ADMIN_FILES } from '../../src/worktrees/reclaim-stale.mjs';
+import { assessReclaimCandidate, reclaimStaleWorktrees, finishLockIsLive, liveProcessCwds, newestWorktreeActivity, NON_ACTIVITY_ADMIN_FILES } from '../../src/worktrees/reclaim-stale.mjs';
 
 after(cleanupTempDirs);
 
@@ -52,13 +53,14 @@ function makeFixtureRepo({ withKit = false } = {}) {
     writeFileSync(join(kitSource, 'README.md'), 'fixture kit\n');
     run(['add', '-A'], kitSource);
     run(['commit', '-m', 'fixture kit'], kitSource);
-    run(['-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'vibe-coding-kit', `file://${kitSource}`, '.vibe-coding/kit'], primaryDir);
+    const kitUrl = pathToFileURL(kitSource).href;
+    run(['-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'vibe-coding-kit', kitUrl, '.vibe-coding/kit'], primaryDir);
     run(['config', 'protocol.file.allow', 'always'], primaryDir);
     const configDir = join(primaryDir, '.vibe-coding');
     mkdirSync(configDir, { recursive: true });
     writeFileSync(join(configDir, 'project.config.json'), `${JSON.stringify({
       schemaVersion: 1,
-      kit: { path: '.vibe-coding/kit', url: `file://${kitSource}` },
+      kit: { path: '.vibe-coding/kit', url: kitUrl },
       adapter: 'engineering/automation/vibe-coding/project-adapter.mjs',
       identity: { name: 'Fixture Consumer', email: 'consumer@example.invalid' },
     })}\n`);
@@ -488,6 +490,48 @@ test('without lsof, the live-process check falls back to /proc and still sees a 
     process.env.PATH = originalPath;
     child.kill('SIGKILL');
   }
+});
+
+test('Windows process CWD inventory preserves readable, unreadable, and exited statuses', () => {
+  const root = mkdtempTracked('wtg-windows-cwds-');
+  const processCwd = join(root, 'process-cwd');
+  mkdirSync(processCwd);
+  const cwds = liveProcessCwds({
+    platform: 'win32',
+    listProcesses: () => [
+      { pid: 201, cwd: processCwd, cwdStatus: 'readable' },
+      { pid: 202, cwd: null, cwdStatus: 'unreadable' },
+      { pid: 203, cwd: null, cwdStatus: 'exited' },
+    ],
+  });
+  assert.ok(cwds.has(realpathSync(processCwd)));
+  assert.deepEqual(cwds.unknownPids, [202]);
+});
+
+test('unknown Windows CWDs fail closed for reclamation without turning processes into AI matches', () => {
+  const root = mkdtempTracked('wtg-windows-cwd-unknown-');
+  const candidate = join(root, 'candidate');
+  const primary = join(root, 'primary');
+  mkdirSync(candidate);
+  mkdirSync(primary);
+  const cwds = liveProcessCwds({
+    platform: 'win32',
+    listProcesses: () => [{ pid: 204, cwd: null, cwdStatus: 'unreadable' }],
+  });
+  const result = assessReclaimCandidate({ path: candidate, branch: 'claude/windows-cwd' }, {
+    config,
+    primaryPath: primary,
+    currentPath: primary,
+    roots: [root],
+    staleDays: 14,
+    allowRecent: false,
+    usePatchId: false,
+    nowMs: Date.now(),
+    livePaths: new Set(),
+    liveCwds: cwds,
+  });
+  assert.equal(result.removable, false);
+  assert.ok(result.reasons.includes('cannot verify working directories of 1 process(es)'));
 });
 
 test('class guard: reclaim removes worktrees only from inside the finish.lock turn', () => {

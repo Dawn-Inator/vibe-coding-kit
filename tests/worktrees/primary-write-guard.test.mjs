@@ -54,7 +54,7 @@ function fixture() {
   const nested = join(primary, 'nested-wt');
   git(primary, 'worktree', 'add', '-q', '-b', 'feat-b', nested);
   const viaLink = join(base, 'link-to-primary');
-  symlinkSync(primary, viaLink);
+  symlinkSync(primary, viaLink, process.platform === 'win32' ? 'junction' : 'dir');
   return { base, primary, sibling, nested, viaLink };
 }
 
@@ -122,6 +122,13 @@ test('a symlinked path to the primary is still recognised, even for a new file',
   assert.equal(write(join(viaLink, 'new-dir', 'a.txt'), sibling).allow, false);
   assert.equal(write(join(viaLink, 'a.txt'), viaLink).allow, false);
   assert.equal(resolvePrimaryRoot(viaLink), primary);
+});
+
+test('Windows drive/case aliases still resolve to the protected primary tree', { skip: process.platform !== 'win32' && 'Windows path alias behavior' }, () => {
+  const { primary } = fixture();
+  const casingAlias = primary.replace(/[a-z]/g, (letter, index) => (index % 2 === 0 ? letter.toUpperCase() : letter));
+  assert.notEqual(casingAlias, primary);
+  assert.equal(write(join(casingAlias, 'new-dir', 'file.txt'), casingAlias).allow, false);
 });
 
 test('NotebookEdit uses notebook_path and MultiEdit uses file_path', () => {

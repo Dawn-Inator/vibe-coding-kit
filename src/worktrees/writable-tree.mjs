@@ -4,7 +4,9 @@
 // Removing a directory entry needs write permission on its PARENT, so only directories
 // need fixing; files are left alone. Every visited path is built from readdir names under
 // `root`; symlinks are never followed or chmod-ed; directories owned by another uid are
-// never touched; the walk stays on the root's device. Only u+rwx is added.
+// never touched; the walk stays on the root's device. Only u+rwx is added. Windows has
+// ACLs rather than POSIX uid/mode ownership: this helper leaves those security descriptors
+// untouched, and the subsequent Git/filesystem removal continues to enforce the ACL.
 
 import { chmodSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,6 +16,7 @@ const OWNER_RWX = 0o700;
 // -> { chmodded, foreign, symlinks, errors }
 export function makeOwnedTreeWritable(root, { uid = typeof process.getuid === 'function' ? process.getuid() : -1 } = {}) {
   const result = { chmodded: 0, foreign: 0, symlinks: 0, errors: 0 };
+  if (process.platform === 'win32') return { ...result, aclProtected: true };
   let rootStat;
   try {
     rootStat = lstatSync(root);

@@ -11,17 +11,18 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   isolatedFixtureGitEnv,
   withFixtureCommitIdentity,
 } from '../support/isolated-git-env.mjs';
 
-import { main, parseArgs } from '../../src/worktrees/cli.mjs';
+import { main, parseArgs, removeWorktreeSafely } from '../../src/worktrees/cli.mjs';
 import { discoverRepo, readWorktreeMetadata } from '../../src/worktrees/worktree-core.mjs';
 import { stashGuardStatus, primaryAuditLogPath } from '../../src/worktrees/hooks.mjs';
 import { loadConfig } from '../../src/worktrees/config.mjs';
@@ -31,6 +32,9 @@ import { aiParentEnvMarkers } from '../../src/worktrees/process-provenance.mjs';
 // markers sync-primary treats as proof of AI-parenthood. A "human shell" test
 // must scrub every configured marker.
 const NO_AI_MARKERS = Object.fromEntries(aiParentEnvMarkers(loadConfig()).map((name) => [name, undefined]));
+const CROSS_PLATFORM_COMMAND = fileURLToPath(new URL('./fixtures/cross-platform-command.mjs', import.meta.url));
+const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
+const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
 
 // ---------------------------------------------------------------------------
 // test helpers
@@ -77,6 +81,25 @@ function makeFixtureRepo(rootDir, { fileCount = 0 } = {}) {
 
   return { remoteDir, primaryDir };
 }
+
+test('safe removal moves the process cwd to the surviving primary before deleting a worktree', () => {
+  const original = process.cwd();
+  const root = mkdtempSync(join(tmpdir(), 'wtg-remove-own-cwd-'));
+  try {
+    const { primaryDir } = makeFixtureRepo(root);
+    const worktreePath = join(root, 'worktrees', 'candidate');
+    run('git', ['worktree', 'add', '-b', 'claude/remove-own-cwd', worktreePath, 'main'], primaryDir);
+
+    process.chdir(worktreePath);
+    removeWorktreeSafely({ projectRoot: worktreePath, worktreePath, primaryPath: primaryDir });
+
+    assert.equal(process.cwd(), realpathSync(primaryDir), 'do not restore cwd into the directory that Git removed');
+    assert.equal(existsSync(worktreePath), false);
+  } finally {
+    process.chdir(original);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 async function withCwd(dir, fn, { worktreeTool = 'claude' } = {}) {
   const original = process.cwd();
@@ -964,7 +987,7 @@ test('finish: while it holds the lock, the lock file names the worktree and the 
     mkdirSync(join(created.path, '.husky', '_'), { recursive: true });
     writeFileSync(
       join(created.path, '.husky', '_', 'pre-push'),
-      `#!/bin/sh\ncp "${lockFile}" "${snapshot}"\nexit 0\n`,
+      `#!/bin/sh\nexec ${nodeFixture('snapshot', lockFile, snapshot)}\n`,
       { mode: 0o755 },
     );
 
@@ -1001,9 +1024,9 @@ test('create --with-deps=<client> runs that client\'s installCommand, and client
     writeFileSync(configPath, JSON.stringify({
       clients: {
         web: {
-          installCommand: `touch ${JSON.stringify(markerFile)}`,
-          testCommand: `touch ${JSON.stringify(testMarkerFile)}`,
-          typecheckCommand: `touch ${JSON.stringify(typecheckMarkerFile)}`,
+          installCommand: nodeFixture('write-marker', markerFile),
+          testCommand: nodeFixture('write-marker', testMarkerFile),
+          typecheckCommand: nodeFixture('write-marker', typecheckMarkerFile),
         },
       },
       defaultClient: 'web',

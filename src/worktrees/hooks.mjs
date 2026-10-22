@@ -36,6 +36,7 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { samePathIdentity } from '../lib/path-identity.mjs';
 
 // ---------------------------------------------------------------------------
 // Small git/process helpers (deliberately self-contained -- this module does
@@ -102,6 +103,12 @@ function primaryLockHooksDir(primaryPath) {
 
 function resolveMaybeRelative(worktreePath, value) {
   return isAbsolute(value) ? value : resolve(worktreePath, value);
+}
+
+function setHookExecutable(path) {
+  // Windows permissions are ACL based; Git for Windows runs hook scripts via
+  // its bundled POSIX shell and enforces the file's Windows ACL.
+  if (process.platform !== 'win32') chmodSync(path, 0o755);
 }
 
 // ---------------------------------------------------------------------------
@@ -206,12 +213,12 @@ export function installStashGuardHook(worktreePath, config) {
 
   const hookFile = join(hooksDir, 'reference-transaction');
   writeFileSync(hookFile, stashGuardHookScript(config));
-  chmodSync(hookFile, 0o755);
+  setHookExecutable(hookFile);
 
   for (const hookName of config.forwardedHookNames) {
     const shimFile = join(hooksDir, hookName);
     writeFileSync(shimFile, huskyForwardShimScript(hookName, config));
-    chmodSync(shimFile, 0o755);
+    setHookExecutable(shimFile);
   }
 
   runGit(['config', '--worktree', 'core.hooksPath', hooksDir], worktreePath);
@@ -233,7 +240,7 @@ export function stashGuardStatus(worktreePath, config) {
   const hooksPath = res.stdout;
   const expectedHooksDir = stashGuardHooksDir(worktreePath);
   const absoluteHooksPath = resolveMaybeRelative(worktreePath, hooksPath);
-  const installed = absoluteHooksPath === expectedHooksDir;
+  const installed = samePathIdentity(absoluteHooksPath, expectedHooksDir);
 
   let intact = false;
   if (installed) {
@@ -483,7 +490,10 @@ function writeIfChanged(filePath, content, mode) {
     return false;
   }
   writeFileSync(filePath, content);
-  chmodSync(filePath, mode);
+  // Windows permissions are ACL based; chmod's POSIX executable bits are not
+  // an authorization boundary there. Git for Windows invokes hooks through its
+  // bundled POSIX shell and the existing Windows ACL controls access.
+  if (process.platform !== 'win32') chmodSync(filePath, mode);
   return true;
 }
 
@@ -547,7 +557,7 @@ export function primaryLockHookIsInstalled(primaryPath, config) {
 
   const expectedHooksDir = primaryLockHooksDir(primaryPath);
   const absoluteHooksPath = resolveMaybeRelative(primaryPath, res.stdout);
-  if (absoluteHooksPath !== expectedHooksDir) return false;
+  if (!samePathIdentity(absoluteHooksPath, expectedHooksDir)) return false;
 
   return existsSync(join(expectedHooksDir, 'reference-transaction'));
 }
@@ -573,7 +583,7 @@ export function sweepStaleSharedHooksPath(primaryPath, hooksDir, config) {
 
   const absoluteCurrent = resolveMaybeRelative(primaryPath, res.stdout);
   const absoluteHooksDir = resolveMaybeRelative(primaryPath, hooksDir);
-  if (absoluteCurrent !== absoluteHooksDir) return;
+  if (!samePathIdentity(absoluteCurrent, absoluteHooksDir)) return;
 
   runGit(['config', '--file', commonConfigPath, '--unset', 'core.hooksPath'], primaryPath, {
     allowFailure: true,

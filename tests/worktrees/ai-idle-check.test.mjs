@@ -66,9 +66,10 @@ function callerTree(extra = []) {
   ];
 }
 
-function seams({ processes = callerTree(), cwds = {}, now = Date.now() + HOUR_MS } = {}) {
+function seams({ processes = callerTree(), cwds = {}, now = Date.now() + HOUR_MS, platform } = {}) {
   return {
     selfPid: SELF,
+    ...(platform ? { platform } : {}),
     now: () => now,
     listProcesses: () => processes,
     resolveCwds: (pids) => new Map(pids.map((pid) => [pid, cwds[pid] ?? null])),
@@ -170,6 +171,30 @@ test('(c) a live AI process whose cwd cannot be read is busy; one that has exite
   const gone = exitedPid();
   const exited = scan(fx, { processes: callerTree([{ pid: gone, ppid: 1, commandLine: 'claude' }]) });
   assert.equal(exited.busy, false, exited.reasons.join('\n'));
+});
+
+test('(c, Windows) an AI process with unreadable native CWD is busy, while unrelated unreadable processes are not AI matches', () => {
+  const fx = makeRepo({ worktrees: 0 });
+  const aiProcess = {
+    pid: 6001,
+    ppid: 1,
+    commandLine: 'C:\\Tools\\claude.exe\u0000--resume',
+    cwd: null,
+    cwdStatus: 'unreadable',
+  };
+  const self = { pid: SELF, ppid: 1, commandLine: 'C:\\node\\node.exe\u0000cli.mjs', cwd: fx.primary, cwdStatus: 'readable' };
+  const busy = scan(fx, { platform: 'win32', processes: [aiProcess, self] });
+  assert.equal(busy.busy, true);
+  assert.ok(busy.reasons.some((reason) => reason.includes('pid=6001') && reason.includes('unreadable')));
+
+  const unrelated = scan(fx, {
+    platform: 'win32',
+    processes: [
+      { pid: 6002, ppid: 1, commandLine: 'C:\\Windows\\notepad.exe\u0000', cwd: null, cwdStatus: 'unreadable' },
+      self,
+    ],
+  });
+  assert.equal(unrelated.busy, false, unrelated.reasons.join('\n'));
 });
 
 test('(d) uncommitted or untracked files in a linked worktree => busy', () => {

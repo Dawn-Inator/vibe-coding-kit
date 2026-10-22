@@ -306,21 +306,17 @@ test('link rewrite helpers are exact inverses and parseSkillDescription handles 
 });
 
 test('splitSkillRel uses native separators and normalizes inner paths for either platform', () => {
-  assert.deepEqual(splitSkillRel('demo/references/deep/SKILL.md'), {
-    name: 'demo',
-    inner: 'references/deep/SKILL.md',
-  });
-
   const skillsRoot = 'C:\\repo\\.vibe-coding\\skills';
   const windowsRelative = win32.relative(
     skillsRoot,
     win32.join(skillsRoot, 'demo', 'references', 'deep', 'SKILL.md'),
   );
+  const expected = { name: 'demo', inner: 'references/deep/SKILL.md' };
   assert.equal(windowsRelative, 'demo\\references\\deep\\SKILL.md');
-  assert.deepEqual(splitSkillRel(windowsRelative, win32.sep), {
-    name: 'demo',
-    inner: 'references/deep/SKILL.md',
-  });
+  for (const separator of ['/', win32.sep]) {
+    assert.deepEqual(splitSkillRel('demo/references/deep/SKILL.md', separator), expected);
+    assert.deepEqual(splitSkillRel(windowsRelative, separator), expected);
+  }
 });
 
 test('validateSkillPacks covers missing member/entry, entry-as-member and double membership', () => {

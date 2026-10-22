@@ -12,6 +12,7 @@ import {
   existsSync, linkSync, mkdirSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
@@ -32,8 +33,11 @@ import {
 after(cleanupTempDirs);
 
 const STAMP = 'node_modules/.worktree-guard-lockfile-stamp';
+const CROSS_PLATFORM_COMMAND = fileURLToPath(new URL('./fixtures/cross-platform-command.mjs', import.meta.url));
+const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
+const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
 // Appends a line per run, so the number of installs is countable.
-const FAKE_INSTALL = 'mkdir -p node_modules && echo ran >> node_modules/install.log';
+const FAKE_INSTALL = nodeFixture('install');
 
 function configWith(nodeDeps, extra = {}) {
   return { ...DEFAULT_CONFIG, nodeDeps, ...extra };
@@ -111,14 +115,15 @@ test('stale => installed: a missing or different stamp runs the install command 
 
 test('a failing install fails CLOSED: status failed, the exact repair command and output tail in the message, no stamp written', () => {
   const root = makeTree();
-  const config = configWith({ lockfile: 'package-lock.json', installCommand: 'echo "registry unreachable" >&2; exit 3' });
+  const installCommand = nodeFixture('fail', 'registry unreachable', '3');
+  const config = configWith({ lockfile: 'package-lock.json', installCommand });
   const out = collect();
   const result = ensureNodeDepsMatchLockfile({ worktreeRoot: root, config, log: out.log });
   assert.equal(result.status, 'failed');
   assert.equal(result.reason, 'install-failed');
   assert.match(result.message, /exit 3/);
   assert.match(result.message, /registry unreachable/);
-  assert.ok(result.message.includes(`cd "${root}" && echo "registry unreachable" >&2; exit 3`), result.message);
+  assert.ok(result.message.includes(`cd "${root}" && ${installCommand}`), result.message);
   assert.match(result.message, /worktree-guard deps-sync/);
   assert.equal(readNodeDepsStamp(root, STAMP), null);
   assert.match(statusLine(out.lines)[0], /status=failed/);
@@ -128,7 +133,7 @@ test('a failing install fails CLOSED: status failed, the exact repair command an
 
 test('an install that rewrites the lockfile fails, and no stamp is written', () => {
   const root = makeTree();
-  const config = configWith({ lockfile: 'package-lock.json', installCommand: 'echo tampered >> package-lock.json' });
+  const config = configWith({ lockfile: 'package-lock.json', installCommand: nodeFixture('tamper-lockfile') });
   const result = ensureNodeDepsMatchLockfile({ worktreeRoot: root, config, log: () => {} });
   assert.equal(result.status, 'failed');
   assert.equal(result.reason, 'lockfile-modified');
@@ -288,11 +293,11 @@ test('create installs stale dependencies before handing out the path, and the lo
 
 test('create fails closed when the install fails: non-zero exit, no "created" line, the repair command is printed', async () => {
   const fx = makeProject();
-  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: 'exit 4' });
+  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: nodeFixture('fail', 'fixture failure', '4') });
   const out = await create(fx, 'bad-install');
   assert.equal(out.result, 1);
   assert.equal(out.logs.some((line) => /created branch/.test(line)), false);
-  assert.match(out.errors.join('\n'), /Repair: cd ".*" && exit 4/);
+  assert.match(out.errors.join('\n'), /Repair: cd ".*" && ".*cross-platform-command\.mjs" "fail"/);
   assert.ok(out.logs.some((line) => /status=failed/.test(line)));
 });
 
@@ -341,7 +346,7 @@ test('finish stops BEFORE the push when the dependency repair fails, keeping the
 
   pushMainChange(fx, 'package-lock.json', 'lock v2\n', 'bump lockfile');
   const remoteBefore = run(['rev-parse', 'main'], fx.remoteDir);
-  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: 'exit 9' });
+  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: nodeFixture('fail', 'fixture failure', '9') });
   writeFileSync(join(path, 'feature.txt'), 'feature\n');
 
   const out = await withCwd(path, () => capture(() => (
@@ -367,7 +372,7 @@ test('deps-sync repairs a stale worktree on demand, fails closed when the instal
   assert.match(statusLine((await withCwd(path, () => capture(() => main(['deps-sync', '--config', fx.configPath])))).logs)[0], /status=fresh/);
 
   writeFileSync(join(path, 'package-lock.json'), 'lock v9\n');
-  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: 'exit 2' });
+  fx.writeConfig({ lockfile: 'package-lock.json', installCommand: nodeFixture('fail', 'fixture failure', '2') });
   const failed = await withCwd(path, () => capture(() => main(['deps-sync', '--config', fx.configPath])));
   assert.equal(failed.result, 1);
   assert.match(failed.errors.join('\n'), /Repair: cd /);

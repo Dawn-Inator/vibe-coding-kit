@@ -36,9 +36,10 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readlinkSync, realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { syncPrimarySettings } from './config.mjs';
+import { isPathWithin, samePathIdentity } from '../lib/path-identity.mjs';
 // eslint-disable-next-line lf/no-bare-pid-probe -- legacy bare pid probe (lock root cure RC4); migrate to lease-lock recordedPidLive/inspectLease
 import { finishQueueDir, listLiveQueueTickets, pidIsAlive } from './finish-lock.mjs';
 import { listProcessCommands, matchesAiParentProcess } from './process-provenance.mjs';
@@ -53,7 +54,7 @@ function canonical(path) {
   const tail = [];
   for (let current = absolute; ; current = dirname(current)) {
     try {
-      return join(realpathSync(current), ...tail);
+      return join(realpathSync.native(current), ...tail);
     } catch {
       if (dirname(current) === current) return absolute;
       tail.unshift(basename(current));
@@ -62,9 +63,7 @@ function canonical(path) {
 }
 
 function isSameOrUnder(path, root) {
-  const p = canonical(path);
-  const r = canonical(root);
-  return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
+  return samePathIdentity(path, root) || isPathWithin(root, path);
 }
 
 /** Linked (non-primary) worktrees that still exist on disk. */
@@ -73,7 +72,7 @@ function linkedWorktrees(repo) {
   const linked = [];
   const missing = [];
   for (const entry of repo.worktrees ?? []) {
-    if (primary && canonical(entry.path) === canonical(primary)) continue;
+    if (primary && samePathIdentity(entry.path, primary)) continue;
     (existsSync(entry.path) ? linked : missing).push(entry.path);
   }
   return { linked, missing };
@@ -154,7 +153,7 @@ export function probeFinishLocks(stateDir) {
  * ancestors) whose cwd is inside the primary checkout or a linked worktree.
  * An AI process whose cwd cannot be read while it is still alive counts as busy.
  */
-export function probeOtherAiProcesses({ repo, config, selfPid, listProcesses, resolveCwds }) {
+export function probeOtherAiProcesses({ repo, config, selfPid, listProcesses, resolveCwds, platform = process.platform }) {
   const table = listProcesses();
   const ppidOf = new Map(table.map((p) => [p.pid, p.ppid]));
   const own = new Set([selfPid]);
@@ -164,7 +163,13 @@ export function probeOtherAiProcesses({ repo, config, selfPid, listProcesses, re
 
   const candidates = table.filter((p) => !own.has(p.pid) && matchesAiParentProcess(p.commandLine, config));
   const roots = [repo.primaryWorktree?.path ?? repo.topLevel, ...linkedWorktrees(repo).linked];
-  const cwds = resolveCwds(candidates.map((p) => p.pid));
+  // Windows process inventory is the source of truth; never fall back to the
+  // POSIX lsof/proc probes there. Missing per-row status is treated as unknown
+  // below, which fails closed only for processes that matched an AI CLI.
+  const windowsRowsHaveCwd = platform === 'win32';
+  const cwds = windowsRowsHaveCwd
+    ? new Map(candidates.map((proc) => [proc.pid, proc.cwdStatus === 'readable' ? proc.cwd : null]))
+    : resolveCwds(candidates.map((p) => p.pid));
 
   const reasons = [];
   const report = [];
@@ -172,12 +177,23 @@ export function probeOtherAiProcesses({ repo, config, selfPid, listProcesses, re
     const name = proc.commandLine.split('\u0000')[0].split(/[\\/]/).pop();
     const cwd = cwds.get(proc.pid);
     if (!cwd) {
+      if (windowsRowsHaveCwd && proc.cwdStatus === 'exited') continue;
+      if (windowsRowsHaveCwd) {
+        reasons.push(`cwd of AI process pid=${proc.pid} (${name}) is ${proc.cwdStatus || 'unknown'}`);
+        report.push(`other-process: pid=${proc.pid} name=${name} cwd=(${proc.cwdStatus || 'unknown'})`);
+        continue;
+      }
       // eslint-disable-next-line lf/no-bare-pid-probe -- legacy bare pid probe (lock root cure RC4); migrate to lease-lock recordedPidLive/inspectLease
       if (pidIsAlive(proc.pid)) {
         reasons.push(`cwd of AI process pid=${proc.pid} (${name}) could not be read`);
         report.push(`other-process: pid=${proc.pid} name=${name} cwd=(unreadable)`);
       }
       continue; // exited between listing and probing
+    }
+    if (platform === 'win32' && (!samePathIdentity(cwd, cwd) || roots.some((root) => !samePathIdentity(root, root)))) {
+      reasons.push(`could not prove Windows path identity for AI process pid=${proc.pid} (${name})`);
+      report.push(`other-process: pid=${proc.pid} name=${name} cwd=(identity-unverified)`);
+      continue;
     }
     if (roots.some((root) => isSameOrUnder(cwd, root))) {
       reasons.push(`AI process pid=${proc.pid} (${name}) has its cwd inside the repository`);
@@ -233,17 +249,19 @@ export function probeWorktreeActivity({ repo, idleMinutes, now }) {
  *   stateDir: string,
  *   config: object,
  *   seams?: {
- *     listProcesses?: () => {pid: number, ppid: number, commandLine: string}[],
+ *     listProcesses?: () => {pid: number, ppid: number, commandLine: string, cwd?: string|null, cwdStatus?: string}[],
  *     resolveCwds?: (pids: number[]) => Map<number, string|null>,
  *     now?: () => number,
  *     selfPid?: number,
+ *     platform?: string,
  *   },
  * }} params
  * @returns {{busy: boolean, reasons: string[], report: string[]}}
  */
 export function checkOtherAiActivity({ repo, stateDir, config, seams = {} }) {
   const {
-    listProcesses = () => listProcessCommands(),
+    platform = process.platform,
+    listProcesses = () => listProcessCommands({ platform }),
     resolveCwds = (pids) => resolveProcessCwds(pids),
     now = Date.now,
     selfPid = process.pid,
@@ -254,7 +272,7 @@ export function checkOtherAiActivity({ repo, stateDir, config, seams = {} }) {
   const report = [];
   const probes = [
     ['finish/queue locks', () => probeFinishLocks(stateDir)],
-    ['AI processes', () => probeOtherAiProcesses({ repo, config, selfPid, listProcesses, resolveCwds })],
+    ['AI processes', () => probeOtherAiProcesses({ repo, config, selfPid, listProcesses, resolveCwds, platform })],
     ['worktree activity', () => probeWorktreeActivity({ repo, idleMinutes, now }), true],
   ];
   for (const [name, probe, costly] of probes) {

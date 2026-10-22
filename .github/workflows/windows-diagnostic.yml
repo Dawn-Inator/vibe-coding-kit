@@ -1,0 +1,41 @@
+name: Windows diagnostic
+
+on:
+  push:
+    branches:
+      - 'diagnostic/windows-**'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-diagnostic:
+    name: Windows / Node 22 / group ${{ matrix.group }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        group: ['1', '2', '3']
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Record runner versions
+        shell: bash
+        run: |
+          git --version
+          node --version
+          node -p 'process.platform + " " + process.arch'
+
+      - name: Run the fixed manifest group
+        shell: bash
+        run: node tests/run-windows-diagnostic.mjs "${{ matrix.group }}"

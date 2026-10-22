@@ -13,6 +13,7 @@ import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { samePathIdentity } from '../lib/path-identity.mjs';
 
 import { loadConfig, syncPrimarySettings } from './config.mjs';
 import {
@@ -80,6 +81,10 @@ export function removeWorktreeSafely({
   beforeRemove,
 }) {
   const proof = assertKitSafeToRemove({ projectRoot });
+  // Windows cannot remove a worktree while this process still has that tree
+  // as its current directory. Stay in the primary after removal; restoring the
+  // caller's cwd could point back into a directory Git just deleted.
+  process.chdir(primaryPath);
   beforeRemove?.();
   const args = ['worktree', 'remove', ...(force ? ['--force'] : []), worktreePath];
   runGit(args, primaryPath, { allowFailure: false, ...(env ? { env } : {}) });
@@ -248,7 +253,7 @@ async function lockedGit(lock, args, cwd, options = {}) {
 
 function samePath(a, b) {
   if (!a || !b) return false;
-  return resolve(a) === resolve(b);
+  return samePathIdentity(a, b);
 }
 
 /**
@@ -432,7 +437,7 @@ function commandStatus(flags, config) {
 
   const prefixes = Object.values(config.tools).map((tool) => tool.prefix);
   const managed = repo.worktrees.filter((w) => (
-    w.path !== repo.primaryWorktree?.path
+    !samePath(w.path, repo.primaryWorktree?.path)
     && w.branch
     && prefixes.some((prefix) => w.branch.startsWith(prefix))
   ));
@@ -1214,7 +1219,7 @@ async function commandCleanup(flags, config) {
 
   let cleaned = 0;
   for (const w of repo.worktrees) {
-    if (repo.primaryWorktree && w.path === repo.primaryWorktree.path) continue;
+    if (repo.primaryWorktree && samePath(w.path, repo.primaryWorktree.path)) continue;
     const metadata = readWorktreeMetadata(w.path, config);
     if (metadata.lifecycle === 'merged') {
       // A "merged" worktree that was touched moments ago may be another
