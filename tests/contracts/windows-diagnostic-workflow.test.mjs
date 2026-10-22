@@ -34,7 +34,7 @@ test('native-only diagnostic refs run the bounded proof without running or claim
   const groups = workflow.slice(groupsStart);
   assert.match(proof, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-'\)/u);
   assert.match(proof, /run: node tests\/run-windows-native-proof\.mjs/u);
-  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\) \}\}/u);
+  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\) \}\}/u);
   assert.match(groups, /needs: windows-native-proof/u);
   assert.match(groups, /node tests\/run-windows-diagnostic\.mjs/u);
   assert.doesNotMatch(proof, /run:.*run-windows-diagnostic|tests\/run\.mjs/u);
@@ -56,6 +56,25 @@ test('Git hook context diagnostic runs only its fixed Node 20/22 regressions aft
 
   const groups = workflow.slice(groupsStart);
   assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\)/u);
+  assert.match(groups, /matrix\.group/u);
+});
+
+test('transport diagnostic runs its fixed CLI proof on Node 20/22 after native proofs and excludes full groups', () => {
+  const proofStart = workflow.indexOf('\n  windows-native-proof:');
+  const transportStart = workflow.indexOf('\n  windows-transport-proof:');
+  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
+  assert.ok(proofStart >= 0 && transportStart > proofStart && groupsStart > transportStart);
+
+  const transport = workflow.slice(transportStart, groupsStart);
+  assert.match(transport, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\)/u);
+  assert.match(transport, /needs: windows-native-proof/u);
+  assert.match(transport, /runs-on: windows-latest/u);
+  assert.match(transport, /matrix:\s+node: \['20', '22'\]/u);
+  assert.match(transport, /run: node tests\/run-windows-transport-proof\.mjs/u);
+  assert.doesNotMatch(transport, /run-windows-diagnostic|matrix\.group|github\.event/u);
+
+  const groups = workflow.slice(groupsStart);
+  assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\)/u);
   assert.match(groups, /matrix\.group/u);
 });
 

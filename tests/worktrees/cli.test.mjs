@@ -23,7 +23,7 @@ import {
 } from '../support/isolated-git-env.mjs';
 
 import { main, parseArgs, removeWorktreeSafely } from '../../src/worktrees/cli.mjs';
-import { discoverRepo, readWorktreeMetadata } from '../../src/worktrees/worktree-core.mjs';
+import { discoverRepo, readWorktreeMetadata, GIT_RETRY_BACKOFF_MS } from '../../src/worktrees/worktree-core.mjs';
 import { stashGuardStatus, primaryAuditLogPath } from '../../src/worktrees/hooks.mjs';
 import { loadConfig } from '../../src/worktrees/config.mjs';
 import { aiParentEnvMarkers } from '../../src/worktrees/process-provenance.mjs';
@@ -37,7 +37,7 @@ const CROSS_PLATFORM_COMMAND = fileURLToPath(new URL('./fixtures/cross-platform-
 const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
 const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
 
-function retryingDescendantTransport(firstAttemptPath, childPidPath) {
+function retryingDescendantTransport(firstAttemptPath, childPidPath, readinessBudgetMs) {
   return [
     "const fs = require('node:fs');",
     "const { spawn } = require('node:child_process');",
@@ -51,7 +51,7 @@ function retryingDescendantTransport(firstAttemptPath, childPidPath) {
     "const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid)); setInterval(() => {}, 1000);`;",
     "const child = spawn(process.execPath, ['-e', childCode], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' });",
     "child.unref();",
-    "const deadline = Date.now() + 4000;",
+    `const deadline = Date.now() + ${readinessBudgetMs};`,
     "while (!fs.existsSync(childPidPath) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
     "if (!fs.existsSync(childPidPath)) process.exit(4);",
   ].join('\n');
@@ -988,7 +988,7 @@ test('finish releases the lock if primary-CWD setup fails before heartbeat initi
   }
 });
 
-test('finish: a git network call that hangs is killed at the hold limit, the lock is released, and the error says so', async () => {
+test('finish: a git network call that hangs is killed at the hold limit, the lock is released, and the error says so', { timeout: 120_000 }, async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'wtg-hold-hang-'));
   try {
     const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'hold hang');
@@ -1000,7 +1000,12 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
     const transport = `node ${shellPath(CROSS_PLATFORM_COMMAND)} hang-and-record-pid ${shellPath(childPidFile)}`;
     run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
     const cfgPath = join(tmp, 'hold.json');
-    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 1500 } }));
+    // Windows job-controller startup and the preceding Git setup can exceed
+    // the tiny POSIX hold budget before the ext transport gets a PID. Keep the
+    // hold finite while giving the real descendant time to start on either OS.
+    const holdLimitMs = process.platform === 'win32' ? 30_000 : 1500;
+    const descendantReapBudgetMs = process.platform === 'win32' ? 30_000 : 5000;
+    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: holdLimitMs } }));
 
     const finishRun = await withEnv({
       GIT_CONFIG_COUNT: '1',
@@ -1012,7 +1017,7 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
 
     assert.equal(finishRun.result, 1);
     assert.ok(
-      finishRun.errors.some((l) => /hold limit of 1500ms reached during `git fetch/.test(l)),
+      finishRun.errors.some((l) => l.includes(`hold limit of ${holdLimitMs}ms reached during ` + '`git fetch')),
       finishRun.errors.join('\n'),
     );
     assert.equal(existsSync(lockFile), false);
@@ -1020,7 +1025,7 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
     const childPid = Number(readFileSync(childPidFile, 'utf8'));
     assert.ok(Number.isSafeInteger(childPid) && childPid > 1, 'the fixture recorded its process id');
     let childStillRunning = true;
-    const reapDeadline = Date.now() + 5000;
+    const reapDeadline = Date.now() + descendantReapBudgetMs;
     while (childStillRunning && Date.now() < reapDeadline) {
       try {
         process.kill(childPid, 0);
@@ -1037,7 +1042,7 @@ test('finish: a git network call that hangs is killed at the hold limit, the loc
   }
 });
 
-test('finish: retry backoff consumes the same hold deadline and parent-exit descendants are reaped', async () => {
+test('finish: retry backoff consumes the same hold deadline and parent-exit descendants are reaped', { timeout: 120_000 }, async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'wtg-retry-deadline-'));
   try {
     const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'retry deadline');
@@ -1045,11 +1050,13 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
     const childPidFile = join(tmp, 'transport-child.pid');
     const transportScript = join(tmp, 'retry-descendant-transport.cjs');
     const shellPath = (path) => path.replaceAll('\\', '/');
-    writeFileSync(transportScript, retryingDescendantTransport(firstAttempt, childPidFile));
+    const cfgPath = join(tmp, 'hold.json');
+    const holdLimitMs = process.platform === 'win32' ? 30_000 : 6000;
+    const descendantReapBudgetMs = process.platform === 'win32' ? 30_000 : 5000;
+    writeFileSync(transportScript, retryingDescendantTransport(firstAttempt, childPidFile, holdLimitMs));
     const transport = `node ${shellPath(transportScript)}`;
     run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
-    const cfgPath = join(tmp, 'hold.json');
-    const holdLimitMs = 6000;
+    assert.ok(700 < GIT_RETRY_BACKOFF_MS[0], 'shared-deadline timing tolerance remains below the retry backoff');
     writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: holdLimitMs } }));
 
     let finishOutcome = null;
@@ -1067,7 +1074,7 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
       throw error;
     });
     let acquiredAt;
-    const lockAcquireDeadline = Date.now() + 15_000;
+    const lockAcquireDeadline = Date.now() + (process.platform === 'win32' ? 60_000 : 15_000);
     while (!acquiredAt && !finishOutcome && Date.now() < lockAcquireDeadline) {
       if (existsSync(lockFile)) {
         try { acquiredAt = JSON.parse(readFileSync(lockFile, 'utf8')).acquiredAt; } catch { /* lock is being written */ }
@@ -1086,7 +1093,7 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
     assert.equal(existsSync(childPidFile), true, `the second attempt launched its descendant (held ${heldMs}ms; ${finishRun.errors.join('\n')})`);
     const childPid = Number(readFileSync(childPidFile, 'utf8'));
     let childStillRunning = true;
-    const reapDeadline = Date.now() + 5000;
+    const reapDeadline = Date.now() + descendantReapBudgetMs;
     while (childStillRunning && Date.now() < reapDeadline) {
       try { process.kill(childPid, 0); } catch (error) {
         if (error?.code === 'ESRCH') childStillRunning = false;
