@@ -14,7 +14,7 @@ after(() => {
   roots.forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 
-async function configureCli(fn) {
+async function configureCli(fn, { maxHoldMs } = {}) {
   const original = {
     cwd: process.cwd(),
     configPath: process.env.WTG_CONFIG_PATH,
@@ -22,13 +22,23 @@ async function configureCli(fn) {
     log: process.env.LIFECYCLE_TEST_LOG,
     failPhase: process.env.LIFECYCLE_FAIL_PHASE,
     mutatePhase: process.env.LIFECYCLE_MUTATE_PHASE,
+    hangPhase: process.env.LIFECYCLE_HANG_PHASE,
+    gitConfigCount: process.env.GIT_CONFIG_COUNT,
+    gitConfigKey: process.env.GIT_CONFIG_KEY_0,
+    gitConfigValue: process.env.GIT_CONFIG_VALUE_0,
   };
   const configDir = mkdtempSync(join(tmpdir(), 'kit-lifecycle-cli-config-'));
   roots.push(configDir);
   const configPath = join(configDir, 'config.json');
-  writeFileSync(configPath, JSON.stringify({ identity: { name: 'Lifecycle CI Agent', email: 'lifecycle-agent@example.com' } }));
+  writeFileSync(configPath, JSON.stringify({
+    identity: { name: 'Lifecycle CI Agent', email: 'lifecycle-agent@example.com' },
+    ...(maxHoldMs ? { queue: { maxHoldMs } } : {}),
+  }));
   process.env.WTG_CONFIG_PATH = configPath;
   process.env.WTG_WORKTREE_TOOL = 'claude';
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = 'protocol.file.allow';
+  process.env.GIT_CONFIG_VALUE_0 = 'always';
   try { return await fn(); }
   finally {
     process.chdir(original.cwd);
@@ -38,6 +48,10 @@ async function configureCli(fn) {
       ['LIFECYCLE_TEST_LOG', original.log],
       ['LIFECYCLE_FAIL_PHASE', original.failPhase],
       ['LIFECYCLE_MUTATE_PHASE', original.mutatePhase],
+      ['LIFECYCLE_HANG_PHASE', original.hangPhase],
+      ['GIT_CONFIG_COUNT', original.gitConfigCount],
+      ['GIT_CONFIG_KEY_0', original.gitConfigKey],
+      ['GIT_CONFIG_VALUE_0', original.gitConfigValue],
     ]) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -53,19 +67,19 @@ async function withCwd(cwd, fn) {
   finally { process.chdir(original); }
 }
 
-function installLifecycleAdapter(project, root) {
+function installLifecycleAdapter(project, root, hookPhases = ['afterCreate', 'beforeCandidate', 'verifyCandidate', 'beforePush', 'afterLand']) {
   const adapterPath = join(project, 'engineering/automation/vibe-coding/project-adapter.mjs');
   mkdirSync(join(project, 'engineering/automation/vibe-coding'), { recursive: true });
+  const hooks = Object.fromEntries(hookPhases.map((phase) => [phase, 'record']));
   writeFileSync(adapterPath, `
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-export const adapterContract = { schemaVersion: 1, hooks: {
-  afterCreate: 'record', beforeCandidate: 'record', verifyCandidate: 'record', beforePush: 'record', afterLand: 'record'
-} };
+export const adapterContract = { schemaVersion: 1, hooks: ${JSON.stringify(hooks)} };
 export async function record(context) {
-  appendFileSync(process.env.LIFECYCLE_TEST_LOG, JSON.stringify({ phase: context.phase, candidateSha: context.candidateSha, pin: context.pin }) + '\\n');
+  appendFileSync(process.env.LIFECYCLE_TEST_LOG, JSON.stringify({ phase: context.phase, pid: process.pid, candidateSha: context.candidateSha, pin: context.pin }) + '\\n');
   if (process.env.LIFECYCLE_FAIL_PHASE === context.phase) throw new Error('fixture hook rejected');
   if (process.env.LIFECYCLE_MUTATE_PHASE === context.phase) writeFileSync(join(context.projectRoot, 'README.md'), 'adapter mutation\\n');
+  if (process.env.LIFECYCLE_HANG_PHASE === context.phase) await new Promise(() => {});
 }
 `);
   const configPath = join(project, '.vibe-coding/project.config.json');
@@ -81,12 +95,12 @@ export async function record(context) {
   return { remote, baseSha: git(remote, ['rev-parse', 'refs/heads/main']).stdout.trim() };
 }
 
-function makeLifecycleRepo() {
+function makeLifecycleRepo({ hookPhases } = {}) {
   const fixture = makeProject();
   roots.push(fixture.root);
   const log = join(fixture.root, 'lifecycle.jsonl');
   writeFileSync(log, '');
-  const { remote, baseSha } = installLifecycleAdapter(fixture.project, fixture.root);
+  const { remote, baseSha } = installLifecycleAdapter(fixture.project, fixture.root, hookPhases);
   return { ...fixture, remote, baseSha, log, worktreeRoot: join(fixture.root, 'worktrees') };
 }
 
@@ -108,6 +122,17 @@ function assertWorktreeAndBranchRetained(fixture, worktreePath) {
   const branch = block.match(/^branch refs\/heads\/(.+)$/mu)?.[1];
   assert.ok(branch, 'failed candidate must keep its branch registered');
   assert.equal(git(fixture.project, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { allowFailure: true }).status, 0);
+}
+
+function isPidAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code !== 'ESRCH'; }
+}
+
+async function waitForPidExit(pid) {
+  const deadline = Date.now() + 3000;
+  while (isPidAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(isPidAlive(pid), false, `hook process ${pid} must be terminated when its finish-lock budget expires`);
 }
 
 test('consumer lifecycle hooks run from begin through finish before the worktree is removed', async () => {
@@ -177,6 +202,58 @@ test('an afterLand gate failure reports the landed push and preserves the worktr
     assert.match(errors.join('\n'), /push DID land/u);
     return path;
   });
+  assert.notEqual(git(fixture.remote, ['rev-parse', 'refs/heads/main']).stdout.trim(), fixture.baseSha);
+  assertWorktreeAndBranchRetained(fixture, worktreePath);
+});
+
+test('finish-lock remaining budget cancels a hanging verify hook and reaps its child', async () => {
+  const fixture = makeLifecycleRepo();
+  const worktreePath = await configureCli(async () => {
+    process.env.LIFECYCLE_TEST_LOG = fixture.log;
+    const path = await createWorktree(fixture);
+    writeFileSync(join(path, 'README.md'), 'candidate content\n');
+    process.env.LIFECYCLE_HANG_PHASE = 'verifyCandidate';
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.map(String).join(' '));
+    let result;
+    try { result = await withCwd(path, () => main(['finish', '--no-wait'])); }
+    finally { console.error = originalError; }
+    assert.equal(result, 1);
+    assert.match(errors.join('\n'), /finish lock hold limit of 12000ms reached during `project adapter hook verifyCandidate`/u);
+    return path;
+  }, { maxHoldMs: 12_000 });
+
+  const hooks = readFileSync(fixture.log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const hangingHook = hooks.find((entry) => entry.phase === 'verifyCandidate');
+  assert.ok(hangingHook, 'verifyCandidate must start before its remaining budget expires');
+  await waitForPidExit(hangingHook.pid);
+  assert.equal(git(fixture.remote, ['rev-parse', 'refs/heads/main']).stdout.trim(), fixture.baseSha);
+  assertWorktreeAndBranchRetained(fixture, worktreePath);
+});
+
+test('an afterLand hold timeout preserves timeout type and reports that push already landed', async () => {
+  const fixture = makeLifecycleRepo({ hookPhases: ['afterLand'] });
+  const worktreePath = await configureCli(async () => {
+    process.env.LIFECYCLE_TEST_LOG = fixture.log;
+    const path = await createWorktree(fixture);
+    writeFileSync(join(path, 'README.md'), 'candidate content\n');
+    process.env.LIFECYCLE_HANG_PHASE = 'afterLand';
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => errors.push(args.map(String).join(' '));
+    let result;
+    try { result = await withCwd(path, () => main(['finish', '--no-wait'])); }
+    finally { console.error = originalError; }
+    assert.equal(result, 1);
+    assert.match(errors.join('\n'), /push DID land .*finish lock hold limit of 12000ms reached during `project adapter hook afterLand`/u);
+    return path;
+  }, { maxHoldMs: 12_000 });
+
+  const hooks = readFileSync(fixture.log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const hangingHook = hooks.find((entry) => entry.phase === 'afterLand');
+  assert.ok(hangingHook, 'afterLand must start before its remaining budget expires');
+  await waitForPidExit(hangingHook.pid);
   assert.notEqual(git(fixture.remote, ['rev-parse', 'refs/heads/main']).stdout.trim(), fixture.baseSha);
   assertWorktreeAndBranchRetained(fixture, worktreePath);
 });

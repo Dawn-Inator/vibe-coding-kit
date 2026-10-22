@@ -44,7 +44,7 @@ node .vibe-coding/kit/cli.mjs check --project-root .
 node .vibe-coding/kit/cli.mjs prepare --project-root .
 ```
 
-Use `prepare --offline` when the required Git object must already be available locally. Preparation does not select a newer version. To upgrade, review and change the gitlink in a deliberate project change, then prepare and validate that pinned commit.
+Use `prepare --offline` only after the registered local submodule module cache contains the exact pinned commit. A cold clone or missing cached commit is refused; `--no-fetch` does not initialize or fetch a submodule on its first use. If offline preparation reports a missing cache or object, rerun `prepare` online. Preparation does not select a newer version. To upgrade, review and change the gitlink in a deliberate project change, then prepare and validate that pinned commit.
 
 The top-level CLI also supports `inspect`, `skills <sync|check>`, and `worktree <command>`. Skill operations compose the selected public skills with project-local skill sources, then write or validate generated mirrors. Worktree commands are forwarded to the worktree runtime; `worktree help` lists its current command names and flags.
 
@@ -86,6 +86,8 @@ The contract permits `afterCreate`, `beforeCandidate`, `verifyCandidate`, `befor
 
 `afterCreate` runs after the worktree has been created, so a failure reports an error but leaves that worktree for inspection. `afterLand` runs only after the push succeeds. If it fails, the remote change is already landed and cannot be rolled back by the hook; the local worktree and branch are preserved for inspection. These hooks are project-owned policy points, not default LingoFly or kit release rules. See the [adapter schema](schemas/adapter.schema.json).
 
+During `finish`, `verifyCandidate`, `beforePush`, and `afterLand` run while the finish lock is held and share its remaining hold-time budget. A slow hook can therefore fail the finish when that budget expires. An `afterLand` timeout is reported after the push has already landed, with the worktree and branch preserved for inspection.
+
 The generated project bootstrap is the small project-owned entry point used before importing the submodule runtime. It can prepare or check the registered submodule without installing a global tool:
 
 ```sh
@@ -98,6 +100,10 @@ Projects should route their own scripts and automation through that bootstrap be
 For an initialized consumer project, a recursive clone retrieves the pinned kit with the parent project. After a normal clone that left the submodule empty, run the generated bootstrap's `prepare` command from inside the project before invoking a kit-backed script.
 
 The documented command surface reflects the implementation currently in this repository. Alternate-layout discovery and automatic migration of existing integrations are not implemented, and cross-platform Git/worktree compatibility remains unverified. Do not infer those guarantees from the default path examples.
+
+### Generated skill mirrors
+
+During `init`, the default `--mirror-policy local` adds or updates a clearly marked `.gitignore` block for `.agents/skills/` and `.claude/skills/`, keeping generated mirrors local. Use `--mirror-policy tracked` when the project deliberately wants to version those generated projections; this removes the managed ignore block. The policy is also recorded in `.vibe-coding/project.config.json` so the project's skill tooling can apply its selected tracking behavior. Existing unrelated `.gitignore` entries are preserved.
 
 ## Project sources and generated files
 

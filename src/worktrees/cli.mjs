@@ -108,7 +108,7 @@ function candidateSnapshot(projectRoot) {
   };
 }
 
-async function runStableLifecycleHook(projectRoot, phase, context, { requireClean = false } = {}) {
+async function runStableLifecycleHook(projectRoot, phase, context, { requireClean = false, signal } = {}) {
   const before = candidateSnapshot(projectRoot);
   if (requireClean && before.status) {
     throw new Error(`refusing ${phase}: candidate worktree is not clean before the adapter hook`);
@@ -122,6 +122,7 @@ async function runStableLifecycleHook(projectRoot, phase, context, { requireClea
       candidateSha: before.head,
       pin: before.kitPin,
     },
+    signal,
   });
   const after = candidateSnapshot(projectRoot);
   if (JSON.stringify(after) !== JSON.stringify(before)) {
@@ -131,6 +132,35 @@ async function runStableLifecycleHook(projectRoot, phase, context, { requireClea
     throw new Error(`project adapter hook ${phase} left the candidate worktree dirty; candidate is invalid`);
   }
   return after;
+}
+
+async function runLockBoundLifecycleHook(lock, projectRoot, phase, context, { requireClean = false } = {}) {
+  await yieldToEventLoop();
+  const remainingMs = lock.remainingHoldMs();
+  if (lock.holdExpired() || remainingMs <= 0) {
+    throw new FinishLockHoldTimeoutError(lock.maxHoldMs, `project adapter hook ${phase}`);
+  }
+  const controller = new AbortController();
+  const timer = Number.isFinite(remainingMs)
+    ? setTimeout(() => controller.abort(), Math.max(1, Math.ceil(remainingMs)))
+    : null;
+  try {
+    const result = await runStableLifecycleHook(projectRoot, phase, context, {
+      requireClean,
+      signal: controller.signal,
+    });
+    if (controller.signal.aborted || lock.holdExpired()) {
+      throw new FinishLockHoldTimeoutError(lock.maxHoldMs, `project adapter hook ${phase}`);
+    }
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted || lock.holdExpired()) {
+      throw new FinishLockHoldTimeoutError(lock.maxHoldMs, `project adapter hook ${phase}`);
+    }
+    throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,11 +812,11 @@ function assertNodeDepsMatchLockfile(cwd, config) {
   if (deps.status === 'failed') throw new Error(deps.message);
 }
 
-async function finalizeIntegration(cwd, config, remoteRef, mode, sources) {
+async function finalizeIntegration(lock, cwd, config, remoteRef, mode, sources) {
   // Reconcile a changed gitlink only after Git has produced the integrated parent tree.
   prepareAndCheckKit(cwd);
   assertNodeDepsMatchLockfile(cwd, config);
-  await runStableLifecycleHook(cwd, 'verifyCandidate', { remoteRef, mode, sources }, { requireClean: true });
+  await runLockBoundLifecycleHook(lock, cwd, 'verifyCandidate', { remoteRef, mode, sources }, { requireClean: true });
   return { mode, sources };
 }
 
@@ -829,7 +859,7 @@ async function integrateOntoRemote(lock, repo, config, remoteRef) {
     }
     reauthorUnpushedCommitsToAiIdentity(cwd, remoteRef, config);
     const sources = listFirstParentMerges(cwd, `${remoteRef}..HEAD`).flatMap((merge) => merge.parents.slice(1));
-    return finalizeIntegration(cwd, config, remoteRef, 'preserve-merges', sources);
+    return finalizeIntegration(lock, cwd, config, remoteRef, 'preserve-merges', sources);
   }
 
   const rebaseResult = await lockedGit(
@@ -850,7 +880,7 @@ async function integrateOntoRemote(lock, repo, config, remoteRef) {
     );
   }
   reauthorUnpushedCommitsToAiIdentity(cwd, remoteRef, config);
-  return finalizeIntegration(cwd, config, remoteRef, 'rebase', []);
+  return finalizeIntegration(lock, cwd, config, remoteRef, 'rebase', []);
 }
 
 async function commandFinish(flags, positional, config) {
@@ -946,7 +976,7 @@ async function commandFinish(flags, positional, config) {
     let pushed = false;
     let lastError;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      await runStableLifecycleHook(repo.topLevel, 'beforePush', {
+      await runLockBoundLifecycleHook(lock, repo.topLevel, 'beforePush', {
         remote: remoteName,
         baseBranch,
         remoteRef,
@@ -974,6 +1004,7 @@ async function commandFinish(flags, positional, config) {
       try {
         integration = await integrateOntoRemote(lock, repo, config, remoteRef);
       } catch (error) {
+        if (error instanceof FinishLockHoldTimeoutError) throw error;
         lastError = `could not integrate the moved ${remoteRef} during retry: ${error.message}`;
         break;
       }
@@ -1004,13 +1035,18 @@ async function commandFinish(flags, positional, config) {
     }
 
     try {
-      await runStableLifecycleHook(repo.topLevel, 'afterLand', {
+      await runLockBoundLifecycleHook(lock, repo.topLevel, 'afterLand', {
         remote: remoteName,
         baseBranch,
         remoteRef,
         head: gitText(['rev-parse', 'HEAD'], repo.topLevel),
       }, { requireClean: true });
     } catch (error) {
+      if (error instanceof FinishLockHoldTimeoutError) {
+        error.pushLanded = true;
+        error.message = `push DID land on ${remoteRef}; worktree and branch are preserved for inspection. ${error.message}`;
+        throw error;
+      }
       throw new Error(`push DID land on ${remoteRef}, but afterLand hook failed; worktree and branch are preserved for inspection: ${error.message}`);
     }
 

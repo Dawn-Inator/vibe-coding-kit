@@ -17,8 +17,9 @@
 //     collected and printed so the operator sees everything that blocks it;
 //   - "landed" is judged against ONE deterministic base ref (never "try several
 //     bases until one says yes");
-//   - removal is plain `git worktree remove` (never --force), so git itself still
-//     refuses a worktree that turned dirty or locked in the meantime;
+//   - a registered kit must first prove its checkout is safe to remove; only
+//     then may that verified worktree use `git worktree remove --force` to let
+//     Git remove its initialized submodule. Ordinary worktrees use plain remove;
 //   - the active-recent floor: any file or git-admin mtime inside
 //     `reclaim.activeRecentHours` means somebody is (or just was) working there,
 //     and the worktree is refused unless the caller passes --allow-recent;
@@ -500,8 +501,9 @@ function recheckUnderLock(v, stateDir) {
 }
 
 function removeReclaimable(v, result, { primaryPath, gitOptions, out }) {
+  let kitProof;
   try {
-    assertKitSafeToRemove({ projectRoot: v.path });
+    kitProof = assertKitSafeToRemove({ projectRoot: v.path });
   } catch (error) {
     const reason = `kit cleanup proof failed: ${error.message}`;
     out(`${LOG_PREFIX} could not reclaim ${v.path}: ${reason}`);
@@ -511,8 +513,11 @@ function removeReclaimable(v, result, { primaryPath, gitOptions, out }) {
   // A killed test run can leave read-only (0555) directories behind; only this
   // verified candidate's own directories get u+rwx back.
   makeOwnedTreeWritable(v.path);
-  // Plain remove, never --force: git refuses a dirty or locked worktree itself.
-  const removed = git(['worktree', 'remove', v.path], primaryPath, gitOptions);
+  // An initialized submodule requires Git's force flag even after its own
+  // safety proof. Scope that flag to the exact candidate whose kit passed it;
+  // ordinary worktrees keep Git's native dirty/locked safeguards.
+  const removeArgs = ['worktree', 'remove', ...(kitProof.applicable ? ['--force'] : []), v.path];
+  const removed = git(removeArgs, primaryPath, gitOptions);
   if (removed.status !== 0) {
     out(`${LOG_PREFIX} could not reclaim ${v.path}: ${removed.stderr || removed.stdout}`);
     result.blocked.push({ ...v, removable: false, reasons: [`git worktree remove failed: ${removed.stderr || removed.stdout}`] });

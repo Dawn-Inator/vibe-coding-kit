@@ -5,8 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-function git(root, args, { allowFailure = false } = {}) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: process.env });
+function git(root, args, { allowFailure = false, env = process.env } = {}) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env });
   if (result.error) throw result.error;
   if (!allowFailure && result.status !== 0) throw new Error((result.stderr || result.stdout).trim());
   return result;
@@ -56,6 +56,22 @@ function targetPin(root, path) {
   return match[1];
 }
 
+function assertOfflinePinCached(root, path) {
+  const pin = targetPin(root, path);
+  const gitPath = git(root, ['rev-parse', '--git-path', 'modules/vibe-coding-kit']).stdout.trim();
+  const modulePath = resolve(root, gitPath);
+  if (!existsSync(modulePath)) {
+    throw new Error(`Offline kit prepare requires the registered module cache at ${modulePath}; fetch or initialize the kit while online first`);
+  }
+  const object = git(modulePath, ['cat-file', '-e', `${pin}^{commit}`], {
+    allowFailure: true,
+    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+  });
+  if (object.status !== 0) {
+    throw new Error(`Offline kit prepare cannot find pinned commit ${pin} in the registered module cache; fetch or initialize the kit while online first`);
+  }
+}
+
 function readHydrationMarker(root, path) {
   const markerPath = hydrationMarkerPath(root);
   if (!existsSync(markerPath)) return null;
@@ -81,10 +97,19 @@ function hydrate(root, path, allowNetwork, { recoverIncomplete = false } = {}) {
   const markerPath = marker || hydrationMarkerPath(root);
   if (!marker) writeFileSync(markerPath, `${JSON.stringify({ path, pin: targetPin(root, path), startedAt: new Date().toISOString() })}\n`, { flag: 'wx' });
   const updateArgs = ['submodule', 'update', '--init', '--checkout'];
-  if (!allowNetwork) updateArgs.push('--no-fetch');
+  if (!allowNetwork) {
+    assertOfflinePinCached(root, path);
+    updateArgs.push('--no-fetch');
+  }
   updateArgs.push('--', path);
   try {
-    git(root, updateArgs);
+    git(root, updateArgs, {
+      env: allowNetwork ? process.env : {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_NO_LAZY_FETCH: '1',
+      },
+    });
   } catch (error) {
     const mode = allowNetwork ? 'with network access' : 'offline';
     throw new Error(`Kit hydration failed ${mode}; no local files were removed. Resolve the reported Git error, then rerun bootstrap prepare. Original error: ${error.message}`);

@@ -34,7 +34,7 @@ function run(args, cwd) {
   return result.stdout.trim();
 }
 
-function makeFixtureRepo() {
+function makeFixtureRepo({ withKit = false } = {}) {
   const root = mkdtempTracked('wtg-reclaim-');
   const remoteDir = join(root, 'remote.git');
   const primaryDir = join(root, 'primary');
@@ -45,6 +45,30 @@ function makeFixtureRepo() {
   run(['commit', '-m', 'initial commit'], primaryDir);
   run(['push', 'origin', 'HEAD:refs/heads/main'], primaryDir);
   run(['branch', '--set-upstream-to=origin/main', 'main'], primaryDir);
+  if (withKit) {
+    const kitSource = join(root, 'kit-source');
+    mkdirSync(kitSource);
+    run(['init', '--initial-branch=main'], kitSource);
+    writeFileSync(join(kitSource, 'README.md'), 'fixture kit\n');
+    run(['add', '-A'], kitSource);
+    run(['commit', '-m', 'fixture kit'], kitSource);
+    run(['-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'vibe-coding-kit', `file://${kitSource}`, '.vibe-coding/kit'], primaryDir);
+    run(['config', 'protocol.file.allow', 'always'], primaryDir);
+    const configDir = join(primaryDir, '.vibe-coding');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, 'project.config.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      kit: { path: '.vibe-coding/kit', url: `file://${kitSource}` },
+      adapter: 'engineering/automation/vibe-coding/project-adapter.mjs',
+      identity: { name: 'Fixture Consumer', email: 'consumer@example.invalid' },
+    })}\n`);
+    const adapterPath = join(primaryDir, 'engineering/automation/vibe-coding/project-adapter.mjs');
+    mkdirSync(join(primaryDir, 'engineering/automation/vibe-coding'), { recursive: true });
+    writeFileSync(adapterPath, 'export const adapterContract = { schemaVersion: 1, hooks: {} };\n');
+    run(['add', '-A'], primaryDir);
+    run(['commit', '-m', 'register the fixture kit'], primaryDir);
+    run(['push', 'origin', 'HEAD:refs/heads/main'], primaryDir);
+  }
   return { root, remoteDir, primaryDir, worktreeRoot: join(root, 'worktrees') };
 }
 
@@ -55,6 +79,20 @@ async function withCwd(dir, fn) {
     return await fn();
   } finally {
     process.chdir(original);
+  }
+}
+
+async function withLocalFileProtocol(fn) {
+  const previous = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'].map((name) => process.env[name]);
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = 'protocol.file.allow';
+  process.env.GIT_CONFIG_VALUE_0 = 'always';
+  try { return await fn(); }
+  finally {
+    for (const [index, name] of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'].entries()) {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    }
   }
 }
 
@@ -187,6 +225,18 @@ test('dry run lists what would be reclaimed and removes nothing; --apply removes
   assert.ok(applied.logs.some((line) => /reclaimed .*abandoned/.test(line)));
   assert.equal(existsSync(path), false);
   assert.equal(branchExists(fx, 'claude/abandoned'), false, 'the landed managed branch is deleted');
+});
+
+test('reclaim removes an initialized kit only after proof, using force for that verified checkout', async () => {
+  const fx = makeFixtureRepo({ withKit: true });
+  const path = await withLocalFileProtocol(() => landedIdleWorktree(fx, 'kit-reclaim'));
+  assert.equal(existsSync(join(path, '.vibe-coding/kit/.git')), true, 'the worktree has an initialized kit submodule');
+
+  const applied = await reclaim(fx, ['--stale-days', '14', '--apply']);
+  assert.equal(applied.result, 0, applied.logs.join('\n'));
+  assert.ok(applied.logs.some((line) => /reclaimed .*kit-reclaim/u.test(line)), applied.logs.join('\n'));
+  assert.equal(existsSync(path), false);
+  assert.equal(branchExists(fx, 'claude/kit-reclaim'), false);
 });
 
 test('a worktree younger than --stale-days is blocked', async () => {

@@ -54,6 +54,9 @@ hook. Failures before a push stop it; `verifyCandidate` and `beforePush` also re
 `HEAD`, working-tree status, or kit pin. `afterCreate` failure leaves the new worktree for inspection.
 `afterLand` runs after a successful push, so its failure cannot undo the remote change; the local worktree
 and branch are kept for inspection. Enable only the checks your project defines in its adapter module.
+During `finish`, `verifyCandidate`, `beforePush`, and `afterLand` share the finish lock's remaining hold-time
+budget. A slow hook can fail when that budget expires; an `afterLand` timeout occurs after the push lands,
+so the local worktree and branch remain for inspection.
 
 - `begin` (alias of `create`) makes a branch and worktree under the configured managed root and records guard
   metadata. Pass `--base <branch>` to choose a base explicitly. `--offline` skips the pre-branch fetch.

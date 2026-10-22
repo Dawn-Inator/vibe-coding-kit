@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { exitDrained } from '../lib/exit-drained.mjs';
 
 const CONFIG_PATH = '.vibe-coding/project.config.json';
 const PHASES = Object.freeze([
@@ -44,7 +45,7 @@ function onHookParentExit() {
 const PARENT_SIGNALS = Object.freeze({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143 });
 const parentSignalHandlers = new Map(Object.entries(PARENT_SIGNALS).map(([signal, exitCode]) => [signal, () => {
   terminateOwnedHookGroups();
-  process.exit(exitCode);
+  exitDrained(exitCode);
 }]));
 
 function registerOwnedHookGroup(pid) {
@@ -68,7 +69,9 @@ function unregisterOwnedHookGroup(pid) {
 
 // Each declared hook gets a fresh Node module graph. This prevents a changed
 // transitive policy/helper module from being silently reused across lifecycle phases.
+const EXIT_DRAINED_URL = new URL('../lib/exit-drained.mjs', import.meta.url).href;
 const HOOK_RUNNER = `
+import { exitDrained } from ${JSON.stringify(EXIT_DRAINED_URL)};
 import { pathToFileURL } from 'node:url';
 import { writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -78,9 +81,11 @@ const phases = ['afterCreate', 'beforeCandidate', 'verifyCandidate', 'beforePush
 const cleanupOrphanedHook = () => {
   if (process.platform === 'win32') {
     spawnSync('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 });
-    process.exit(143);
+    exitDrained(143);
+    return;
   }
-  try { process.kill(-process.pid, 'SIGKILL'); } catch { process.exit(143); }
+  try { process.kill(-process.pid, 'SIGKILL'); } catch { /* process group already ended */ }
+  exitDrained(143);
 };
 let closingNormally = false;
 const closeParentChannel = () => {

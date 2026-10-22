@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const CONFIG_PATH = '.vibe-coding/project.config.json';
@@ -99,19 +99,19 @@ function inspect(projectRoot, { requireConfig = true } = {}) {
   return { applicable: true, path, commit, initialized };
 }
 
-function assertRemoteProvenance(submodulePath, approvedUrl) {
+function assertRemoteProvenance(submodulePath, approvedUrl, env) {
   if (typeof approvedUrl !== 'string' || !approvedUrl) throw new Error('Cannot prove the approved kit remote URL');
-  const remotes = git(submodulePath, ['remote'], { allowFailure: true });
+  const remotes = git(submodulePath, ['remote'], { allowFailure: true, env });
   if (remotes.status !== 0) throw new Error('Cannot inspect kit remotes');
   const names = remotes.stdout.trim().split(/\r?\n/).filter(Boolean);
   if (names.length !== 1 || names[0] !== 'origin') {
     throw new Error(`Refusing to change kit with unapproved remotes: ${names.join(', ') || '(none)'}`);
   }
-  const urls = git(submodulePath, ['config', '--get-all', 'remote.origin.url'], { allowFailure: true });
+  const urls = git(submodulePath, ['config', '--get-all', 'remote.origin.url'], { allowFailure: true, env });
   if (urls.status !== 0 || urls.stdout.trim().split(/\r?\n/).filter(Boolean).length !== 1 || urls.stdout.trim() !== approvedUrl) {
     throw new Error('Refusing to change kit: origin URL does not match the registered kit URL');
   }
-  const remoteRefs = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/remotes'], { allowFailure: true });
+  const remoteRefs = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/remotes'], { allowFailure: true, env });
   if (remoteRefs.status !== 0) throw new Error('Cannot inspect remote-tracking kit refs');
   const refs = remoteRefs.stdout.trim().split(/\r?\n/).filter(Boolean);
   if (refs.some((ref) => !ref.startsWith('refs/remotes/origin/'))) {
@@ -120,12 +120,53 @@ function assertRemoteProvenance(submodulePath, approvedUrl) {
   return refs;
 }
 
-function workingTreeSafety(submodulePath, approvedUrl) {
-  const status = git(submodulePath, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], { allowFailure: true });
+function assertOfflinePinAvailable(projectRoot, registration, commit) {
+  const gitPath = git(projectRoot, ['rev-parse', '--git-path', `modules/${registration.name}`]).stdout.trim();
+  const modulePath = resolve(projectRoot, gitPath);
+  if (!existsSync(modulePath)) {
+    throw new Error(`Offline kit prepare requires the registered module cache at ${modulePath}; fetch or initialize the kit while online first`);
+  }
+  const cached = git(modulePath, ['cat-file', '-e', `${commit}^{commit}`], {
+    allowFailure: true,
+    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+  });
+  if (cached.status !== 0) {
+    throw new Error(`Offline kit prepare cannot find pinned commit ${commit} in the registered module cache; fetch or initialize the kit while online first`);
+  }
+}
+
+function workingTreeSafety(projectRoot, submodulePath, registration) {
+  const localEnv = { ...process.env, GIT_NO_LAZY_FETCH: '1' };
+  let expectedRoot;
+  try { expectedRoot = realpathSync(submodulePath); }
+  catch { throw new Error(`Cannot resolve kit checkout path ${submodulePath}`); }
+  const topLevel = git(submodulePath, ['rev-parse', '--show-toplevel'], { allowFailure: true, env: localEnv });
+  if (topLevel.status !== 0) throw new Error('Cannot establish kit checkout top-level');
+  let actualRoot;
+  try { actualRoot = realpathSync(topLevel.stdout.trim()); }
+  catch { throw new Error('Cannot resolve kit checkout top-level'); }
+  if (actualRoot !== expectedRoot) {
+    throw new Error(`Refusing to change kit path ${expectedRoot}: its Git metadata resolves to another worktree ${actualRoot}`);
+  }
+  const actualGitDir = git(submodulePath, ['rev-parse', '--absolute-git-dir'], { allowFailure: true, env: localEnv });
+  if (actualGitDir.status !== 0) throw new Error('Cannot establish kit Git directory');
+  const expectedGitPath = git(projectRoot, ['rev-parse', '--git-path', `modules/${registration.name}`], { env: localEnv }).stdout.trim();
+  let actualGitDirPath;
+  let expectedGitDirPath;
+  try {
+    actualGitDirPath = realpathSync(actualGitDir.stdout.trim());
+    expectedGitDirPath = realpathSync(resolve(projectRoot, expectedGitPath));
+  } catch {
+    throw new Error('Cannot resolve registered kit Git directory');
+  }
+  if (actualGitDirPath !== expectedGitDirPath) {
+    throw new Error(`Refusing to change kit path ${expectedRoot}: its Git directory resolves outside registered module ${registration.name}`);
+  }
+  const status = git(submodulePath, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], { allowFailure: true, env: localEnv });
   if (status.status !== 0) throw new Error('Cannot establish submodule working-tree cleanliness');
   if (status.stdout.trim()) throw new Error(`Refusing to change dirty submodule ${submodulePath}:\n${status.stdout.trim()}`);
-  const remoteRefs = assertRemoteProvenance(submodulePath, approvedUrl);
-  const refs = git(submodulePath, ['for-each-ref', '--format=%(refname) %(objectname)'], { allowFailure: true });
+  const remoteRefs = assertRemoteProvenance(submodulePath, registration.url, localEnv);
+  const refs = git(submodulePath, ['for-each-ref', '--format=%(refname) %(objectname)'], { allowFailure: true, env: localEnv });
   if (refs.status !== 0) throw new Error('Cannot inspect local submodule refs');
   for (const line of refs.stdout.split(/\r?\n/).filter(Boolean)) {
     const [ref, object] = line.split(' ');
@@ -133,8 +174,8 @@ function workingTreeSafety(submodulePath, approvedUrl) {
     let allowedRemoteRefs = remoteRefs;
     if (ref.startsWith('refs/heads/')) {
       const branch = ref.slice('refs/heads/'.length);
-      const remote = git(submodulePath, ['config', '--get', `branch.${branch}.remote`], { allowFailure: true });
-      const merge = git(submodulePath, ['config', '--get', `branch.${branch}.merge`], { allowFailure: true });
+      const remote = git(submodulePath, ['config', '--get', `branch.${branch}.remote`], { allowFailure: true, env: localEnv });
+      const merge = git(submodulePath, ['config', '--get', `branch.${branch}.merge`], { allowFailure: true, env: localEnv });
       if (remote.status !== 0 || merge.status !== 0 || !remote.stdout.trim() || !merge.stdout.trim()) {
         throw new Error(`Refusing to change submodule with a local branch lacking an upstream: ${ref}`);
       }
@@ -145,13 +186,13 @@ function workingTreeSafety(submodulePath, approvedUrl) {
       allowedRemoteRefs = remoteRefs.includes(upstream) ? [upstream] : [];
     }
     const knownUpstream = allowedRemoteRefs.some((remoteRef) =>
-      git(submodulePath, ['merge-base', '--is-ancestor', object, remoteRef], { allowFailure: true }).status === 0);
+      git(submodulePath, ['merge-base', '--is-ancestor', object, remoteRef], { allowFailure: true, env: localEnv }).status === 0);
     if (!knownUpstream) throw new Error(`Refusing to change submodule with a local-only ref: ${ref}`);
   }
-  const unreachable = git(submodulePath, ['fsck', '--no-reflogs', '--unreachable'], { allowFailure: true });
+  const unreachable = git(submodulePath, ['fsck', '--no-reflogs', '--unreachable'], { allowFailure: true, env: localEnv });
   if (unreachable.status !== 0) throw new Error('Cannot prove that the kit object database has no private objects');
   if (unreachable.stdout.trim()) throw new Error(`Refusing to change submodule with unreachable objects:\n${unreachable.stdout.trim()}`);
-  const stash = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/stash'], { allowFailure: true });
+  const stash = git(submodulePath, ['for-each-ref', '--format=%(refname)', 'refs/stash'], { allowFailure: true, env: localEnv });
   if (stash.status !== 0) throw new Error('Cannot inspect submodule stash state');
   if (stash.stdout.trim()) throw new Error('Refusing to change submodule with a stash reference');
 }
@@ -175,7 +216,7 @@ export function checkKit({ projectRoot } = {}) {
   if (!result.initialized) throw new Error(`Kit submodule is not initialized: ${result.path}; run the project bootstrap prepare command`);
   const current = git(result.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (current !== result.commit) throw new Error(`Kit checkout ${current} does not match parent gitlink ${result.commit}`);
-  workingTreeSafety(result.path, getKitRegistration({ projectRoot }).url);
+  workingTreeSafety(projectRoot, result.path, getKitRegistration({ projectRoot }));
   return result;
 }
 
@@ -185,21 +226,30 @@ export function prepareKit({ projectRoot, allowNetwork = true } = {}) {
   const target = inspect(root);
   if (!target.applicable || target.initialized) {
     if (target.initialized) {
-      workingTreeSafety(target.path, getKitRegistration({ projectRoot: root }).url);
+      workingTreeSafety(root, target.path, getKitRegistration({ projectRoot: root }));
       const current = git(target.path, ['rev-parse', 'HEAD']).stdout.trim();
       if (current === target.commit) return target;
     }
     if (!target.applicable) return target;
   }
   const args = ['submodule', 'update', '--init', '--checkout'];
-  if (!allowNetwork) args.push('--no-fetch');
+  if (!allowNetwork) {
+    assertOfflinePinAvailable(root, getKitRegistration({ projectRoot: root }), target.commit);
+    args.push('--no-fetch');
+  }
   args.push('--', DEFAULT_KIT_PATH);
-  git(root, args, { env: allowNetwork ? process.env : { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  git(root, args, {
+    env: allowNetwork ? process.env : {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_NO_LAZY_FETCH: '1',
+    },
+  });
   const prepared = inspect(root);
   if (!prepared.initialized) throw new Error(`Submodule prepare completed without initializing ${prepared.path}`);
   const actual = git(prepared.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (actual !== prepared.commit) throw new Error(`Prepared kit commit ${actual} does not match parent gitlink ${prepared.commit}`);
-  workingTreeSafety(prepared.path, getKitRegistration({ projectRoot: root }).url);
+  workingTreeSafety(root, prepared.path, getKitRegistration({ projectRoot: root }));
   return { ...prepared, initialized: true };
 }
 
@@ -214,10 +264,13 @@ export function assertKitSafeToRemove({ projectRoot } = {}) {
   if (!committedPin || stagedPin !== committedPin || committedPin !== result.commit) {
     throw new Error('Cannot remove kit: parent HEAD and index do not agree on the registered gitlink');
   }
-  workingTreeSafety(result.path, getKitRegistration({ projectRoot: root }).url);
+  workingTreeSafety(root, result.path, getKitRegistration({ projectRoot: root }));
   const actual = git(result.path, ['rev-parse', 'HEAD']).stdout.trim();
   if (actual !== committedPin) throw new Error(`Cannot remove kit at ${actual}; parent gitlink is ${committedPin}`);
-  const nested = git(result.path, ['submodule', 'status', '--recursive'], { allowFailure: true });
+  const nested = git(result.path, ['submodule', 'status', '--recursive'], {
+    allowFailure: true,
+    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+  });
   if (nested.status !== 0 || nested.stdout.trim()) throw new Error('Cannot prove safety for nested submodule state');
   return { ...result, commit: committedPin, safeToRemove: true };
 }

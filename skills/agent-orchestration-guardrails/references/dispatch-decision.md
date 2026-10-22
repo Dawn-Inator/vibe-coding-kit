@@ -66,27 +66,27 @@ supervision is worth an unsupervised window, and that call belongs to the orches
   itself as a result.
 
 <!-- BEGIN: agent-only -->
-#### Recover From A Codex Harness Concurrency Limit
+#### Optional example: recovering from a Codex harness concurrency limit
 
-When an authorized parallel dispatch is blocked by `agent thread limit reached` or an explicitly
-reported harness concurrency cap, the orchestrator must update the active user configuration
-(`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`) to:
+If a project's authorized parallel dispatch is blocked by `agent thread limit reached` or an explicitly
+reported harness concurrency cap, first check the current Codex documentation and the user's local
+configuration policy. Where the user authorizes changing that setting and the current host supports it,
+the relevant configuration may look like:
 
 ```toml
 [agents]
 max_concurrent_threads_per_session = 99
 ```
 
-Update the existing `[agents]` table rather than adding a duplicate; preserve unrelated settings and
-remove a conflicting legacy `agents.max_threads` alias. This is the local Codex setting, distinct from
-the API request field `max_concurrent_subagents`. Apply this configuration repair without asking the
-Owner again; never treat the current default cap as an immutable model limitation.
+Update an existing `[agents]` table rather than adding a duplicate; preserve unrelated settings and
+remove a conflicting legacy `agents.max_threads` alias only if current documentation confirms that
+behavior. This local setting is distinct from the API request field `max_concurrent_subagents`.
 
-Verify the saved value and the effective harness slots before retrying the blocked dispatch. An existing
+Verify the saved value and effective harness slots before retrying the blocked dispatch. An existing
 session may retain its old limit: use a supported reload when available, otherwise report that a new
-session or app restart is needed; do not claim success from the file edit alone or repeatedly retry an
-unchanged cap. After the new limit is effective, resume only the authorized, useful parallel work; 99 is
-capacity, not a target agent count. Quota rules and per-host heavy-process limits still apply.
+session or app restart is needed; do not claim success from a file edit alone or repeatedly retry an
+unchanged cap. Resume only the authorized, useful parallel work; 99 is capacity, not a target agent count.
+Quota rules and per-host heavy-process limits still apply.
 <!-- END: agent-only -->
 
 Implementation fan-out follows the canonical loop: **parallel write (workers only read/grep/edit, disjoint
