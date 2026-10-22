@@ -63,10 +63,11 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
   let controller;
   let receivedArgs;
   let receivedOptions;
+  const targetEnvironment = { PATH: 'C:\\Windows', SAMPLE: 'quotes " and $; ` remain data' };
   const started = startWindowsJob('git.exe', ['-c', 'user.name=a "quoted" value', 'status'], {
     platform: 'win32',
     cwd: 'C:\\work tree',
-    env: { PATH: 'C:\\Windows', SAMPLE: 'quotes " and $; ` remain data' },
+    env: targetEnvironment,
     resolveExecutable(command, cwd, env) {
       assert.equal(command, 'git.exe');
       assert.equal(cwd, 'C:\\work tree');
@@ -92,7 +93,8 @@ test('controller configuration is base64 data and cancellation waits for zero-pr
   assert.equal(config.cwd, 'C:\\work tree');
   assert.equal(Buffer.from(config.environmentBase64, 'base64').toString('utf16le').includes('SAMPLE=quotes " and $; ` remain data'), true);
   assert.equal(receivedOptions.windowsHide, true);
-  assert.equal(receivedOptions.env.SAMPLE, 'quotes " and $; ` remain data');
+  assert.equal(receivedOptions.env, process.env, 'controller keeps the host PATH independent of the target environment');
+  assert.equal(Object.hasOwn(receivedOptions.env, 'SAMPLE'), Object.hasOwn(process.env, 'SAMPLE'));
   assert.ok(receivedArgs.at(-1).length < 30_000, 'the PowerShell controller source must fit in the native command-line limit');
   assert.equal(receivedArgs.at(-1).includes('SAMPLE=quotes'), false, 'environment values stay on stdin rather than the controller command line');
   assert.deepEqual(controller.controls, ['start'], 'the controller must receive an explicit launch grant after readiness');
@@ -180,7 +182,7 @@ const windowsOnly = { skip: process.platform === 'win32' ? false : 'requires nat
 test('native job captures stdout, stderr, and exit status', windowsOnly, async () => {
   const job = startWindowsJob(process.execPath, ['-e', "process.stdout.write('out'); process.stderr.write('err'); process.exit(7)"], { timeoutMs: 20_000 });
   const result = await job.result;
-  assert.equal(result.status, 7);
+  assert.equal(result.status, 7, JSON.stringify(result));
   assert.equal(result.stdout, 'out');
   assert.equal(result.stderr, 'err');
   assert.equal(result.signal, null);
@@ -191,7 +193,7 @@ test('native job enforces a combined output-byte cap while continuing to drain p
   const code = "process.stdout.write('x'.repeat(100000)); process.stderr.write('y'.repeat(100000))";
   const result = await startWindowsJob(process.execPath, ['-e', code], { timeoutMs: 20_000, maxOutputBytes: 17 }).result;
   assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 17);
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 0, JSON.stringify(result));
 });
 
 test('native cancellation contains a parent-exited descendant and preserves unrelated processes', windowsOnly, async (t) => {
@@ -227,8 +229,8 @@ test('native cancellation contains a parent-exited descendant and preserves unre
   const outcome = await resultObserved;
   if (outcome.error) throw outcome.error;
   const { result } = outcome;
-  assert.equal(result.status, 0);
-  assert.equal(result.signal, 'SIGTERM');
+  assert.equal(result.status, 0, JSON.stringify(result));
+  assert.equal(result.signal, 'SIGTERM', JSON.stringify(result));
   assert.equal(unrelated.exitCode, null, 'unrelated process must remain alive');
   await rm(root, { recursive: true, force: false });
   assert.equal(unrelated.exitCode, null, 'unrelated process must remain alive after deleting CWD');
@@ -239,8 +241,8 @@ test('native timeout terminates all job members but leaves unrelated process ali
   t.after(() => { if (unrelated.exitCode === null) unrelated.kill(); });
   const job = startWindowsJob(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 2500 });
   const result = await job.result;
-  assert.equal(result.timedOut, true);
-  assert.equal(result.signal, 'SIGTERM');
+  assert.equal(result.timedOut, true, JSON.stringify(result));
+  assert.equal(result.signal, 'SIGTERM', JSON.stringify(result));
   assert.equal(unrelated.exitCode, null);
 });
 

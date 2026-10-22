@@ -878,7 +878,10 @@ export function startWindowsJob(command, args = [], options = {}) {
   try {
     child = spawn('powershell.exe', powershellArgs, {
       cwd: process.cwd(),
-      env: options.controllerEnv ?? (options.env ?? process.env),
+      // The controller runs under the host environment so that powershell.exe
+      // remains discoverable even when the target intentionally supplies a
+      // restricted PATH. The target gets its separately encoded `options.env`.
+      env: options.controllerEnv ?? process.env,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
