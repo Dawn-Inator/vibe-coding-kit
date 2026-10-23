@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
 import { samePathIdentity } from '../../src/lib/path-identity.mjs';
@@ -44,6 +45,48 @@ function run(fixture, more = [], projectRoot = fixture.project) {
   return spawnSync(process.execPath, [cliPath, 'install', '--project-root', projectRoot,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
     '--identity-email', 'install@example.invalid', ...more], { cwd: fixture.project, encoding: 'utf8', env: process.env });
+}
+
+function snapshotFiles(root, { excludedPaths = new Set() } = {}) {
+  const entries = [];
+  const walk = (directory, relativeDirectory = '') => {
+    for (const name of readdirSync(directory).sort()) {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+      if (excludedPaths.has(relativePath)) continue;
+      const absolutePath = join(directory, name);
+      const stat = lstatSync(absolutePath);
+      if (stat.isSymbolicLink()) {
+        entries.push(`symlink ${relativePath} -> ${readlinkSync(absolutePath)}`);
+      } else if (stat.isDirectory()) {
+        entries.push(`directory ${relativePath}`);
+        walk(absolutePath, relativePath);
+      } else if (stat.isFile()) {
+        const digest = createHash('sha256').update(readFileSync(absolutePath)).digest('hex');
+        entries.push(`file ${relativePath} ${digest}`);
+      } else {
+        entries.push(`other ${relativePath} mode=${stat.mode}`);
+      }
+    }
+  };
+  walk(root);
+  return entries;
+}
+
+function snapshotGitState(repo, { excludedPaths = new Set() } = {}) {
+  return {
+    head: git(repo, ['rev-parse', '--verify', 'HEAD']).stdout.trim(),
+    index: git(repo, ['ls-files', '--stage', '-z']).stdout,
+    refs: git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout,
+    config: git(repo, ['config', '--local', '--list', '--null']).stdout,
+    files: snapshotFiles(repo, { excludedPaths }),
+  };
+}
+
+function snapshotInstalledProject(fixture) {
+  return {
+    parent: snapshotGitState(fixture.project, { excludedPaths: new Set(['.git', '.vibe-coding/kit']) }),
+    kit: snapshotGitState(join(fixture.project, '.vibe-coding/kit'), { excludedPaths: new Set(['.git']) }),
+  };
 }
 
 test('install check is read-only and fresh install delegates init then is idempotent', () => {
@@ -120,9 +163,16 @@ test('install repeats resolve tags locally by commit and reject a different loca
   const installed = run(fixture, ['--ref', 'fixture-v1']);
   assert.equal(installed.status, 0, installed.stderr || installed.stdout);
   assert.equal(git(fixture.project, ['-C', '.vibe-coding/kit', 'rev-parse', 'HEAD']).stdout.trim(), older);
-  const projectStateBefore = git(fixture.project, ['status', '--porcelain=v1', '--untracked-files=all']).stdout;
-  const moduleStateBefore = git(join(fixture.project, '.vibe-coding/kit'), ['status', '--porcelain=v1', '--untracked-files=all']).stdout;
-  const refsBefore = git(join(fixture.project, '.vibe-coding/kit'), ['for-each-ref', '--format=%(refname) %(objectname)']).stdout;
+  const projectStateBefore = snapshotInstalledProject(fixture);
+  const generatedInstructions = join(fixture.project, '.vibe-coding/loading.md');
+  const originalInstructions = readFileSync(generatedInstructions);
+  try {
+    writeFileSync(generatedInstructions, Buffer.concat([originalInstructions, Buffer.from('\nmutation probe\n')]));
+    assert.notDeepEqual(snapshotInstalledProject(fixture), projectStateBefore, 'semantic snapshot must detect real generated-file content changes');
+  } finally {
+    writeFileSync(generatedInstructions, originalInstructions);
+  }
+  assert.deepEqual(snapshotInstalledProject(fixture), projectStateBefore, 'restoring generated-file bytes restores the semantic snapshot');
 
   const repeat = run(fixture, ['--ref', 'fixture-v1']);
   assert.equal(repeat.status, 0, repeat.stderr || repeat.stdout);
@@ -132,9 +182,7 @@ test('install repeats resolve tags locally by commit and reject a different loca
   assert.equal(otherTag.status, 1);
   assert.match(otherTag.stderr, /resolves locally to .*install does not upgrade/);
 
-  assert.equal(git(fixture.project, ['status', '--porcelain=v1', '--untracked-files=all']).stdout, projectStateBefore);
-  assert.equal(git(join(fixture.project, '.vibe-coding/kit'), ['status', '--porcelain=v1', '--untracked-files=all']).stdout, moduleStateBefore);
-  assert.equal(git(join(fixture.project, '.vibe-coding/kit'), ['for-each-ref', '--format=%(refname) %(objectname)']).stdout, refsBefore);
+  assert.deepEqual(snapshotInstalledProject(fixture), projectStateBefore, 'repeated installs preserve parent and kit index, refs, config, and file contents');
   assert.equal(git(fixture.project, ['-C', '.vibe-coding/kit', 'rev-parse', 'HEAD']).stdout.trim(), older);
 });
 
