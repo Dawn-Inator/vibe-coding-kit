@@ -5,6 +5,7 @@
   "contracts/windows-transport-proof.test.mjs",
   "dependencies/submodule.test.mjs",
   "install/bootstrap.test.mjs",
+  "install/command.test.mjs",
   "install/init.test.mjs",
   "knowledge/consumer-boundary.test.mjs",
   "knowledge/docs-index.test.mjs",

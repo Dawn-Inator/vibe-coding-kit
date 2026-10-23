@@ -2,6 +2,16 @@
 
 Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, project templates, skills, and tutorials. It is designed to be consumed by projects with their own architecture, workflow, and release policies.
 
+## 中文快速开始
+
+在一个已提交且工作区干净的 Git 项目根目录，用 Node.js 20+、Git 和 npm 执行下面命令。请将身份参数替换为项目真实的提交名称和邮箱：
+
+```sh
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --skill agent-worktree-lifecycle=adopt --skill bugfix-regression-tests=adopt
+```
+
+这里的 `ai@example.org` 是格式示意，不能原样使用。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
+
 ## Repository and consumer path
 
 This repository is the public source of the kit. A consuming project checks it out as a Git submodule at `.vibe-coding/kit/`; that path is a consumer convention and is not an extra directory inside this repository. The parent project's gitlink pins the exact kit commit used by that checkout.
@@ -19,9 +29,9 @@ The runtime under `src/` is called directly from the pinned checkout. Consumers 
 
 Project source files remain the authority. Generated skill mirrors and generated root instruction files are projections; update their declared source and regenerate them using the project's tooling.
 
-The kit is invoked from its Git checkout with Node. It is not currently distributed as an npm package or global command. See [INSTALL.md](INSTALL.md) for initial setup and the command surface.
+The Kit CLI can be bootstrapped with `npx` from this GitHub repository; the project runtime itself remains in the consuming project's pinned submodule. The Kit is not published to the npm registry and does not require a global install. For repeatable setup, pin both the bootstrap package and installed submodule to an approved commit as described in [INSTALL.md](INSTALL.md).
 
-`init` defaults to keeping generated `.agents/skills/` and `.claude/skills/` mirrors out of Git through a managed `.gitignore` block. Projects that intentionally track those projections can initialize with `--mirror-policy tracked`. Offline `prepare` requires the registered local submodule module cache to contain the exact pinned commit; a cold checkout must be prepared online first.
+`install` defaults to keeping generated `.agents/skills/` and `.claude/skills/` mirrors out of Git through a managed `.gitignore` block. Projects that intentionally track those projections can install with `--mirror-policy tracked`. Offline `prepare` requires the registered local submodule module cache to contain the exact pinned commit; a cold checkout must be prepared online first.
 
 Windows worktree process and cleanup checks use the system PowerShell 5.1 and native Windows process/file-handle facilities; the kit adds no npm runtime dependency. See [INSTALL.md](INSTALL.md#compatibility-and-project-policy) for failure and recovery behavior.
 
