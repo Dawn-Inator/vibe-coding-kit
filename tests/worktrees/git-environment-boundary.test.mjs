@@ -7,30 +7,20 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
+import { gitTrim } from '../support/git-fixture.mjs';
 import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const moduleUrl = (path) => pathToFileURL(join(here, path)).href;
 
-function runGit(cwd, args) {
-  const result = spawnSync('git', withFixtureCommitIdentity(args), {
-    cwd,
-    env: isolatedFixtureGitEnv(),
-    encoding: 'utf8',
-    timeout: 30_000,
-  });
-  assert.equal(result.status, 0, `fixture git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
-  return String(result.stdout || '').trim();
-}
-
 function initRepo(path, name) {
   mkdirSync(path, { recursive: true });
-  runGit(path, ['init', '-q', '-b', 'main']);
-  runGit(path, ['config', '--local', 'user.name', name]);
-  runGit(path, ['config', '--local', 'user.email', `${name.toLowerCase().replaceAll(' ', '.')}@fixture.invalid`]);
+  gitTrim(['init', '-q', '-b', 'main'], path);
+  gitTrim(['config', '--local', 'user.name', name], path);
+  gitTrim(['config', '--local', 'user.email', `${name.toLowerCase().replaceAll(' ', '.')}@fixture.invalid`], path);
   writeFileSync(join(path, 'tracked.txt'), `${name}\n`);
-  runGit(path, ['add', 'tracked.txt']);
-  runGit(path, ['commit', '-q', '-m', `${name} initial`]);
+  gitTrim(['add', 'tracked.txt'], path);
+  gitTrim(['commit', '-q', '-m', `${name} initial`], path);
 }
 
 function assertPathIdentity(actual, expected, message) {
@@ -46,10 +36,10 @@ test('Git wrappers and worktree consumers stay on their explicit child repo unde
     initRepo(parent, 'Parent Fixture');
     initRepo(child, 'Child Fixture');
     const canonicalChild = realpathSync(child);
-    const childBase = runGit(child, ['rev-parse', 'HEAD']);
+    const childBase = gitTrim(['rev-parse', 'HEAD'], child);
     writeFileSync(join(child, 'second.txt'), 'child second\n');
-    runGit(child, ['add', 'second.txt']);
-    runGit(child, ['commit', '-q', '-m', 'child second']);
+    gitTrim(['add', 'second.txt'], child);
+    gitTrim(['commit', '-q', '-m', 'child second'], child);
 
     const gitDir = join(parent, '.git');
     const resultPath = join(root, 'hook-result.json');
@@ -165,7 +155,7 @@ writeFileSync(process.env.WTG_TEST_RESULT_FILE, JSON.stringify(result));
       timeout: 30_000,
     });
     assert.notEqual(parentHookPath.status, 0, 'child hook setup must not mutate parent config');
-    const parentStatus = runGit(parent, ['status', '--porcelain']);
+    const parentStatus = gitTrim(['status', '--porcelain'], parent);
     const parentStatusLines = parentStatus.split(/\r?\n/).filter(Boolean);
     assert.equal(parentStatusLines.length, 1, 'the parent repo must remain otherwise untouched except for the child fixture');
     assert.equal(parentStatusLines[0].slice(0, 3), '?? ', 'the nested fixture must be the only parent-repository change');
