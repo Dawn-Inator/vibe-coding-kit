@@ -72,8 +72,6 @@ Claude Code arms with one script, never a hand-typed timer:
 
 **Caps** (a not-yet-due step is `done — <last run's evidence and time>` or `deferred ← <window end> ETA <=20m`): verification ≤1/hour or per 3 landings; review once per feature plus one re-review; category 3 ≤hourly.
 
-**RESUME/handoff** (`.workspace/`, never `doc/`) at ~40% context, owner leaving, before compaction: per agent worktree, deliverable, blocked items, next step.
-
 **Cleanup**: before the session ends stop re-arming and cancel every wake-up (timers, monitors, probes); no OS cron/launchd/daemon.
 
 ## Report Boundary
