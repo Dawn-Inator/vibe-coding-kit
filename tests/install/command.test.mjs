@@ -12,6 +12,7 @@ const cliPath = fileURLToPath(new URL('../../cli.mjs', import.meta.url));
 
 function consumerProject() {
   const fixture = makeProject();
+  requireExplicitFixtureIdentity(fixture);
   const repo = fileURLToPath(new URL('../..', import.meta.url));
   for (const name of ['cli.mjs']) cpSync(join(repo, name), join(fixture.source, name));
   for (const name of ['src', 'templates']) cpSync(join(repo, name), join(fixture.source, name), { recursive: true });
@@ -26,9 +27,16 @@ function consumerProject() {
   rmSync(join(fixture.project, '.gitmodules'), { force: true });
   rmSync(join(fixture.project, '.vibe-coding/kit'), { recursive: true, force: true });
   rmSync(join(fixture.project, '.git/modules/vibe-coding-kit'), { recursive: true, force: true });
-  git(fixture.project, ['add', '-A']);
-  git(fixture.project, ['commit', '-m', 'remove fixture kit registration', '-q']);
+  commit(fixture.project, 'remove fixture kit registration');
   return fixture;
+}
+
+function requireExplicitFixtureIdentity(fixture) {
+  for (const repo of [fixture.source, fixture.project]) {
+    git(repo, ['config', 'user.useConfigOnly', 'true']);
+    const identityFallbackProbe = git(repo, ['commit', '--allow-empty', '-m', 'identity fallback must fail'], { allowFailure: true });
+    assert.notEqual(identityFallbackProbe.status, 0, 'bare commit must fail when the isolated fixture has no explicit identity');
+  }
 }
 
 function run(fixture, more = []) {
@@ -58,9 +66,7 @@ test('fresh JavaScript projects keep their package metadata and merge kit script
   const packagePath = join(fixture.project, 'package.json');
   writeFileSync(packagePath, `${JSON.stringify({ name: 'consumer-app', scripts: { test: 'node app-test.mjs' }, dependencies: { sample: '1.0.0' } }, null, 2)}\n`);
   writeFileSync(join(fixture.project, '.gitignore'), 'node_modules/\n');
-  git(fixture.project, ['add', 'package.json']);
-  git(fixture.project, ['add', '.gitignore']);
-  git(fixture.project, ['commit', '-m', 'JavaScript consumer', '-q']);
+  commit(fixture.project, 'JavaScript consumer');
   mkdirSync(join(fixture.project, 'node_modules/sample'), { recursive: true });
   writeFileSync(join(fixture.project, 'node_modules/sample/package.json'), '{}');
   const result = run(fixture);
@@ -150,8 +156,7 @@ test('install preflight rejects missing identity, dirty roots, and occupied path
   const occupied = consumerProject();
   mkdirSync(join(occupied.project, '.vibe-coding/kit'), { recursive: true });
   writeFileSync(join(occupied.project, '.vibe-coding/kit/keep.txt'), 'keep');
-  git(occupied.project, ['add', '-A']);
-  git(occupied.project, ['commit', '-m', 'occupied path', '-q']);
+  commit(occupied.project, 'occupied path');
   const occupiedResult = run(occupied);
   assert.equal(occupiedResult.status, 1);
   assert.match(occupiedResult.stderr, /occupied and will be preserved/i);
@@ -162,8 +167,7 @@ test('install and direct init preserve existing generated instruction targets', 
   const fresh = consumerProject();
   const instructions = join(fresh.project, 'AGENTS.md');
   writeFileSync(instructions, 'consumer instructions\n');
-  git(fresh.project, ['add', 'AGENTS.md']);
-  git(fresh.project, ['commit', '-m', 'consumer instructions', '-q']);
+  commit(fresh.project, 'consumer instructions');
   const install = run(fresh);
   assert.equal(install.status, 1);
   assert.match(install.stderr, /projection target already exists/);
@@ -171,10 +175,10 @@ test('install and direct init preserve existing generated instruction targets', 
   assert.equal(readFileSync(instructions, 'utf8'), 'consumer instructions\n');
 
   const registered = makeProject();
+  requireExplicitFixtureIdentity(registered);
   git(registered.project, ['rm', '-f', '.vibe-coding/project.config.json']);
   writeFileSync(join(registered.project, 'CLAUDE.md'), 'local Claude instructions\n');
-  git(registered.project, ['add', '-A']);
-  git(registered.project, ['commit', '-m', 'consumer Claude instructions', '-q']);
+  commit(registered.project, 'consumer Claude instructions');
   const direct = spawnSync(process.execPath, [cliPath, 'init', '--project-root', registered.project,
     '--url', pathToFileURL(registered.source).href, '--identity-name', 'Install User',
     '--identity-email', 'install@example.invalid'], { encoding: 'utf8' });
@@ -200,8 +204,7 @@ test('install rejects a committed symlink at the kit path without touching its t
   writeFileSync(join(outside, 'keep.txt'), 'preserve');
   mkdirSync(join(fixture.project, '.vibe-coding'), { recursive: true });
   symlinkSync(outside, join(fixture.project, '.vibe-coding/kit'), 'dir');
-  git(fixture.project, ['add', '.vibe-coding/kit']);
-  git(fixture.project, ['commit', '-m', 'symlink kit target', '-q']);
+  commit(fixture.project, 'symlink kit target');
   const result = run(fixture);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /symlink install target/);

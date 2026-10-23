@@ -141,6 +141,41 @@ node .vibe-coding/kit/cli.mjs check --project-root .
 
 已有 LingoFly 式集成的项目应保留自己的 bootstrap 和 adapter 桥接，逐项审查 Kit 可复用能力；不要用首次初始化去替换既有桥接或项目策略。
 
+### 已有 starter-kit 或治理体系的项目迁移
+
+这条路径适用于已经有 loading、skills、根指令或自建桥接的项目。它是人工迁移流程，不是 `install` 的自动升级模式；不要为了让初始化通过而删除项目既有规范。
+
+1. **在项目自己的普通变更分支开始。** 按项目现有流程隔离和评审迁移，先确认工作区状态及未提交改动的归属。
+2. **盘点当前真源与调用关系。** 记录现有 loading / 根指令、skills 与扩展、bootstrap/adapter、gate 和 release 入口，以及引用它们的脚本、自动化和测试。标出已有的双门状态机、发布授权和恢复规则，迁移时继续由项目负责。
+3. **注册已审阅的固定 Kit submodule。** 如果 `.vibe-coding/kit` 已被旧 checkout 占用，先保留它并人工选定迁移/归档位置；不要直接覆盖。确认目标路径可用后，注册并固定版本。先把选定 SHA 的 gitlink 放入父项目 index，再运行 prepare：
+
+   ```sh
+   git submodule add --name vibe-coding-kit https://github.com/Dawn-Inator/vibe-coding-kit.git .vibe-coding/kit
+   git -C .vibe-coding/kit fetch --no-tags origin '<approved-ref>'
+   git -C .vibe-coding/kit rev-parse --verify --end-of-options 'FETCH_HEAD^{commit}'
+   git -C .vibe-coding/kit checkout --detach '<resolved-full-commit-sha>'
+   git add -- .vibe-coding/kit
+   ```
+
+   检查父项目 index 中的 gitlink 确实指向审阅过的 SHA。此时还不要运行依赖项目配置的 bootstrap。
+4. **只补齐缺少的项目文件。** 逐项比较 Kit `templates/` 与项目现状，以模板为参考，手工补建缺少的 `project.config.json`、bootstrap 或 adapter；已有配置要保留并按 [配置 schema](schemas/project-config.schema.json) 合并必要字段，不要覆盖。填写实际 Kit URL/path、项目提交身份与 adapter 路径。对每个公开 skill 都在配置中作出明确选择（`adopt` / `extend` / `replace` / `exclude`；`replace` 和 `exclude` 写明理由）。此时只准备并验证固定 Kit pin，不要生成 skill 或根指令投影：
+
+   ```sh
+   node engineering/automation/vibe-coding/bootstrap.mjs prepare
+   node .vibe-coding/kit/cli.mjs check --project-root .
+   ```
+
+   这些命令要求项目配置、submodule 注册和 bootstrap 已按上文完成。skills composer 要求所有公开 skill 都有决策；不要把未决项默认为采纳。
+5. **迁移规则并接通项目已有门禁。** 保留原有 canonical loading，将原来根指令中的有效规则合并进项目自有 `.vibe-coding/loading.md`，检查合并结果后，再运行 skill sync/check：
+
+   ```sh
+   node .vibe-coding/kit/cli.mjs skills sync --project-root .
+   node .vibe-coding/kit/cli.mjs skills check --project-root .
+   ```
+
+   这一步才生成根指令与 skill 镜像；确认规则已进入 canonical source 后，才将新生成的 `AGENTS.md` / `CLAUDE.md` 作为项目投影使用。adapter 应调用项目已经在用的 gate 命令，并保留成熟状态机和发布授权；空 hook adapter 是 no-op，不能当作 gate 已就绪。
+6. **用有限范围验证，再退役重复入口。** 运行迁移涉及的项目测试和 bounded checks，复核配置/生成 diff，验证 `skills check`、冷克隆后的 submodule hydrate、项目自己的 worktree begin/finish 路径，以及缺失或 dirty kit pin 会被拒绝。只有在调用关系已迁移且对应测试通过后，才在普通提交中退役旧的重复核心实现；未完成迁移的消费者继续使用各自原有桥接。
+
 ## 有意升级 Kit 版本
 
 日常工作不执行 `git submodule update --remote`。升级是项目自己的代码变更：先确认没有未提交的 Kit 子模块修改，在父项目新工作分支中 fetch 并审阅获批的上游 tag/commit，解析为完整 commit SHA，再把子模块 checkout 到该 SHA。然后先将 gitlink 加入父项目暂存区，使父项目 index 成为 `prepare` 的固定版本依据：
