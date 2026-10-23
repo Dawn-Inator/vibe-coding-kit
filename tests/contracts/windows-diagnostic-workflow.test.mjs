@@ -5,13 +5,27 @@ import { filesForGroup } from '../run-windows-diagnostic.mjs';
 import { main as runNativeProof, NATIVE_CASES, nativeProofOutputVerdict } from '../run-windows-native-proof.mjs';
 
 const workflow = readFileSync(new URL('../../.github/workflows/windows-diagnostic.yml', import.meta.url), 'utf8');
+const JOB_ORDER = [
+  'windows-native-proof',
+  'windows-hook-context',
+  'windows-installer-proof',
+  'windows-transport-proof',
+  'windows-diagnostic',
+];
+
+function jobBlock(name) {
+  const start = workflow.indexOf(`\n  ${name}:`);
+  assert.ok(start >= 0, `workflow declares ${name}`);
+  const nextStart = JOB_ORDER
+    .map((job) => workflow.indexOf(`\n  ${job}:`))
+    .filter((offset) => offset > start)
+    .sort((left, right) => left - right)[0] ?? workflow.length;
+  return workflow.slice(start, nextStart);
+}
 
 test('Windows diagnostic requires native directory and Job Object proofs before running the full manifest groups', () => {
-  const proofStart = workflow.indexOf('\n  windows-native-proof:');
-  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
-  assert.ok(proofStart >= 0 && groupsStart > proofStart, 'the native proof job is declared before the manifest matrix');
-
-  const proof = workflow.slice(proofStart, groupsStart);
+  const proof = jobBlock('windows-native-proof');
+  const groups = jobBlock('windows-diagnostic');
   assert.match(proof, /runs-on: windows-latest/u);
   assert.match(proof, /node-version: 22/u);
   assert.match(proof, /timeout-minutes: 15/u);
@@ -19,7 +33,6 @@ test('Windows diagnostic requires native directory and Job Object proofs before 
   assert.match(proof, /run: node tests\/run-windows-native-proof\.mjs/u);
   assert.equal(NATIVE_CASES.length, 10);
 
-  const groups = workflow.slice(groupsStart);
   assert.match(groups, /needs: windows-native-proof/u);
   assert.match(groups, /max-parallel: 3/u);
   assert.match(groups, /group: \['1', '2', '3'\]/u);
@@ -28,25 +41,18 @@ test('Windows diagnostic requires native directory and Job Object proofs before 
 });
 
 test('native-only diagnostic refs run the bounded proof without running or claiming the full manifest groups', () => {
-  const proofStart = workflow.indexOf('\n  windows-native-proof:');
-  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
-  const proof = workflow.slice(proofStart, groupsStart);
-  const groups = workflow.slice(groupsStart);
-  assert.match(proof, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-'\)/u);
+  const proof = jobBlock('windows-native-proof');
+  const groups = jobBlock('windows-diagnostic');
+  assert.match(proof, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-installer-'\)/u);
   assert.match(proof, /run: node tests\/run-windows-native-proof\.mjs/u);
-  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\) \}\}/u);
+  assert.match(groups, /if: \$\{\{ !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-native-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\) && !startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-installer-'\) \}\}/u);
   assert.match(groups, /needs: windows-native-proof/u);
   assert.match(groups, /node tests\/run-windows-diagnostic\.mjs/u);
   assert.doesNotMatch(proof, /run:.*run-windows-diagnostic|tests\/run\.mjs/u);
 });
 
 test('Git hook context diagnostic runs only its fixed Node 20/22 regressions after native proofs', () => {
-  const proofStart = workflow.indexOf('\n  windows-native-proof:');
-  const hookStart = workflow.indexOf('\n  windows-hook-context:');
-  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
-  assert.ok(proofStart >= 0 && hookStart > proofStart && groupsStart > hookStart, 'the bounded job follows native proof and precedes the full groups');
-
-  const hook = workflow.slice(hookStart, groupsStart);
+  const hook = jobBlock('windows-hook-context');
   assert.match(hook, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\)/u);
   assert.match(hook, /needs: windows-native-proof/u);
   assert.match(hook, /runs-on: windows-latest/u);
@@ -54,18 +60,36 @@ test('Git hook context diagnostic runs only its fixed Node 20/22 regressions aft
   assert.match(hook, /node --test tests\/contracts\/project-adapter\.test\.mjs tests\/worktrees\/git-environment-boundary\.test\.mjs/u);
   assert.doesNotMatch(hook, /matrix\.group|run-windows-diagnostic|tests\/run\.mjs|\$\{\{\s*github\.event/u, 'the job accepts no caller-supplied test selection');
 
-  const groups = workflow.slice(groupsStart);
+  const groups = jobBlock('windows-diagnostic');
   assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-hook-context-'\)/u);
   assert.match(groups, /matrix\.group/u);
 });
 
-test('transport diagnostic runs its fixed CLI proof on Node 20/22 after native proofs and excludes full groups', () => {
-  const proofStart = workflow.indexOf('\n  windows-native-proof:');
-  const transportStart = workflow.indexOf('\n  windows-transport-proof:');
-  const groupsStart = workflow.indexOf('\n  windows-diagnostic:');
-  assert.ok(proofStart >= 0 && transportStart > proofStart && groupsStart > transportStart);
+test('installer diagnostic runs its fixed Node 20/22 tests and packaged CLI smoke without native or full groups', () => {
+  const installer = jobBlock('windows-installer-proof');
+  const native = jobBlock('windows-native-proof');
+  const groups = jobBlock('windows-diagnostic');
 
-  const transport = workflow.slice(transportStart, groupsStart);
+  assert.match(installer, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-installer-'\)/u);
+  assert.match(installer, /runs-on: windows-latest/u);
+  assert.match(installer, /timeout-minutes: 15/u);
+  assert.match(installer, /matrix:\s+node: \['20', '22'\]/u);
+  assert.match(installer, /actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5/u);
+  assert.match(installer, /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/u);
+  assert.match(installer, /node-version: \$\{\{ matrix\.node \}\}/u);
+  assert.match(installer, /persist-credentials: false/u);
+  assert.match(installer, /node --test tests\/install\/command\.test\.mjs tests\/install\/init\.test\.mjs tests\/install\/bootstrap\.test\.mjs/u);
+  assert.match(installer, /npm pack --pack-destination "\$RUNNER_TEMP"/u);
+  assert.match(installer, /version="\$\(node -p "require\('\.\/package\.json'\)\.version"\)"/u);
+  assert.match(installer, /npm exec --offline --yes --cache "\$RUNNER_TEMP\/npm-cache" --package="\$RUNNER_TEMP\/vibe-coding-kit-\$version\.tgz" -- vibe-coding-kit help/u);
+  assert.doesNotMatch(installer, /matrix\.group|github\.event|workflow_dispatch|input:/u, 'the installer proof accepts no caller-selected test list');
+  assert.doesNotMatch(installer, /needs: windows-native-proof/u, 'the installer proof runs independently of native-process proof');
+  assert.match(native, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-installer-'\)/u);
+  assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-installer-'\)/u);
+});
+
+test('transport diagnostic runs its fixed CLI proof on Node 20/22 after native proofs and excludes full groups', () => {
+  const transport = jobBlock('windows-transport-proof');
   assert.match(transport, /if: startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\)/u);
   assert.match(transport, /needs: windows-native-proof/u);
   assert.match(transport, /runs-on: windows-latest/u);
@@ -73,7 +97,7 @@ test('transport diagnostic runs its fixed CLI proof on Node 20/22 after native p
   assert.match(transport, /run: node tests\/run-windows-transport-proof\.mjs/u);
   assert.doesNotMatch(transport, /run-windows-diagnostic|matrix\.group|github\.event/u);
 
-  const groups = workflow.slice(groupsStart);
+  const groups = jobBlock('windows-diagnostic');
   assert.match(groups, /!startsWith\(github\.ref, 'refs\/heads\/diagnostic\/windows-transport-'\)/u);
   assert.match(groups, /matrix\.group/u);
 });
