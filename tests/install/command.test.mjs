@@ -39,8 +39,8 @@ function requireExplicitFixtureIdentity(fixture) {
   }
 }
 
-function run(fixture, more = []) {
-  return spawnSync(process.execPath, [cliPath, 'install', '--project-root', fixture.project,
+function run(fixture, more = [], projectRoot = fixture.project) {
+  return spawnSync(process.execPath, [cliPath, 'install', '--project-root', projectRoot,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
     '--identity-email', 'install@example.invalid', ...more], { cwd: fixture.project, encoding: 'utf8', env: process.env });
 }
@@ -225,4 +225,24 @@ test('install refuses non-root paths and missing refs before init', () => {
   assert.match(missing.stderr, /could not be fetched/);
   assert.ok(existsSync(join(fixture.project, '.gitmodules')), 'registration is accurately retained after fetch failure');
   assert.equal(existsSync(join(fixture.project, 'engineering/automation/vibe-coding/project-adapter.mjs')), false);
+});
+
+test('installer accepts Windows case and available 8.3 aliases for the same project root', { skip: process.platform !== 'win32' }, () => {
+  const fixture = consumerProject();
+  const caseAlias = fixture.project.toUpperCase();
+  assert.notEqual(caseAlias, fixture.project);
+  const caseCheck = run(fixture, ['--check'], caseAlias);
+  assert.equal(caseCheck.status, 1, caseCheck.stderr || caseCheck.stdout);
+  assert.match(caseCheck.stdout, /Would register/);
+
+  const shortPath = spawnSync('cmd.exe', ['/d', '/c', `for %I in ("${fixture.project}") do @echo %~sI`], { encoding: 'utf8' });
+  if (shortPath.status === 0) {
+    const shortAlias = shortPath.stdout.trim().split(/\r?\n/).at(-1);
+    if (shortAlias && shortAlias.toLowerCase() !== fixture.project.toLowerCase()) {
+      const shortCheck = run(fixture, ['--check'], shortAlias);
+      assert.equal(shortCheck.status, 1, shortCheck.stderr || shortCheck.stdout);
+      assert.match(shortCheck.stdout, /Would register/);
+    }
+  }
+  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
 });

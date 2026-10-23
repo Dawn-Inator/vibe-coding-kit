@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { checkKit, getKitRegistration, inspectKit, prepareKit } from './src/dependencies/submodule.mjs';
 import { syncProjectSkills } from './src/skills/project-sync.mjs';
 import { composeSources } from './src/skills/composition.mjs';
 import { isMainModule } from './src/lib/main-module.mjs';
+import { isPathWithin, samePathIdentity } from './src/lib/path-identity.mjs';
 import { sanitizedGitEnv } from './src/git-environment.mjs';
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -81,7 +82,7 @@ function install(root, options) {
   if (options.ref && (options.ref.startsWith('-') || /[\0\r\n]/.test(options.ref))) throw new Error('--ref must be a non-empty Git ref or commit');
   const rootReal = realpathSync(root);
   const top = git(rootReal, ['rev-parse', '--show-toplevel']).stdout.trim();
-  if (realpathSync(top) !== rootReal) throw new Error(`--project-root must be the existing Git project root (${top})`);
+  if (!samePathIdentity(top, rootReal)) throw new Error(`--project-root must be the existing Git project root (${top})`);
   assertNoSymlinkPaths(rootReal, [resolve(rootReal, '.gitmodules')]);
   const status = git(rootReal, ['status', '--porcelain=v1', '--untracked-files=all']);
   git(rootReal, ['rev-parse', '--verify', 'HEAD']);
@@ -221,8 +222,11 @@ function assertSafeInstallTargets(root) {
 function assertNoSymlinkPaths(root, paths) {
   for (const target of paths) {
     let current = target;
-    while (current !== root && relative(root, current) && !relative(root, current).startsWith(`..${sep}`) && relative(root, current) !== '..') {
+    while (true) {
       if (isSymlink(current)) throw new Error(`Refusing symlink install path: ${current}`);
+      if (!isPathWithin(root, current)) throw new Error(`Refusing install path outside the project root: ${current}`);
+      if (samePathIdentity(root, current)) break;
+      if (dirname(current) === current) throw new Error(`Refusing install path outside the project root: ${current}`);
       current = dirname(current);
     }
   }
