@@ -38,6 +38,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      # The Go backend analyzer runs through `go run`; macOS runner images ship without Go.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: stable
+          cache: false
+
       - name: Record runner versions
         shell: bash
         run: |

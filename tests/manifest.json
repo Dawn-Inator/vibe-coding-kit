@@ -3,6 +3,7 @@
   "backend/python.test.mjs",
   "backend/typescript.test.mjs",
   "contracts/backend-cli.test.mjs",
+  "contracts/ci-workflow.test.mjs",
   "contracts/cli.test.mjs",
   "contracts/project-adapter.test.mjs",
   "contracts/windows-system-diagnostic-workflow.test.mjs",
