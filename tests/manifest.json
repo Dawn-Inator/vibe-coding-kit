@@ -1,4 +1,8 @@
 [
+  "backend/go.test.mjs",
+  "backend/python.test.mjs",
+  "backend/typescript.test.mjs",
+  "contracts/backend-cli.test.mjs",
   "contracts/cli.test.mjs",
   "contracts/project-adapter.test.mjs",
   "contracts/windows-diagnostic-workflow.test.mjs",
@@ -48,7 +52,7 @@
   "worktrees/reclaim-stale.test.mjs",
   "worktrees/submodule-cleanup-safety.test.mjs",
   "worktrees/submodule-lifecycle.test.mjs",
+  "worktrees/windows-git-job.test.mjs",
   "worktrees/worktree-core.test.mjs",
-  "worktrees/writable-tree.test.mjs",
-  "worktrees/windows-git-job.test.mjs"
+  "worktrees/writable-tree.test.mjs"
 ]

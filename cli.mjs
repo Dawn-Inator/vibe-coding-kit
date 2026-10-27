@@ -417,6 +417,16 @@ function main() {
   const root = projectRoot(options);
   switch (options.command) {
     case 'install': install(root, options); return;
+    case 'backend-check': {
+      const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'src/backend/dispatch.mjs'),
+        '--project-root', root, '--config', options.config || '.vibe-coding/backend-architecture.json'], {
+        cwd: root,
+        stdio: 'inherit',
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      return;
+    }
     case 'init': init(root, options); return;
     case 'check': {
       const result = checkKit({ projectRoot: root });
@@ -466,7 +476,7 @@ function main() {
       return;
     }
     case 'help':
-      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--mirror-policy local|tracked] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|worktree> --project-root <path> [options]');
+      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--mirror-policy local|tracked] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|worktree|backend-check> --project-root <path> [options]\nBackend: --config <project-relative JSON path>');
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }

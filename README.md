@@ -39,6 +39,15 @@ Windows worktree process and cleanup checks use the system PowerShell 5.1 and na
 
 The kit provides reusable mechanisms and examples. Each consuming project defines its own branches, environments, gate commands, authorization rules, deployment policy, and business constraints through project-owned configuration and adapters. No single project's production or gate policy becomes a default for every consumer. Existing integrations, including the LingoFly bridge, may keep thin project-owned bootstrap and adapter wrappers; the wrapper supplies project policy and delegates reusable operations to the pinned kit.
 
+## Backend architecture checks
+
+`node .vibe-coding/kit/cli.mjs backend-check --project-root .` runs a configured Python,
+TypeScript or Go source analyzer and fails on structural boundary violations. Copy the matching
+`templates/backend-architecture.<language>.json`, set the project's source roots and import namespaces,
+then wire the command into the project's chosen gate. See the [setup, rule scope and limitations](tutorial/06-codebase-architecture/backend-guardrails.md).
+Shared ownership rules remain language-independent; transaction, API and event semantics remain
+project-aware checks. These source analyzers do not certify every backend contract.
+
 ## Project lifecycle hooks
 
 The project adapter is a project-owned ES module selected by `.vibe-coding/project.config.json`. The initializer creates a valid adapter with an empty hook map, so a fresh setup uses the kit's default behavior without running project-defined hooks. Projects opt into named exports for `afterCreate`, `beforeCandidate`, `verifyCandidate`, `beforePush`, and `afterLand`; see the [adapter schema](schemas/adapter.schema.json) and [project config schema](schemas/project-config.schema.json).
