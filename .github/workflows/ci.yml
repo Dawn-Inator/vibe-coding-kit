@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - main
-      - 'candidate/**'
   pull_request:
     branches:
       - main
-      - 'candidate/**'
 
 permissions:
   contents: read
