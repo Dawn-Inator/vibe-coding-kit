@@ -2,6 +2,8 @@
 
 Vibe Coding Kit 以 Git submodule 固定版本。`install` 把 submodule、项目配置和初始文件接入现有项目；以后用 `prepare` 准备父仓库已固定的版本，用 `check` 只读检查。它不会替项目决定门禁、发布或业务规则。
 
+需要后端结构检查时，参考 [Python、TypeScript、Go 配置与接入说明](tutorial/06-codebase-architecture/backend-guardrails.md)，配置实际源码范围及语言工具链，再运行 `node .vibe-coding/kit/cli.mjs backend-check --project-root .`。项目自行将检查接入所选门禁。
+
 ## 前置条件
 
 - 一个已初始化、已提交且工作区干净的 Git 项目。首次安装会先注册 submodule，再生成项目文件。

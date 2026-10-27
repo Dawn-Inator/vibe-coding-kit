@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "language": "typescript",
+  "services": [{ "root": "src/domains", "module": "@domains" }],
+  "ormModules": ["typeorm"],
+  "providerModules": ["stripe"],
+  "providerRoots": ["src/domains/providers"]
+}

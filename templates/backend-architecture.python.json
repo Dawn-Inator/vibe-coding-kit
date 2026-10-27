@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "language": "python",
+  "services": [{ "root": "apps/api/app/service", "module": "app.service" }],
+  "ormModules": ["sqlalchemy"],
+  "providerModules": ["stripe"],
+  "providerRoots": ["apps/api/app/service/providers"]
+}

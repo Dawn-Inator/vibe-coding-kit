@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "language": "go",
+  "services": [{ "root": "internal/domains", "module": "example.com/app/internal/domains" }],
+  "ormModules": ["gorm.io/gorm"],
+  "providerModules": ["github.com/stripe/stripe-go"],
+  "providerRoots": ["internal/domains/providers"]
+}

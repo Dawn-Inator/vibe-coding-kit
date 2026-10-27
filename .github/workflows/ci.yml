@@ -47,6 +47,15 @@ jobs:
           node --version
           node -p 'process.platform + " " + process.arch'
 
+      - name: Install locked analyzer test dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Record backend analyzer toolchains
+        shell: bash
+        run: |
+          python3 --version
+          go version
+
       - name: Run the exact test manifest
         shell: bash
         run: node tests/run.mjs
