@@ -121,8 +121,21 @@ description: Use before adding or reviewing a database migration with schema, de
    事务里"时才生效;写的时候按"每条语句都可能单独提交"来排序,才是在两种执行模型下都安全的写法。
 9. 新增了非空且无默认值的列时,记得同步检查测试用的种子数据/fixture 是否也需要补上这个字段。
 
+## 线上安全(摘要,细则见 [references/online-safety.md](references/online-safety.md))
+
+迁移跑在**有流量、且旧版本进程还没退场**的环境里。除可逆性之外,还必须守住:
+
+- **限时**:每条会拿强锁的 DDL 显式写 `lock_timeout` / `statement_timeout`,拿不到锁就快速失败,不排队堵死业务。
+- **在线建索引**:需要 `CREATE INDEX CONCURRENTLY` 但迁移工具在事务内执行时,头部注释写明大表上线前的手工等价步骤,迁移本身保持幂等。
+- **回填**:大表回填分批、可续跑、每批有界;DROP 之前只读预览将丢的行数。
+- **expand/contract**:滚动发布时旧镜像仍在跑,收紧权限/加严约束/删列只能放 post-deploy 阶段。
+- **用线上版本自己的校验器验证候选迁移**,不靠人读 SQL;取不到线上版本或无法评估时 fail closed。
+- **phase 必须显式声明**:manifest 里缺失的部署阶段不得被静默默认成 pre-deploy(真实事故:未声明的收紧迁移被提前执行,旧镜像启动校验失败)。
+- **声明 ↔ 语句交叉校验**:`-- reversibility:` 必须被静态检查对照实际语句;新规则只约束「激活序号」之后的条目,历史空洞带理由逐条登记。
+
 ## 与其它 skill 的关系
 
 新建一张持久化存储(表/物化视图/队列)前,先走 [data-architecture-card](../data-architecture-card/SKILL.md)
-想清楚容量模型和放置决策;涉及新业务能力/服务边界的改动,先走
+想清楚容量模型和放置决策(涉及个人数据的新表还要声明注销/擦除处理方式,见 [data-erasure-boundary](../data-erasure-boundary/SKILL.md));涉及新业务能力/服务边界的改动,先走
 [business-boundary-cards](../business-boundary-cards/SKILL.md)。
+测试库的隔离与一次性库用法见 [test-database-isolation](../test-database-isolation/SKILL.md)。

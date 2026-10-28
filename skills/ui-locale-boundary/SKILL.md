@@ -177,6 +177,14 @@ pattern — it's the single easiest way for someone under time pressure to bypas
 mechanism "just this once," and every instance silently reopens the same class of bug the catalog
 mechanism exists to prevent.
 
+## Gate the message keys too, in both directions
+
+Locale parity (above) covers the locale set, not the catalog contents. Also gate: referenced-but-missing
+keys (fail), present-but-unreferenced keys (fail or advisory with a planned-key registry), per-locale
+key-set parity, and dynamic key concatenation (static map or registered prefix). Details, scanner
+caveats, and React (i18next / next-intl) vs uniapp (vue-i18n) notes:
+[references/i18n-key-governance.md](references/i18n-key-governance.md).
+
 ## Record irreversible or judgment-call product decisions once, in the doc, not per-conversation
 
 Language-scope decisions attract the same well-intentioned suggestion repeatedly: "should we add a

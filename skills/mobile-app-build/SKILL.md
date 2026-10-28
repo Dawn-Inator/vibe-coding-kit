@@ -131,3 +131,7 @@ credential. See [references/device-session-guards-and-errors.md](references/devi
 | Artifact directory layout, filename template, channel ≠ environment mapping | [references/naming-and-channel-mapping.md](references/naming-and-channel-mapping.md) |
 | Bundle IDs, keystores, signing fingerprints, `.ci-secrets/` | [references/identity-and-signing.md](references/identity-and-signing.md) |
 | Real-device sign-in, injection guard, common errors, build-number discipline | [references/device-session-guards-and-errors.md](references/device-session-guards-and-errors.md) |
+
+## See also
+
+- 客户端版本上报、强制升级判定（`must_update`）、灰度白名单与旧版本 API 兼容：见 [`references/client-version-compat.md`](references/client-version-compat.md)。

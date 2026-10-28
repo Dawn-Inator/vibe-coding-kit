@@ -122,6 +122,13 @@ per-key authorization — not the existence of a narrow, audited, step-up-gated 
   follow-up. A provider registered without its config/tests/docs updated in lockstep is the most
   common way this boundary rots.
 
+## Outbound And East-West Calls
+
+- Outbound HTTP: one client factory is the single source; business code never builds a raw client
+  (static scan), timeouts are named tiers, retries are policy objects, non-idempotent calls are never
+  retried: [references/outbound-http.md](references/outbound-http.md)
+- East-west (service-to-service) client and tolerant reader: [references/east-west-client.md](references/east-west-client.md)
+
 ## Verification
 
 - Run your project's focused/changed-file test selection first (see your project's test-routing

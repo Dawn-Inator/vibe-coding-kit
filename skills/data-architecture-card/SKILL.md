@@ -98,6 +98,9 @@ description: Use before creating or materially changing a persistent store — a
 可能被重新排序的序号——**更不能写一个代码里根本没有对应实现的执行入口**,那等于伪造了一个"通过了
 但什么都没覆盖"的门禁。
 
+保存了某个主体(用户/账号)数据的存储,还要声明主体注销时的处理方式(删除 / 匿名化 / 保留并写明
+法定理由),按 [data-erasure-boundary](../data-erasure-boundary/SKILL.md) 接入统一的删除入口。
+
 ## 放置决策的判断步骤(顺序不能颠倒)
 
 放置是唯一必须先于容量和物理设计做的决策:

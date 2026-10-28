@@ -157,6 +157,16 @@ The value of this whole convention collapses if it's only enforced by code revie
 
 Wire it into your test suite so a violating route fails CI, not just a human reviewer's attention span.
 
+## Deeper Governance (read the reference for the topic you touch)
+
+- Auth gate (AST detection of every injection form, fail-closed dynamic routes, reviewed allowlists, empty unauthenticated baseline): [references/auth-gate.md](references/auth-gate.md)
+- Public vs internal schema artifacts; client <-> schema two-way reconciliation: [references/schema-surfaces-and-client-reconciliation.md](references/schema-surfaces-and-client-reconciliation.md)
+- Envelope, pagination shape, segmented error codes, unknown-exception handling: [references/response-and-errors.md](references/response-and-errors.md)
+- Idempotency for side-effecting POSTs (key, fingerprint -> 409, cache vs durable store): [references/idempotency.md](references/idempotency.md)
+- Versioning cost, forced upgrade vs rollout, core/compat action vocabulary: [references/versioning-compat-and-actions.md](references/versioning-compat-and-actions.md)
+
+Narrative walkthrough: `tutorial/06-codebase-architecture/api-idempotency-and-compat.md`.
+
 ## Stop And Escalate
 
 Stop for direction when existing consumers cannot remain compatible, a public/internal classification is

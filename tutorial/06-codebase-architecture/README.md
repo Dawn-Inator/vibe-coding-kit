@@ -60,6 +60,11 @@ monorepo 的根目录本身也是一种架构决策的产物,不是随手建文�
 | [mobile-native-build-pipeline.md](./mobile-native-build-pipeline.md) | 原生打包 wrapper 命令、必答的环境/区域两个问题、文件名/发布目录/远程存储 key 三层命名分离、"打包即发布"默认行为 | [`mobile-app-build`](../../skills/mobile-app-build/SKILL.md) |
 | [ui-locale-boundary.md](./ui-locale-boundary.md) | UI locale 轴 vs 内容语言轴、每个 runtime 一份真源、keyed record 类型护栏、跨包编译期断言、locale 与外部契约 URL、错误消息 fallback 安全边界 | [`ui-locale-boundary`](../../skills/ui-locale-boundary/SKILL.md) |
 | [cross-service-event-contract.md](./cross-service-event-contract.md) | 双向读源码的 allowlist 一致性测试、去重轴选择、跨服务宽度契约、新事件类型接线清单、失败分类、分层幂等 | [`cross-service-event-contract`](../../skills/cross-service-event-contract/SKILL.md) |
+| [backend-guardrails.md](./backend-guardrails.md) | 可移植的后端结构检查器(Python/TypeScript/Go)、配置字段、能力边界 | [`backend-layering`](../../skills/backend-layering/SKILL.md) |
+| [governance-ratchets.md](./governance-ratchets.md) | 存量债务基线只减不增、从 merge-base 读基线、过期日、防扫描塌缩假绿 | [`backend-governance-ratchets`](../../skills/backend-governance-ratchets/SKILL.md) |
+| [api-idempotency-and-compat.md](./api-idempotency-and-compat.md) | 幂等键三件套、同键异 payload 为何是 409、强制升级与灰度、URL 与代码包耦合的代价 | [`api-contract-change`](../../skills/api-contract-change/SKILL.md)、[`provider-gateway`](../../skills/provider-gateway/SKILL.md) |
+| [migration-online-safety.md](./migration-online-safety.md) | 锁超时与并发建索引、expand/contract 与旧版本兼容、未声明部署阶段的事故、never-dead-letter 不等于平坦重试 | [`migration-downpath`](../../skills/migration-downpath/SKILL.md)、[`test-database-isolation`](../../skills/test-database-isolation/SKILL.md)、[`data-erasure-boundary`](../../skills/data-erasure-boundary/SKILL.md) |
+| [frontend-contracts.md](./frontend-contracts.md) | 框架无关的前端契约:唯一 API 客户端、幂等键、错误展示边界、平台 SDK 收口、深链白名单、埋点脱敏,附 React / uniapp 对照表 | [`frontend-api-client-contract`](../../skills/frontend-api-client-contract/SKILL.md)、[`frontend-error-display-boundary`](../../skills/frontend-error-display-boundary/SKILL.md)、[`frontend-layering-boundaries`](../../skills/frontend-layering-boundaries/SKILL.md)、[`client-routing-and-deeplink`](../../skills/client-routing-and-deeplink/SKILL.md)、[`client-telemetry-contract`](../../skills/client-telemetry-contract/SKILL.md) |
 
 这个模块讲的是"为什么这样决策"(带 Nova 案例);右边一列链接的是同一套框架去品牌化之后、
 可以直接拖进新项目使用的可执行版本——两者内容互相印证,教程负责讲道理,skill 负责能照着做。

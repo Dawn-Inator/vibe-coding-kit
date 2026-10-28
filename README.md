@@ -20,7 +20,7 @@ The runtime under `src/` is called directly from the pinned checkout. Consumers 
 
 ## Contents
 
-- [`skills/`](skills/) contains 27 current reusable skills. Projects select and extend them according to their own needs.
+- [`skills/`](skills/) contains the current reusable skills (backend, frontend, data, workflow and agent-orchestration). Projects select and extend them according to their own needs.
 - [`tutorial/`](tutorial/) explains the methods and tradeoffs behind the skills. Tutorial examples are illustrative, not mandatory project policy.
 - [`src/`](src/) contains reusable runtime mechanisms.
 - [`schemas/`](schemas/) defines public configuration and adapter contracts.
