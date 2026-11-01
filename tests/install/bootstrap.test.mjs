@@ -106,12 +106,16 @@ test('bootstrap offline hydration passes no-lazy-fetch and no-prompt to the upda
   const events = readFileSync(trace, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
   const bySession = new Map();
   for (const event of events) bySession.set(event.sid, [...(bySession.get(event.sid) || []), event]);
-  const update = [...bySession.values()].find((group) => group.some((event) => event.event === 'start'
-    && event.argv?.some((arg, index, argv) => arg === 'submodule' && argv[index + 1] === 'update')));
-  assert.ok(update, 'Git trace must include the actual submodule update process');
-  const parameters = new Map(update.filter((event) => event.event === 'def_param').map((event) => [event.param, event.value]));
-  assert.equal(parameters.get('GIT_NO_LAZY_FETCH'), '1');
-  assert.equal(parameters.get('GIT_TERMINAL_PROMPT'), '0');
+  // The update process tree: the `git submodule update` session plus every child session (trace2 sids nest as `parent/child`).
+  // Which process of that tree reports the env vars depends on the Git build: where `git submodule` is a shell script (e.g. 2.43)
+  // the dispatcher session emits no def_param, and the builtin children (rev-parse, config, ...) carry the inherited values.
+  const updateSid = [...bySession.entries()].find(([, group]) => group.some((event) => event.event === 'start'
+    && event.argv?.some((arg, index, argv) => arg === 'submodule' && argv[index + 1] === 'update')))?.[0];
+  assert.ok(updateSid, 'Git trace must include the actual submodule update process');
+  const tree = [...bySession.entries()].filter(([sid]) => sid === updateSid || sid.startsWith(`${updateSid}/`)).flatMap(([, group]) => group);
+  const valuesOf = (param) => [...new Set(tree.filter((event) => event.event === 'def_param' && event.param === param).map((event) => event.value))];
+  assert.deepEqual(valuesOf('GIT_NO_LAZY_FETCH'), ['1'], 'every process of the update tree sees no-lazy-fetch=1 (and at least one reports it)');
+  assert.deepEqual(valuesOf('GIT_TERMINAL_PROMPT'), ['0'], 'every process of the update tree sees terminal-prompt=0 (and at least one reports it)');
 });
 
 test('cold bootstrap preserves a non-empty uninitialized target and gives recovery guidance', () => {
