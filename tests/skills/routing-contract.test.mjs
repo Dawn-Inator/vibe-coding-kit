@@ -76,8 +76,8 @@ test('dispatch-only model choice remains in the existing orchestration authority
   assert.match(guardrails, /explicit model, explicit effort/);
   assert.match(guardrails, /never mix an override with a full-history fork/);
   assert.match(guardrails, /Haiku read-only only; Sonnet for every write-capable task/);
-  assert.match(guardrails, /Luna is the default executor/);
-  assert.match(guardrails, /Terra is the fallback/);
+  assert.match(guardrails, /Luna is for read-only exploration; Terra is the default executor/);
+  assert.match(guardrails, /must have a different implementation owner and isolated context/);
 });
 
 test('class guard catches stale consumers in arbitrary paths and allows historical prose', () => {
