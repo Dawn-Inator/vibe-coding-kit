@@ -131,61 +131,8 @@ write **and** both automated layers are named. Authorization does not waive
 
 ## Write Permission Boundary (Hard Line)
 
-The tracker is the **reporter's/tester's input source, not the developer's output ledger**. The
-developer (**including AI**) has exactly one write power over it:
-
-```
-✅ Only allowed:  status: active → <write-target>
-❌ Forbidden:      adding a new row (a new bug entry)
-❌ Forbidden:      any status → <verified>
-❌ Forbidden:      editing an existing row's report text / expected result / repro steps —
-                   anything the reporter/tester filled in
-```
-
-**`<verified>` is an acceptance conclusion that only the reporter/tester may set, after their own
-re-test passes** — it is not within the developer's authority, AI included.
-
-### Owner-level decision: AI must not add rows or mark them verified
-
-A real incident that generalizes: an AI session found several new issues while comparing the
-running app against a design spec, and created new tracker rows for them directly via the
-underlying API client, growing the table. The developer required all of them deleted and the
-frozen baseline restored, with zero residue. The reasoning: that table is the reporter's/tester's
-**input**, and an AI adding entries to it pollutes someone else's data source; the terminal
-"verified" status is specifically an acceptance judgment, and an AI self-certifying its own fix
-would make re-testing meaningless. New problems an AI notices belong in the commit message, PR
-description, or a handoff document — never in the tracker directly. To surface them to a human,
-list them plainly in the final reply and let the developer decide whether to record them.
-
-### Bypassing the managed script is bypassing the permission guard
-
-Your project's managed writeback script is the **only** approved write entry point, and it should
-be built so it can physically only touch the one status field (the field ID that maps to it
-hard-coded in the script), with a drift guard that refuses to touch any row already snapshotted as
-`<verified>`. **That design is correct — do not weaken it.** Calling the underlying API/CLI
-directly to write this table, even to write the one allowed field, is itself a signal of going
-around the guard, regardless of which field gets written.
-
-What the managed script itself must guarantee, so the guard does not depend on the caller behaving:
-
-- **Tracked in the repository.** A writeback script living in a temp directory or on one machine
-  disappears with that machine, and the next session improvises a direct API call instead. Keep it
-  under version control next to the rest of your automation.
-- **Compare-and-set on the current value.** Read the row right before writing and refuse unless its
-  status is exactly the expected source state (`<active>`); blank, already-advanced, or any other
-  value is a refusal, not something to overwrite.
-- **Preconditions as arguments, checked by the script.** The fix commit(s) must already be on the
-  shared branch, and both regression layers (local regression + class-level guard) must be named as
-  `<file>::<test>` and actually exist in tracked files. Missing either layer refuses the write.
-- **Dry-run by default; write only with an explicit flag; read back after writing** and verify the
-  status changed and no other field did. Emit a machine-readable receipt.
-- Repeatable flags (`--tests a --tests b`) rather than comma-joined lists, so a test name may contain
-  a comma.
-
-### "active → `<write-target>`" still requires an actual fix and an actual verification
-
-The rule permitting this direction does not mean it is safe to flip casually. If a row scoped to
-one platform (say, iOS) had every verification this round done on a different platform (say,
-Android) and the underlying issue was never touched, leave it `active`. Marking a row
-`<write-target>` when nothing about it was actually fixed or verified sends the reporter/tester to
-re-test something that never changed, wasting their next round.
+The tracker is the reporter's input, not the developer's ledger. Only an explicitly authorized
+`<active> → <write-target>` transition through the tracked managed script is allowed; never add rows,
+modify reporter content, or set the reporter's terminal `<verified>` status. Require a real fix,
+both regression layers and the required verification for each row before writeback. Read the
+[managed writeback contract](references/writeback-contract.md) before any external write.
