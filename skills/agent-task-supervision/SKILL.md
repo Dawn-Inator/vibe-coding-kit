@@ -17,6 +17,8 @@ A heartbeat for long multi-agent orchestration, run at each timer wake by the or
 
 **Register when either holds:** **A** ≥3 agents in flight AND expected runtime >2h; **B** one agent works autonomously and the session has run or will run >2h (overnight, unattended). "Expected >2h": user said overnight/unattended, backlog clearly >2h, or >2h since the first action.
 
+**Developer task intake.** When supervision is active, record each new or materially changed actionable developer request in the session's existing `## Items` registry immediately upon receipt, before unrelated work or the next timer wake. Update the existing row for a correction or add a separate row for new work; preserve the request, scope and constraints, use an `owner:` source and the registry's allowed statuses, and keep already completed history accurate. A question, status request or simple acknowledgement is not a new task. After the write succeeds, tell the developer in that same turn that the task was added or updated in the heartbeat ledger; if the write fails, state that it was not recorded and why. Do not claim success before the write. Intake does not trigger a full heartbeat audit or grant permission for restricted actions. A consuming project may opt into this intake for shorter tasks without activating a timer.
+
 **Wake point.** 1. Arm your tool's wake-up mechanism, default **20 min** announce mechanism, interval, next due time in one line.
 2. First a one-shot delivery probe (1–3 min), then **yield** (end the turn); registered only when it arrives. Not within ~2x its delay: delete it, name the failure, try the next; none delivers → go event-anchored.
 3. One-shot timers chain: each firing **re-arms first, then audits**; re-arm at any wake where none is armed.
