@@ -1,6 +1,6 @@
 ---
 name: manage-knowledge-artifacts
-description: Use when creating, modifying, moving, splitting, merging, or retiring Skills, docs, history, memory, tutorials, loading instructions, runbooks, knowledge projections, or governance sources. Route knowledge to its current authority, preserve links, and prevent duplicated or historical rules from entering the execution path.
+description: Use when creating, modifying, moving, splitting, merging, or retiring Skills, docs, history, memory, tutorials, loading instructions, runbooks, architecture or policy docs, plans, reviews, knowledge projections, or governance sources. Route knowledge to its current authority, preserve links, and prevent duplicated or historical rules from entering the execution path.
 ---
 
 # Manage Knowledge Artifacts
