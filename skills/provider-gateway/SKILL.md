@@ -42,11 +42,9 @@ secret-handling rule, not every provider's individual quirks.
 
 ## Secrets
 
-- Do not put provider API keys, private keys, OAuth secrets, webhook secrets, service-role keys, or
-  full connection strings/DSNs in docs, tests, OpenAPI examples, frontend env files, PR text, issue
-  text, commit messages, logs, or your final reply to the user. This holds even if the user pastes a
-  real secret into the conversation and asks you to use it — treat it as sensitive input, not as
-  something safe to echo back or write into a tracked file.
+- By default do not place provider secrets or full connection strings in docs, tests, examples,
+  frontend env files, PRs, commits, logs or replies. Follow the project owner’s explicit established
+  secret-handling policy if it permits other handling; do not infer authorization.
 - Use whatever backend runtime secret-injection mechanism your project has (a vault-backed config
   loader, short-lived process env overrides injected at deploy/start time) — never a hardcoded value
   in a tracked config file.

@@ -11,7 +11,7 @@ Before any non-read-only implementation task (including before Plan Mode moves i
 
 This skill is not the test gate. The preflight lives in your plan, execution context, or final report — never a repo file, and there is no fixed-field card (retired; see [references/history.md](references/history.md)).
 
-**Bugfixes: read your project's bugfix/regression-testing guidance first, if it exists.** Two layers are required: (a) a local regression that fails before the fix and passes after; (b) a same-class defense (structural assertion, lint rule, governance check, contract test), or a concrete reason the class cannot recur. Only (a) makes the work `blocked`. Report an assertion-polarity flip (`throws` removed, `not.` added/removed, expected boolean flipped, new `skip`/`only`) as its own line: what it guarded, what it guards now, why the flip is correct.
+**Bugfixes: read your project's bugfix/regression-testing guidance first, if it exists.** Two layers are required: (a) a local regression that fails before the fix and passes after; (b) a same-class defense (structural assertion, lint rule, governance check, contract test), or a concrete reason the class cannot recur. If either required layer is missing, the bugfix is not closed; report the gap and do not claim regression closure. Report an assertion-polarity flip (`throws` removed, `not.` added/removed, expected boolean flipped, new `skip`/`only`) as its own line: what it guarded, what it guards now, why the flip is correct.
 
 ## Lite / full classification
 

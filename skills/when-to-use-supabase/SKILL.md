@@ -1,6 +1,6 @@
 ---
 name: when-to-use-supabase
-description: Use whenever the task touches authentication, user management, object storage, realtime/WebSocket, vector search/embeddings, message queues, cron/scheduled jobs, webhook receivers, multi-tenant RLS, audit logs, or Postgres extensions — to evaluate whether Supabase's managed service can replace self-hosted code. Also trigger when the user mentions "Supabase", "self-host", "managed service", "backend selection", "后端选型", "要不要自建".
+description: Use when selecting a new backend capability, explicitly reconsidering an existing integration, or evaluating whether Supabase can replace a self-hosted service. Skip ordinary fixes that do not change service selection.
 ---
 
 # when-to-use-supabase
@@ -12,9 +12,9 @@ skill 时的快照，使用前建议核对 [Supabase 官方文档](https://supab
 
 ---
 
-## 何时触发（激进模式）
+## 何时触发
 
-**必须触发**：任务描述或讨论落到以下任何一个业务域
+**仅当涉及新增能力选型、明确重新评估或用户询问选型时触发**；普通修复不因关键词重复选型。相关领域包括
 
 | 业务域 | 关键词示例 |
 |---|---|
@@ -30,7 +30,7 @@ skill 时的快照，使用前建议核对 [Supabase 官方文档](https://supab
 | 审计 | audit log / 操作日志 / 合规 |
 | Postgres 扩展 | PostGIS / GIS / 地理 / 全文搜索 / pg_cron / FDW |
 
-**以及**：用户主动说 `Supabase` / `自建` / `managed` / `BaaS` / `Firebase 替代`。
+**以及**：用户主动询问 Supabase、自建、托管服务或替代方案的选型。
 
 **不触发**：纯前端样式 / 纯 UI 交互 / 与服务端选型无关的代码。
 
@@ -55,7 +55,7 @@ skill 时的快照，使用前建议核对 [Supabase 官方文档](https://supab
 | 审计日志 | pgaudit 扩展 | 自写 trigger |
 | 数据湖分析 | Analytics Buckets (Iceberg) | Snowflake / BigQuery（小规模场景） |
 | 复杂业务编排逻辑 | ❌ 自建后端服务（FastAPI / Nest / Express 等） | — |
-| 数据本地化 / 合规强制要求 | ❌ 自建或选支持本地化部署的方案 | — |
+| 数据本地化 / 合规要求 | 按具体托管或自建部署的地域和数据流核验 | — |
 
 ---
 
@@ -80,7 +80,7 @@ skill 时的快照，使用前建议核对 [Supabase 官方文档](https://supab
 
 ## 三条硬规则
 
-1. **国内合规 / ICP / 数据境内** 的项目 → 直接劝退 Supabase 这类托管服务，不要啰嗦，走自建或支持本地化部署的企业定制方案。**数据本地化 / 合规强制要求的项目应该默认远离 Supabase 这类托管服务。**
+1. **数据本地化 / 合规**：按具体供应商、部署形态与地域核验数据库、认证、对象存储、备份、日志及第三方处理的数据流，并依据适用要求评估；不能仅凭中国、ICP 或 Supabase 标签排除托管服务。Supabase 可有不同供应商的托管或自建部署，能力和地域应逐项核实。
 2. **先搞清楚你的项目当前有没有已经在用 Supabase 的某些能力**，再决定这次评估是「要不要新引入 Supabase」还是「要不要用 Supabase 补齐缺的能力」——已经在用某项能力时不要无理由建议换供应商，评估重心放在「缺失」的业务域能否用 Supabase 补上。
 3. **复杂业务编排逻辑应该放在自建的后端服务里，不要塞进边缘函数**。Edge Function 适合 webhook 接收、代理、短任务、胶水逻辑，不适合承载完整的领域服务编排。
 

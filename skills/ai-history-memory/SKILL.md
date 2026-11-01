@@ -68,7 +68,7 @@ Keep entries concise. Prefer repo paths, commit SHAs, command names, and evidenc
 
 ## Redaction
 
-Never write plaintext secrets, tokens, cookies, passwords, private keys, full connection strings, personal access tokens, or raw customer PII. Report secret values only as `<set>`, `<empty>`, or `<redacted>`. It is fine to name an env var or vault key in prose, but do not write secret-like assignments with real values. If an entry discusses a compromised value or credential placement, set `redaction: "redacted"` and describe only the safe handling path.
+By default do not write plaintext secrets, tokens, cookies, passwords, private keys, connection strings, or personal access tokens in History; use `<set>`, `<empty>`, or `<redacted>`. Follow the project owner’s explicit established secret-handling policy when it permits a different handling; do not infer permission. Never write raw customer PII. If an entry discusses a compromised value or credential placement, set `redaction: "redacted"` and describe only the safe handling path.
 
 ## Indexes
 

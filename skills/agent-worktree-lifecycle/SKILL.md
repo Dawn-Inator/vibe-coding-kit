@@ -37,7 +37,6 @@ cd <printed path>                                 # edit only there
 node .vibe-coding/kit/cli.mjs worktree finish --message "type(scope): summary"
 node .vibe-coding/kit/cli.mjs worktree status
 node .vibe-coding/kit/cli.mjs worktree cleanup
-node .vibe-coding/kit/cli.mjs worktree sync-primary
 ```
 
 When a `package.json` exists, the initializer adds `worktree:begin`, `worktree:end`, `worktree:status`,
@@ -61,7 +60,7 @@ so the local worktree and branch remain for inspection.
 - `begin` (alias of `create`) makes a branch and worktree under the configured managed root and records guard
   metadata. Pass `--base <branch>` to choose a base explicitly. `--offline` skips the pre-branch fetch.
 - A spawned sub-agent's worktree is created by the orchestrator with `--worker`; a worker never adds `--install` or installs dependencies on its own. A fresh worktree without `--install` has no dependencies; a missing-module error there is expected state, not a bug.
-- **Branch-context rule**: `begin` defaults the base to the primary worktree's current branch; if that branch is not the one you intend to land on, pass `--base` explicitly instead of guessing, and read cross-session state from an explicit ref, not from primary's working tree (another session may have switched it).
+- **Branch-context rule**: follow the project adapter’s branch and identity rules first. Without project-specific rules, `begin` defaults to the primary worktree’s current branch; pass `--base` when appropriate and never guess identity. Read cross-session state from an explicit ref.
 - `finish` commits dirty changes, fetches the base, rebases (a branch carrying its own merge is merged instead), then pushes the worktree's own `HEAD` to its configured upstream. A rebase conflict aborts with nothing pushed; a push that never succeeds leaves the worktree intact, so re-run it. Primary is not advanced.
 - The completion report cites the terminal output of the real `finish` run (command, exit status, pushed SHA, cleanup result). Guard metadata and thread IDs are attribution only, not proof of completion.
 - `finish` may wait on its lock: run it detached according to the project's process policy and wait on the log event-driven. `cd` into your own worktree before finishing.
