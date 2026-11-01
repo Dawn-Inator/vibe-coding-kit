@@ -2,28 +2,20 @@
 
 Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and pinned rules.
 
-## Orchestrator Does Not Fix Bugs By Hand
+## Bug-Fix Ownership
 
-The orchestrator's job is dispatch, integration, centralized verification, and acceptance — not writing the
-fix itself. **Any code/test/config fix, however small, is dispatched to a write-capable worker with an
-explicit acceptance oracle.** "It's a one-liner" is not an exception — that class of fix is exactly what
-this rule covers, precisely because its small size is what makes it tempting to hand-patch instead of
-dispatching.
+A single-agent orchestrator may implement a fix directly with an explicit acceptance oracle. In a project-mandated dispatch-only mode, assign fixes to a write-capable worker.
 
-- **The orchestrator may only edit files that are pure orchestration artifacts**: handoff/plan/status docs
-  it owns, and conflict-marker resolution during a rebase/merge it itself owns. It must not touch source,
-  test, or config files to resolve a bug, however trivial the diff looks.
+- In dispatch-only mode, the orchestrator limits its own edits to permitted orchestration artifacts and integration.
 - **A finish/merge chain must be gated on the verification result — never `build; finish` unconditionally.**
   Run the acceptance oracle, check its actual exit code/result, and finish only on green.
-- If the orchestrator notices a bug while reviewing or integrating a worker's output, the correct action is
-  to dispatch a fix task, not to open the file and patch it directly, even when a worker dispatch feels like
-  overkill for the size of the change.
+- Apply the active mode and higher-priority delegation instructions to issues found during review.
 
 See your project's tutorial for the incident that motivated this section.
 
 ## Orchestrator Duties
 
-The bug-hand-patching ban, the symlink-prohibition, the light-self-check naming, and the per-host heavy
+The active bug-fix ownership rule, the symlink-prohibition, the light-self-check naming, and the per-host heavy
 process limit are stated in full above (see "Orchestrator Does Not Fix Bugs By Hand", "Worker Prompt
 Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule") — restate all of them in every
 dispatch prompt rather than assuming a worker already knows them. Additional orchestrator-only duties:

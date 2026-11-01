@@ -21,7 +21,7 @@ groups on a ≥10-core host, 1 on fewer; never throttle agent count "to save mem
 ### When To Parallelize, When Not
 
 Fan out only independent write units with a measurable wall-clock benefit; no parallel floor, and task size
-alone is no reason. Dispatch is **required** when all four hold: expected >~15 min; root cause/next action
+alone is no reason. When permitted by higher-priority instructions and parallelism has measurable wall-clock benefit, dispatch is **required** when all four hold: expected >~15 min; root cause/next action
 known (execution, not investigation); fits a self-contained task packet; write scope overlaps no in-flight
 worker. Absorbing such a unit into the orchestrator's own turns is a guardrail violation. Do not fan out
 open investigation or overlapping write sets; merge <~15 min packages that share a write set and blocking
@@ -35,7 +35,7 @@ dependency into one dispatch.
   heavy commands, locally or remotely — only the exact light check named in the packet; never host-sync
   commands, shared-resource cleanup, another worktree's dependency symlinks, or whole-env/secret dumps.
 - Workers never write into the human primary checkout; facts come from origin refs or their managed worktree.
-- Workers do not spawn agents or windows; out-of-scope findings go in the final handoff.
+- Default to one worker layer. A top orchestrator may explicitly authorize one nested worker layer for a bounded submodule when the runtime supports it and parallelism benefits the task. No deeper nesting or independent windows; see task-packet.
 - On finish a worker stops every background shell/loop/watcher it started and attaches `ps` proof; a
   report without it is invalid.
 - Quota is hard: ≥95% stop new dispatch, ≥97% stop all, merge, hand off. Reviews cover four categories only
@@ -80,9 +80,8 @@ feed each worker back its own failures.
 
 Whichever platform and model you use as the top-level orchestrator, keep goal interpretation, dependency
 ordering, conflict resolution, architecture forks, integration, and final semantic acceptance **in the
-orchestrator**. Delegate bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Luna on
-Codex); escalate to Opus / Terra only to discover or reconcile an uncertain subsystem boundary or for a
-submodule-level architectural fix.
+orchestrator**. Delegate bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Terra on
+Codex); Luna is read-only exploration. Return architectural decisions to the top orchestrator.
 
 After an implementation candidate is committed, and before final acceptance of a non-trivial integrated
 multi-agent candidate, dispatch an **independent pre-review worker** (Terra on Codex; Opus/Fable-tier on
@@ -100,7 +99,7 @@ seats and acceptance split when they apply.
 
 Before the first broad wave, dispatch one representative low-risk task as a health check: confirm one
 private structured final, respected write scope, no heavy processes, usable evidence.
-Workers must not spawn additional agents or independent windows — the top orchestrator owns fan-out.
+Nested delegation requires explicit top-level authorization and is limited to two worker layers; reviewers never delegate.
 
 ### Task Packet Reference
 
@@ -119,11 +118,9 @@ setting.
   design/root cause is known. Opus only for (a) review/falsification, (b) root-cause investigation, (c)
   security-boundary design decisions; write `opus because (a|b|c): <reason>` first, else Sonnet.
 - **Codex**: pass model, effort and fork setting together; never mix an override with a full-history fork.
-  Luna is the default executor when objective, writable scope, and an acceptance oracle are all
-  explicit, even across multiple files; Terra is the fallback for discovering/reconciling subsystem
-  boundaries or a submodule-level architectural fix; Sol is for a genuine architecture/semantic fork or an
-  independent final review. A "max reasoning" toggle on Luna adds depth; it does not turn Luna into Terra
-  or Sol.
+  Luna is for read-only exploration; Terra is the default executor for bounded write tasks, like Sonnet.
+  Sol is for architecture/semantic decisions or independent review. An independent Terra pre-review
+  must have a different implementation owner and isolated context; risk increases verification strength.
 - Difficulty picks the tier; risk picks verification strength; "high-impact" alone never justifies a
   frontier tier. Mirror this floor into the always-loaded project file.
 
@@ -135,7 +132,7 @@ setting.
   In a shared managed checkout, return the patch to the orchestrator for serial commits instead.
 - Name the offload directory; commands >~2 min run detached; verify landed hashes by ancestor check.
 - Exactly one private structured final; report blocked rather than message elsewhere.
-- Orchestrator never hand-patches bugs: dispatch a fixer with an oracle, gate finish on it.
+- A single-agent orchestrator may fix bugs directly; in a project-mandated dispatch-only mode, assign a fixer with an oracle. Gate finish on the actual result.
 
 ## References Index
 
