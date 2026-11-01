@@ -85,4 +85,3 @@ The value of this whole convention collapses if it's only enforced by code revie
    rather than silently accepting them.
 
 Wire it into your test suite so a violating route fails CI, not just a human reviewer's attention span.
-
