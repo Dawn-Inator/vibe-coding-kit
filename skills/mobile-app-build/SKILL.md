@@ -53,11 +53,9 @@ everything" behaves the same across sibling commands (iOS may allow it, Android 
 Re-verify docs against the parser after any change to it. Drift examples:
 [references/cli-flag-drift.md](references/cli-flag-drift.md).
 
-### Ask two questions before building — never infer them
+### Resolve environment and region before building
 
-Any "build a package" request must confirm **environment** and **region/flavor** explicitly (via
-whatever interactive question mechanism your agent has) before running anything. Do not default to
-whatever `.env` already has, and do not guess from context. Environment and build type are
+Resolve **environment** and **region/flavor** from the developer’s explicit request and prior authorization. Ask only for a missing choice; never repeat an answered question or infer a target from `.env`. Environment and build type are
 **strongly bound** — the developer picks environment, build type follows; never ask "debug or
 release" separately:
 
