@@ -17,7 +17,7 @@ surrounding conversation:
 | Verification & closeout | Which light/heavy checks are allowed, who owns guard/gate/finish authority, whether there's an in-flight lock/SHA already being verified | Which checks actually ran and their results; final guard/gate/finish state; release/readback evidence where applicable |
 | Status & handoff | The conditions for each terminal status (e.g. fix-needed / verified / blocked) and who owns the next step | Current status, next step, what authority or evidence is needed from whom |
 | Execution identity | The requested model/effort, and the actual model/effort resolved after the current adapter validates it | The actual model/effort the run used, from a real runtime receipt — write "unknown" when the host doesn't expose this |
-| Attempt & escalation | The attempt number, the one same-tier retry this attempt is allowed, the conditions for escalating effort/model, and a ban on a worker recursively spawning its own sub-workers | The actual attempt number, the failure category if any, which escalation (if any) was already used, and a recommended next owner/tier |
+| Attempt & escalation | The attempt number, the one same-tier retry this attempt is allowed, the conditions for escalating effort/model, and whether a single nested worker layer is explicitly authorized | The actual attempt number, the failure category if any, which escalation (if any) was already used, and a recommended next owner/tier |
 | Progress durability | **Mandatory in every write-capable dispatch prompt**: "commit to your own worktree branch each time a verifiable unit turns green (no push, no finish until the end)" | Which sub-steps were actually committed as they landed, with commit SHAs |
 
 In a shared managed checkout, workers must not stage or commit concurrently: the orchestrator alone
@@ -46,6 +46,4 @@ defined check set — not a release readback), and `finish` (merges/cleans up/pu
 check into a passed one) conceptually separate; never let a worker report blur them into "everything is
 done." A worker may only report the actual output of the authority it actually holds.
 
-Workers must not spawn additional agents or independent windows — the top orchestrator owns fan-out. If the
-platform can't mechanically prevent re-delegation, state the prohibition in every worker prompt and treat a
-recursive spawn as a failed health check.
+Default to no nested dispatch. Only a top-level packet may authorize a bounded module owner to spawn one worker layer, when runtime support, measurable benefit, scope ownership, result delivery and descendant completion are established. Name each child model, scope and owner; descendants cannot delegate. Reviewers cannot delegate. Independent windows are not nested workers. The module owner reports all child identities, models, results and unresolved work; the top orchestrator retains integration and final acceptance. If tracking or reliable return is unavailable, use top-level dispatch. Enforce depth/tool restrictions mechanically where supported.

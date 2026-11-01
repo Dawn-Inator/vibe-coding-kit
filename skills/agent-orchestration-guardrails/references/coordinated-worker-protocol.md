@@ -7,7 +7,7 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 Whichever platform and model you use as the top-level orchestrator, keep goal interpretation, dependency
 ordering, conflict resolution, architecture forks, integration, and final semantic acceptance **in the
 orchestrator**. Delegate bounded execution to a mid-tier, write-capable worker by default (Sonnet on
-Claude, Luna on Codex); **escalate to Claude Opus / Codex Terra** when the task must discover or reconcile
+Claude, Terra on Codex); **escalate to Claude Opus / Codex Sol** when the task must discover or reconcile
 an uncertain subsystem boundary or global consistency a narrowly-bounded worker cannot retain, **or when
 the task needs an architectural fix at the submodule level**. If your project documents a durable version
 of this contract and its escalation ladder elsewhere, apply that; this skill states the pattern to apply at

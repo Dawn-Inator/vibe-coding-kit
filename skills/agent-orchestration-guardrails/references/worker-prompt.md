@@ -58,10 +58,7 @@ When delegating implementation or workflow worker tasks, explicitly say:
 The following are worth restating explicitly in every non-trivial dispatch prompt, not something a worker
 is expected to already know from having read this skill once.
 
-- **The orchestrator does not hand-patch bugs found during dispatch review, however small** — even a
-  discovered one-line fix gets its own worker dispatch with an explicit acceptance oracle (see
-  "Orchestrator Does Not Fix Bugs By Hand" below). A finish/merge step that follows must be gated on that
-  oracle's actual result, never chained unconditionally.
+- Apply the active bug-fix ownership mode and gate finish/merge on the acceptance oracle result.
 
 - **Name the canvas path and the offload directory in every non-trivial dispatch prompt** (see "Context
   Offloading" above), and on a re-dispatch after a dead worker, the same scratch directory plus "read the canvas

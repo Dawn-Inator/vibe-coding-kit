@@ -53,11 +53,9 @@ use only their schema-exposed fields.
 
 Pass an explicit model, effort, and fork/context-carry setting together — never mix an override with an
 "inherit everything" fork mode, since a full-history fork inherits the parent's own model/effort and
-rejects a partial override. Luna is the default executor when objective, writable scope, and an acceptance
-oracle are all explicit, even across multiple files; Terra is the fallback for discovering/reconciling
-subsystem boundaries or a submodule-level architectural fix; Sol is reserved for a genuine
-architecture/semantic fork, cross-domain judgment, or an independent final review that itself clears the
-frontier bar. A "max reasoning" toggle on Luna adds depth; it does not turn Luna into Terra or Sol.
+rejects a partial override. Luna handles read-only exploration with `write_scope: none`; Terra executes
+bounded code, docs, tests and configuration changes, like Sonnet. Sol handles architecture/semantic
+decisions and may do additional independent review. Terra pre-review must be independent of the implementation owner.
 
 ⚠️ **"High-impact" alone is deliberately NOT a valid reason for frontier-tier dispatch** — during a
 production deploy or major gate overhaul nearly every dispatch is honestly high-impact, so treating that as

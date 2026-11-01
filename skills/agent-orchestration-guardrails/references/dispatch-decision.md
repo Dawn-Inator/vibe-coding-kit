@@ -5,7 +5,7 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 ### When Dispatch Is Required, Not Optional
 
 The Core Rule above lists what does *not* by itself justify fan-out. The converse also holds, and is not
-discretionary: dispatch is **required** when all four hold —
+discretionary only if higher-priority instructions permit delegation and parallelism has measurable wall-clock benefit: dispatch is **required** when all four hold —
 
 1. the unit is expected to take more than ~15 minutes;
 2. the root cause or next action is already identified — the unit is execution, not open investigation;
