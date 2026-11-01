@@ -9,7 +9,7 @@ description: Use before implementation to classify the actual Git scope and choo
 
 Before any non-read-only implementation task (including before Plan Mode moves into execution): code, docs, tests, config, generated artifacts. Skip it for pure read-only analysis, status queries, log reading, or when the user explicitly skips the preflight. If the user scopes the writable area, the preflight covers only that scope.
 
-This skill is not the test gate. The preflight lives in your plan, execution context, or final report — never a repo file, and there is no fixed-field card (historical background is in `tutorial/04-gate-and-release/preflight-card-history.md`, read only when tracing the decision).
+This skill is not the test gate. The preflight lives in your plan, execution context, or final report — never a repo file, and there is no fixed-field card (historical background is in `.vibe-coding/kit/tutorial/04-gate-and-release/preflight-card-history.md`, read only when tracing the decision).
 
 **Bugfixes: read your project's bugfix/regression-testing guidance first, if it exists.** Two layers are required: (a) a local regression that fails before the fix and passes after; (b) a same-class defense (structural assertion, lint rule, governance check, contract test), or a concrete reason the class cannot recur. If either required layer is missing, the bugfix is not closed; report the gap and do not claim regression closure. Report an assertion-polarity flip (`throws` removed, `not.` added/removed, expected boolean flipped, new `skip`/`only`) as its own line: what it guarded, what it guards now, why the flip is correct.
 
