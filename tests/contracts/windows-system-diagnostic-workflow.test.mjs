@@ -21,10 +21,9 @@ function jobBlock(name) {
   return workflow.slice(start, nextStart);
 }
 
-test('Windows system diagnostic runs on main pushes or manual dispatch, never on per-attempt branches', () => {
+test('Windows system diagnostic runs only on explicit manual dispatch', () => {
   const trigger = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\nconcurrency:'));
-  assert.match(trigger, /push:\s+branches:\s+- main\s+paths:/u);
-  assert.match(trigger, /\n  workflow_dispatch:\s*$/u, 'manual dispatch takes no caller-supplied inputs');
+  assert.match(trigger, /^\non:\s*\n  workflow_dispatch:\s*$/u, 'manual dispatch takes no caller-supplied inputs');
   assert.doesNotMatch(workflow, /diagnostic\/|candidate\/|refs\/heads\/|\n    if:|inputs:|secrets\.|github\.event/u);
   assert.match(workflow, /cancel-in-progress: true/u);
   assert.match(workflow, /permissions:\s+contents: read/u);

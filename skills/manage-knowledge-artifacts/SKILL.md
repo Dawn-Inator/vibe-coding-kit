@@ -22,14 +22,14 @@ de-branded/generalized form. A tutorial chapter answers "why does this Skill's r
 project-specific names/paths/domains stripped out the same way the rest of a starter kit is de-branded.
 Writing both from one real incident is not a duplicate source: one is this project's own narrow AI-facing
 correction, the other is the methodology-level teaching material a Skill points to for its "why." If your
-project doesn't ship its own tutorial (only consumes one, or has neither), skip that half and write memory
-only.
+project doesn't ship its own tutorial (only consumes one, or has neither), skip the tutorial; record a
+project-specific incident in History and add memory only when its corrective retrieval cue is needed.
 
 **A Skill's body must never carry a concrete incident narrative — only the distilled rule plus a one-clause
 pointer to where the incident actually lives.** "One overnight session absorbed 21 conflicts...", "one
 project's incident: the orchestrating session exited mid-session...", or any other scene-setting sentence
 inside a Skill's prose is a governance violation, not a stylistic choice — it belongs in the tutorial
-chapter (or, for a project's own non-generalized history, memory) that the Skill should instead point to
+chapter (or, for a project's own non-generalized incident, History) that the Skill should instead point to
 with a single sentence ("See your project's tutorial for the incident that motivated this rule."). This
 applies even when a Skill is actively being written or extended, not only during a later trim pass — the
 default failure mode is a narrative creeping back in while porting or writing a new section, exactly because
@@ -39,6 +39,15 @@ did X") and relocate anything you find, the same way an editing pass would reloc
 not treat this as optional cleanup deferred to a future trim. The only exception is a single-clause example
 that names no session, date, or count, used purely to illustrate what a rule means (e.g. "a one-liner fix
 is not exempt") — that is illustration, not narrative, and can stay.
+
+**Keep the execution path current and historical context optional.** Skill bodies contain current actions;
+canonical Docs contain current behavior and the concise rationale needed to apply it. Detailed incident
+timelines, superseded designs, options analysis and evidence go to History, or to a generalized tutorial
+when they teach adopting projects. Project memory holds a retrieval cue, corrective guidance and its current
+source; it is not the incident archive. Link historical material as optional investigation, not a prerequisite
+for routine work. Historical business data and its current handling remain current contract, not historical
+narrative. When moving material, preserve incoming links and point historical records to current authority;
+review touched sections and references before finishing.
 
 This skill assumes your project keeps (or will create) one canonical governance document that owns the full
 classification policy and the exact Artifact Decision Card fields — do not copy the policy itself into this

@@ -23,7 +23,7 @@ test('every workflow pins third-party actions to a full commit SHA', () => {
   }
 });
 
-test('CI runs only for main pushes and pull requests into main', () => {
+test('CI runs only on explicit manual dispatch', () => {
   const trigger = ci.slice(ci.indexOf('\non:'), ci.indexOf('\npermissions:'));
-  assert.match(trigger, /push:\s+branches:\s+- main\s+pull_request:\s+branches:\s+- main\s*$/u);
+  assert.match(trigger, /^\non:\s*\n  workflow_dispatch:\s*$/u);
 });

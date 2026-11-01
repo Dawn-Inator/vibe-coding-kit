@@ -4,16 +4,6 @@ name: Windows system diagnostic
 # safety, Git hook environment, packaged installer and CLI process-tree cleanup.
 # The full test manifest on Windows already runs in ci.yml.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'cli.mjs'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/**'
   workflow_dispatch:
 
 concurrency:
