@@ -4,7 +4,7 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 
 ## Bug-Fix Ownership
 
-A single-agent orchestrator may implement a fix directly with an explicit acceptance oracle. In a project-mandated dispatch-only mode, assign fixes to a write-capable worker.
+In ordinary tasks the main agent may implement a fix directly with an explicit acceptance oracle. Under threshold B or another applicable dispatch-only policy, assign fixes to a write-capable worker.
 
 - In dispatch-only mode, the orchestrator limits its own edits to permitted orchestration artifacts and integration.
 - **A finish/merge chain must be gated on the verification result — never `build; finish` unconditionally.**
@@ -16,7 +16,7 @@ See your project's tutorial for the incident that motivated this section.
 ## Orchestrator Duties
 
 The active bug-fix ownership rule, the symlink-prohibition, the light-self-check naming, and the per-host heavy
-process limit are stated in full above (see "Orchestrator Does Not Fix Bugs By Hand", "Worker Prompt
+process limit are stated in full above (see "Bug-Fix Ownership", "Worker Prompt
 Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule") — restate all of them in every
 dispatch prompt rather than assuming a worker already knows them. Additional orchestrator-only duties:
 

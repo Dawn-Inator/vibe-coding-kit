@@ -20,12 +20,16 @@ groups on a ≥10-core host, 1 on fewer; never throttle agent count "to save mem
 
 ### When To Parallelize, When Not
 
-Fan out only independent write units with a measurable wall-clock benefit; no parallel floor, and task size
-alone is no reason. When permitted by higher-priority instructions and parallelism has measurable wall-clock benefit, dispatch is **required** when all four hold: expected >~15 min; root cause/next action
-known (execution, not investigation); fits a self-contained task packet; write scope overlaps no in-flight
-worker. Absorbing such a unit into the orchestrator's own turns is a guardrail violation. Do not fan out
-open investigation or overlapping write sets; merge <~15 min packages that share a write set and blocking
-dependency into one dispatch.
+Ordinary tasks: the main agent may investigate, edit, and test directly. Delegate independent units only
+when authorized and parallelism offers measurable wall-clock benefit; task size alone does not require it.
+Give every in-flight writer exclusive ownership of its write scope.
+
+**Threshold B:** when a single-agent autonomous session has run or is expected to run over two hours
+(including overnight or unattended work), the orchestrator switches to dispatch-only: delegate each
+implementation write unit to a worker; retain decomposition, dispatch, integration, verification, and
+acceptance. Orchestration artifacts and owned merge conflict resolution remain with the orchestrator.
+Respect higher-priority delegation restrictions; if dispatch is unavailable, report the blocker instead
+of silently self-implementing. This mode does not depend on heartbeat tooling being available or enabled.
 
 ### Dispatch Red Lines
 
@@ -80,7 +84,7 @@ feed each worker back its own failures.
 
 Whichever platform and model you use as the top-level orchestrator, keep goal interpretation, dependency
 ordering, conflict resolution, architecture forks, integration, and final semantic acceptance **in the
-orchestrator**. Delegate bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Terra on
+orchestrator**. When delegating, assign bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Terra on
 Codex); Luna is read-only exploration. Return architectural decisions to the top orchestrator.
 
 After an implementation candidate is committed, and before final acceptance of a non-trivial integrated
@@ -132,7 +136,7 @@ setting.
   In a shared managed checkout, return the patch to the orchestrator for serial commits instead.
 - Name the offload directory; commands >~2 min run detached; verify landed hashes by ancestor check.
 - Exactly one private structured final; report blocked rather than message elsewhere.
-- A single-agent orchestrator may fix bugs directly; in a project-mandated dispatch-only mode, assign a fixer with an oracle. Gate finish on the actual result.
+- In ordinary tasks the main agent may fix bugs directly; under threshold B or another applicable dispatch-only policy, assign a fixer with an oracle. Gate finish on the actual result.
 
 ## References Index
 

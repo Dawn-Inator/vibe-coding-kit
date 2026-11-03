@@ -2,21 +2,12 @@
 
 Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and pinned rules.
 
-### When Dispatch Is Required, Not Optional
+### When to Dispatch
 
-The Core Rule above lists what does *not* by itself justify fan-out. The converse also holds, and is not
-discretionary only if higher-priority instructions permit delegation and parallelism has measurable wall-clock benefit: dispatch is **required** when all four hold —
-
-1. the unit is expected to take more than ~15 minutes;
-2. the root cause or next action is already identified — the unit is execution, not open investigation;
-3. it can be written as a self-contained task packet without the orchestrator staying in the loop; and
-4. its write scope does not overlap any other in-flight worker's.
-
-When all four hold and the orchestrator does the work itself anyway, that is a **guardrail violation**, not
-a judgment call — name it as such rather than as a style preference. This is the mirror image of "task size
-alone is not a reason to delegate": that line stops an orchestrator from over-dispatching busywork, this one
-stops it from quietly absorbing real, independently-dispatchable work into its own turns instead of fanning
-it out — see your project's tutorial for the incident this responds to.
+Ordinary tasks may be implemented directly. Delegate independent work when authorized and doing so has a
+measurable wall-clock benefit; do not infer a mandate from duration or task size alone. Give each worker a
+self-contained packet and a non-overlapping write scope. Under threshold B, dispatch every implementation
+write unit as specified in the skill entry; if delegation is unavailable, report the blocker.
 
 ## Orchestration Mode Selection
 

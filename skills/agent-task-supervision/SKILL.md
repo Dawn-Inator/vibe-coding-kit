@@ -9,7 +9,8 @@ This is an optional, intensive coordination recipe. The kit provides reusable su
 `init` does not register heartbeat schedules, probes, ledgers, or the package scripts shown in older project
 integrations. Apply this recipe only when the consuming project has opted into it and supplies the required
 project-specific configuration and wake-up capability. Adapt its cadence and governance rules to that
-project; they are not universal kit policy.
+project; they are not universal kit policy. Threshold B dispatch-only ownership is independent of this
+optional heartbeat recipe; see agent-orchestration-guardrails.
 
 A heartbeat for long multi-agent orchestration, run at each timer wake by the orchestrating session itself, never by a "supervisor" subagent.
 
@@ -43,7 +44,7 @@ Claude Code arms with one script, never a hand-typed timer:
    - Stale worktrees (`node .vibe-coding/kit/cli.mjs worktree status --stale`): nudge, or resume there if the worker is gone.
 2. **Free/blocked backlog procedure (mandatory).** At each applicable wake, follow the complete [backlog audit](references/backlog-audit.md), including the ten-category sweep, registry, re-split, and ledger checks.
 3. **Direction check** with your project's anti-tunnel-vision diagnostics: no hit → "direction fine"; hit → apply its remedy first (a full re-evaluation belongs to your architecture review). "Waiting for X" while `free` backlog exists is a hit: back to step 2.
-4. **Overreach check:** did the orchestrator edit source/test/config itself instead of dispatching, or land a change without its oracle passing, since the last heartbeat? If so state `direction: switch (orchestrator self-fix)`, stop, dispatch a worker.
+4. **Overreach check:** under threshold B or another applicable dispatch-only policy, did the orchestrator implement a write unit itself instead of dispatching? If so state `direction: switch (orchestrator self-fix)`, stop and dispatch a worker. In every mode, separately flag a landing without its oracle passing; ordinary self-implementation alone is not an overreach.
 
 **Status line.** Internal notifications (not the timer's fire) accumulate (zero tool calls), read together at the next wake. A worker's **interim notification** (still running; no landing, report or blocker) gets an **empty reply**. A human message is answered at once; one about progress or speed ("can this be split", "why still …") also re-runs the free/blocked procedure that turn and reports what it newly dispatched. Ledger (append-only) `.workspace/task/<yyyy-mm-dd>-<topic-slug>/heartbeat.md`; each timer wake appends `----`, `## <ISO time> wake (10-row ledger)`, the `sources:` line and the table, and chat gets **exactly one** line `[heartbeat] in-flight N · xx% · splittable: D/P · blocked: <none|item>` (real numbers). A pass with a dispatch, landing, direction switch or overreach prints instead exactly: `audit HH:MM | <+dispatched X, landed Y, direction switch, overreach found> | splittable D/P | free F (<names, or "0, ten categories (1a/1b) swept">) | blocked: <item ← resource>, …`, only at the wake. Timestamps: copy from evidence (receipt, `HEARTBEAT due HH:MM:SS`), never `date`.
 
