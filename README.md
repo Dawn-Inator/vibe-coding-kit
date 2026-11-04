@@ -7,10 +7,10 @@ Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, pr
 在一个已提交且工作区干净的 Git 项目根目录，用 Node.js 20+、Git 和 npm 执行下面命令。请将身份参数替换为项目真实的提交名称和邮箱：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --skill agent-worktree-lifecycle=adopt --skill bugfix-regression-tests=adopt
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
-这里的 `ai@example.org` 是格式示意，不能原样使用。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
+这里的 `ai@example.org` 是格式示意，不能原样使用。默认启用全部公开 skill，可按项目需要调整。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
 
 ## Repository and consumer path
 

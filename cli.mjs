@@ -279,7 +279,7 @@ function plannedInitFiles(root, options) {
     for (const name of commonNames) {
       if (selected.has(name)) continue;
       if (localNames.includes(name)) continue;
-      selected.set(name, { mode: 'exclude', rationale: 'Not selected for this project during initialization.' });
+      selected.set(name, { mode: 'adopt' });
     }
     configTemplate.skills.skills = Object.fromEntries(selected);
   }

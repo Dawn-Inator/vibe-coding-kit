@@ -17,7 +17,7 @@ Kit 不需要发布到 npm registry，也没有额外运行时依赖。通过 Gi
 在项目根目录运行，并将身份替换为项目真实值：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --skill agent-worktree-lifecycle=adopt --skill bugfix-regression-tests=adopt
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
 `ai@example.org` 仅表示参数格式，必须换成真实、可用的项目提交邮箱。首次接入要求仓库干净；命令运行后会新增 submodule 和生成文件，检查输出并按项目流程提交这些变更。
@@ -25,7 +25,7 @@ npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install -
 也可以从已有 Kit checkout 调用同一入口：
 
 ```sh
-node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org' --skill agent-worktree-lifecycle=adopt --skill bugfix-regression-tests=adopt
+node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
 如需固定经审阅的 tag 或 commit，可加 `--ref <tag-or-commit>`。默认使用 Kit 的远端默认版本；要让多个消费者得到相同内容，应显式固定并审阅版本。
@@ -33,7 +33,7 @@ node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --
 若需复现同一套安装入口与 Kit 运行时版本，可分别固定从 GitHub 取得 CLI 的 commit 和写入 submodule 的 commit：
 
 ```sh
-npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --ref '<approved-kit-sha>' --skill agent-worktree-lifecycle=adopt --skill bugfix-regression-tests=adopt
+npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --ref '<approved-kit-sha>'
 ```
 
 把两个 SHA 都替换为已审阅的完整 commit，并使用项目真实身份。若两者来自同一 Kit 版本，可填写相同 SHA。
@@ -94,9 +94,9 @@ node .vibe-coding/kit/cli.mjs help
 --skill my-project-only-skill=local
 ```
 
-公开 skill 支持 `adopt`、`extend`、`replace:<原因>`、`exclude:<原因>`；`local` 用于项目专属 skill。`extend` 会创建项目自有的 `EXTENSION.md` 起始文件；`replace` 要求已有项目自有的 `SKILL.md` 并提供原因。若至少选择一项公开 skill，命令中未列出的公开 skill 会记录为排除。安装后在项目自己的 `.vibe-coding/project.config.json` 调整这些选择。
+公开 skill 支持 `adopt`、`extend`、`replace:<原因>`、`exclude:<原因>`；`local` 用于项目专属 skill。`extend` 会创建项目自有的 `EXTENSION.md` 起始文件；`replace` 要求已有项目自有的 `SKILL.md` 并提供原因。默认采纳全部公开 skill；`--skill` 可为指定 skill 覆盖默认选择，未列出的公开 skill 仍会采纳。安装后在项目自己的 `.vibe-coding/project.config.json` 调整这些选择。
 
-先读所选 skill，再决定是否采纳。skill 是方法和边界的说明，不会替项目写出实际 gate、release 命令或产品策略；项目必须自己定义分支、环境、检查命令、发布授权和安全边界。
+默认采纳全部公开 skill；请审阅并按项目需要调整。skill 是方法和边界的说明，不会替项目写出实际 gate、release 命令或产品策略；项目必须自己定义分支、环境、检查命令、发布授权和安全边界。
 
 ## 轻量适配生命周期检查
 

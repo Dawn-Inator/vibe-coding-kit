@@ -64,7 +64,7 @@ test('init check is read-only, init creates minimal files, and reruns are idempo
   assert.equal(existsSync(join(fixture.project, 'engineering/automation/vibe-coding/bootstrap.mjs')), true);
   assert.equal(existsSync(join(fixture.project, 'package.json')), false);
   assert.ok(Object.keys(config.skills.skills).length > 0);
-  assert.ok(Object.values(config.skills.skills).every((skill) => skill.mode === 'exclude' && skill.rationale));
+  assert.ok(Object.values(config.skills.skills).every((skill) => skill.mode === 'adopt'));
   assert.equal(cli(['skills', 'check', '--project-root', fixture.project]).status, 0);
   assert.equal(cli([...args, '--check']).status, 0);
   assert.equal(cli(args).status, 0);
