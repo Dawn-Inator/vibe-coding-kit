@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEnvironmentRenderer, resolveBranchEnvironment } from '../../src/env-config/index.mjs';
+import { createEnvironmentRenderer, resolveBranchEnvironment, deepMerge } from '../../src/env-config/index.mjs';
 
 test('consumer renders overlays deterministically and detects drift without writing', t => {
   const root = mkdtempSync(join(tmpdir(), 'kit-env-'));
@@ -39,4 +39,14 @@ test('branch mapping requires a known and consistent explicit source', () => {
   assert.throws(() => resolveBranchEnvironment({ ...config, branch: 'unknown' }), /unknown branch/);
   assert.throws(() => resolveBranchEnvironment({ ...config, branch: 'develop', environment: 'prod' }), /conflict/);
   assert.throws(() => resolveBranchEnvironment({ ...config, branches: { main: 'bad' }, branch: 'main' }), /invalid mapping/);
+});
+
+
+test('merge rejects dangerous keys in new and replaced nested values and arrays', () => {
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const hostile = JSON.parse(`{"x":[{"${key}":{}}]}`);
+    assert.throws(() => deepMerge({}, hostile), /unsafe key/);
+    assert.throws(() => deepMerge(hostile, {}), /unsafe key/);
+    assert.throws(() => deepMerge({ x: 1 }, hostile), /unsafe key/);
+  }
 });

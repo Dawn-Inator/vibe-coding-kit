@@ -12,6 +12,12 @@ const UNSAFE_MERGE_KEYS = Object.freeze(new Set(['__proto__', 'constructor', 'pr
 
 /** Deep merge: objects recurse, everything else (arrays, scalars, null) is replaced. */
 export function deepMerge(base, overlay) {
+  validateKeys(base);
+  validateKeys(overlay);
+  return mergeObjects(base, overlay);
+}
+
+function mergeObjects(base, overlay) {
   if (!isPlainObject(base) || !isPlainObject(overlay)) return structuredClone(overlay);
   const out = {};
   for (const key of Object.keys(base)) {
@@ -20,7 +26,7 @@ export function deepMerge(base, overlay) {
   }
   for (const key of Object.keys(overlay)) {
     if (UNSAFE_MERGE_KEYS.has(key)) throw new Error(`deepMerge: refusing unsafe key ${JSON.stringify(key)}`);
-    out[key] = Object.hasOwn(out, key) ? deepMerge(out[key], overlay[key]) : structuredClone(overlay[key]);
+    out[key] = Object.hasOwn(out, key) ? mergeObjects(out[key], overlay[key]) : structuredClone(overlay[key]);
   }
   return out;
 }
