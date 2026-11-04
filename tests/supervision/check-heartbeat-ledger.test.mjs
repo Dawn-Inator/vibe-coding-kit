@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
 
@@ -12,7 +13,6 @@ after(cleanupTempDirs);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', '..', 'src', 'supervision', 'check-heartbeat-ledger.mjs');
-const SKILL = join(HERE, '..', '..', 'skills', 'agent-task-supervision', 'SKILL.md');
 
 const GOOD = {
   1: '(1a) in-flight w1; (1b) empty -- `ls .todolist` shows nothing free',
@@ -108,8 +108,8 @@ test('--latest ignores red history but still grades the newest section', () => {
 });
 
 test('the category names are the ones the supervision skill uses', () => {
-  const skill = readFileSync(SKILL, 'utf8').replace(/\s+/g, ' ').toLowerCase();
-  for (const name of CATEGORIES) assert.ok(skill.includes(name), `SKILL.md does not mention category "${name}"`);
+  const skill = readSkillText('agent-task-supervision').replace(/\s+/g, ' ').toLowerCase();
+  for (const name of CATEGORIES) assert.ok(skill.includes(name), `skill does not mention category "${name}"`);
 });
 
 // ---- `unchanged` shorthand ----
@@ -256,7 +256,7 @@ test('drift row: under --latest an empty/done drift row must cite the matrix or 
 // ---- Audit of the skill's checkable claims ----
 
 test('skill claims: the allowed state forms, sources tokens and checker bullets are all in the skill text', () => {
-  const skill = readFileSync(SKILL, 'utf8');
+  const skill = readSkillText('agent-task-supervision');
   for (const form of ['in-flight', 'dispatched', 'blocked ←', 'deferred ←', 'empty —', 'done —', 'unchanged —']) assert.ok(skill.includes(form), form);
   for (const token of ['sweep(✓)', 'landings(✓)', 'reports(✓)', 'drift-matrix(✓)', 'memory/handoff(✓ at resume)', 'external-backlog(✓ <timestamp>|blocked ← <reason>)', 'worker-health(✓)']) {
     assert.ok(skill.includes(token), token);

@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import {
@@ -223,7 +224,7 @@ test('sources template: the skill\'s tokens, in the skill\'s order, with the bac
     SOURCES_TEMPLATE,
     'sources: sweep(✓) landings(✓) reports(✓) drift-matrix(✓) memory/handoff(✓ at resume) external-backlog(✓ <timestamp>) worker-health(✓)',
   );
-  const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills', 'agent-task-supervision', 'SKILL.md'), 'utf8');
+  const skill = readSkillText('agent-task-supervision');
   for (const token of ['sweep(✓)', 'landings(✓)', 'reports(✓)', 'drift-matrix(✓)', 'memory/handoff(✓ at resume)', 'worker-health(✓)']) {
     assert.ok(skill.includes(token) && SOURCES_TEMPLATE.includes(token), token);
   }
