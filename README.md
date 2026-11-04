@@ -61,3 +61,20 @@ See [INSTALL.md](INSTALL.md) for the submodule layout, the direct Node CLI, and 
 ## License
 
 The MIT license in [LICENSE](LICENSE) applies to original material authored for this repository by Dawn-Inator. It does not replace or broaden any third-party license. Any third-party component or material must retain its own notices and terms.
+
+## Environment configuration
+
+`src/env-config/index.mjs` exports `createEnvironmentRenderer` for projects that
+keep a shared JSON base and a JSON overlay per environment. The consumer supplies
+its own stage names, paths and generated-file banner. Objects merge recursively;
+arrays, scalars and null are replaced by the overlay. `render` and `text` read
+one environment; `check` returns stale environment names without writing; `regen`
+validates all inputs before updating output files. Inputs must be JSON objects;
+unsafe prototype keys and unknown stages are rejected. Consumers own secret
+storage and must not put secret values into checked-in files.
+
+`resolveBranchEnvironment` validates a consumer-supplied branch-to-environment
+map and resolves a known branch or explicit environment. Conflicting or unknown
+inputs fail. The mapping selects configuration only: it grants no deployment
+permission and does not verify a release candidate. Projects must keep their own
+admission checks and special candidate rules.
