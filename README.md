@@ -10,13 +10,13 @@ Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, pr
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
-这里的 `ai@example.org` 是格式示意，不能原样使用。默认启用全部公开 skill，可按项目需要调整。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
+这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
 
 ## Repository and consumer path
 
 This repository is the public source of the kit. A consuming project checks it out as a Git submodule at `.vibe-coding/kit/`; that path is a consumer convention and is not an extra directory inside this repository. The parent project's gitlink pins the exact kit commit used by that checkout.
 
-The runtime under `src/` is called directly from the pinned checkout. Consumers must not copy the runtime into their own source tree. Files under `templates/` are initial project scaffolding: `init` may create project-owned configuration, loading instructions, and adapter/bootstrap files once, and later prepare or upgrade operations must not replace those files. A project owns its configuration, adapter, skills extensions, and knowledge sources after initialization.
+The runtime under `src/` is called directly from the pinned checkout. Consumers must not copy the runtime into their own source tree. Files under `templates/` are initial project scaffolding. By default initialization copies public skills into project-owned `.vibe-coding/skills/` sources and generates tool mirrors. Upgrades do not overwrite or automatically update these snapshots; projects selectively merge upstream changes. Explicit `adopt` and `extend` selections retain shared-source behavior.
 
 ## Contents
 

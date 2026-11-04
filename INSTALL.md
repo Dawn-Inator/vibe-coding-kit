@@ -40,7 +40,7 @@ npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe
 
 ## 安装生成什么
 
-Kit 作为名为 `vibe-coding-kit` 的 submodule 注册在 `.vibe-coding/kit`。父项目提交的 gitlink 是版本真源。安装创建 `.vibe-coding/project.config.json`、`.vibe-coding/loading.md`、项目自有 bootstrap 和 adapter、选中 skill 的扩展起始文件，以及默认的忽略/镜像设置。
+Kit 作为名为 `vibe-coding-kit` 的 submodule 注册在 `.vibe-coding/kit`。父项目提交的 gitlink 是版本真源。首次安装将公开 skill 的完整快照放入项目自有的 `.vibe-coding/skills/`，再从本地源文件生成工具镜像。安装还创建项目配置、加载规则、bootstrap 和 adapter，以及默认的忽略/镜像设置。
 
 首次接入后的项目相关目录如下；只在选择 `extend` 时会出现对应 `EXTENSION.md`，memory 和 history 由项目按需维护，不是安装生成的目录：
 
@@ -49,7 +49,7 @@ Kit 作为名为 `vibe-coding-kit` 的 submodule 注册在 `.vibe-coding/kit`。
 ├── kit/                         # Kit submodule：src/、skills/、tutorial/、templates/ 等公开内容
 ├── project.config.json          # 项目自有配置
 ├── loading.md                   # 项目自有加载规则
-├── skills/<name>/EXTENSION.md   # 项目自有 skill 扩展（按选择创建）
+├── skills/<name>/               # 项目自有 skill 源文件（默认快照）
 ├── memory/                      # 项目自有，已有内容保留，按需创建
 └── history/                     # 项目自有，已有内容保留，按需创建
 engineering/automation/vibe-coding/
@@ -94,9 +94,9 @@ node .vibe-coding/kit/cli.mjs help
 --skill my-project-only-skill=local
 ```
 
-公开 skill 支持 `adopt`、`extend`、`replace:<原因>`、`exclude:<原因>`；`local` 用于项目专属 skill。`extend` 会创建项目自有的 `EXTENSION.md` 起始文件；`replace` 要求已有项目自有的 `SKILL.md` 并提供原因。默认采纳全部公开 skill；`--skill` 可为指定 skill 覆盖默认选择，未列出的公开 skill 仍会采纳。安装后在项目自己的 `.vibe-coding/project.config.json` 调整这些选择。
+公开 skill 支持 `adopt`、`extend`、`replace:<原因>`、`exclude:<原因>`；`local` 用于项目专属 skill。`extend` 会创建项目自有的 `EXTENSION.md` 起始文件；`replace` 要求已有项目自有的 `SKILL.md` 并提供原因。默认将未显式选择的公开 skill 复制为本地快照，并配置为 `replace`；显式 `adopt` 和 `extend` 则继续使用 Kit 中的共享源文件。安装后可在项目自己的 `.vibe-coding/project.config.json` 调整选择。
 
-默认采纳全部公开 skill；请审阅并按项目需要调整。skill 是方法和边界的说明，不会替项目写出实际 gate、release 命令或产品策略；项目必须自己定义分支、环境、检查命令、发布授权和安全边界。
+项目拥有默认快照；修改 `.vibe-coding/skills/` 后运行 `node .vibe-coding/kit/cli.mjs skills sync --project-root .` 更新镜像。Kit 升级不会覆盖或自动更新本地快照；需要时应手动审阅并合并上游修改。skill 不会替项目定义门禁或发布策略。
 
 ## 轻量适配生命周期检查
 
