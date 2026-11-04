@@ -9,6 +9,7 @@
   "contracts/windows-system-diagnostic-workflow.test.mjs",
   "contracts/windows-transport-proof.test.mjs",
   "dependencies/submodule.test.mjs",
+  "env-config/env-config.test.mjs",
   "install/bootstrap.test.mjs",
   "install/command.test.mjs",
   "install/init.test.mjs",
