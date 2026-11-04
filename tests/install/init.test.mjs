@@ -64,10 +64,21 @@ test('init check is read-only, init creates minimal files, and reruns are idempo
   assert.equal(existsSync(join(fixture.project, 'engineering/automation/vibe-coding/bootstrap.mjs')), true);
   assert.equal(existsSync(join(fixture.project, 'package.json')), false);
   assert.ok(Object.keys(config.skills.skills).length > 0);
-  assert.ok(Object.values(config.skills.skills).every((skill) => skill.mode === 'exclude' && skill.rationale));
+  assert.ok(Object.entries(config.skills.skills).every(([name, skill]) => skill.mode === 'replace' && skill.replaces === name && skill.rationale));
+  const skill = Object.keys(config.skills.skills)[0];
+  assert.equal(readFileSync(join(fixture.project, '.vibe-coding/skills', skill, 'SKILL.md'), 'utf8'), readFileSync(fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url)), 'utf8'));
+  assert.match(readFileSync(join(fixture.project, '.agents/skills', skill, 'SKILL.md'), 'utf8'), new RegExp(`Source: \\.vibe-coding/skills/${skill}/SKILL\\.md`));
   assert.equal(cli(['skills', 'check', '--project-root', fixture.project]).status, 0);
   assert.equal(cli([...args, '--check']).status, 0);
   assert.equal(cli(args).status, 0);
+  const sourcePath = join(fixture.project, '.vibe-coding/skills', skill, 'SKILL.md');
+  writeFileSync(sourcePath, `${readFileSync(sourcePath, 'utf8')}\nLocal snapshot marker\n`);
+  const synchronized = cli(['skills', 'sync', '--project-root', fixture.project]);
+  assert.equal(synchronized.status, 0, synchronized.stderr || synchronized.stdout);
+  for (const tool of ['.agents', '.claude']) {
+    assert.match(readFileSync(join(fixture.project, tool, 'skills', skill, 'SKILL.md'), 'utf8'), /Local snapshot marker/);
+  }
+  assert.equal(git(fixture.project, ['-C', '.vibe-coding/kit', 'status', '--porcelain']).stdout.trim(), '');
 });
 
 test('init reports and preserves existing project files that differ from templates', () => {

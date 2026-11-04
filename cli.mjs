@@ -115,7 +115,7 @@ function install(root, options) {
   const plan = plannedInitFiles(rootReal, { ...options, url, mirrorPolicy });
   assertNoSymlinkPaths(rootReal, [...plan.entries.map(({ path }) => path), resolve(rootReal, '.gitmodules')]);
   if (plan.conflicts.length) throw new Error(`Install preflight found conflicts: ${plan.conflicts.join(', ')}`);
-  validateSkillPlan(rootReal, plan.config);
+  validateSkillPlan(rootReal, plan.config, plan.entries);
   if (options.check) {
     console.log(`Would register ${url} at ${KIT_PATH}, initialize the selected kit revision, and create ${plan.writes.length} project file(s). Remote state was not checked.`);
     process.exitCode = 1;
@@ -167,13 +167,18 @@ function install(root, options) {
   if (initialized.status !== 0) throw new Error(`Kit submodule is registered${resolvedRef ? ` at ${resolvedRef}` : ''}, but project initialization failed. Existing files were preserved; resolve the reported conflict, then run "node ${KIT_PATH}/cli.mjs init" with the install identity and options.`);
 }
 
-function validateSkillPlan(projectRoot, config) {
+function validateSkillPlan(projectRoot, config, entries = []) {
   const scratch = mkdtempSync(resolve(tmpdir(), 'vibe-coding-kit-install-preflight-'));
   try {
     const localSkills = resolve(projectRoot, '.vibe-coding/skills');
     const scratchSkills = resolve(scratch, '.vibe-coding/skills');
     mkdirSync(scratchSkills, { recursive: true });
     if (existsSync(localSkills)) cpSync(localSkills, scratchSkills, { recursive: true });
+    for (const entry of entries.filter((item) => item.skillSnapshot)) {
+      const destination = resolve(scratchSkills, entry.skillSnapshot);
+      mkdirSync(dirname(destination), { recursive: true });
+      if (!existsSync(destination)) writeFileSync(destination, entry.content, { mode: entry.mode });
+    }
     for (const [name, decision] of Object.entries(config.skills.skills)) {
       if (decision.mode === 'extend' && !existsSync(resolve(scratchSkills, name, 'EXTENSION.md'))) {
         const target = resolve(scratchSkills, name, 'EXTENSION.md');
@@ -260,6 +265,7 @@ function plannedInitFiles(root, options) {
   if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
   configTemplate.skills = { ...configTemplate.skills, mirrorPolicy, skills: {} };
   const selected = new Map();
+  const snapshots = [];
   {
     const commonSkills = resolve(REPO_ROOT, 'skills');
     const commonNames = (awaitlessReaddir(commonSkills));
@@ -278,8 +284,9 @@ function plannedInitFiles(root, options) {
     }
     for (const name of commonNames) {
       if (selected.has(name)) continue;
-      if (localNames.includes(name)) continue;
-      selected.set(name, { mode: 'exclude', rationale: 'Not selected for this project during initialization.' });
+      if (localNames.includes(name) && !existsSync(configPath)) continue;
+      selected.set(name, { mode: 'replace', rationale: 'Project-owned snapshot initialized from the kit.', replaces: name });
+      if (!existsSync(configPath)) snapshots.push(name);
     }
     configTemplate.skills.skills = Object.fromEntries(selected);
   }
@@ -293,6 +300,18 @@ function plannedInitFiles(root, options) {
     { path: bootstrapPath, content: readFileSync(resolve(REPO_ROOT, 'templates/bootstrap.mjs'), 'utf8') },
     { path: loadingPath, content: readFileSync(resolve(REPO_ROOT, 'templates/loading.md'), 'utf8') },
   ];
+  const addSnapshot = (source, target, skillPath) => {
+    for (const entry of readdirSync(source, { withFileTypes: true })) {
+      if (entry.name === '.DS_Store' || entry.name === 'node_modules' || entry.name === '.git') continue;
+      const sourcePath = resolve(source, entry.name);
+      const targetPath = resolve(target, entry.name);
+      const snapshotPath = `${skillPath}/${entry.name}`;
+      if (entry.isSymbolicLink()) throw new Error(`Refusing symlink in skill source: ${sourcePath}`);
+      if (entry.isDirectory()) addSnapshot(sourcePath, targetPath, snapshotPath);
+      else if (entry.isFile()) entries.push({ path: targetPath, content: readFileSync(sourcePath), mode: lstatSync(sourcePath).mode & 0o777, skillSnapshot: snapshotPath });
+    }
+  };
+  for (const name of snapshots) addSnapshot(resolve(REPO_ROOT, 'skills', name), resolve(root, '.vibe-coding/skills', name), name);
   const gitignorePath = resolve(root, '.gitignore');
   const currentGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
   const mergedGitignore = mergeMirrorIgnoreBlock(currentGitignore, mirrorPolicy);
@@ -334,12 +353,13 @@ function plannedInitFiles(root, options) {
   const writes = [];
   for (const entry of entries) {
     if (!existsSync(entry.path)) { writes.push(entry); continue; }
-    const current = readFileSync(entry.path, 'utf8');
+    const current = readFileSync(entry.path, Buffer.isBuffer(entry.content) ? undefined : 'utf8');
+    const same = Buffer.isBuffer(entry.content) ? current.equals(entry.content) : current === entry.content;
     if (entry.mergeExisting) {
-      if (current !== entry.content) writes.push(entry);
+      if (!same) writes.push(entry);
       continue;
     }
-    if (current !== entry.content) conflicts.push(entry.path);
+    if (!same) conflicts.push(entry.path);
   }
   if (!configTemplate.identity.name.trim() || !configTemplate.identity.email.trim()) {
     conflicts.push('identity.name and identity.email (pass --identity-name and --identity-email)');
@@ -388,7 +408,8 @@ function init(root, options) {
   }
   const plan = plannedInitFiles(root, options);
   if (!existsSync(resolve(root, '.vibe-coding/project.config.json'))) assertProjectionTargetsAvailable(root);
-  validateSkillPlan(root, plan.config);
+  assertNoSymlinkPaths(root, plan.entries.map(({ path }) => path));
+  validateSkillPlan(root, plan.config, plan.entries);
   for (const entry of plan.writes) console.log(`create ${entry.path}`);
   for (const entry of plan.entries.filter(({ path }) => existsSync(path))) {
     if (plan.conflicts.includes(entry.path)) continue;
@@ -404,7 +425,7 @@ function init(root, options) {
   }
   for (const entry of plan.writes) {
     mkdirSync(dirname(entry.path), { recursive: true });
-    writeFileSync(entry.path, entry.content, entry.mergeExisting ? undefined : { flag: 'wx' });
+    writeFileSync(entry.path, entry.content, entry.mergeExisting ? undefined : { flag: 'wx', mode: entry.mode });
   }
   prepareKit({ projectRoot: root });
   mkdirSync(resolve(root, '.vibe-coding/skills'), { recursive: true });
