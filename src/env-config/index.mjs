@@ -97,7 +97,8 @@ export function createEnvironmentRenderer({ stages, paths, bannerKey, bannerFor 
   function check(options = {}) {
     return configuredStages.filter(stage => {
       const file = paths(stage, options.rootDir).rendered;
-      return !existsSync(file) || readFileSync(file, 'utf8') !== text(stage, options);
+      const expected = text(stage, options);
+      return !existsSync(file) || readFileSync(file, 'utf8') !== expected;
     });
   }
   function regen(options = {}) {
