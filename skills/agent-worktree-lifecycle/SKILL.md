@@ -24,7 +24,7 @@ rules. Detail and optional integration recipes are in `references/` (index at th
 - **Never `rm -rf` a managed worktree**; finish it with the lifecycle CLI or use its `cleanup` command for eligible worktrees.
 - **Never push a temporary agent branch**; `finish` pushes to the recorded base and removes the temporary branch.
 - **Never resolve conflicts one-sidedly** (`-X theirs`, `-X ours`, `-s ours`) and never `git reset --hard origin/<base>` on a shared branch to "get clean". Abort and resolve by hand.
-- **Do not leave finished work unlanded**: use `finish` according to the project's integration policy before reporting a task done.
+- **Do not leave finished work unlanded**: use `finish` according to the project's integration policy before reporting a task done. For an untouched task worktree with no changes or new commits, run `worktree close` from that worktree to remove it without a push; it fails closed if safety cannot be proven.
 - **Session closeout checks leftovers**: use `status`, then `cleanup --reclaim-stale --stale-days 14` to inspect candidates. Reclamation is a dry run unless `--apply` is supplied; apply it only when the project authorizes cleanup and the candidates are safe.
 - Env-var escape hatches (`WTG_PRIMARY_LOCK_ALLOW`, `WTG_SYNC_PRIMARY_APPROVED_BY`, ...) are deliberate human/orchestrator decisions, never a reflex after a refusal. See `references/environment-variables.md`.
 
@@ -61,6 +61,7 @@ so the local worktree and branch remain for inspection.
   metadata. Pass `--base <branch>` to choose a base explicitly. `--offline` skips the pre-branch fetch.
 - A spawned sub-agent's worktree is created by the orchestrator with `--worker`; a worker never adds `--install` or installs dependencies on its own. A fresh worktree without `--install` has no dependencies; a missing-module error there is expected state, not a bug.
 - **Branch-context rule**: follow the project adapter’s branch and identity rules first. Without project-specific rules, `begin` defaults to the primary worktree’s current branch; pass `--base` when appropriate and never guess identity. Read cross-session state from an explicit ref.
+- `close` removes only the current untouched managed worktree and its original branch, after checking clean files (including ignored files), the creation commit, base reachability, and kit safety. It never pushes; if refused, preserve the worktree and investigate.
 - `finish` commits dirty changes, fetches the base, rebases (a branch carrying its own merge is merged instead), then pushes the worktree's own `HEAD` to its configured upstream. A rebase conflict aborts with nothing pushed; a push that never succeeds leaves the worktree intact, so re-run it. Primary is not advanced.
 - The completion report cites the terminal output of the real `finish` run (command, exit status, pushed SHA, cleanup result). Guard metadata and thread IDs are attribution only, not proof of completion.
 - `finish` may wait on its lock: run it detached according to the project's process policy and wait on the log event-driven. `cd` into your own worktree before finishing.

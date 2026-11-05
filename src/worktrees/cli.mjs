@@ -9,7 +9,7 @@
 // Node built-ins only, zero third-party dependencies, ESM.
 
 import { mkdirSync, existsSync, readFileSync, appendFileSync, statSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve, isAbsolute } from 'node:path';
+import { basename, dirname, join, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -685,6 +685,7 @@ async function commandCreate(flags, positional, config) {
   writeWorktreeMetadata(worktreePath, {
     managed: 'true',
     'created-by': toolId,
+    'branch-ref': branchName,
     lifecycle: 'active',
     'worktree-path': worktreePath,
     'primary-worktree-path': primaryPath,
@@ -900,6 +901,60 @@ async function integrateOntoRemote(lock, repo, config, remoteRef) {
   }
   reauthorUnpushedCommitsToAiIdentity(cwd, remoteRef, config);
   return finalizeIntegration(lock, cwd, config, remoteRef, 'rebase', []);
+}
+
+// Close only the calling session's untouched managed worktree. Unlike finish,
+// this never commits, fetches, rebases, pushes, or touches another worktree.
+async function commandClose(config) {
+  const repo = discoverRepo(process.cwd());
+  const stateDir = config.stateDirAbs ?? resolveStateDirAbs(repo, config);
+  const lock = await acquireFinishLockQueued(stateDir, { worktree: repo.branchShort, config });
+  try {
+    const metadata = readWorktreeMetadata(repo.topLevel, config);
+    if (!repo.primaryWorktree || samePath(repo.topLevel, repo.primaryWorktree.path)
+        || metadata.managed !== 'true' || metadata.lifecycle !== 'active' || !repo.branchShort) {
+      throw new Error('close requires the current active managed worktree on its branch');
+    }
+    const creator = config.tools[metadata['created-by']];
+    if (!creator || !repo.branchShort.startsWith(creator.prefix)
+        || !samePath(metadata['worktree-path'] || '', repo.topLevel)
+        || (metadata['branch-ref'] ? metadata['branch-ref'] !== repo.branchShort
+          : basename(repo.topLevel) !== repo.branchShort.replaceAll('/', '-'))) {
+      throw new Error('close requires the original managed branch and worktree path');
+    }
+    const base = metadata['base-ref'];
+    const baseSha = metadata['base-sha'];
+    if (!base || base === repo.branchShort || !baseSha || !/^[0-9a-f]{40,64}$/i.test(baseSha)
+        || git(['check-ref-format', `refs/heads/${base}`], repo.topLevel).status !== 0) {
+      throw new Error('close requires a valid recorded base branch and creation commit');
+    }
+    const status = git(['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], repo.topLevel, { allowFailure: false });
+    if (status.stdout) throw new Error('close refused: worktree contains tracked, untracked, or ignored files; preserve them and use finish when appropriate');
+    if (gitText(['rev-parse', 'HEAD'], repo.topLevel) !== baseSha) {
+      throw new Error('close refused: HEAD differs from the recorded creation commit; use finish or inspect the commits');
+    }
+    const upstream = resolveUpstream(repo.topLevel);
+    const remote = upstream.remote || 'origin';
+    const refs = [`refs/heads/${base}`, `refs/remotes/${remote}/${base}`];
+    if (!refs.some((ref) => git(['merge-base', '--is-ancestor', baseSha, ref], repo.topLevel).status === 0)) {
+      throw new Error('close refused: the creation commit is not reachable from the recorded local or remote base');
+    }
+    removeWorktreeSafely({
+      projectRoot: repo.topLevel,
+      worktreePath: repo.topLevel,
+      primaryPath: repo.primaryWorktree.path,
+      force: true,
+      env: primaryLockBypassEnv(config),
+      deleteBranch: repo.branchShort,
+    });
+    if (git(['show-ref', '--verify', '--quiet', `refs/heads/${repo.branchShort}`], repo.primaryWorktree.path).status === 0) {
+      throw new Error(`worktree removed, but branch ${repo.branchShort} could not be deleted; inspect it`);
+    }
+    console.log(`[worktree-guard] closed untouched worktree and deleted ${repo.branchShort}; no push was needed.`);
+    return 0;
+  } finally {
+    lock.release();
+  }
 }
 
 async function commandFinish(flags, positional, config) {
@@ -1373,6 +1428,7 @@ const COMMAND_DESCRIPTIONS = [
   ['status', 'Show the primary worktree and all managed worktrees (--stale, --stale-minutes <N>, --json).'],
   ['create | begin', 'Create a new managed worktree and branch (--offline, --with-deps[=<client>|all]).'],
   ['finish | end', 'Commit, rebase, push, and clean up a managed worktree.'],
+  ['close', 'Remove the current untouched managed worktree without pushing.'],
   ['sync-primary', 'Fast-forward the primary worktree to its upstream.'],
   ['cleanup', 'Remove managed worktrees whose lifecycle=merged (--allow-recent skips the 2h activity floor).'],
   ['cleanup --reclaim-stale', 'Reclaim abandoned worktrees: --stale-days <n> (required) [--apply] [--allow-recent] [--no-patch-id] [--worktree-root <dir>]. Dry run unless --apply.'],
@@ -1412,6 +1468,7 @@ export async function main(argv, deps = {}) {
     if (command === 'status') return commandStatus(flags, config);
     if (command === 'create' || command === 'begin') return await commandCreate(flags, positional, config);
     if (command === 'finish' || command === 'end') return await commandFinish(flags, positional, config);
+    if (command === 'close') return await commandClose(config);
     if (command === 'sync-primary') return commandSyncPrimary(flags, config, deps);
     if (command === 'cleanup') return await commandCleanup(flags, config);
     if (command === 'deps-sync') return commandDepsSync(flags, config);

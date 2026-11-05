@@ -8,13 +8,15 @@ node .vibe-coding/kit/cli.mjs worktree help
 ```
 
 The CLI currently routes `status`, `create` / `begin`, `finish` / `end`, `sync-primary`,
-`cleanup`, `deps-sync`, `client-check`, `stash-audit`, `stash-guard`, `primary-lock`, and
+`close`, `cleanup`, `deps-sync`, `client-check`, `stash-audit`, `stash-guard`, `primary-lock`, and
 `primary-audit`. For example:
 
 ```sh
 node .vibe-coding/kit/cli.mjs worktree begin --name "<task>"
 node .vibe-coding/kit/cli.mjs worktree status
 node .vibe-coding/kit/cli.mjs worktree finish --message "type(scope): summary"
+# Or, from an untouched task worktree with no new commits:
+node .vibe-coding/kit/cli.mjs worktree close
 ```
 
 Initialization adds `worktree:begin`, `worktree:end`, `worktree:status`, `worktree:cleanup`,

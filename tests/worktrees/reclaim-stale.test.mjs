@@ -628,3 +628,51 @@ test('plain cleanup applies the same activity floor to lifecycle=merged worktree
   assert.equal(forced.result, 0);
   assert.equal(existsSync(fresh), false);
 });
+
+test('close removes the current untouched managed worktree and branch without pushing', async () => {
+  const fx = makeFixtureRepo();
+  const path = await createWorktree(fx, 'close-untouched');
+  const remoteBefore = run(['rev-parse', 'refs/heads/main'], fx.remoteDir);
+  const out = await withCwd(path, () => capture(() => main(['close'])));
+  assert.equal(out.result, 0, out.errors.join('\n'));
+  assert.equal(existsSync(path), false);
+  assert.equal(run(['branch', '--list', 'claude/close-untouched'], fx.primaryDir), '');
+  assert.equal(run(['rev-parse', 'refs/heads/main'], fx.remoteDir), remoteBefore);
+});
+
+test('close fails closed for dirty, ignored, committed, switched-branch and unanchored work', async () => {
+  for (const scenario of ['tracked', 'untracked', 'ignored', 'commit', 'switched', 'unanchored']) {
+    const fx = makeFixtureRepo();
+    if (scenario === 'ignored') {
+      writeFileSync(join(fx.primaryDir, '.gitignore'), 'private.tmp\n');
+      run(['add', '.gitignore'], fx.primaryDir);
+      run(['commit', '-m', 'ignore fixture'], fx.primaryDir);
+      run(['push', 'origin', 'main'], fx.primaryDir);
+    }
+    const path = await createWorktree(fx, `close-${scenario}`);
+    if (scenario === 'tracked') writeFileSync(join(path, 'README.md'), 'keep this edit\n');
+    if (scenario === 'untracked') writeFileSync(join(path, 'private.txt'), 'keep this file\n');
+    if (scenario === 'ignored') writeFileSync(join(path, 'private.tmp'), 'keep this ignored file\n');
+    if (scenario === 'commit') commitInWorktree(path, 'local.txt', 'keep commit\n');
+    if (scenario === 'switched') run(['checkout', '-b', 'claude/different-branch'], path);
+    if (scenario === 'unanchored') {
+      const earlier = run(['commit-tree', 'HEAD^{tree}', '-m', 'unrelated base'], fx.primaryDir);
+      run(['update-ref', 'refs/heads/main', earlier], fx.primaryDir);
+      run(['update-ref', 'refs/remotes/origin/main', earlier], fx.primaryDir);
+    }
+    const out = await withCwd(path, () => capture(() => main(['close'])));
+    assert.equal(out.result, 1, `${scenario}: ${out.errors.join('\n')}`);
+    assert.equal(existsSync(path), true, `${scenario}: worktree must survive`);
+    assert.ok(run(['branch', '--list', `claude/close-${scenario}`], fx.primaryDir), `${scenario}: branch must survive`);
+  }
+});
+
+test('close checks the kit deletion proof before removing a managed worktree', async () => {
+  const fx = makeFixtureRepo({ withKit: true });
+  const path = await withLocalFileProtocol(() => createWorktree(fx, 'close-dirty-kit'));
+  writeFileSync(join(path, '.vibe-coding/kit/ignored-private.txt'), 'preserve child data\n');
+  const out = await withCwd(path, () => capture(() => main(['close'])));
+  assert.equal(out.result, 1);
+  assert.equal(existsSync(join(path, '.vibe-coding/kit/ignored-private.txt')), true);
+  assert.ok(run(['branch', '--list', 'claude/close-dirty-kit'], fx.primaryDir));
+});

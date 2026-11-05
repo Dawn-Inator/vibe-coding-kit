@@ -2,6 +2,10 @@
 
 > Moved verbatim from `SKILL.md` (slimming 2026-10-21). Entry: [../SKILL.md](../SKILL.md).
 
+## Closing an untouched task
+
+From the task worktree, run `node .vibe-coding/kit/cli.mjs worktree close` when it has no changes or new commits. It verifies the original branch, clean tracked, untracked and ignored files, creation commit reachability, and safe kit removal under the finish lock, then removes that worktree and branch without pushing. It does not sweep other worktrees. If any check fails, it preserves the worktree for investigation.
+
 ## Status And Cleanup
 
 ```bash
