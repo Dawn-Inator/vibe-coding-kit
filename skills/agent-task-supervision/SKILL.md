@@ -29,7 +29,7 @@ A heartbeat for long multi-agent orchestration, run at each timer wake by the or
 <!-- BEGIN: claude-only -->
 Claude Code arms with one script, never a hand-typed timer:
 
-- **Arm**: `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --ledger .workspace/task/<yyyy-mm-dd>-<topic-slug>/heartbeat.md` via `Bash` `run_in_background: true` (`--minutes N`); it sleeps, prints the checklist, exits; its completion wakes you.
+- **Arm**: `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --ledger .workspace/task/<yyyy-mm-dd>-<topic-slug>/heartbeat.md` via `Bash` `run_in_background: true` (`--minutes N`; for N above ~25 also pass the Bash call a `timeout` (ms) longer than the interval, because the default 30-minute background limit kills the timer before it fires); it sleeps, prints the checklist, exits; its completion wakes you.
 - **Wake output**: a ledger block plus a re-split prompt. **Probe first**: `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --probe` (75 s).
 - **Ledger gate**: each arming appends to `heartbeat.arms`; arming k+1 is refused (exit 3) unless the ledger holds ≥k-1 wake sections: append the missing one, run the `--latest` checker below, re-arm.
 - Stop with `TaskStop` or do not re-arm; `Monitor` is not the heartbeat.

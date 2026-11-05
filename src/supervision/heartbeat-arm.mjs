@@ -23,6 +23,8 @@
 //   pnpm heartbeat:arm -- --ledger .workspace/task/<yyyy-mm-dd>-<topic-slug>/heartbeat.md   # 20 min
 //   pnpm heartbeat:arm -- --ledger <path> --minutes 15
 //   pnpm heartbeat:arm -- --ledger <path> --seconds 90              # tests
+// Claude Code's Bash tool stops a run_in_background command after 30 minutes unless the call passes a larger
+// `timeout` (ms, max 7200000), so for --minutes above ~25 pass timeout > interval; the wake checklist repeats this.
 //
 // Keep-awake: on macOS a sleeping machine freezes `sleep`, so an overnight chain silently stalls. While a
 // real timer sleeps, a detached `caffeinate -i -w <pid>` holds an idle-sleep assertion that ends with
@@ -179,6 +181,30 @@ export function holdIdleAwake({ platform = process.platform, pid = process.pid, 
   }
 }
 
+// The re-arm command must carry the interval this timer was armed with, or a --minutes 60 session silently
+// falls back to the default. Claude Code's Bash tool stops a run_in_background command after 30 minutes unless
+// the call passes a larger `timeout`, so long intervals also get that hint.
+const BASH_BACKGROUND_LIMIT_MINUTES = 30;
+const LONG_INTERVAL_HINT_MINUTES = 25;
+
+function wholeMinutes(seconds) {
+  return Math.max(1, Math.round(seconds / 60));
+}
+
+function rearmInterval(seconds) {
+  const minutes = wholeMinutes(seconds);
+  return minutes === DEFAULT_INTERVAL_MINUTES ? '' : ` --minutes ${minutes}`;
+}
+
+function rearmHint(seconds) {
+  const minutes = wholeMinutes(seconds);
+  if (minutes < LONG_INTERVAL_HINT_MINUTES) return '';
+  return (
+    `; Bash run_in_background stops a command at ${BASH_BACKGROUND_LIMIT_MINUTES} min by default, ` +
+    `so give this call timeout >= ${(minutes + 10) * 60000} ms`
+  );
+}
+
 export function formatWakeMessage({ seconds, probe, ledger, now }) {
   const stamp = now.toISOString().slice(11, 19);
   if (probe) {
@@ -190,7 +216,7 @@ export function formatWakeMessage({ seconds, probe, ledger, now }) {
   const wakeIso = `${now.toISOString().slice(0, 16)}Z`;
   return [
     `HEARTBEAT due ${stamp} (interval ${Math.max(1, Math.round(seconds / 60))} min) -- ledger: ${ledger}`,
-    `Order: (1) re-arm FIRST: pnpm heartbeat:arm -- --ledger ${ledger} (background), (2) audit, (3) ledger, (4) one chat line.`,
+    `Order: (1) re-arm FIRST: pnpm heartbeat:arm -- --ledger ${ledger}${rearmInterval(seconds)} (background${rearmHint(seconds)}), (2) audit, (3) ledger, (4) one chat line.`,
     'Audit (agent-task-supervision):',
     '  0. the heartbeat chain is alive (step 1 just re-armed it); quota and host load per your project thresholds',
     '  1. in-flight workers: run the stall detector on EVERY worker notification that completed since the last wake',

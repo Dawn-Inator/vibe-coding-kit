@@ -96,6 +96,21 @@ test('formatWakeMessage: re-arm first, one chat line, no project-specific comman
   assert.match(probe, /^HEARTBEAT_PROBE delivered 10:20:05/);
 });
 
+test('formatWakeMessage: the re-arm line keeps the armed interval and warns about the Bash background limit', () => {
+  const now = new Date('2026-01-01T10:20:05Z');
+  const rearm = (seconds) =>
+    formatWakeMessage({ seconds, probe: false, ledger: LEDGER_REL, now }).split('\n').find((l) => l.includes('re-arm FIRST'));
+  const long = rearm(3600);
+  assert.ok(long.includes(`--ledger ${LEDGER_REL} --minutes 60`), long);
+  assert.ok(long.includes('timeout >= 4200000 ms'), long);
+  const edge = rearm(1500);
+  assert.ok(edge.includes('--minutes 25') && edge.includes('timeout >= 2100000 ms'), edge);
+  const short = rearm(900);
+  assert.ok(short.includes('--minutes 15') && !short.includes('timeout'), short);
+  const def = rearm(1200);
+  assert.ok(!def.includes('--minutes') && !def.includes('timeout'), def);
+});
+
 test('CLI: arming sleeps, logs one arm, prints the checklist; the third arming without a ledger block is refused with exit 3', () => {
   const { cwd, ledger, arms } = fixture();
   const first = arm(cwd);
