@@ -33,6 +33,7 @@ Claude Code arms with one script, never a hand-typed timer:
 - **Wake output**: a ledger block plus a re-split prompt. **Probe first**: `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --probe` (75 s).
 - **Ledger gate**: each arming appends to `heartbeat.arms`; arming k+1 is refused (exit 3) unless the ledger holds ≥k-1 wake sections: append the missing one, run the `--latest` checker below, re-arm.
 - Stop with `TaskStop` or do not re-arm; `Monitor` is not the heartbeat.
+- **Child sessions** (claude-code-remote): record each `create_session` as an Items row owned by `session:<id>` and its outcome branch with `heartbeat-branches.mjs record --owner session:<id>`; at step 1b `get_session` each `poll` id (`list_events` with `kinds: ["result"]` for the final message); finished and verified on its base → `archive_session`, then `archived` in its row.
 <!-- END: claude-only -->
 
 **At every timer wake**, yourself, synchronously:
@@ -42,6 +43,7 @@ Claude Code arms with one script, never a hand-typed timer:
    - **Worker-health:** last notification an interim sentence and no live background children → STALLED, nudge now. Elapsed >2x expected, or the same step ≥3 times → circuit-breaker row.
    - **Stall detector:** `node .vibe-coding/kit/src/supervision/detect-announcement-stall.mjs "<notification text>"` on EACH worker notification of this window (exit 1 = next step announced without evidence).
    - Stale worktrees (`node .vibe-coding/kit/cli.mjs worktree status --stale`): nudge, or resume there if the worker is gone.
+   - **1b. Child sessions and branches:** `node .vibe-coding/kit/src/supervision/heartbeat-branches.mjs check --ledger <ledger>` and the [closeout](references/branch-closeout.md): a finished child session is verified on its base (landed first if not), then archived; every `cleanable`/`gone` registered branch is cleaned with `clean --apply`; `land-pending` is landed, then cleaned. Every branch a dispatch creates is `record`ed into `branches.md` beside the ledger the turn it is created.
 2. **Free/blocked backlog procedure (mandatory).** At each applicable wake, follow the complete [backlog audit](references/backlog-audit.md), including the ten-category sweep, registry, re-split, and ledger checks.
 3. **Direction check** with your project's anti-tunnel-vision diagnostics: no hit → "direction fine"; hit → apply its remedy first (a full re-evaluation belongs to your architecture review). "Waiting for X" while `free` backlog exists is a hit: back to step 2.
 4. **Overreach check:** under threshold B or another applicable dispatch-only policy, did the orchestrator implement a write unit itself instead of dispatching? If so state `direction: switch (orchestrator self-fix)`, stop and dispatch a worker. In every mode, separately flag a landing without its oracle passing; ordinary self-implementation alone is not an overreach.
@@ -50,8 +52,8 @@ Claude Code arms with one script, never a hand-typed timer:
 
 **Caps** (a not-yet-due step is `done — <last run's evidence and time>` or `deferred ← <window end> ETA <=20m`): verification ≤1/hour or per 3 landings; review once per feature plus one re-review; category 3 ≤hourly.
 
-**Cleanup**: before the session ends stop re-arming and cancel every wake-up (timers, monitors, probes); no OS cron/launchd/daemon.
+**Cleanup**: before the session ends stop re-arming and cancel every wake-up (timers, monitors, probes); no OS cron/launchd/daemon. Close out branches and child sessions first ([closeout](references/branch-closeout.md) "Session end").
 
 ## Report Boundary
 
-Advisory only: no verdict, never blocks a finish, vetoes an exit or grants authority. **Flag, don't act:** for a stuck, orphaned or contradictory subagent the audit only reports; it never kills, restarts, runs finish/cleanup or deletes a worktree/branch. **Judge completion by the terminal receipt** (exit code, push/merge outcome, receipt path), not attribution metadata; without one: "not enough evidence".
+Advisory only: no verdict, never blocks a finish, vetoes an exit or grants authority. **Flag, don't act:** for a stuck, orphaned or contradictory subagent the audit only reports; it never kills, restarts, runs finish/cleanup or deletes a worktree/branch. **Finished work is closed out, not flagged:** a unit with a verified terminal receipt is landed through the project's finish path, its child session archived and its registered branches cleaned, only via `heartbeat-branches.mjs clean --apply` and its gates ([closeout](references/branch-closeout.md)); unlanded work is never deleted. **Judge completion by the terminal receipt** (exit code, push/merge outcome, receipt path), not attribution metadata; without one: "not enough evidence".

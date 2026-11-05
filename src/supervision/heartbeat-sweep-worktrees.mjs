@@ -37,7 +37,7 @@ function rootMtimeMs(path) {
 }
 
 // Mirrors the worktree CLI's own state-dir rule: relative to the common git dir unless absolute.
-function stateDirOf(repo, config) {
+export function stateDirOf(repo, config) {
   if (config.stateDirAbs) return config.stateDirAbs;
   if (isAbsolute(config.stateDir)) return config.stateDir;
   return resolve(repo.commonGitDir, config.stateDir.replace(/^\.git[\\/]?/, ''));

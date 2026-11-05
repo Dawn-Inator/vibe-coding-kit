@@ -19,6 +19,7 @@ surrounding conversation:
 | Execution identity | The requested model/effort, and the actual model/effort resolved after the current adapter validates it | The actual model/effort the run used, from a real runtime receipt — write "unknown" when the host doesn't expose this |
 | Attempt & escalation | The attempt number, the one same-tier retry this attempt is allowed, the conditions for escalating effort/model, and whether a single nested worker layer is explicitly authorized | The actual attempt number, the failure category if any, which escalation (if any) was already used, and a recommended next owner/tier |
 | Progress durability | **Mandatory in every write-capable dispatch prompt**: "commit to your own worktree branch each time a verifiable unit turns green (no push, no finish until the end)" | Which sub-steps were actually committed as they landed, with commit SHAs |
+| Branches created | The branch (and worktree) the orchestrator pre-created and recorded for this unit, its landing base, and "name every other branch you create, local or pushed, in your final report" | Every branch the run created or pushed, each with its base, tip SHA and whether it is landed, so the orchestrator records it in the heartbeat branch registry and cleans it after landing |
 
 In a shared managed checkout, workers must not stage or commit concurrently: the orchestrator alone
 checkpoints the disjoint patches serially. The packet explicitly names that exception and commit owner;

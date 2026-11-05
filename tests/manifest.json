@@ -30,6 +30,7 @@
   "skills/sync-skills-packs.test.mjs",
   "skills/sync-skills.test.mjs",
   "supervision/check-heartbeat-ledger.test.mjs",
+  "supervision/heartbeat-branches.test.mjs",
   "supervision/detect-announcement-stall.test.mjs",
   "supervision/heartbeat-arm-guard.test.mjs",
   "supervision/heartbeat-arm.test.mjs",

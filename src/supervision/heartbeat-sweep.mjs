@@ -20,6 +20,9 @@
 //   1. landings  -- commits on each tracked base branch after the last reviewed point that no `landing:` item names
 //   2. worktrees -- registered managed worktrees the kit's reclaim pass would remove (never an active-recent one)
 //   3. registry  -- item rows outside the `## Items` table, and duplicate ids
+//   4. branches  -- when `branches.md` sits next to the ledger (heartbeat-branches.mjs): every registered
+//                   branch that is landed and cleanable, gone, or done-but-unlanded, and every finished
+//                   child session (`session:<id>`) whose done row never records the archive
 // Extension point (`--probes <file>` or HEARTBEAT_SWEEP_PROBES): where a project adds its own drift
 // probes (deployed-version drift, an external backlog, ...). JSON: an array of {source, item, evidence}.
 // ES module (.mjs/.js): default export `(ctx) => candidates | Promise<candidates>` with
@@ -32,6 +35,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { findDuplicateItemIds, findStrayItemRows, parseItems } from './check-heartbeat-ledger.mjs';
 import { defaultBase, discoverLandings } from './heartbeat-sweep-landings.mjs';
 import { discoverWorktrees } from './heartbeat-sweep-worktrees.mjs';
+import { discoverBranchRegistry } from './heartbeat-branches.mjs';
 import { computeFree, formatFree } from './heartbeat-sweep-free.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
 
@@ -127,6 +131,7 @@ export async function sweep(opts, { cwd = process.cwd(), worktreeOptions = {} } 
     configPath: opts.config,
     ...worktreeOptions,
   }));
+  take(discoverBranchRegistry(cwd, resolve(cwd, opts.ledger), { getLiveProcessCwds: worktreeOptions.getLiveProcessCwds }));
   all.push(...registryHygiene(text, rows));
   const free = computeFree(rows, { repoDir: cwd, base: bases[0] ?? 'HEAD', ledgerPath: resolve(cwd, opts.ledger) });
   if (opts.probes) all.push(...(await runProbes(opts.probes, { ledgerPath: resolve(cwd, opts.ledger), repoDir: cwd, rows, bases })));
