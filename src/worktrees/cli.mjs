@@ -26,7 +26,7 @@ import { checkOtherAiActivity } from './ai-idle-check.mjs';
 import { detectAiParent } from './process-provenance.mjs';
 import { reclaimStaleWorktrees, recentWorktreeActivity } from './reclaim-stale.mjs';
 import { makeOwnedTreeWritable } from './writable-tree.mjs';
-import { assertKitSafeToRemove, checkKit, prepareKit } from '../dependencies/submodule.mjs';
+import { assertKitSafeToRemove, assertKitWorktreeBaseline, checkKit, prepareKit } from '../dependencies/submodule.mjs';
 import { runProjectHook } from '../contracts/project-adapter.mjs';
 import { ensureNodeDepsMatchLockfile } from './node-deps-integrity.mjs';
 import { hasFirstParentMerge, isAncestor, listFirstParentMerges, redoMergesOnTip } from './merge-topology.mjs';
@@ -99,8 +99,9 @@ export function removeWorktreeSafely({
   return proof;
 }
 
-function prepareAndCheckKit(projectRoot) {
+function prepareAndCheckKit(projectRoot, { required = false } = {}) {
   const prepared = prepareKit({ projectRoot });
+  if (required && !prepared.applicable) throw new Error('required kit registration is missing from the worktree');
   if (prepared.applicable) checkKit({ projectRoot });
   return prepared;
 }
@@ -631,6 +632,7 @@ async function commandCreate(flags, positional, config) {
   }
 
   const baseSha = gitText(['rev-parse', effectiveBaseRef], repo.topLevel);
+  const kitBaseline = assertKitWorktreeBaseline({ projectRoot: repo.topLevel, revision: baseSha });
 
   if (flags.dryRun) {
     console.log(`[dry-run] would create branch "${branchName}" at "${worktreePath}" from ${effectiveBaseRef}@${baseSha}`);
@@ -675,7 +677,7 @@ async function commandCreate(flags, positional, config) {
 
   try {
     // Consumer hooks and later CLI imports must see the exact parent gitlink pin.
-    prepareAndCheckKit(worktreePath);
+    prepareAndCheckKit(worktreePath, { required: kitBaseline.applicable });
   } catch (error) {
     throw new Error(`worktree exists at ${worktreePath}, but its registered kit could not be prepared and verified; inspect it before use: ${error.message}`);
   }
@@ -739,7 +741,7 @@ async function commandCreate(flags, positional, config) {
     context: { worktreePath, branch: branchName, baseRef: normalizedBaseRef, baseSha },
   });
   try {
-    prepareAndCheckKit(worktreePath);
+    prepareAndCheckKit(worktreePath, { required: kitBaseline.applicable });
   } catch (error) {
     throw new Error(`afterCreate completed, but the registered kit is no longer prepared and safe at ${worktreePath}: ${error.message}`);
   }

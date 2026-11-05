@@ -19,8 +19,12 @@ function git(projectRoot, args, { allowFailure = false, env = process.env } = {}
 function readProjectConfig(projectRoot) {
   const path = join(projectRoot, CONFIG_PATH);
   if (!existsSync(path)) throw new Error(`Required project config is missing: ${CONFIG_PATH}`);
+  return parseProjectConfig(readFileSync(path, 'utf8'));
+}
+
+function parseProjectConfig(text) {
   let config;
-  try { config = JSON.parse(readFileSync(path, 'utf8')); }
+  try { config = JSON.parse(text); }
   catch (error) { throw new Error(`Invalid ${CONFIG_PATH}: ${error.message}`); }
   if (config?.schemaVersion !== 1) throw new Error(`${CONFIG_PATH} must declare schemaVersion: 1`);
   if (config?.kit?.path !== DEFAULT_KIT_PATH) throw new Error(`${CONFIG_PATH} kit.path must be ${DEFAULT_KIT_PATH}`);
@@ -32,10 +36,11 @@ function readProjectConfig(projectRoot) {
   return config;
 }
 
-function readSubmodule(projectRoot, expectedPath) {
+function readSubmodule(projectRoot, expectedPath, revision) {
   const path = join(projectRoot, '.gitmodules');
-  if (!existsSync(path)) return null;
-  const raw = git(projectRoot, ['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.(path|url)$'], { allowFailure: true });
+  if (revision ? committedFile(projectRoot, revision, '.gitmodules') === null : !existsSync(path)) return null;
+  const source = revision ? ['--blob', `${revision}:.gitmodules`] : ['-f', '.gitmodules'];
+  const raw = git(projectRoot, ['config', ...source, '--get-regexp', '^submodule\\..*\\.(path|url)$'], { allowFailure: true });
   if (raw.status === 1 && !raw.stdout.trim() && !raw.stderr.trim()) return null;
   if (raw.status !== 0) throw new Error(`Could not parse .gitmodules: ${raw.stderr.trim()}`);
   const sections = new Map();
@@ -202,6 +207,48 @@ function workingTreeSafety(projectRoot, submodulePath, registration) {
 export function inspectKit({ projectRoot } = {}) {
   if (!projectRoot) throw new TypeError('projectRoot is required');
   return inspect(projectRoot);
+}
+
+function committedFile(projectRoot, revision, path) {
+  const entry = git(projectRoot, ['ls-tree', '-z', revision, '--', path]).stdout;
+  if (!entry) return null;
+  if (!/^100(?:644|755) blob [0-9a-f]+\t/.test(entry)) {
+    throw new Error(`${path} must be a committed regular file`);
+  }
+  return git(projectRoot, ['show', `${revision}:${path}`]).stdout;
+}
+
+/** Check the exact commit a worktree will inherit, not the caller's index or files. */
+export function assertKitWorktreeBaseline({ projectRoot, revision } = {}) {
+  if (!projectRoot || !revision) throw new TypeError('projectRoot and revision are required');
+  const root = resolve(projectRoot);
+  const required = inspectKit({ projectRoot: root }).applicable;
+  // Resolve once so callers cannot race a moving branch between file reads.
+  const commit = git(root, ['rev-parse', '--verify', `${revision}^{commit}`]).stdout.trim();
+  try {
+    const entry = readSubmodule(root, DEFAULT_KIT_PATH, commit);
+    const configText = committedFile(root, commit, CONFIG_PATH);
+    const pin = gitlinkAt(root, commit, DEFAULT_KIT_PATH);
+    if (!required && !entry && configText === null && !pin) return { applicable: false };
+    if (!entry) throw new Error(`.gitmodules does not register ${DEFAULT_KIT_PATH}`);
+    if (!pin) throw new Error(`${DEFAULT_KIT_PATH} has no committed gitlink pin`);
+    if (configText === null) throw new Error(`${CONFIG_PATH} is not committed`);
+    const config = parseProjectConfig(configText);
+    assertDeclaration(root, config, entry);
+    // Git tree paths are portable, project-relative paths, never host paths.
+    const adapter = config.adapter;
+    if (adapter.includes('\\') || adapter.includes(':') || adapter.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new Error('project adapter path must be relative to the project root');
+    }
+    if (committedFile(root, commit, adapter) === null) throw new Error(`configured adapter ${adapter} is not committed`);
+    const bootstrap = 'engineering/automation/vibe-coding/bootstrap.mjs';
+    if (existsSync(join(root, bootstrap)) && committedFile(root, commit, bootstrap) === null) {
+      throw new Error(`${bootstrap} is not committed`);
+    }
+    return { applicable: true, commit, pin };
+  } catch (error) {
+    throw new Error(`Cannot create worktree: worktree baseline ${commit.slice(0, 12)} has incomplete kit initialization: ${error.message}. Commit the project initialization to the selected base (and its upstream when used), then retry begin.`, { cause: error });
+  }
 }
 
 export function getKitRegistration({ projectRoot, path = DEFAULT_KIT_PATH } = {}) {

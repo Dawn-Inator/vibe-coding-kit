@@ -25,6 +25,15 @@ falling back, unless you pass `--offline`, in which case it logs a warning and b
 worktree on the local branch as-is, accepting it may be stale — use `--offline` only when
 you know you're deliberately working without network access.
 
+For a project using the kit, the selected base commit must contain the kit registration
+in `.gitmodules`, its gitlink pin, `.vibe-coding/project.config.json`, the configured
+adapter, and the project bootstrap when present in the source checkout. `begin` checks
+that exact commit before creating any branch or directory, including in `--dry-run`.
+Staged or untracked initialization files in the primary checkout do not satisfy this
+check. Commit initialization to the selected base and, when using its upstream, push it
+before retrying. Unrelated uncommitted files do not prevent creation. A missing required
+registration after `afterCreate` also prevents a successful result.
+
 Key flags:
 
 - `--name "<scope goal>"` — required. Used to derive the branch slug.

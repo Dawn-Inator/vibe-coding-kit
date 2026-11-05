@@ -178,6 +178,16 @@ node .vibe-coding/kit/cli.mjs check --project-root .
    这一步才生成根指令与 skill 镜像；确认规则已进入 canonical source 后，才将新生成的 `AGENTS.md` / `CLAUDE.md` 作为项目投影使用。adapter 应调用项目已经在用的 gate 命令，并保留成熟状态机和发布授权；空 hook adapter 是 no-op，不能当作 gate 已就绪。
 6. **用有限范围验证，再退役重复入口。** 运行迁移涉及的项目测试和 bounded checks，复核配置/生成 diff，验证 `skills check`、冷克隆后的 submodule hydrate、项目自己的 worktree begin/finish 路径，以及缺失或 dirty kit pin 会被拒绝。只有在调用关系已迁移且对应测试通过后，才在普通提交中退役旧的重复核心实现；未完成迁移的消费者继续使用各自原有桥接。
 
+## 首次创建工作区前提交初始化
+
+初始化文件必须进入用于创建工作区的基线提交：包括 `.gitmodules`、`.vibe-coding/kit` 的 gitlink、
+`.vibe-coding/project.config.json`、配置声明的 adapter 和项目 bootstrap，以及选定跟踪的技能源与投影。
+只暂存或只在主工作区生成这些文件不够；Git worktree 不会继承另一个工作区的暂存区和未跟踪文件。
+
+`begin` 会在创建分支或目录之前检查实际选定的提交，缺失时拒绝并提示完成初始化提交。若基线使用远程
+upstream，还需先把初始化提交推送到该目标分支；本地已经完整而远程仍缺文件也会被拒绝。普通业务文件的
+未提交改动不受此检查限制。
+
 ## 有意升级 Kit 版本
 
 日常工作不执行 `git submodule update --remote`。升级是项目自己的代码变更：先确认没有未提交的 Kit 子模块修改，在父项目新工作分支中 fetch 并审阅获批的上游 tag/commit，解析为完整 commit SHA，再把子模块 checkout 到该 SHA。然后先将 gitlink 加入父项目暂存区，使父项目 index 成为 `prepare` 的固定版本依据：

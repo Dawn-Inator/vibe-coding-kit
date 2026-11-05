@@ -45,6 +45,7 @@
   "worktrees/git-environment-boundary.test.mjs",
   "worktrees/git-identity.test.mjs",
   "worktrees/hooks.test.mjs",
+  "worktrees/kit-baseline.test.mjs",
   "worktrees/merge-topology.test.mjs",
   "worktrees/node-deps-integrity.test.mjs",
   "worktrees/primary-write-guard-hook.test.mjs",
