@@ -640,6 +640,18 @@ test('plain cleanup applies the same activity floor to lifecycle=merged worktree
   assert.equal(existsSync(fresh), false);
 });
 
+test('plain cleanup preserves ignored user files even when the worktree is marked merged', async () => {
+  const fx = makeFixtureRepo();
+  const path = await createWorktree(fx, 'merged-ignored');
+  writeWorktreeMetadata(path, { lifecycle: 'merged' }, config);
+  run(['config', 'core.excludesFile', join(fx.root, 'local-excludes')], path);
+  writeFileSync(join(fx.root, 'local-excludes'), 'private.txt\n');
+  writeFileSync(join(path, 'private.txt'), 'preserve');
+  const out = await withCwd(fx.primaryDir, () => capture(() => main(['cleanup', '--allow-recent'])));
+  assert.ok(out.errors.some((line) => /ignored/.test(line)), out.errors.join('\n'));
+  assert.ok(existsSync(join(path, 'private.txt')));
+});
+
 test('close removes the current untouched managed worktree and branch without pushing', async () => {
   const fx = makeFixtureRepo();
   const path = await createWorktree(fx, 'close-untouched');

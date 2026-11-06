@@ -1318,6 +1318,8 @@ async function commandCleanup(flags, config) {
         }
       }
       try {
+        const status = git(['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], w.path);
+        if (status.status !== 0 || status.stdout) throw new Error('worktree has uncommitted, untracked, or ignored files, or status failed');
         removeWorktreeSafely({
           projectRoot: w.path,
           worktreePath: w.path,
