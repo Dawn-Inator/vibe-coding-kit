@@ -233,6 +233,17 @@ test('dry run lists what would be reclaimed and removes nothing; --apply removes
   assert.equal(branchExists(fx, 'claude/abandoned'), false, 'the landed managed branch is deleted');
 });
 
+test('reclaim preserves ignored user files in an otherwise landed worktree', async () => {
+  const fx = makeFixtureRepo();
+  const path = await landedIdleWorktree(fx, 'ignored-safety');
+  run(['config', 'core.excludesFile', join(fx.root, 'local-excludes')], path);
+  writeFileSync(join(fx.root, 'local-excludes'), 'private.txt\n');
+  writeFileSync(join(path, 'private.txt'), 'preserve');
+  const out = await reclaim(fx, ['--stale-days', '0.01', '--allow-recent', '--apply']);
+  assert.ok(out.logs.some((line) => /ignored/.test(line)), out.logs.join('\n'));
+  assert.ok(existsSync(join(path, 'private.txt')));
+});
+
 test('reclaim removes an initialized kit only after proof, using force for that verified checkout', async () => {
   const fx = makeFixtureRepo({ withKit: true });
   const path = await withLocalFileProtocol(() => landedIdleWorktree(fx, 'kit-reclaim'));

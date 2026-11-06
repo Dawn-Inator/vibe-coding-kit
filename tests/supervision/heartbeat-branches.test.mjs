@@ -218,6 +218,26 @@ test('a registered branch with no commits of its own is never cleanable until it
   assert.equal(stateOf(check(fx), 'claude/linked'), 'cleanable', 'a done item with nothing unlanded is closed out');
 });
 
+test('cleanup preserves ignored files and refuses a recorded path reused by another checkout', async () => {
+  for (const mode of ['ignored-file', 'ignored-directory', 'different-branch', 'detached']) {
+    const fx = makeRepo();
+    const path = await createWorktree(fx, 'safety');
+    const sha = commitIn(path, 'safety');
+    writeLedger(fx, '| I1 | owner:chat | unit | done | complete |');
+    recordBranch({ ledger: fx.ledger, branch: 'claude/safety', base: 'main', owner: 'agent:w1', worktree: path, item: 'I1', cwd: fx.primary });
+    landByCherryPick(fx, sha, path);
+    if (mode.startsWith('ignored')) {
+      git(['config', 'core.excludesFile', join(fx.root, 'excludes')], path);
+      writeFileSync(join(fx.root, 'excludes'), mode === 'ignored-file' ? 'secret.txt\n' : 'private/\n');
+      if (mode === 'ignored-directory') spawnSync('mkdir', ['-p', join(path, 'private')]);
+      writeFileSync(join(path, mode === 'ignored-file' ? 'secret.txt' : 'private/data'), 'keep');
+    } else if (mode === 'different-branch') git(['checkout', '-b', 'claude/other'], path);
+    else git(['checkout', '--detach'], path);
+    assert.equal(clean(fx, 'claude/safety', true).ok, false, mode);
+    assert.ok(existsSync(path), mode);
+  }
+});
+
 test('a landed but dirty worktree is refused, and an unregistered branch is never cleaned', async () => {
   const fx = makeRepo();
   const path = await createWorktree(fx, 'dirty');

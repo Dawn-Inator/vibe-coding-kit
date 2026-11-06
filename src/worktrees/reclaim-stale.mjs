@@ -457,13 +457,13 @@ export function assessReclaimCandidate(entry, ctx) {
     reasons.push(`recorded base "${baseRef}" is a commit id, not a branch name`);
   }
 
-  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], path);
+  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'], path);
   let dirty = false;
   if (status.status !== 0) {
     reasons.push('git status failed (broken or incomplete checkout)');
     dirty = true;
   } else if (parsePorcelainPaths(status.stdout).length > 0) {
-    reasons.push('worktree has uncommitted or untracked files');
+    reasons.push('worktree has uncommitted or untracked or ignored files');
     dirty = true;
   }
 
@@ -523,7 +523,7 @@ function recheckUnderLock(v, stateDir, { liveCwds, platform, probeDirectoryDelet
   if (!existsSync(v.path)) return 'checkout directory disappeared';
   const tip = git(['rev-parse', 'HEAD'], v.path);
   if (tip.status !== 0 || tip.stdout !== v.tip) return `tip moved since classification (${v.tip.slice(0, 10)} -> ${tip.stdout.slice(0, 10) || '?'})`;
-  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], v.path);
+  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'], v.path);
   if (status.status !== 0 || parsePorcelainPaths(status.stdout).length > 0) return 'worktree is no longer clean';
   if ([...livePathsFromFinishQueue(stateDir)].some((livePath) => samePathIdentity(livePath, v.path))) {
     return 'a live finish ticket now names this worktree';

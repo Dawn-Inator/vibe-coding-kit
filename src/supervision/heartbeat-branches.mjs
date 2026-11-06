@@ -121,11 +121,11 @@ export function resolveBaseRef(repoDir, base, remote) {
 }
 
 function worktreeState(entry, { liveCwds, livePaths, currentPath }) {
-  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], entry.path, { retry: false });
+  const status = gitRaw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'], entry.path, { retry: false });
   const reasons = [];
   if (!existsSync(entry.path)) reasons.push(`worktree ${entry.path} is registered but its directory is missing (git worktree prune)`);
   else if (status.status !== 0) reasons.push(`git status failed in ${entry.path}`);
-  else if (status.stdout.trim()) return { dirty: true, busy: [], reasons: [`worktree ${entry.path} has uncommitted or untracked files`] };
+  else if (status.stdout.trim()) return { dirty: true, busy: [], reasons: [`worktree ${entry.path} has uncommitted, untracked, or ignored files`] };
   const busy = [];
   if (isPathWithin(entry.path, currentPath)) busy.push('this command runs inside it');
   if (!liveCwds) busy.push('the live-process inventory is unavailable');
@@ -151,6 +151,7 @@ export function assessBranch(repoDir, row, ctx) {
   const entry = repo.worktrees.find((wt) => wt.branch === row.branch)
     || (row.worktree ? repo.worktrees.find((wt) => samePathIdentity(wt.path, row.worktree)) : null);
   if (entry) out.worktree = entry.path;
+  if (entry && entry.branch !== row.branch) return done('protected', `recorded worktree ${entry.path} is now on ${entry.branch || 'a detached HEAD'}, not ${row.branch}`);
   if (entry && repo.primaryWorktree && samePathIdentity(entry.path, repo.primaryWorktree.path)) {
     return done('protected', `${row.branch} is checked out in the primary worktree`);
   }
