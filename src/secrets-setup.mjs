@@ -39,3 +39,14 @@ export function createSecretRepository(root, plan) {
     throw new Error(`GitHub repository ${plan.repository} was created but setup did not complete. Preserve it and inspect visibility and ${target} before retrying; no rollback was attempted. ${error.message}`);
   }
 }
+
+export function verifySecretRepository(root, plan) {
+  if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(plan.repository || '') || !/^\.\.\/[A-Za-z0-9_.-]+-secret-key$/.test(plan.localPath || '')) throw new Error('Invalid secrets repository or local path');
+  const target = join(dirname(realpathSync(root)), basename(plan.localPath));
+  if (!existsSync(target)) throw new Error(`Secret repository clone is missing: ${target}`);
+  const expected = `https://github.com/${plan.repository}.git`;
+  const remote = run('git', ['remote', 'get-url', 'origin'], target);
+  const canonical = remote.replace(/^git@github\.com:/, 'https://github.com/').replace(/\/?$/, '').replace(/\.git$/, '');
+  if (canonical !== expected.slice(0, -4)) throw new Error('Secret repository clone origin does not match the chosen GitHub repository');
+  if (run('gh', ['api', `repos/${plan.repository}`, '--jq', '.visibility'], root) !== 'private') throw new Error('Secret repository must be private');
+}

@@ -10,7 +10,7 @@ import { composeSources } from './src/skills/composition.mjs';
 import { isMainModule } from './src/lib/main-module.mjs';
 import { isPathWithin, samePathIdentity } from './src/lib/path-identity.mjs';
 import { sanitizedGitEnv } from './src/git-environment.mjs';
-import { planSecrets, createSecretRepository } from './src/secrets-setup.mjs';
+import { planSecrets, createSecretRepository, verifySecretRepository } from './src/secrets-setup.mjs';
 import { createInterface } from 'node:readline/promises';
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -176,7 +176,9 @@ async function install(root, options) {
   const help = spawnSync(process.execPath, [targetCli, 'help'], { cwd: rootReal, encoding: 'utf8' });
   if (help.error || help.status !== 0 || !help.stdout.includes('--secrets github|vault')) throw new Error(`Selected kit revision does not support the required secret-storage choice; kit registration remains. Choose a compatible revision before configuring secrets.`);
   if (secrets.method === 'github') {
-    createSecretRepository(rootReal, secrets);
+    try { createSecretRepository(rootReal, secrets); } catch (error) {
+      throw new Error(`${error.message} To recover, inspect GitHub ${secrets.repository} and sibling ${secrets.localPath}; create a private repository only if absent, verify its ownership and privacy, clone it to that sibling path, then run init with these arguments: ${JSON.stringify(['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy, '--secrets', 'github', '--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath, ...options.skill.flatMap((skill) => ['--skill', skill])])}. Pass each JSON string as one argument.`);
+    }
     console.log(`Created private secret repository ${secrets.repository} and cloned it to ${secrets.localPath}; it will be preserved if later setup fails.`);
   }
   const initArgs = ['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy];
@@ -185,7 +187,7 @@ async function install(root, options) {
   for (const skill of options.skill) initArgs.push('--skill', skill);
   const initialized = spawnSync(process.execPath, [targetCli, ...initArgs], { cwd: rootReal, stdio: 'inherit', env: sanitizedGitEnv(process.env) });
   if (initialized.error) throw initialized.error;
-  if (initialized.status !== 0) throw new Error(`Kit submodule is registered${resolvedRef ? ` at ${resolvedRef}` : ''}, but project initialization failed. Existing files were preserved; resolve the reported conflict, then run "node ${KIT_PATH}/cli.mjs init" with the install identity and options.`);
+  if (initialized.status !== 0) throw new Error(`Kit submodule is registered${resolvedRef ? ` at ${resolvedRef}` : ''}, but project initialization failed. Existing files were preserved. Recovery arguments (pass each JSON string as one argument): ${JSON.stringify(initArgs)}; inspect and repair the reported conflict before retrying.`);
 }
 
 function validateSkillPlan(projectRoot, config, entries = []) {
@@ -425,6 +427,7 @@ function requireReaddirSync(path) {
 }
 
 function init(root, options) {
+  if (options.secrets === 'github') verifySecretRepository(root, { repository: options.secretsRepository, localPath: options.secretsLocalPath });
   const registration = getKitRegistration({ projectRoot: root });
   if (registration.name !== 'vibe-coding-kit') throw new Error(`Expected .gitmodules submodule name vibe-coding-kit, found ${registration.name}`);
   const expectedUrl = options.url || DEFAULT_URL;
