@@ -315,6 +315,8 @@ function plannedInitFiles(root, options) {
     const method = configTemplate.secrets?.method;
     const optionalName = method === 'github' ? 'secret-repository-access' : method === 'vault' ? 'vault-secret-access' : null;
     if (optionalName) {
+      const otherName = method === 'github' ? 'vault-secret-access' : 'secret-repository-access';
+      if (localNames.includes(otherName) || selected.has(otherName)) throw new Error(`Conflicting secret access skill ${otherName}; preserve it and resolve the project authority before installing`);
       if (selected.has(optionalName)) throw new Error(`Secret access skill ${optionalName} is selected automatically; do not pass --skill for it`);
       selected.set(optionalName, { mode: 'local' });
       optionalSkills.push(optionalName);

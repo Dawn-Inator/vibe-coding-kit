@@ -375,3 +375,35 @@ test('failed repository clone reports exact recovery and init verifies the repai
   assert.equal(config.secrets.repository, `fixture-owner/${repoName}`);
   assert.equal(config.skills.skills['secret-repository-access'].mode, 'local');
 });
+
+
+test('install rejects an opposing pre-existing or explicitly selected secret access skill before mutation', () => {
+  for (const mode of ['existing', 'explicit']) {
+    const fixture = consumerProject();
+    if (mode === 'existing') {
+      const path = join(fixture.project, '.vibe-coding/skills/secret-repository-access');
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, 'SKILL.md'), '---\nname: secret-repository-access\ndescription: Existing project skill\n---\nKeep this file.\n');
+      commit(fixture.project, 'add existing access skill');
+    }
+    const result = run(fixture, mode === 'explicit' ? ['--skill', 'secret-repository-access=local'] : []);
+    assert.notEqual(result.status, 0, mode);
+    assert.match(result.stderr, /Conflicting secret access skill/, mode);
+    assert.equal(existsSync(join(fixture.project, '.gitmodules')), false, mode);
+    if (mode === 'existing') assert.match(readFileSync(join(fixture.project, '.vibe-coding/skills/secret-repository-access/SKILL.md'), 'utf8'), /Keep this file/);
+  }
+});
+
+test('GitHub choice also rejects a pre-existing Vault skill without creating anything', () => {
+  const fixture = consumerProject();
+  git(fixture.project, ['remote', 'add', 'origin', 'https://github.com/example/project.git']);
+  const path = join(fixture.project, '.vibe-coding/skills/vault-secret-access');
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, 'SKILL.md'), '---\nname: vault-secret-access\ndescription: Existing Vault skill\n---\nKeep it.\n');
+  commit(fixture.project, 'add existing Vault skill');
+  const result = run(fixture, ['--secrets', 'github']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Conflicting secret access skill vault-secret-access/);
+  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
+  assert.match(readFileSync(join(path, 'SKILL.md'), 'utf8'), /Keep it/);
+});
