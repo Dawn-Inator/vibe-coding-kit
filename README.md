@@ -7,7 +7,7 @@ Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, pr
 在一个已提交且工作区干净的 Git 项目根目录，用 Node.js 20+、Git 和 npm 执行下面命令。请将身份参数替换为项目真实的提交名称和邮箱：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
 ```
 
 这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
@@ -72,7 +72,7 @@ arrays, scalars and null are replaced by the overlay. `render` and `text` read
 one environment; `check` returns stale environment names without writing; `regen`
 validates all inputs before updating output files. Inputs must be JSON objects;
 unsafe prototype keys and unknown stages are rejected. Consumers own secret
-storage and must not put secret values into checked-in files.
+storage and must not put secret values into checked-in application files. A selected private secrets repository may contain plaintext values.
 
 `resolveBranchEnvironment` validates a consumer-supplied branch-to-environment
 map and resolves a known branch or explicit environment. Conflicting or unknown

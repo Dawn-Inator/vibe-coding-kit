@@ -10,6 +10,8 @@ import { composeSources } from './src/skills/composition.mjs';
 import { isMainModule } from './src/lib/main-module.mjs';
 import { isPathWithin, samePathIdentity } from './src/lib/path-identity.mjs';
 import { sanitizedGitEnv } from './src/git-environment.mjs';
+import { planSecrets, createSecretRepository } from './src/secrets-setup.mjs';
+import { createInterface } from 'node:readline/promises';
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://github.com/Dawn-Inator/vibe-coding-kit.git';
@@ -70,8 +72,8 @@ function git(root, args, { allowFailure = false, env = process.env } = {}) {
   return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
 }
 
-function install(root, options) {
-  const allowed = new Set(['command', 'positional', 'skill', 'projectRoot', 'url', 'ref', 'identityName', 'identityEmail', 'mirrorPolicy', 'check']);
+async function install(root, options) {
+  const allowed = new Set(['command', 'positional', 'skill', 'projectRoot', 'url', 'ref', 'identityName', 'identityEmail', 'mirrorPolicy', 'check', 'secrets']);
   const unsupported = Object.keys(options).filter((key) => !allowed.has(key));
   if (unsupported.length) throw new Error(`Unsupported install option(s): ${unsupported.map((key) => `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`).join(', ')}`);
   if (options.positional.length) throw new Error(`Unexpected install argument(s): ${options.positional.join(' ')}`);
@@ -111,12 +113,23 @@ function install(root, options) {
   assertSafeInstallTargets(rootReal);
   assertProjectionTargetsAvailable(rootReal);
   assertNoSymlinkPaths(rootReal, ['.gitignore', 'package.json', '.vibe-coding/skills', 'engineering/automation/vibe-coding'].map((path) => resolve(rootReal, path)));
+  if (!options.secrets) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Select secret storage with --secrets github or --secrets vault');
+    const prompt = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await prompt.question('Secret storage: 1) private GitHub repository (quick setup)  2) Vault (more setup) [1/2]: ')).trim();
+      options.secrets = answer === '1' ? 'github' : answer === '2' ? 'vault' : '';
+      if (!options.secrets) throw new Error('Select 1 or 2');
+    } finally { prompt.close(); }
+  }
   // Validate all init options and conflicts before the first repository mutation.
-  const plan = plannedInitFiles(rootReal, { ...options, url, mirrorPolicy });
+  const secrets = planSecrets(rootReal, options.secrets);
+  const plan = plannedInitFiles(rootReal, { ...options, url, mirrorPolicy, secretsPlan: secrets });
   assertNoSymlinkPaths(rootReal, [...plan.entries.map(({ path }) => path), resolve(rootReal, '.gitmodules')]);
   if (plan.conflicts.length) throw new Error(`Install preflight found conflicts: ${plan.conflicts.join(', ')}`);
   validateSkillPlan(rootReal, plan.config, plan.entries);
   if (options.check) {
+    console.log(`Secrets choice: ${secrets.method}${secrets.repository ? `; would create private ${secrets.repository} and clone to ${secrets.localPath}` : '; Vault setup remains project-owned'}.`);
     console.log(`Would register ${url} at ${KIT_PATH}, initialize the selected kit revision, and create ${plan.writes.length} project file(s). Remote state was not checked.`);
     process.exitCode = 1;
     return;
@@ -160,7 +173,15 @@ function install(root, options) {
   }
   const targetCli = resolve(rootReal, KIT_PATH, 'cli.mjs');
   if (!existsSync(targetCli)) throw new Error(`Kit submodule is registered at ${KIT_PATH}${resolvedRef ? ` (${resolvedRef})` : ''}, but that revision has no cli.mjs to run init. Registration remains; inspect the pin and use a supported kit revision.`);
+  const help = spawnSync(process.execPath, [targetCli, 'help'], { cwd: rootReal, encoding: 'utf8' });
+  if (help.error || help.status !== 0 || !help.stdout.includes('--secrets github|vault')) throw new Error(`Selected kit revision does not support the required secret-storage choice; kit registration remains. Choose a compatible revision before configuring secrets.`);
+  if (secrets.method === 'github') {
+    createSecretRepository(rootReal, secrets);
+    console.log(`Created private secret repository ${secrets.repository} and cloned it to ${secrets.localPath}; it will be preserved if later setup fails.`);
+  }
   const initArgs = ['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy];
+  initArgs.push('--secrets', secrets.method);
+  if (secrets.method === 'github') initArgs.push('--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath);
   for (const skill of options.skill) initArgs.push('--skill', skill);
   const initialized = spawnSync(process.execPath, [targetCli, ...initArgs], { cwd: rootReal, stdio: 'inherit', env: sanitizedGitEnv(process.env) });
   if (initialized.error) throw initialized.error;
@@ -261,6 +282,10 @@ function plannedInitFiles(root, options) {
   configTemplate.kit.url = options.url || DEFAULT_URL;
   configTemplate.identity.name = options.identityName || '';
   configTemplate.identity.email = options.identityEmail || '';
+  if (options.secretsPlan) configTemplate.secrets = options.secretsPlan;
+  else if (options.secrets === 'vault') configTemplate.secrets = { method: 'vault', status: 'not-provisioned' };
+  else if (options.secrets === 'github' && options.secretsRepository && options.secretsLocalPath) configTemplate.secrets = { method: 'github', repository: options.secretsRepository, localPath: options.secretsLocalPath };
+  else if (options.secrets) throw new Error('init requires a valid secrets method and GitHub repository details');
   const mirrorPolicy = options.mirrorPolicy || 'local';
   if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
   configTemplate.skills = { ...configTemplate.skills, mirrorPolicy, skills: {} };
@@ -433,11 +458,12 @@ function init(root, options) {
   console.log('Initialization complete. No package.json or business dependencies were created.');
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   const root = projectRoot(options);
+
   switch (options.command) {
-    case 'install': install(root, options); return;
+    case 'install': await install(root, options); return;
     case 'backend-check': {
       const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'src/backend/dispatch.mjs'),
         '--project-root', root, '--config', options.config || '.vibe-coding/backend-architecture.json'], {
@@ -497,13 +523,13 @@ function main() {
       return;
     }
     case 'help':
-      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--mirror-policy local|tracked] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|worktree|backend-check> --project-root <path> [options]\nBackend: --config <project-relative JSON path>');
+      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--mirror-policy local|tracked] --secrets github|vault [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|worktree|backend-check> --project-root <path> [options]\nBackend: --config <project-relative JSON path>');
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }
 }
 
 if (isMainModule(import.meta.url)) {
-  try { main(); }
+  try { await main(); }
   catch (error) { console.error(`[vibe-coding-kit] ${error.message}`); process.exitCode = 1; }
 }

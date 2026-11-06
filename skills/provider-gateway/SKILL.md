@@ -47,7 +47,7 @@ secret-handling rule, not every provider's individual quirks.
   secret-handling policy if it permits other handling; do not infer authorization.
 - Use whatever backend runtime secret-injection mechanism your project has (a vault-backed config
   loader, short-lived process env overrides injected at deploy/start time) — never a hardcoded value
-  in a tracked config file.
+  in the application repository. The project-selected private secrets repository may contain plaintext.
 - If your project has a CLI or script for writing secrets into that mechanism, use it instead of
   hand-editing a config file. A typical shape (fill in your own project's actual command names once
   you have them):
@@ -90,16 +90,15 @@ write-only as a default hardening step. Instead, harden *how* it works:
 - **Value-free audit trail**: log who revealed which key name, when, from where, and why (if your UI
   captures a reason) — never log the secret value itself, in the audit record, request/response body,
   error message, or any telemetry.
-- **Single source of truth stays the vault/secret-manager**: any inventory or metadata store your
+- **Single source of truth stays the selected secret authority**: any inventory or metadata store your
   project keeps about provider credentials (purpose, which modules reuse this key, blast radius of
-  rotation) should hold only non-secret metadata — provider name, the vault path, provenance,
+  rotation) should hold only non-secret metadata — provider name, the authority reference, provenance,
   last-verified timestamp. It must never itself persist the plaintext value, a reversible ciphertext,
-  or even a masked prefix; the vault/secret manager remains the only place the real value lives.
-  Runtime code must always source the actual value from that same vault-backed config at request
-  time — never from a value the browser returned, and never from an unlabelled database mirror.
+  or even a masked prefix; the selected authority remains the source of truth.
+  Runtime code must obtain the actual value through the project-approved delivery path — never from a value the browser returned, and never from an unlabelled database mirror.
 
 A review that flags "an owner can see secret plaintext" as inherently a blocking finding has
-misunderstood the model. The blocking findings are: the value persisted somewhere outside the vault,
+misunderstood the model. The blocking findings are: the value persisted in an unauthorized store,
 a broad role able to reveal without step-up, bulk/unscoped export, or reveal accessible without
 per-key authorization — not the existence of a narrow, audited, step-up-gated single-owner path.
 

@@ -44,7 +44,7 @@ function requireExplicitFixtureIdentity(fixture) {
 function run(fixture, more = [], projectRoot = fixture.project) {
   return spawnSync(process.execPath, [cliPath, 'install', '--project-root', projectRoot,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
-    '--identity-email', 'install@example.invalid', ...more], { cwd: fixture.project, encoding: 'utf8', env: process.env });
+    '--identity-email', 'install@example.invalid', '--secrets', 'vault', ...more], { cwd: fixture.project, encoding: 'utf8', env: process.env });
 }
 
 function snapshotFiles(root, { excludedPaths = new Set() } = {}) {
@@ -303,4 +303,38 @@ test('installer accepts Windows case and available 8.3 aliases for the same proj
     assert.match(shortCheck.stdout, /Would register/, `8.3-alias install --check: status=${shortCheck.status}, stderr=${shortCheck.stderr}, stdout=${shortCheck.stdout}`);
   }
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
+});
+
+test('fresh install requires an explicit secret-storage choice without a terminal', () => {
+  const fixture = consumerProject();
+  const result = spawnSync(process.execPath, [cliPath, 'install', '--project-root', fixture.project,
+    '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
+    '--identity-email', 'install@example.invalid'], { cwd: fixture.project, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--secrets github or --secrets vault/);
+  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
+});
+
+test('install creates and records the private secrets repository without placing it inside the project', { skip: process.platform === 'win32' }, () => {
+  const fixture = consumerProject();
+  const bin = join(fixture.project, '..', 'fake-bin'); mkdirSync(bin);
+  const log = join(fixture.project, '..', 'gh-calls');
+  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_LOG"\nif [ "$1" = api ] && [ "$2" = user ]; then echo fixture-owner; elif [ "$1" = api ]; then echo private; elif [ "$1" = repo ] && [ "$2" = clone ]; then mkdir "$4"; fi\n', { mode: 0o755 });
+  const args = [cliPath, 'install', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
+    '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github'];
+  const options = { cwd: fixture.project, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_GH_LOG: log } };
+  const dry = spawnSync(process.execPath, [...args, '--check'], options);
+  assert.equal(dry.status, 1);
+  assert.match(dry.stdout, /would create private/);
+  assert.doesNotMatch(existsSync(log) ? readFileSync(log, 'utf8') : '', /repo create/);
+  const installed = spawnSync(process.execPath, args, options);
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+  assert.equal(config.secrets.method, 'github');
+  assert.match(config.secrets.repository, /^fixture-owner\/.+-secret-key$/);
+  assert.ok(existsSync(join(fixture.project, config.secrets.localPath)));
+  assert.match(readFileSync(log, 'utf8'), /repo create .* --private/);
+  const repeat = spawnSync(process.execPath, args, options);
+  assert.equal(repeat.status, 0, repeat.stderr || repeat.stdout);
+  assert.equal(readFileSync(log, 'utf8').split('\n').filter((line) => line.startsWith('repo create ')).length, 1);
 });

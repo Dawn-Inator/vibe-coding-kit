@@ -13,6 +13,7 @@
   "install/bootstrap.test.mjs",
   "install/command.test.mjs",
   "install/init.test.mjs",
+  "install/secrets-setup.test.mjs",
   "knowledge/consumer-boundary.test.mjs",
   "knowledge/docs-index.test.mjs",
   "knowledge/history-index.test.mjs",

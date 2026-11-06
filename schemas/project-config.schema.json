@@ -25,6 +25,12 @@
       },
       "additionalProperties": false
     },
+    "secrets": {
+      "oneOf": [
+        { "type": "object", "required": ["method", "repository", "localPath"], "properties": { "method": { "const": "github" }, "repository": { "type": "string", "minLength": 1 }, "localPath": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+        { "type": "object", "required": ["method", "status"], "properties": { "method": { "const": "vault" }, "status": { "const": "not-provisioned" } }, "additionalProperties": false }
+      ]
+    },
     "worktrees": { "type": "object" },
     "skills": { "type": "object" },
     "knowledge": { "type": "object" },

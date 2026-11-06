@@ -17,7 +17,7 @@ Kit 不需要发布到 npm registry，也没有额外运行时依赖。通过 Gi
 在项目根目录运行，并将身份替换为项目真实值：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
 ```
 
 `ai@example.org` 仅表示参数格式，必须换成真实、可用的项目提交邮箱。首次接入要求仓库干净；命令运行后会新增 submodule 和生成文件，检查输出并按项目流程提交这些变更。
@@ -25,7 +25,7 @@ npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install -
 也可以从已有 Kit checkout 调用同一入口：
 
 ```sh
-node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org'
+node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
 ```
 
 如需固定经审阅的 tag 或 commit，可加 `--ref <tag-or-commit>`。默认使用 Kit 的远端默认版本；要让多个消费者得到相同内容，应显式固定并审阅版本。
@@ -33,7 +33,7 @@ node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --
 若需复现同一套安装入口与 Kit 运行时版本，可分别固定从 GitHub 取得 CLI 的 commit 和写入 submodule 的 commit：
 
 ```sh
-npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --ref '<approved-kit-sha>'
+npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github --ref '<approved-kit-sha>'
 ```
 
 把两个 SHA 都替换为已审阅的完整 commit，并使用项目真实身份。若两者来自同一 Kit 版本，可填写相同 SHA。
@@ -83,6 +83,12 @@ AGENTS.md / CLAUDE.md            # 由 skills:sync 生成的根指令投影
 ```sh
 node .vibe-coding/kit/cli.mjs help
 ```
+
+## 密钥管理选择
+
+全新安装时选择 `--secrets github`（快速方案）或 `--secrets vault`；终端交互安装未传参数时会询问，非交互安装必须显式传入。`github` 默认使用主仓库的 GitHub owner 和仓库名，创建私有 `<项目名>-secret-key` 仓库并克隆到主项目的同级目录；主项目没有 GitHub origin 时使用当前 `gh` 身份和目录名。需要已登录的 GitHub CLI 和相应组织权限。仓库文件可供获授权用户直接查看，不强制加密。权限需由项目维护者单独配置。
+
+`vault` 仅记录选择，**不会自动部署或配置 Vault**。两种方式的运行时接入、访问控制和恢复由项目完成，详见[密钥规范](guidance/environment-and-secrets.md#choose-one-secret-authority)。`--check` 不创建远端仓库；若 GitHub 创建成功但后续安装失败，仓库会保留，检查并手动修复后再继续，不自动删除或接管同名仓库。重复安装不会改变已有配置。
 
 ## 选择和适配 skills
 
