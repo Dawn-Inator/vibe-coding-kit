@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { fakeGhEnvironment } from '../support/fake-gh.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
@@ -321,14 +322,12 @@ test('fresh install requires an explicit secret-storage choice without a termina
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
 });
 
-test('install creates and records the private secrets repository without placing it inside the project', { skip: process.platform === 'win32' }, () => {
+test('install creates and records the private secrets repository without placing it inside the project', () => {
   const fixture = consumerProject();
-  const bin = join(fixture.project, '..', 'fake-bin'); mkdirSync(bin);
   const log = join(fixture.project, '..', 'gh-calls');
-  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_LOG"\nif [ "$1" = api ] && [ "$2" = user ]; then echo fixture-owner; elif [ "$1" = api ]; then echo private; elif [ "$1" = repo ] && [ "$2" = clone ]; then mkdir "$4"; git -C "$4" init -q; git -C "$4" remote add origin "https://github.com/$3.git"; fi\n', { mode: 0o755 });
   const args = [cliPath, 'install', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github'];
-  const options = { cwd: fixture.project, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_GH_LOG: log } };
+  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { log, cloneGit: true }) };
   const dry = spawnSync(process.execPath, [...args, '--check'], options);
   assert.equal(dry.status, 1);
   assert.match(dry.stdout, /would create private/);
@@ -350,23 +349,21 @@ test('install creates and records the private secrets repository without placing
   assert.equal(readFileSync(log, 'utf8').split('\n').filter((line) => line.startsWith('repo create ')).length, 1);
 });
 
-test('failed repository clone reports exact recovery and init verifies the repaired private clone', { skip: process.platform === 'win32' }, () => {
+test('failed repository clone reports exact recovery and init verifies the repaired private clone', () => {
   const fixture = consumerProject();
-  const bin = join(fixture.project, '..', 'recovery-bin'); mkdirSync(bin);
-  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nif [ "$1" = api ] && [ "$2" = user ]; then echo fixture-owner; elif [ "$1" = api ]; then echo "${VISIBILITY:-private}"; elif [ "$1" = repo ] && [ "$2" = clone ]; then echo clone-failed >&2; exit 1; fi\n', { mode: 0o755 });
-  const options = { cwd: fixture.project, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } };
+  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { failClone: true }) };
   const args = [cliPath, 'install', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github'];
   const failed = spawnSync(process.execPath, args, options);
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /To recover[\s\S]*--secrets-repository[\s\S]*--secrets-local-path/);
-  const repoName = `${fixture.project.split('/').pop()}-secret-key`;
+  const repoName = `${basename(fixture.project)}-secret-key`;
   const sibling = join(fixture.project, '..', repoName);
   mkdirSync(sibling); git(sibling, ['init']); git(sibling, ['remote', 'add', 'origin', `https://github.com/fixture-owner/${repoName}.git`]);
   const recovery = [cliPath, 'init', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github',
     '--secrets-repository', `fixture-owner/${repoName}`, '--secrets-local-path', `../${repoName}`];
-  const notPrivate = spawnSync(process.execPath, recovery, { ...options, env: { ...options.env, VISIBILITY: 'public' } });
+  const notPrivate = spawnSync(process.execPath, recovery, { ...options, env: { ...options.env, TEST_VISIBILITY: 'public' } });
   assert.equal(notPrivate.status, 1);
   assert.match(notPrivate.stderr, /must be private/);
   const repaired = spawnSync(process.execPath, recovery, options);

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import test, { after } from 'node:test';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 after(cleanupTempDirs);
+import { fakeGhEnvironment } from '../support/fake-gh.mjs';
 import { planSecrets, createSecretRepository, verifySecretRepository } from '../../src/secrets-setup.mjs';
 
 const git = (cwd, ...args) => assert.equal(spawnSync('git', args, { cwd }).status, 0);
@@ -20,13 +21,12 @@ test('plans a private sibling repository from the project GitHub origin and refu
   assert.throws(() => planSecrets(root, 'unknown'), /github or vault/);
 });
 
-test('creates only private GitHub repository and clones it; refuses non-private visibility', { skip: process.platform === 'win32' }, () => {
-  const tmp = mkdtempTracked('kit-secret-create-');
-  const root = join(tmp, 'app'); const bin = join(tmp, 'bin'); mkdirSync(root); mkdirSync(bin);
-  const log = join(tmp, 'calls'); const gh = join(bin, 'gh');
-  writeFileSync(gh, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_LOG"\nif [ "$1" = api ]; then printf "%s\\n" "${TEST_VISIBILITY:-private}"; fi\nif [ "$1" = repo ] && [ "$2" = clone ]; then mkdir "$4"; fi\n', { mode: 0o755 });
-  const old = { PATH: process.env.PATH, TEST_GH_LOG: process.env.TEST_GH_LOG, TEST_VISIBILITY: process.env.TEST_VISIBILITY };
-  process.env.PATH = `${bin}:${old.PATH}`; process.env.TEST_GH_LOG = log;
+test('creates only private GitHub repository and clones it; refuses non-private visibility', () => {
+  const tmp = mkdtempTracked("kit-secret-create-' space-");
+  const root = join(tmp, 'app'); mkdirSync(root);
+  const log = join(tmp, 'calls');
+  const old = { ...process.env };
+  Object.assign(process.env, fakeGhEnvironment(tmp, { log }));
   try {
     const plan = { method: 'github', repository: 'owner/app-secret-key', localPath: '../app-secret-key' };
     createSecretRepository(root, plan);
@@ -46,6 +46,7 @@ test('creates only private GitHub repository and clones it; refuses non-private 
     assert.throws(() => createSecretRepository(root, { ...plan, repository: 'owner/other-secret-key', localPath: '../other-secret-key' }), /visibility public/);
     assert.equal(existsSync(join(tmp, 'other-secret-key')), false);
   } finally {
-    for (const [key, value] of Object.entries(old)) value === undefined ? delete process.env[key] : process.env[key] = value;
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
+    Object.assign(process.env, old);
   }
 });
