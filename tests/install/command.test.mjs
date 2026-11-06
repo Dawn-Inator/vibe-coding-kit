@@ -99,6 +99,12 @@ test('install check is read-only and fresh install delegates init then is idempo
   const installed = run(fixture);
   assert.equal(installed.status, 0, installed.stderr || installed.stdout);
   assert.equal(git(fixture.project, ['config', '-f', '.gitmodules', '--get', 'submodule.vibe-coding-kit.path']).stdout.trim(), '.vibe-coding/kit');
+  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+  assert.equal(config.skills.skills['vault-secret-access'].mode, 'local');
+  for (const mirror of ['.agents/skills', '.claude/skills']) {
+    assert.ok(existsSync(join(fixture.project, mirror, 'vault-secret-access/SKILL.md')));
+    assert.equal(existsSync(join(fixture.project, mirror, 'secret-repository-access/SKILL.md')), false);
+  }
   const again = run(fixture);
   assert.equal(again.status, 0, again.stderr || again.stdout);
   assert.match(again.stdout, /existing configuration .* preserved/i);
@@ -331,6 +337,11 @@ test('install creates and records the private secrets repository without placing
   assert.equal(installed.status, 0, installed.stderr || installed.stdout);
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
   assert.equal(config.secrets.method, 'github');
+  assert.equal(config.skills.skills['secret-repository-access'].mode, 'local');
+  for (const mirror of ['.agents/skills', '.claude/skills']) {
+    assert.ok(existsSync(join(fixture.project, mirror, 'secret-repository-access/SKILL.md')));
+    assert.equal(existsSync(join(fixture.project, mirror, 'vault-secret-access/SKILL.md')), false);
+  }
   assert.match(config.secrets.repository, /^fixture-owner\/.+-secret-key$/);
   assert.ok(existsSync(join(fixture.project, config.secrets.localPath)));
   assert.match(readFileSync(log, 'utf8'), /repo create .* --private/);
@@ -362,4 +373,5 @@ test('failed repository clone reports exact recovery and init verifies the repai
   assert.equal(repaired.status, 0, repaired.stderr || repaired.stdout);
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
   assert.equal(config.secrets.repository, `fixture-owner/${repoName}`);
+  assert.equal(config.skills.skills['secret-repository-access'].mode, 'local');
 });

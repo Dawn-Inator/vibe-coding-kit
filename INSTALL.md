@@ -86,9 +86,9 @@ node .vibe-coding/kit/cli.mjs help
 
 ## 密钥管理选择
 
-全新安装时选择 `--secrets github`（快速方案）或 `--secrets vault`；终端交互安装未传参数时会询问，非交互安装必须显式传入。`github` 默认使用主仓库的 GitHub owner 和仓库名，创建私有 `<项目名>-secret-key` 仓库并克隆到主项目的同级目录；主项目没有 GitHub origin 时使用当前 `gh` 身份和目录名。需要已登录的 GitHub CLI 和相应组织权限。仓库文件可供获授权用户直接查看，不强制加密。权限需由项目维护者单独配置。
+全新安装时选择 `--secrets github`（快速方案）或 `--secrets vault`；终端交互安装未传参数时会询问，非交互安装必须显式传入。`github` 默认使用主仓库的 GitHub owner 和仓库名，创建私有 `<项目名>-secret-key` 仓库并克隆到主项目的同级目录；主项目没有 GitHub origin 时使用当前 `gh` 身份和目录名。需要已登录的 GitHub CLI 和相应组织权限。仓库文件可供获授权用户直接查看，不强制加密。权限需由项目维护者单独配置。安装会自动启用 `secret-repository-access` 技能，供 AI 按项目配置定位并读取所需密钥。
 
-`vault` 仅记录选择，**不会自动部署或配置 Vault**。两种方式的运行时接入、访问控制和恢复由项目完成，详见[密钥规范](guidance/environment-and-secrets.md#choose-one-secret-authority)。`--check` 不创建远端仓库；若 GitHub 创建成功但后续安装失败，仓库会保留，检查并手动修复后再继续，不自动删除或接管同名仓库。重复安装不会改变已有配置。
+`vault` 仅记录选择，**不会自动部署或配置 Vault**；安装会自动启用 `vault-secret-access` 技能，待项目完成 Vault 接入后按项目命令获取密钥。两种方式的运行时接入、访问控制和恢复由项目完成，详见[密钥规范](guidance/environment-and-secrets.md#choose-one-secret-authority)。`--check` 不创建远端仓库；若 GitHub 创建成功但后续安装失败，仓库会保留，检查并手动修复后再继续，不自动删除或接管同名仓库。重复安装不会改变已有配置。
 
 ## 选择和适配 skills
 

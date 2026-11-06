@@ -293,6 +293,7 @@ function plannedInitFiles(root, options) {
   configTemplate.skills = { ...configTemplate.skills, mirrorPolicy, skills: {} };
   const selected = new Map();
   const snapshots = [];
+  const optionalSkills = [];
   {
     const commonSkills = resolve(REPO_ROOT, 'skills');
     const commonNames = (awaitlessReaddir(commonSkills));
@@ -308,6 +309,15 @@ function plannedInitFiles(root, options) {
       if (mode === 'replace') { decision.rationale = rationale; decision.replaces = name; }
       if (mode === 'exclude') decision.rationale = rationale;
       selected.set(name, decision);
+    }
+    // Secret access is an installer-selected project-owned skill, not a new
+    // public skill that would force a decision on existing kit consumers.
+    const method = configTemplate.secrets?.method;
+    const optionalName = method === 'github' ? 'secret-repository-access' : method === 'vault' ? 'vault-secret-access' : null;
+    if (optionalName) {
+      if (selected.has(optionalName)) throw new Error(`Secret access skill ${optionalName} is selected automatically; do not pass --skill for it`);
+      selected.set(optionalName, { mode: 'local' });
+      optionalSkills.push(optionalName);
     }
     for (const name of commonNames) {
       if (selected.has(name)) continue;
@@ -339,6 +349,7 @@ function plannedInitFiles(root, options) {
     }
   };
   for (const name of snapshots) addSnapshot(resolve(REPO_ROOT, 'skills', name), resolve(root, '.vibe-coding/skills', name), name);
+  for (const name of optionalSkills) addSnapshot(resolve(REPO_ROOT, 'templates/optional-skills', name), resolve(root, '.vibe-coding/skills', name), name);
   const gitignorePath = resolve(root, '.gitignore');
   const currentGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
   const mergedGitignore = mergeMirrorIgnoreBlock(currentGitignore, mirrorPolicy);
