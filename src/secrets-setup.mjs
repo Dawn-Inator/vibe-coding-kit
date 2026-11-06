@@ -46,7 +46,7 @@ export function verifySecretRepository(root, plan) {
   if (!existsSync(target)) throw new Error(`Secret repository clone is missing: ${target}`);
   const expected = `https://github.com/${plan.repository}.git`;
   const remote = run('git', ['remote', 'get-url', 'origin'], target);
-  const canonical = remote.replace(/^git@github\.com:/, 'https://github.com/').replace(/\/?$/, '').replace(/\.git$/, '');
+  const canonical = remote.replace(/^git@github\.com:/, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//, 'https://github.com/').replace(/\/?$/, '').replace(/\.git$/, '');
   if (canonical !== expected.slice(0, -4)) throw new Error('Secret repository clone origin does not match the chosen GitHub repository');
   if (run('gh', ['api', `repos/${plan.repository}`, '--jq', '.visibility'], root) !== 'private') throw new Error('Secret repository must be private');
 }
