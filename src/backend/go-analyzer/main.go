@@ -305,6 +305,12 @@ func run(root, configPath string) error {
 		slot := strings.TrimSuffix(filepath.Base(p.name), ".go")
 		allowedDB := slot == "operate" || slot == "query" || slot == "projection"
 		readonly := slot == "query" || slot == "projection"
+		trueShadowed := false
+		for _, other := range files {
+			if other.dir == p.dir && other.file.Scope.Lookup("true") != nil {
+				trueShadowed = true
+			}
+		}
 		{
 			for _, decl := range p.file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
@@ -346,7 +352,7 @@ func run(root, configPath string) error {
 			if !allowedDB {
 				add(p, call.Pos(), "sql-slot", "database calls belong in operate.go, query.go or projection.go")
 			}
-			if readonly && (writeMethod(method) || sqlWrite(call)) {
+			if readonly && ((writeMethod(method) && !readOnlyBeginTx(call, p.imports, trueShadowed)) || sqlWrite(call)) {
 				add(p, call.Pos(), "readonly-write", "query and projection must not write")
 			}
 			return true
@@ -364,6 +370,60 @@ func run(root, configPath string) error {
 	})
 	out.OK = len(out.Findings) == 0
 	return json.NewEncoder(os.Stdout).Encode(out)
+}
+
+// readOnlyBeginTx recognizes only an explicit database/sql TxOptions literal.
+// Identifier object links supplied by the parser reject locally shadowed names;
+// package-level shadowing of the predeclared true is checked across files.
+func readOnlyBeginTx(call *ast.CallExpr, imports map[string]string, trueShadowed bool) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "BeginTx" || len(call.Args) != 2 || trueShadowed {
+		return false
+	}
+	arg := unparen(call.Args[1])
+	addr, ok := arg.(*ast.UnaryExpr)
+	if !ok || addr.Op != token.AND {
+		return false
+	}
+	lit, ok := unparen(addr.X).(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	typ, ok := unparen(lit.Type).(*ast.SelectorExpr)
+	if !ok || typ.Sel.Name != "TxOptions" {
+		return false
+	}
+	ident, ok := typ.X.(*ast.Ident)
+	if !ok || ident.Obj != nil || imports[ident.Name] != "database/sql" {
+		return false
+	}
+	seen := map[string]bool{}
+	readOnly := false
+	for _, elt := range lit.Elts {
+		field, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			return false
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if !ok || seen[key.Name] {
+			return false
+		}
+		seen[key.Name] = true
+		if key.Name == "ReadOnly" {
+			value, ok := unparen(field.Value).(*ast.Ident)
+			readOnly = ok && value.Name == "true" && value.Obj == nil
+		}
+	}
+	return readOnly
+}
+func unparen(expr ast.Expr) ast.Expr {
+	for {
+		p, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = p.X
+	}
 }
 func receiverName(x ast.Expr) string {
 	switch v := x.(type) {
@@ -389,21 +449,21 @@ func isDBReceiver(s string) bool {
 }
 func dbMethod(s string) bool {
 	switch s {
-	case "query", "querycontext", "queryrow", "queryrowcontext", "exec", "execcontext", "prepare", "preparecontext", "begin", "begintx", "commit", "rollback", "select", "get", "insert", "update", "delete", "save", "create", "first", "find", "scan", "raw", "where", "model", "table":
+	case "query", "querycontext", "queryrow", "queryrowcontext", "exec", "execcontext", "prepare", "preparecontext", "begin", "begintx", "transaction", "commit", "rollback", "select", "get", "insert", "update", "delete", "save", "create", "first", "find", "scan", "raw", "where", "model", "table":
 		return true
 	}
 	return false
 }
 func ormMethod(s string) bool {
 	switch s {
-	case "select", "insert", "update", "delete", "create", "save", "exec", "query", "raw", "model", "table":
+	case "select", "insert", "update", "delete", "create", "save", "exec", "query", "raw", "model", "table", "transaction":
 		return true
 	}
 	return false
 }
 func writeMethod(s string) bool {
 	switch s {
-	case "exec", "execcontext", "insert", "update", "delete", "save", "create", "commit", "begin", "begintx":
+	case "exec", "execcontext", "insert", "update", "delete", "save", "create", "commit", "begin", "begintx", "transaction":
 		return true
 	}
 	return false

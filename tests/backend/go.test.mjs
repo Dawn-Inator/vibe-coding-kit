@@ -37,6 +37,45 @@ test('detect DB slot, readonly writes, ORM return and provider imports, includin
   assert.ok(result.findings.every(x => x.path && x.line > 0 && x.message));
 });
 
+test('only proven database/sql read-only BeginTx literals pass in read slots', t => {
+  const f = fixture(t);
+  const source = `package orders
+import sqlalias "database/sql"
+import fake "example.com/fake"
+func Read(db DB, ctx Context, opts *sqlalias.TxOptions) {
+ db.BeginTx(ctx, &sqlalias.TxOptions{Isolation: sqlalias.LevelRepeatableRead, ReadOnly: true}) // pass
+ db.BeginTx(ctx, (&(sqlalias.TxOptions{ReadOnly: (true)}))) // pass
+ db.BeginTx(ctx, &sqlalias.TxOptions{ReadOnly: false}) // reject
+ db.BeginTx(ctx, &sqlalias.TxOptions{}) // reject
+ db.BeginTx(ctx, opts) // reject
+ db.BeginTx(ctx, options()) // reject
+ db.BeginTx(ctx, &fake.TxOptions{ReadOnly: true}) // reject
+ db.BeginTx(ctx, &sqlalias.TxOptions{ReadOnly: true, ReadOnly: true}) // reject
+ db.Begin(ctx, &sqlalias.TxOptions{ReadOnly: true}) // reject
+ db.Transaction(ctx, &sqlalias.TxOptions{ReadOnly: true}) // reject
+ db.Query("UPDATE x SET y=1") // reject
+ db.Commit() // reject
+}
+func ShadowAlias(db DB, ctx Context, sqlalias Fake) {
+ db.BeginTx(ctx, &sqlalias.TxOptions{ReadOnly: true}) // reject
+}
+func ShadowTrue(db DB, ctx Context, true bool) {
+ db.BeginTx(ctx, &sqlalias.TxOptions{ReadOnly: true}) // reject
+}
+`;
+  f.put('internal/domains/orders/query.go', source);
+  const findings = f.run().findings.filter(x => x.rule === 'readonly-write');
+  const expected = source.split('\n').flatMap((line, i) => line.includes('// reject') ? [i + 1] : []);
+  assert.deepEqual(findings.map(x => x.line), expected);
+});
+
+test('package-level true shadow in another file prevents proving read-only options', t => {
+  const f = fixture(t);
+  f.put('internal/domains/orders/other.go', 'package orders\nvar true = false\n');
+  f.put('internal/domains/orders/query.go', 'package orders\nimport "database/sql"\nfunc Read(db DB, ctx Context) { db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true}) }\n');
+  assert.equal(f.run().findings.filter(x => x.rule === 'readonly-write').length, 1);
+});
+
 test('package import cycles are reported and build tags do not hide files', t => {
   const f = fixture(t);
   f.put('internal/domains/orders/a.go', 'package orders\nimport _ "example.com/app/internal/domains/users"\n');
