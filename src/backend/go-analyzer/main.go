@@ -256,14 +256,32 @@ func run(root, configPath string) error {
 	add := func(p parsed, pos token.Pos, rule, msg string) {
 		out.Findings = append(out.Findings, finding{rule, p.rel, p.fs.Position(pos).Line, msg})
 	}
+	// External test packages have a separate Go import graph node even though
+	// they share a directory with the production package they exercise.
+	productionNames := map[string]map[string]bool{}
+	for _, p := range files {
+		if p.pkg != "" && !strings.HasSuffix(p.name, "_test.go") {
+			if productionNames[p.dir] == nil {
+				productionNames[p.dir] = map[string]bool{}
+			}
+			productionNames[p.dir][p.file.Name.Name] = true
+		}
+	}
+	graphNode := func(p parsed) string {
+		name := p.file.Name.Name
+		if p.pkg != "" && strings.HasSuffix(p.name, "_test.go") && strings.HasSuffix(name, "_test") && productionNames[p.dir][strings.TrimSuffix(name, "_test")] {
+			return p.pkg + "#external-test"
+		}
+		return p.pkg
+	}
 	graph := map[string]map[string]bool{}
 	for _, p := range files {
-		if p.pkg != "" {
-			if graph[p.pkg] == nil {
-				graph[p.pkg] = map[string]bool{}
+		if node := graphNode(p); node != "" {
+			if graph[node] == nil {
+				graph[node] = map[string]bool{}
 			}
 			for _, v := range p.imports {
-				graph[p.pkg][v] = true
+				graph[node][v] = true
 			}
 		}
 	}
@@ -295,7 +313,7 @@ func run(root, configPath string) error {
 			if matches(v, c.ProviderModules) && !allowed {
 				add(p, im.Pos(), "provider-import", "provider module must be imported within a provider root")
 			}
-			if p.pkg != "" && graph[v] != nil && reaches(v, p.pkg, map[string]bool{}) {
+			if node := graphNode(p); node != "" && graph[v] != nil && reaches(v, node, map[string]bool{}) {
 				add(p, im.Pos(), "import-cycle", "package import participates in a cycle")
 			}
 		}

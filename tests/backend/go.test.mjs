@@ -76,6 +76,15 @@ test('package-level true shadow in another file prevents proving read-only optio
   assert.equal(f.run().findings.filter(x => x.rule === 'readonly-write').length, 1);
 });
 
+test('external test packages may import their package and its independent testkit', t => {
+  const f = fixture(t);
+  f.put('internal/domains/orders/testkit/fixture.go', 'package testkit\nfunc Fixture() {}\n');
+  f.put('internal/domains/orders/external_test.go', 'package orders_test\nimport (\n _ "example.com/app/internal/domains/orders"\n _ "example.com/app/internal/domains/orders/testkit"\n)\n');
+  const result = f.run();
+  assert.equal(result.findings.filter(x => x.rule === 'import-cycle').length, 0, JSON.stringify(result.findings));
+  assert.equal(result.ok, true, JSON.stringify(result.findings));
+});
+
 test('package import cycles are reported and build tags do not hide files', t => {
   const f = fixture(t);
   f.put('internal/domains/orders/a.go', 'package orders\nimport _ "example.com/app/internal/domains/users"\n');
