@@ -488,6 +488,64 @@ test('tracking items require read-only tracking metadata and cannot claim dispat
   rejected(tracker({ dispatchRef: 'receipts/fake-tracker.json' }), 'fake dispatch receipt');
 });
 
+test('current v2 assessment IDs support generic nested parent IDs such as ALL and W1', () => {
+  const tracker = (id, child) => item({
+    id, source: `report:${id.toLowerCase()}`, item: `track child ${child}`,
+    status: 'tracking', evidence: 'tracking plan', owner: `agent:${id.toLowerCase()}`,
+    repository: 'repo-a', worktree: `worktrees/${id.toLowerCase()}`, mode: 'read-only',
+    writeSet: '[]', dispatchRef: '-', children: JSON.stringify([child]),
+  });
+  const leaf = item({
+    id: 'I1', source: 'report:leaf', item: 'implement leaf unit', status: 'dispatched agent:leaf',
+    evidence: '-', owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf',
+    mode: 'write', writeSet: '["src/leaf.mjs"]', dispatchRef: 'receipts/leaf.json', children: '[]',
+  });
+  const candidate = fixture(v2({
+    items: [tracker('ALL', 'W1'), tracker('W1', 'I1'), leaf],
+    includeChildren: true,
+    decompositionRows: [
+      '| ALL | track worker group | continuing | agent:all | tracking raw-ref |',
+      '| W1 | track leaf work | continuing | agent:w1 | tracking raw-ref |',
+      '| I1 | implement leaf unit | dispatched | agent:leaf | receipts/leaf.json |',
+    ],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(ALL: continuing: tracking raw-ref; W1: continuing: tracking raw-ref; I1: split->dispatched agent:leaf)\nsplittable: 1/3',
+  }), { 'receipts/leaf.json': accepted('agent:leaf') });
+  assert.deepEqual(latestRules(candidate.text, { ledgerPath: candidate.ledgerPath }), [], 'generic and real parent IDs, plus a real accepted leaf dispatch, count as three assessments');
+});
+
+test('current v2 keeps hyphenated assessment IDs distinct and rejects duplicate or unknown IDs', () => {
+  const owners = [
+    { id: 'A-B', owner: 'agent:hyphen', path: 'src/hyphen.mjs', receipt: 'receipts/hyphen.json' },
+    { id: 'AB', owner: 'agent:plain', path: 'src/plain.mjs', receipt: 'receipts/plain.json' },
+  ];
+  const items = owners.map(({ id, owner, path, receipt }) => item({
+    id, source: `report:${owner}`, item: `implement ${id}`, status: `dispatched ${owner}`,
+    evidence: '-', owner, repository: 'repo-a', worktree: `worktrees/${owner}`,
+    mode: 'write', writeSet: JSON.stringify([path]), dispatchRef: receipt,
+  }));
+  const decompositionRows = owners.map(({ id, owner, receipt }) => `| ${id} | implement leaf | dispatched | ${owner} | ${receipt} |`);
+  const receipts = Object.fromEntries(owners.map(({ owner, receipt }) => [receipt, accepted(owner)]));
+  const good = fixture(v2({
+    items, decompositionRows, includeResplit: false, includeSplitCount: false,
+    extra: 're-split: rows(A-B: split->dispatched agent:hyphen; AB: split->dispatched agent:plain)\nsplittable: 2/2',
+  }), receipts);
+  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'A-B and AB are separate registry and assessment IDs');
+
+  const duplicate = fixture(v2({
+    items, decompositionRows, includeResplit: false, includeSplitCount: false,
+    extra: 're-split: rows(A-B: split->dispatched agent:hyphen; A-B: split->dispatched agent:hyphen)\nsplittable: 1/1',
+  }), receipts);
+  assert.ok(latestRules(duplicate.text, { ledgerPath: duplicate.ledgerPath }).includes('resplit-row-duplicate'), 'an exact repeated generic ID is rejected');
+
+  const unknown = fixture(v2({
+    items, decompositionRows, includeResplit: false, includeSplitCount: false,
+    extra: 're-split: rows(UNKNOWN: continuing: tracking raw-ref)\nsplittable: 0/1',
+  }), receipts);
+  assert.ok(latestRules(unknown.text, { ledgerPath: unknown.ledgerPath }).includes('resplit-row-unknown'), 'an unknown generic ID is rejected');
+});
+
 test('tracking metadata and coordination evidence reject blank and placeholder values', () => {
   const placeholders = ['', '-', '—', 'none', 'unknown', 'n-a', 'n/a', 'todo', 'tbd', '?', '未知', '待补'];
   const parentFor = (field, value) => item({

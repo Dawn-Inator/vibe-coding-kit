@@ -30,10 +30,14 @@ const CANNOT_RE = /^cannot-split\s*:\s*(\S.*)$/i;
 const CONTINUING_RE = /^continuing\s*:\s*(active|private-final|tracking)\s+(\S.*)$/i;
 const CONTINUING_PLACEHOLDER_RE = /^(?:-|none|unknown|n\/?a|tbd|todo|\?)$/i;
 const ACCEPTANCE_ONLY_RE = /\b(?:acceptance[- ]only|(?:accepted|acceptance)\s+(?:receipt|evidence)\s+only)\b/i;
-const ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
+const LEGACY_ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
+const V2_ENTRY_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*[:=]?\s*(\S.*)$/i;
 const TOKEN_RE = /\bsplittable:\s*(\d+)\s*\/\s*(\d+)/i;
 
-const normId = (id) => String(id).replace(/-/g, '').toUpperCase();
+const normId = (id) => {
+  const value = String(id);
+  return /^I-?\d+$/i.test(value) ? value.replace('-', '').toUpperCase() : value.toUpperCase();
+};
 const err = (rule, message) => ({ severity: 'error', rule, message });
 
 // `name(` ... matching `)`, parentheses inside the group allowed (reasons often cite `(why)`).
@@ -49,13 +53,13 @@ function groupOf(line, name) {
 }
 
 /** Entries of a `rows(...)` group: [{id, verdict: 'dispatched'|'cannot-split'|'continuing'|'invalid', detail, proof}]. */
-export function parseRowVerdicts(group, { allowContinuing = false } = {}) {
+export function parseRowVerdicts(group, { allowContinuing = false, allowGenericIds = false } = {}) {
   return String(group ?? '')
     .split(';')
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part) => {
-      const entry = part.match(ENTRY_RE);
+      const entry = part.match(allowGenericIds ? V2_ENTRY_RE : LEGACY_ENTRY_RE);
       if (!entry) return { id: null, verdict: 'invalid', detail: part, proof: null };
       const body = entry[2].trim();
       const id = normId(entry[1]);
@@ -102,7 +106,7 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   const findings = [];
   const line = sectionLines.find((l) => /^\s*re-split:/i.test(l));
   const group = line ? groupOf(line, 'rows') : null;
-  const verdicts = group === null ? [] : parseRowVerdicts(group, { allowContinuing: v2Format });
+  const verdicts = group === null ? [] : parseRowVerdicts(group, { allowContinuing: v2Format, allowGenericIds: v2Format });
   const byId = new Map(verdicts.filter((v) => v.id).map((v) => [v.id, v]));
   const labels = (rows) => rows.map((r) => r.label).join(', ');
 
