@@ -1,28 +1,64 @@
-# Free/blocked backlog audit
+# Backlog audit
 
-2. **Free/blocked backlog procedure (mandatory).**
-   - `free` = deliverable now; write set overlaps no in-flight worker or free item. `blocked` = `<item> ← blocked because <resource> is required for <first step>`, only if no deliverable line is possible without it; `<resource>` is a named **exclusive** resource (a ref that must not move, a lock, a scarce machine, `<path> write set held by <worker>`) plus a reason; "in flight" or "one batch/more complete later" means free. Landing-stage resources (preflight slots, finish lock, another landing in flight or queued, host load) never block implementation (only the landing waits): the item is `free`. A `write set` conflict names the overlapping FILES; an item overlapping only a branch, or waiting on another unit's unlanded output, bases on it and lands after. A `blocked` row naming a unit/SHA the registry shows done, or unchanged >24h, is stale: re-verify it now. One agent per free item. On every landing re-scan blocked items and dispatch what it freed. **FAIL**: an undispatched free item, or a bare free/blocked count.
-   - **Ten-category sweep, item or "none" each:**
-     1. **Goal-derived remaining work**, two answers: **(1a)** critical-path next step(s) toward the plan/gate/owner objective, named even if blocked; **(1b)** off-critical-path goal work (result gaps, coverage, anything needed before "complete"), answered independently. `free 0` needs both; in-flight ≤2 AND 1a blocked → enumerate 1b first or FAIL. Answer 1b from a maintained remaining-work list (`.todolist/`), struck on landing.
-     2. read-only review of commits since the last review.
-     3. temporary status updates for landed facts, in `.workspace/` never `doc/`, ≤hourly.
-     4. long-lived knowledge artifacts (Skill/Doc/History/memory) owed; a fact fitting 3 and 4 goes under both.
-     5. tooling/test fixes for defects this session, incl. the orchestrator's workarounds.
-     6. release/deploy prep needing no scarce resource.
-     7. follow-ups from finished workers.
-     8. centralized verification not yet run on the tip.
-     9. session hygiene: leftover worktrees (dry-run cleanup, never inline `--apply`), background shells/watchers, owed history.
-     10. deployable-unit drift: per target stage, each unit's running SHA/version vs target, a line per unit behind; cite a check against your stage x unit matrix or name the units unchecked.
-   - **`sources:` line every wake** (missing = FAIL): `sources: sweep(✓) landings(✓) reports(✓) drift-matrix(✓) memory/handoff(✓ at resume) external-backlog(✓ <timestamp>|blocked ← <reason>) worker-health(✓)`. An external backlog (bug tracker, issue queue) is read at start and every ≤6h; if inaccessible mark the token `blocked ← <reason>` AND open an `owner ←` item.
-   - **Mechanical discovery sweep, required on every wake that is not an interim notification** (timer, landing, report, blocker, human message). Each wake, run `node .vibe-coding/kit/src/supervision/heartbeat-sweep.mjs`; every row in its `free-candidates:` list is not blocked, so ingest and dispatch it that same turn, and take the status line's `in-flight / free-undispatched / blocked` numbers from its last line rather than from memory. Pass `-- --ledger <ledger>` (read-only, offline: `git fetch` first; exit 1 = candidates); a candidate is an `## Items` row dispatched or reclassified with proof that turn, never "next wake" (Audit FAIL). It also covers landings (2), reclaimable worktrees (9), registry hygiene, probes; walk the other categories citing each query.
-   - **Categories 2 and 8:** never defer for "more commits/workers to land" (reviews bind to existing SHAs, verification to the tip); batch only for a named input due ≤20 min (`deferred ← <input> ETA <=20m`). A category-2 review of a checker/guard/gate landing runs that checker in strict mode on the landed tip; its `done` row cites the backticked command, not a bare SHA.
-   - **Dispositions:** every review finding, coverage gap, file:line, "out of scope" caveat in a worker report, below-target result or missing evidence gets its own line: `dispatched (<worker>)` / `declined: <reason>` / `blocked ← <resource>`.
-   - **Ten-row ledger every wake**, never abbreviated ("same as before"); every `free 0` restates all ten. Row 1 is `(1a) <state>; (1b) <state>`. Every other row and each part of row 1 is exactly one of: `in-flight <agent/unit>` · `dispatched <unit>` · `blocked ← <named exclusive resource>` · `deferred ← <input> ETA <=20m` · `empty — <concrete query/evidence run this tick>` · `done — <backticked command/output or SHA>` · `unchanged — \`<command rerun this wake>\``. `unchanged` is for rows 2–9 unchanged since the previous wake, never on the first wake, for a row `deferred` last wake, row 1 or row 10.
-   - **Re-split: the default answer is yes.** Every wake, find the split: each `blocked ←` / `deferred ←` table row and `blocked ←` `## Items` row gets a verdict in `re-split: … rows(<id>: split→dispatched <unit>; <id>: cannot-split: <proof>)` (ids `r1b`, `r7`, `I12`). A proof is one tag: `needs-landed: production effect` · `branch-unstable: <branch> rewritten in the last 60 min` · `owner-gated` · `same-file conflict: <path>`; another unit's unlanded branch/output alone is no block (base on it, land after it). Write `splittable: <dispatched-this-wake>/<rows-with-proof>` in the wake and status line. Two idle (1b) wakes running also need `prep-ahead(<items | none — reason>) lessons(…) audit(…)`; a `none` cites a check run THIS wake, is rejected while any open row lacks a proof, and the same `none — …` three wakes running is red. Why: a checker's open question gets answered for the checker; this presupposes yes and demands item proof, as the Owner's direct question does.
+Run this procedure at every delivered heartbeat wake. Use the project adapter's configured discovery and
+checker commands where available; command substitutions change invocation only. The categories and decisions
+below remain required for every project.
 
-     `deferred`'s `<input>` is the artifact this very item consumes, never a borrowed trigger; the same input deferred two consecutive wakes becomes `dispatched` or `blocked ←`. Split composite items: a part with inputs on hand is its own `dispatched` row. `empty` names its query (`git log <last-reviewed>..origin/main` for 2; deployed SHA vs branch tip for 10; `git worktree list` for 9). "Checked worker logs/branch tips" is no evidence. "Nothing to dispatch" without all 10 rows = FAIL.
-   - **Ledger checker before ending the tick:** `node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs <ledger> --latest`; clear every red row (heading, `sources:`, ten rows once each, allowed states, `empty`/`done` with a backticked command or SHA, `blocked ←` naming a first-step resource, strict `deferred ←`, no repeated deferred input, no freeze without expiry). Never rewrite old wake sections; an unwired checker is category 5.
-   - **A shared-branch landing auto-opens two rows** next wake: category 2 (review of that range) and category 10 (drift of the affected stage).
-   - **Item registry:** one `## Items` table (`id | source | item | status | evidence`) in the session file, updated every wake; append rows inside the table (rows outside are `item-outside-table`). Status is exactly `ready` / `dispatched <agent-or-unit>` / `done` (evidence in the evidence column) / `blocked ← <exclusive resource>` / `owner ← <hard category: irreversible / security boundary / significant cost / owner decision> + <standing authorization checked and why it does not cover this item>` (a covering authorization makes it `ready`/`dispatched`). Source is `memory:`/`handoff:`/`report:`/`landing:`/`owner:`/`sweep:`/`audit:`/`goal:` + ref. Ingest a worker's final report the turn it arrives (each follow-up/not-done is a row) and every memory/handoff open-item list at start, resume or compaction. **End every wake with zero `ready` rows.**
-   - **Replay counter:** each full-chain publish/deploy/migration dispatch item carries `replays:<unit>=<N>` (stable slug), +1 per re-dispatch, never reset; N ≥3 fails without a done/dispatched `audit:<unit>` (or `report:<itemId>` root-cause audit), as does any decrease.
-   - **Registry checker every wake:** `node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs <ledger> --items` (ready count, stray/duplicate rows, `owner ←` proof, `done` evidence, replays, stale/landing-stage `blocked ←`, freezes).
+## Sweep
+
+Read and reconcile each of these ten sources, recording what was actually checked in the wake's `sources:`
+line:
+
+1. **Dispatches and worker health**: accepted receipts, active sessions/processes, terminal reports, and
+   reports that have not been ingested. Acceptance is not execution. Mark active/final/landed only with
+   separate evidence.
+2. **Landings and handoffs**: project-relevant merge, push, or delivery evidence and any outstanding handoff.
+3. **Worker reports**: every result or interim update since the last wake.
+4. **Direction and drift**: the project's declared work matrix, or identify what remains unchecked.
+5. **Current memory and resume context**: read on initial resume; thereafter record meaningful changes and
+   unresolved handoff context.
+6. **External backlog**: read the configured source and timestamp the read. If unavailable, record a specific
+   blocker and an `owner` item for the missing access/decision.
+7. **Worker health**: current evidence from host tools and expected duration; do not infer live activity from
+   a row marked dispatched.
+8. **Registry integrity**: every task discovered by sweep belongs in `## Items`; resolve missing, duplicate,
+   stale, or malformed rows.
+9. **Independent work**: inspect each non-done Item for concrete, separable next actions and exact file
+   ownership. Identify blockers that prevent only one unit versus the whole objective.
+10. **Completion and boundaries**: verify reported completion against its terminal evidence and note relevant
+    authorization boundaries; the heartbeat never supplies authorization.
+
+Use the configured sweeper/checker as evidence, then reconcile its output manually into the registry. A probe
+that is absent or unavailable is recorded as unchecked or blocked; it is not silently treated as complete.
+
+## Re-split and dispatch
+
+For every current non-done Item, record a row in `### Decomposition` with its id, concrete next action,
+disposition (`dispatched`, `continuing`, `blocked`, `owner`, or `done`), owner, and evidence. There is no
+`ready` disposition at the end of a wake. Split each free independent unit and dispatch it during this wake
+when capacity exists. Use one clear owner per unit, name repository and worktree, and provide an exact JSON
+array of relative file paths for the write set. Re-split after a worker goes stale, reports a blocker, or its
+remaining work no longer matches the accepted task.
+
+Every dispatch gets an accepted receipt path in `dispatch_ref`. Validate that receipt has `tool`,
+`event: "accepted"`, the owner-matching `agent_id`, and a returned task/session identifier that matches that
+owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
+active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
+
+At the end of the decomposition section write `require re-split: rows(...)` and `splittable: D/P`. If no
+additional split is needed, still write `require re-split: rows()` and `splittable: 0/0`. State the counting
+scope so the numerator and denominator are reproducible. Every blocker must name the concrete unavailable
+resource, decision, or dependency and its owner. Never use subjective completion percentages.
+
+## Check and preserve
+
+Append the new heartbeat section and run the configured strict latest checker. The latest section must carry
+`contract: heartbeat/v2`, all ten source categories, the Decomposition table and terminal split markers, plus
+the current Items metadata. A failed check is not current certification: fix the new section and check again.
+Legacy wake sections may remain readable for history, but cannot certify the current v2 format. Preserve all
+prior wake bytes and append only.
+
+The audit is advisory. Report stale, blocked, unlanded, or inconsistent work with evidence. Do not kill or
+restart workers, perform finishes or merges, archive sessions, clean branches/worktrees, or delete anything
+under this shared policy. Any action must come from separately applicable project instructions and current
+authorization.

@@ -107,16 +107,19 @@ export function parseWakes(text) {
   const wakes = [];
   for (let i = 0; i < lines.length; i += 1) {
     if (!WAKE_HEADING_RE.test(lines[i])) continue;
-    const wake = { heading: lines[i].trim(), line: i + 1, headingOk: HEADING_TIME_RE.test(lines[i]), sources: false, sourcesLine: null, rows: [] };
+    const wake = { heading: lines[i].trim(), line: i + 1, lineNumber: i + 1, headingLine: i + 1, layout: { count: 10, reviewRow: 2, driftRow: 10, goalRow: 1 }, headingOk: HEADING_TIME_RE.test(lines[i]), sources: false, sourcesLine: null, rows: [] };
     wake.sectionLines = [];
-    for (let j = i + 1; j < lines.length && !SECTION_END_RE.test(lines[j]); j += 1) {
+    const headingLevel = (lines[i].match(/^#+/)?.[0] ?? '##').length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const nextHeadingLevel = lines[j].match(/^(#+)\s/)?.[1].length;
+      if ((nextHeadingLevel && nextHeadingLevel <= headingLevel) || /^-{3,}\s*$/.test(lines[j])) break;
       wake.sectionLines.push(lines[j]);
       if (SOURCES_RE.test(lines[j]) && !wake.sourcesLine) {
         wake.sources = true;
         wake.sourcesLine = lines[j].trim();
       }
       const row = lines[j].match(ROW_RE);
-      if (row) wake.rows.push({ num: Number(row[1]), category: row[2].trim(), state: row[3].trim(), line: j + 1 });
+      if (row) wake.rows.push({ num: Number(row[1]), category: row[2].trim(), state: row[3].trim(), line: j + 1, lineNumber: j + 1 });
     }
     wake.timeMs = parseIsoMs(lines[i].match(HEADING_ISO_RE)?.[0]);
     wakes.push(wake);
@@ -151,7 +154,7 @@ function deferredInputs(wake) {
   return inputs;
 }
 
-export function checkLedger(text, { latest = false, now = new Date() } = {}) {
+export function checkLedger(text, { latest = false, now = new Date(), requireAudit = false } = {}) {
   const blockedStreaks = createBlockedStreakTracker();
   const wakes = parseWakes(text);
   const findings = [];
@@ -231,7 +234,7 @@ export function checkLedger(text, { latest = false, now = new Date() } = {}) {
     if (latest && graded) {
       const itemRows = parseItems(text).rows.map((row) => ({ id: row.id, status: row.status }));
       const cells = stateCells(wake, () => {});
-      for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows })) findings.push(finding);
+      for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit })) findings.push(finding);
     }
   }
   return findings;
@@ -259,25 +262,70 @@ export function parseItems(text) {
   const lines = text.split('\n');
   const rows = [];
   let found = false;
+  let headers = [];
   for (let i = 0; i < lines.length; i += 1) {
     if (!ITEMS_HEADING_RE.test(lines[i])) continue;
     found = true;
-    let j = i + 1;
-    while (j < lines.length && lines[j].trim() === '') j += 1;
-    j += 2; // header row + separator row
-    for (; j < lines.length && /^\|.*\|\s*$/.test(lines[j].trim()); j += 1) {
-      const [id = '', source = '', item = '', status = '', ...evidence] = lines[j].trim().slice(1, -1).split('|').map((c) => c.trim());
-      rows.push({ id, source, item, status, evidence: evidence.join(' | '), line: j + 1 });
+    let headerIndex = i + 1;
+    while (headerIndex < lines.length && lines[headerIndex].trim() === '') headerIndex += 1;
+    if (headerIndex >= lines.length || !/^\|.*\|\s*$/.test(lines[headerIndex].trim())) continue;
+    headers = lines[headerIndex].trim().slice(1, -1).split('|').map((c) => c.trim().toLowerCase().replace(/[ -]+/g, '_'));
+    const separator = lines[headerIndex + 1]?.trim() ?? '';
+    if (!/^\|\s*:?-{2,}/.test(separator)) continue;
+    for (let j = headerIndex + 2; j < lines.length && /^\|.*\|\s*$/.test(lines[j].trim()); j += 1) {
+      const values = lines[j].trim().slice(1, -1).split('|').map((c) => c.trim());
+      const parsed = Object.fromEntries(headers.map((key, index) => [key, values[index] ?? '']));
+      // Keep the public legacy fields even when optional columns are absent; retain all other
+      // named fields so v2 columns are available to downstream generic checks.
+      rows.push({ id: parsed.id ?? '', source: parsed.source ?? '', item: parsed.item ?? '', status: parsed.status ?? '', evidence: parsed.evidence ?? '', owner: parsed.owner ?? '', repository: parsed.repository ?? '', worktree: parsed.worktree ?? '', mode: parsed.mode ?? '', write_set: parsed.write_set ?? '', dispatch_ref: parsed.dispatch_ref ?? '', ...parsed, line: j + 1 });
     }
   }
-  return { found, rows };
+  return { found, headers, rows };
+}
+
+// Compatibility surface for project adapters that previously owned a separate item-table parser.
+// The shared parseItems implementation is the single source of truth; this wrapper only adds the
+// table context shape those adapters consumed.
+export function parseItemTables(text) {
+  const parsed = parseItems(text);
+  if (!parsed.found) return [];
+  const headingLine = text.split('\n').findIndex((line) => ITEMS_HEADING_RE.test(line)) + 1;
+  const table = {
+    heading: '## Items',
+    lineNumber: headingLine,
+    headers: parsed.headers,
+    rows: parsed.rows.map((row) => ({ ...row, lineNumber: row.line })),
+  };
+  return [table];
+}
+
+export function classifyItemState(stateText) { return itemKind(stateText); }
+
+export function ownerColumnIndex(headerCells) { return headerCells.findIndex((cell, index) => index >= 4 && /^owner$/i.test(String(cell).trim())); }
+export function ownerOf(row) {
+  const column = String(row.owner ?? '').trim();
+  if (column && column !== '-') return column;
+  return String(row.evidence ?? '').match(/\bowner\s*:\s*([^;|]+)/i)?.[1].trim() ?? '';
+}
+export function hasWorktreeOrSessionRef(text) {
+  return /(?:^|[\s(@=:`])[A-Za-z0-9._/-]*worktrees\/[A-Za-z0-9._/-]+|\b(?:claude|codex)\/[A-Za-z0-9._-]+|\b(?:session|agent)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9._-]*/i.test(String(text ?? ''));
+}
+export function ownerFindings(tables, classify = classifyItemState) {
+  const findings = [];
+  for (const table of tables) for (const row of table.rows ?? []) {
+    if (classify(String(row.status ?? '').trim()) !== 'dispatched') continue;
+    if (hasWorktreeOrSessionRef(`${ownerOf(row)} ${row.status ?? ''} ${row.evidence ?? ''}`)) continue;
+    findings.push({ severity: 'error', rule: 'item-dispatched-no-owner', message: `${table.heading ?? '## Items'} row id=${row.id || '(missing)'} (line ${row.lineNumber ?? row.line}): dispatched row names no worktree or session` });
+  }
+  return findings;
 }
 
 // A registry row (its second cell is a recognised source) that sits outside the `## Items` table:
 // invisible to `--items` parsing, so it is reported instead of silently lost. Wake-ledger rows
 // (`| 3 | category | state |`) never carry a source in their second cell, so they cannot match.
 export function findStrayItemRows(text, rows = parseItems(text).rows) {
-  const inTable = new Set(rows.map((row) => row.line));
+  const normalizedRows = Array.isArray(rows) && rows.some((entry) => Array.isArray(entry.rows)) ? rows.flatMap((entry) => entry.rows) : rows;
+  const inTable = new Set(normalizedRows.map((row) => row.line ?? row.lineNumber));
   const stray = [];
   text.split('\n').forEach((raw, index) => {
     const line = raw.trim();
@@ -289,6 +337,7 @@ export function findStrayItemRows(text, rows = parseItems(text).rows) {
 }
 
 export function findDuplicateItemIds(rows) {
+  if (Array.isArray(rows) && rows.some((entry) => Array.isArray(entry.rows))) rows = rows.flatMap((entry) => entry.rows);
   const first = new Map();
   const duplicates = [];
   for (const row of rows) {
@@ -377,11 +426,11 @@ function hasAudit(rows, unit, itemId) {
 
 // ---- CLI --------------------------------------------------------------------------------------
 
-function main() {
+async function main() {
   const args = process.argv.slice(2).filter((arg) => arg !== '--');
   const flags = new Set(args.filter((arg) => arg.startsWith('--')));
   const target = args.find((arg, i) => !arg.startsWith('--') && args[i - 1] !== '--now');
-  const known = new Set(['--latest', '--items']);
+  const known = new Set(['--latest', '--items', '--legacy', '--json']);
   const nowAt = args.indexOf('--now');
   const nowText = nowAt >= 0 ? args[nowAt + 1] : null;
   const now = nowText ? new Date(nowText) : new Date();
@@ -393,8 +442,8 @@ function main() {
       return;
     }
   }
-  if (!target || [...flags].some((flag) => !known.has(flag)) || (flags.has('--latest') && flags.has('--items'))) {
-    process.stderr.write('usage: check-heartbeat-ledger.mjs <ledger> [--latest | --items]\n');
+  if (!target || [...flags].some((flag) => !known.has(flag)) || (flags.has('--latest') && flags.has('--items')) || (flags.has('--legacy') && (!flags.has('--latest') || flags.has('--items')))) {
+    process.stderr.write('usage: check-heartbeat-ledger.mjs <ledger> [--latest [--legacy] | --items] [--json] [--now <ISO>]\n');
     exitDrained(2);
     return;
   }
@@ -406,14 +455,32 @@ function main() {
     exitDrained(2);
     return;
   }
-  const findings = flags.has('--items') ? checkItems(text, { now }) : checkLedger(text, { latest: flags.has('--latest'), now });
-  if (findings.length === 0) {
+  const ledgerPath = resolve(process.cwd(), target);
+  let findings;
+  if (flags.has('--items')) findings = checkItems(text, { now });
+  else if (flags.has('--latest') && !flags.has('--legacy')) {
+    const { checkHeartbeatV2 } = await import('./heartbeat-ledger-v2.mjs');
+    findings = checkHeartbeatV2(text, { now, ledgerPath });
+  } else findings = checkLedger(text, { latest: flags.has('--latest'), now });
+  if (flags.has('--legacy')) findings.push({ severity: 'advisory', rule: 'legacy-read-only', message: 'legacy latest mode is historical inspection only and cannot certify the current heartbeat/v2 audit' });
+  const failed = findings.some((finding) => finding.severity !== 'advisory') || flags.has('--legacy');
+  if (flags.has('--json')) {
+    const itemsMode = flags.has('--items');
+    const payload = itemsMode
+      ? { path: target, mode: 'items', tableCount: parseItemTables(text).length, findings }
+      : { path: target, mode: 'wakes', wakeCount: parseWakes(text).length, latest: flags.has('--latest'), findings, ...(flags.has('--legacy') ? { certifiesCurrent: false } : {}) };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    exitDrained(failed ? 1 : 0);
+    return;
+  }
+  if (!failed) {
+    for (const finding of findings) process.stdout.write(`ADVISORY [${finding.rule}] ${finding.message}\n`);
     process.stdout.write(`check-heartbeat-ledger: OK ${target}\n`);
     exitDrained(0);
     return;
   }
-  for (const finding of findings) process.stdout.write(`RED [${finding.rule}] ${finding.message}\n`);
-  exitDrained(1);
+  for (const finding of findings) process.stdout.write(`${finding.severity === 'advisory' ? 'ADVISORY' : 'RED'} [${finding.rule}] ${finding.message}\n`);
+  exitDrained(failed ? 1 : 0);
 }
 
 if (isMainModule(import.meta.url)) main();

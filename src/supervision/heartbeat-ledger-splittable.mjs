@@ -83,9 +83,9 @@ export function openRows({ cells = [], itemRows = [] }) {
  * Findings for the newest wake. `sectionLines` are the wake section's lines (heading excluded), `cells`
  * [{key, state}] its table cells (keys `1a`, `1b`, `2`..`10`), `itemRows` the registry [{id, status}].
  */
-export function checkSplittable({ loc, sectionLines, cells, itemRows }) {
+export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAudit = false }) {
   const open = openRows({ cells, itemRows });
-  if (open.length === 0) return [];
+  if (open.length === 0 && !requireAudit) return [];
   const findings = [];
   const line = sectionLines.find((l) => /^\s*re-split:/i.test(l));
   const group = line ? groupOf(line, 'rows') : null;
