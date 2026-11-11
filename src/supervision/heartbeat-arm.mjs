@@ -3,7 +3,7 @@
 //
 // Run it through your AI tool's background shell facility (Claude Code: Bash with
 // `run_in_background: true`). It sleeps for the interval, prints the audit checklist, and exits;
-// that completion notification is what wakes the orchestrating session. One-shot: every wake
+// that completion notification is the delivered wake. One-shot: every wake
 // re-arms the next timer FIRST, then audits, so an interrupted audit cannot break the chain.
 //
 // Why a script instead of a hand-typed `sleep 1200; echo HEARTBEAT`: a hand-typed timer carries no
@@ -64,6 +64,7 @@ export const SOURCES_TEMPLATE =
 
 export const DEFAULT_COMMANDS = Object.freeze({
   arm: 'node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --ledger {ledger}{interval}',
+  due: 'node .vibe-coding/kit/src/supervision/heartbeat-audit-due-cli.mjs {ledger} --minutes {minutes} --json',
   check: 'node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs {ledger} --latest',
   sweep: 'node .vibe-coding/kit/src/supervision/heartbeat-sweep.mjs --ledger {ledger}',
   inflight: 'node .vibe-coding/kit/cli.mjs worktree status --stale',
@@ -193,7 +194,7 @@ export const STATE_LEGEND = [
   '  AND an `owner ←` item naming the blocker in the Items table.',
   '  In Decomposition, include every current non-done Item with its concrete next step and disposition dispatched|continuing|blocked|owner|done.',
   '  Every accepted dispatch is only an accepted request; record later active/final/landed evidence separately. Never infer execution from acceptance.',
-  '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. If there are no Items to split, use rows() and 0/0.',
+  '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. P counts every valid assessed row, including dispatched rows; D counts new dispatches. If no Items are assessed, use rows() and 0/0.',
   '  Add one Decomposition data row per current non-done Item; the emitted table is intentionally empty until populated. Do not leave ready items.',
 ];
 
@@ -287,6 +288,8 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
     `Chat: ONE line only -- \`${STATUS_LINE_FORMAT}\`; report actual counts supported by current evidence, never subjective percentages or invented numbers. Expand only on an anomaly.`,
     'The next re-arm is refused if this wake writes no ledger block.',
     'Between timer wakes: a worker interim notification (background work still running, no terminal result) gets an EMPTY reply.',
+    `Without a delivered timer: on every meaningful human request, resume, private final, landing, or newly surfaced blocker, run ${command(commands, 'due', ledger, seconds)}. If JSON says due=true, re-arm if available and finish this full audit before unrelated next-batch work; otherwise handle the event normally. No event means no guaranteed wall-clock wake; this probe schedules nothing.`,
+    'For v2 splittable D/P, P counts every valid row assessed (including dispatched and not newly split rows); D counts new dispatches. State row ids and evidence. Preserve older wake denominators unchanged.',
   ].join('\n');
 }
 

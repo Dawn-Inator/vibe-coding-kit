@@ -15,7 +15,8 @@
 //   cannot-split: <tagged proof>        needs-landed: production effect | branch-unstable: <branch>
 //                                       rewritten in the last 60 min | owner-gated | same-file
 //                                       conflict: <path>
-// and the section carries `splittable: <dispatched-this-wake>/<rows-with-proof>` matching the verdicts.
+// and the section carries `splittable: <dispatched-this-wake>/<assessed-rows>` matching the verdicts.
+// Historical ledgers retain the original denominator: rows with a tagged cannot-split proof.
 // A bare `none — <reason>` in prep-ahead(...) / audit(...) is rejected while any open row lacks a
 // `split->dispatched` / valid `cannot-split` verdict. Pure helpers, byte-identical in the starter kit
 // and in the consuming project.
@@ -93,6 +94,17 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   const byId = new Map(verdicts.filter((v) => v.id).map((v) => [v.id, v]));
   const labels = (rows) => rows.map((r) => r.label).join(', ');
 
+  if (requireAudit) {
+    const seenIds = new Set();
+    for (const verdict of verdicts) {
+      if (!verdict.id) continue;
+      if (seenIds.has(verdict.id)) {
+        findings.push(err('resplit-row-duplicate', `${loc}: rows(...) contains more than one verdict for ${verdict.id}; each assessed row must appear once`));
+      }
+      seenIds.add(verdict.id);
+    }
+  }
+
   if (group === null) {
     findings.push(err('resplit-rows-missing', `${loc}: ${open.length} row(s) are blocked/deferred (${labels(open)}); the default answer to "can it be split?" is yes, so the wake's "re-split:" line must carry rows(<id>: split->dispatched <unit> | <id>: cannot-split: <tagged proof>; ...) for every one — proofs: ${PROOF_TAG_HELP}`));
   } else {
@@ -115,13 +127,23 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
     }
   }
 
-  const dispatched = verdicts.filter((v) => v.verdict === 'dispatched').length;
+  const uniqueValidVerdicts = requireAudit
+    ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split'].includes(v.verdict))
+    : null;
+  const dispatched = requireAudit
+    ? uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').length
+    : verdicts.filter((v) => v.verdict === 'dispatched').length;
   const withProof = verdicts.filter((v) => v.verdict === 'cannot-split').length;
+  const assessed = requireAudit
+    ? uniqueValidVerdicts.length
+    : withProof;
   const token = sectionLines.join('\n').match(TOKEN_RE);
   if (!token) {
-    findings.push(err('splittable-missing', `${loc}: add "splittable: <dispatched-this-wake>/<blocked-rows-with-proof>" (here ${dispatched}/${withProof}) to the wake and to the chat status line`));
-  } else if (group !== null && (Number(token[1]) !== dispatched || Number(token[2]) !== withProof)) {
-    findings.push(err('splittable-mismatch', `${loc}: "splittable: ${token[1]}/${token[2]}" does not match the rows(...) verdicts (${dispatched} dispatched / ${withProof} with proof)`));
+    const denominator = requireAudit ? 'assessed-rows' : 'rows-with-proof';
+    findings.push(err('splittable-missing', `${loc}: add "splittable: <dispatched-this-wake>/${denominator}" (here ${dispatched}/${assessed}) to the wake and to the chat status line`));
+  } else if (group !== null && (Number(token[1]) !== dispatched || Number(token[2]) !== assessed)) {
+    const denominator = requireAudit ? 'assessed' : 'with proof';
+    findings.push(err('splittable-mismatch', `${loc}: "splittable: ${token[1]}/${token[2]}" does not match the rows(...) verdicts (${dispatched} dispatched / ${assessed} ${denominator})`));
   }
   return findings;
 }

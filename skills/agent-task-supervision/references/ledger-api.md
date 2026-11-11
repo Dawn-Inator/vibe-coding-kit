@@ -11,6 +11,18 @@ Older 8/10 wake records remain readable for historical inspection. Reading one s
 a current audit. Do not migrate or rewrite old wake sections merely to satisfy current certification; only
 active Items and the first newly appended wake use the current contract.
 
+On adoption or resume, reconcile every active Item individually against its raw accepted dispatch, private
+final report, and landing evidence. Record transitions that cannot be established as `unknown`; blank owner
+metadata in legacy rows is not completion evidence. Never bulk-mark historical dispatched rows done, expand
+their accepted scope, or reclassify ordinary delegable work as an owner-domain decision. Keep actual status
+(accepted, active, final, landed, blocked) separate from acceptance criteria.
+
+In v2, `splittable: D/P` uses all valid rows assessed for `P`, including rows already dispatched and rows not
+newly split; `D` is new dispatches. Keep the older denominator semantics only in preserved historical wakes.
+Do not rewrite historical denominators. If the latest current audit is red, append a corrective audit and
+claim certification only when the normalized report has `certifiesCurrent: true`. A red audit does not block
+separately authorized business work or ending the session.
+
 ## One normalized report
 
 Consumers that need a report should call the canonical Kit API:
@@ -43,6 +55,32 @@ exports. New Kit consumers should use `inspectHeartbeatLedger`; do not build a l
 checker wrapper, or duplicate policy guard. A consuming project should provide a thin adapter that re-exports
 the canonical API and any native helpers it needs. This keeps one report schema and one source of current
 format validation.
+
+## Audit due probe
+
+For event-anchored cadence checks, use the read-only helper from the canonical API:
+
+```js
+import { heartbeatAuditDue } from './src/supervision/heartbeat-ledger-api.mjs';
+
+const result = heartbeatAuditDue(markdown, {
+  now: new Date(),
+  intervalMinutes: 20,
+});
+```
+
+The normalized result includes `due`, `lastAuditAt`, `nextDueAt`, `reason`, `intervalMinutes`, and
+`schemaVersion`; `line` identifies the source wake when available. The CLI is:
+
+```sh
+node .vibe-coding/kit/src/supervision/heartbeat-audit-due-cli.mjs <ledger> [--minutes 20 --json]
+```
+
+Use `--json` and its `due` field; both valid `due: true` and `due: false` results exit zero. Invalid arguments,
+invalid values, or unreadable ledgers exit nonzero. `--now <ISO>` is available for deterministic inspection.
+The latest complete ten-row wake sets cadence even if its v2 audit is red; this records an audit attempt and
+does not certify the ledger. A newer partial wake does not reset cadence. The probe schedules nothing and
+grants no timer, hook, or other wake capability.
 
 ## CLI modes
 

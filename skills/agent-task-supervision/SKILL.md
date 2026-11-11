@@ -29,20 +29,28 @@ not grant permission for restricted actions.
 
 ## Wake mechanism
 
-Use the host's supported periodic/scheduled capability at a default 20-minute cadence. First send a short
-delivery probe (1–3 minutes), yield, and trust the mechanism only after the probe arrives. If it does not arrive
-within about twice its delay, remove that probe, record the failure, and try an available fallback. If no timer
-delivers, use event-anchored self-checks at least one interval apart. The configured adapter may provide
-project-specific command strings for `arm`, `check`, `sweep`, `inflight`, and `branches`; it must not alter
-these audit obligations. The Kit arm template accepts a `--commands '<JSON object>'` option for those keys;
-values are command strings and can use `{ledger}`, `{minutes}`, or `{interval}` placeholders. A project may
-replace invocation strings, but cannot remove or weaken a shared audit step.
+Use a host-supported periodic capability at a default 20-minute cadence. Send a short delivery probe (1–3
+minutes), yield, and trust it only after the probe arrives. If it fails, record that and use meaningful events
+as the fallback; do not claim a timer, daemon, hook, or app automation will wake the session unless one
+actually delivered. No event means no guaranteed wall-clock wake.
 
-At every delivered timer wake, re-arm first, then audit. The timer firing is a wake and must lead to a fresh
-audit. Other turns and notifications are handled for their event: ingest a worker result, landing, or blocker
-and run relevant discovery immediately; otherwise respond normally without pretending a full heartbeat ran.
-A worker's interim notification that it is still running needs no substantive reply. A separate one-shot waiter
-does not replace or swallow the recurring heartbeat.
+When no timer delivered, run the read-only Kit due probe on every meaningful human request, resume, private
+worker final, landing, or newly surfaced blocker. The first such event at or after 20 minutes from the last
+full audit is due: re-arm if a timer is available, then run a full audit before starting unrelated next-batch
+work. Earlier events get their normal event handling and do not count as a full audit. Do not wait for another
+event once an event is due. Interim worker notifications are not meaningful events unless they surface a
+blocker or new evidence. The CLI probe is `node .vibe-coding/kit/src/supervision/heartbeat-audit-due-cli.mjs
+<ledger> [--minutes 20 --json]`; its JSON `due` field is authoritative. It schedules nothing and grants no
+hook or wake capability.
+
+The configured adapter may provide project-specific command strings for `arm`, `due`, `check`, `sweep`,
+`inflight`, and `branches`; invocation overrides must not alter audit obligations. The Kit arm template accepts
+`--commands '<JSON object>'`; values can use `{ledger}`, `{minutes}`, or `{interval}` placeholders.
+
+At every delivered timer wake, re-arm first, then audit. The timer firing leads to a fresh audit. On other turns,
+handle the event and run relevant discovery; if the due probe says a meaningful event is due, complete the full
+audit before unrelated next-batch work. Do not describe event handling as a full audit unless the full checklist
+and ledger append were completed. A separate one-shot waiter does not replace or swallow the recurring heartbeat.
 
 ## Required audit
 
@@ -64,7 +72,9 @@ At every timer wake, the orchestrator itself must:
    worktree, mode, and exact relative file write set. Re-split idle, stale, or newly blocked work when its
    current decomposition no longer holds.
 5. Check direction against known project signals and record the evidence. An unsubstantiated impression is
-   not a signal.
+   not a signal. On initial resume or a Kit upgrade, read the skill from the session's actual pinned managed
+   tree. Distinguish installed, projected/generated, and actually read copies; a stale primary projection is
+   not evidence of the active policy.
 6. Record actual countable progress and blockers. Do not use subjective percentages. A ratio is acceptable
    only when both counts and the counted scope are stated.
 
@@ -86,14 +96,24 @@ with its own evidence. The orchestrator must provide the same receipt for its ow
 
 Every new wake includes a `### Decomposition` table with columns `item | next_step | disposition | owner |
 evidence`. List every current non-done Item. Allowed dispositions are `dispatched`, `continuing`, `blocked`,
-`owner`, and `done`; there is no `ready` disposition at the end of an audit. End with `re-split: rows()`
-and `splittable: 0/0`, including when no blockers remain. Add the current row details to `rows(...)` as needed;
-do not leave an unassessed item implicit. `splittable: D/P` is a count of newly dispatched independent units
-over rows assessed for splitting, with the denominator and evidence defined in that wake.
+`owner`, and `done`; there is no `ready` disposition at the end of an audit. If there are no Items to assess,
+end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
+do not leave an unassessed item implicit. `splittable: D/P` is newly dispatched independent units over **all
+valid rows assessed in this v2 wake**, including rows already dispatched or not newly split. State assessed row
+ids and evidence. Historical wake denominators retain their old meaning; do not rewrite them or apply that old
+denominator rule to v2.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
 the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
 and Items inventory are useful read modes, but neither can certify a current v2 audit.
+
+For adoption or resume, reconcile each active Item against its original request/dispatch, private final, and
+landing evidence. Use `known` or `unknown` explicitly for missing transitions; blank historical owner metadata
+is unknown, not proof of completion. Do not bulk-mark dispatched rows done, relabel routine delegable work as
+an owner decision, or broaden a dispatched unit beyond its accepted scope. Actual status (accepted, active,
+final, landed, blocked) is separate from acceptance criteria. Preserve every old wake byte. If a new audit is
+red, append a corrective audit and claim current certification only when the checker returns
+`certifiesCurrent: true`; a red audit never blocks separately authorized business work or session finish.
 
 ## Reporting and end of session
 

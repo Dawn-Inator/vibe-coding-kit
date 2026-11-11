@@ -3,6 +3,7 @@
 import { checkItems, checkLedger, findStrayItemRows, ownerFindings, parseItemTables, parseItems, parseWakes } from './check-heartbeat-ledger.mjs';
 import { checkHeartbeatV2 } from './heartbeat-ledger-v2.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
+export { heartbeatAuditDue } from './heartbeat-audit-due.mjs';
 
 const MODES = new Set(['current', 'history', 'items']);
 

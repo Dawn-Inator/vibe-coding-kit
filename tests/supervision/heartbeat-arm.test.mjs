@@ -29,6 +29,7 @@ after(cleanupTempDirs);
 delete process.env.HEARTBEAT_LEDGER_RE; // keep the in-process parseArgs tests hermetic
 
 const CHECKER = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/check-heartbeat-ledger.mjs');
+const DUE_CLI = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/heartbeat-audit-due-cli.mjs');
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '../../src/supervision/heartbeat-arm.mjs');
 const LEDGER_REL = '.workspace/2026-01-01-demo/heartbeat.md';
 
@@ -63,14 +64,26 @@ test('parseArgs: a real heartbeat needs a ledger that matches the pattern; the p
 });
 
 test('project command mappings flow into the checklist and re-arm command', () => {
-  const commands = { ...DEFAULT_COMMANDS, check: 'pnpm project:heartbeat-check -- {ledger} --latest', sweep: 'pnpm project:heartbeat-sweep -- {ledger}' };
-  const args = parseArgs(['--ledger', LEDGER_REL, '--commands', JSON.stringify({ check: commands.check, sweep: commands.sweep })]);
+  const commands = { ...DEFAULT_COMMANDS, check: 'pnpm project:heartbeat-check -- {ledger} --latest', sweep: 'pnpm project:heartbeat-sweep -- {ledger}', due: 'pnpm project:heartbeat-due -- {ledger} --minutes {minutes} --json' };
+  const args = parseArgs(['--ledger', LEDGER_REL, '--commands', JSON.stringify({ check: commands.check, sweep: commands.sweep, due: commands.due })]);
   assert.deepEqual(args.commands, commands);
   const message = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: WAKE_NOW, commands: args.commands });
   assert.match(message, /pnpm project:heartbeat-check -- \.workspace\/2026-01-01-demo\/heartbeat\.md --latest/);
   assert.match(message, /pnpm project:heartbeat-sweep -- \.workspace\/2026-01-01-demo\/heartbeat\.md/);
+  assert.match(message, /pnpm project:heartbeat-due -- \.workspace\/2026-01-01-demo\/heartbeat\.md --minutes 20 --json/);
   assert.match(message, /node \.vibe-coding\/kit\/src\/supervision\/heartbeat-arm\.mjs --ledger \.workspace\/2026-01-01-demo\/heartbeat\.md/);
   assert.match(message, /--commands/);
+});
+
+test('event fallback names the canonical due CLI and makes the first eligible event an audit wake', () => {
+  const skill = readSkillText('agent-task-supervision').replace(/\s+/g, ' ').toLowerCase();
+  assert.match(skill, /heartbeat-audit-due-cli\.mjs\s+<ledger>\s+\[--minutes 20 --json\]/);
+  assert.match(skill, /first such event at or after 20 minutes from the last\s+full audit is due/i);
+  for (const event of ['human request', 'resume', 'private worker final', 'landing', 'newly surfaced blocker']) {
+    assert.ok(skill.includes(event), `event fallback is missing ${event}`);
+  }
+  assert.match(skill, /No event means no guaranteed wall-clock wake/i);
+  assert.match(skill, /its JSON `due` field is authoritative/i);
 });
 
 test('HEARTBEAT_LEDGER_RE overrides the ledger path pattern', () => {
@@ -103,10 +116,28 @@ test('formatWakeMessage: re-arm first, one countable chat line, shared Node defa
   assert.ok(text.includes(`node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs ${LEDGER_REL} --latest`));
   assert.ok(text.includes('node .vibe-coding/kit/cli.mjs worktree status --stale'));
   assert.ok(!text.includes('worktree:'));
+  assert.match(text, /heartbeat-audit-due-cli\.mjs \.workspace\/2026-01-01-demo\/heartbeat\.md --minutes 20 --json/);
+  assert.match(text, /Without a delivered timer: on every meaningful human request, resume, private final, landing, or newly surfaced blocker/);
+  assert.match(text, /If JSON says due=true, re-arm if available and finish this full audit before unrelated next-batch work/);
+  assert.match(text, /No event means no guaranteed wall-clock wake; this probe schedules nothing/);
+  assert.match(text, /P counts every valid row assessed \(including dispatched and not newly split rows\)/);
   assert.match(text, /active N · dispatched X · landed Y · splittable: D\/P/);
   assert.doesNotMatch(text, /\b\d+%/, 'the status line does not invent a subjective completion percentage');
   const probe = formatWakeMessage({ seconds: 75, probe: true, ledger: null, now });
   assert.match(probe, /^HEARTBEAT_PROBE delivered 10:20:05/);
+});
+
+test('the rendered due command invokes the real read-only CLI and returns JSON', () => {
+  const now = '2026-01-01T10:20:00.000Z';
+  const { cwd, ledger } = fixture();
+  const rows = CATEGORIES.map((name, index) => `| ${index + 1} | ${name} | done -- \`audit ${index + 1}\` |`).join('\n');
+  writeFileSync(ledger, `## 2026-01-01T10:00Z wake (10-row ledger)\n| # | category | state |\n| --- | --- | --- |\n${rows}\n`);
+  const message = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: new Date(now) });
+  const match = message.match(/run (node \.vibe-coding\/kit\/src\/supervision\/heartbeat-audit-due-cli\.mjs) (\S+) --minutes (\d+) --json/);
+  assert.ok(match, 'wake text must name an executable canonical CLI command');
+  const cli = spawnSync(process.execPath, [DUE_CLI, match[2], '--minutes', match[3], '--now', now, '--json'], { cwd, encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).due, true);
 });
 
 test('formatWakeMessage: the re-arm line keeps the armed interval and warns about the Bash background limit', () => {
@@ -224,7 +255,7 @@ function fillBlock(block, rowStates = {}) {
     .replace('(1a) <state>; (1b) <state>', '(1a) in-flight unit-a; (1b) empty -- `ls .todolist` = nothing free')
     .replace(/^\| (\d+) \| ([^|]+) \| <state> \|$/gm, (_, num, name) => `| ${num} | ${name} | ${states[num]} |`)
     .replace(/^\| <item id>[^\n]*\n?/m, '')
-    .replace('re-split: rows()\nsplittable: 0/0', 're-split: prep-ahead(dispatched P1) lessons(done) audit(dispatched A1) rows(r4: cannot-split: owner-gated; r5: split->dispatched reviewer-2)\nsplittable: 1/1');
+    .replace('re-split: rows()\nsplittable: 0/0', 're-split: prep-ahead(dispatched P1) lessons(done) audit(dispatched A1) rows(r4: cannot-split: owner-gated; r5: split->dispatched reviewer-2)\nsplittable: 1/2');
 }
 
 test('wake message: the printed block passes the real checker once every placeholder is filled', () => {

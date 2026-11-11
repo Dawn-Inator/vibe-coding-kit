@@ -169,6 +169,127 @@ test('every open Items row needs one matching decomposition and no ready disposi
   assert.ok(latestRules(mismatch.text, { ledgerPath: mismatch.ledgerPath }).length > 0, 'decomposition owner and disposition must match current item status/owner');
 });
 
+test('current v2 split counts include accepted independent dispatches and all assessed rows', () => {
+  const workers = [
+    { id: 'I1', owner: 'agent:worker-1', path: 'src/one.mjs' },
+    { id: 'I2', owner: 'agent:worker-2', path: 'src/two.mjs' },
+    { id: 'I3', owner: 'agent:worker-3', path: 'src/three.mjs' },
+  ];
+  const items = workers.map(({ id, owner, path }, index) => item({
+    id,
+    item: `implement unit ${index + 1}`,
+    owner,
+    worktree: `worktrees/${owner}`,
+    writeSet: JSON.stringify([path]),
+    dispatchRef: `receipts/${owner}.json`,
+  }));
+  const decompositionRows = workers.map(({ id, owner }) => `| ${id} | implement independent unit | dispatched | ${owner} | receipts/${owner}.json |`);
+  const receipts = Object.fromEntries(workers.map(({ owner }) => [`receipts/${owner}.json`, accepted(owner)]));
+  const splitRows = workers.map(({ id, owner }) => `${id}: split->dispatched ${owner}`).join('; ');
+
+  const good = fixture(v2({ items, decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${splitRows})\nsplittable: 3/3` }), receipts);
+  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'three accepted workers with disjoint exact file sets are three valid assessments');
+
+  const wrongDenominator = fixture(v2({ items, decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${splitRows})\nsplittable: 3/0` }), receipts);
+  assert.ok(latestRules(wrongDenominator.text, { ledgerPath: wrongDenominator.ledgerPath }).includes('splittable-mismatch'), 'a zero denominator cannot hide three current dispatch outcomes');
+});
+
+test('current v2 rejects duplicate split audit and count markers', () => {
+  const duplicateMarkers = fixture(v2({
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows()\nsplittable: 0/0\nre-split: rows()\nsplittable: 0/0',
+  }));
+  assert.ok(latestRules(duplicateMarkers.text, { ledgerPath: duplicateMarkers.ledgerPath }).length > 0, 'duplicate audit markers cannot be silently accepted by first-match parsing');
+});
+
+test('current v2 denominator includes a tagged cannot-split proof alongside a dispatch', () => {
+  const dispatch = item({
+    id: 'I1', owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
+    writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
+  });
+  const blocked = item({
+    id: 'I2', item: 'resolve owner-gated dependency', status: 'blocked <- owner-gated', owner: 'worker-2',
+    worktree: 'worktrees/worker-2', mode: 'read-only', writeSet: '[]', dispatchRef: '-',
+  });
+  const decompositionRows = [
+    '| I1 | implement independent unit | dispatched | agent:worker-1 | receipts/worker-1.json |',
+    '| I2 | wait for owner decision | blocked | worker-2 | owner-gated |',
+  ];
+  const mixedRows = 'I1: split->dispatched agent:worker-1; I2: cannot-split: owner-gated';
+  const good = fixture(v2({ items: [dispatch, blocked], decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${mixedRows})\nsplittable: 1/2` }), {
+    'receipts/worker-1.json': accepted('agent:worker-1'),
+  });
+  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'one dispatch and one tagged blocker are both assessed');
+
+  const wrong = fixture(v2({ items: [dispatch, blocked], decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${mixedRows})\nsplittable: 1/1` }), {
+    'receipts/worker-1.json': accepted('agent:worker-1'),
+  });
+  assert.ok(latestRules(wrong.text, { ledgerPath: wrong.ledgerPath }).includes('splittable-mismatch'), 'the denominator must include both valid outcomes');
+});
+
+test('v2 registry scope ignores auxiliary tables and rejects missing metadata on the real Items registry', () => {
+  const legacyItems = [
+    '## Items',
+    '| id | source | item | status | evidence |',
+    '| --- | --- | --- | --- | --- |',
+    '| I1 | report:worker-1 | implement feature | dispatched worker-1 | branch codex/worker-1 |',
+  ].join('\n');
+  const auxiliary = [
+    '### Auxiliary dispatch notes',
+    '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| I2 | report:worker-2 | auxiliary only | dispatched worker-2 | accepted | worker-2 | repo-a | worktrees/worker-2 | write | ["src/two.mjs"] | receipts/worker-2.json |',
+  ].join('\n');
+  const wakeOnlyText = v2({ extra: 're-split: rows()\nsplittable: 0/0' }).replace(`${ITEMS_HEADER}\n`, '');
+  const text = `${wakeOnlyText}${legacyItems}\n\n${auxiliary}\n`;
+  const candidate = fixture(text, { 'receipts/worker-2.json': accepted('worker-2') });
+  const findings = checkHeartbeatV2(candidate.text, { ledgerPath: candidate.ledgerPath });
+  assert.ok(findings.some((finding) => finding.rule === 'v2-item-column'), 'the actual dispatched row inside the single Items registry still requires v2 metadata');
+  assert.ok(!findings.some((finding) => finding.rule.startsWith('v2-') && /item I2/.test(finding.message)), 'an auxiliary table cannot supply or create a v2 registry row');
+  assert.ok(findings.some((finding) => finding.rule === 'item-outside-table'), 'the historical stray-row guard still reports the auxiliary row');
+});
+
+test('a corrective latest wake must cover every later non-done registry addition', () => {
+  const firstWake = v2({
+    wake: '2026-01-01T10:00Z',
+    items: [],
+    decompositionRows: [],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows()\nsplittable: 0/0',
+  });
+  const secondWake = v2({
+    wake: '2026-01-01T10:20Z',
+    items: [],
+    decompositionRows: ['| I1 | implement first unit | dispatched | agent:worker-1 | receipts/worker-1.json |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows()\nsplittable: 0/0',
+  });
+  const items = [
+    item({ id: 'I1', owner: 'agent:worker-1', worktree: 'worktrees/worker-1', writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json' }),
+    item({ id: 'I2', owner: 'agent:worker-2', worktree: 'worktrees/worker-2', writeSet: '["src/two.mjs"]', dispatchRef: 'receipts/worker-2.json' }),
+  ];
+  const receipts = { 'receipts/worker-1.json': accepted('agent:worker-1'), 'receipts/worker-2.json': accepted('agent:worker-2') };
+  const uncovered = fixture(withWakeHistory(firstWake, secondWake).replace(`${ITEMS_HEADER}\n`, `${ITEMS_HEADER}\n${items.join('\n')}\n`), receipts);
+  assert.ok(latestRules(uncovered.text, { ledgerPath: uncovered.ledgerPath }).includes('v2-decomposition-item-missing'), 'a later non-done item absent from the latest decomposition is uncovered');
+
+  const correctedWake = v2({
+    wake: '2026-01-01T10:40Z',
+    items: [],
+    decompositionRows: [
+      '| I1 | continue first unit | dispatched | agent:worker-1 | receipts/worker-1.json |',
+      '| I2 | implement second unit | dispatched | agent:worker-2 | receipts/worker-2.json |',
+    ],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows()\nsplittable: 0/0',
+  });
+  const corrected = fixture(withWakeHistory(firstWake, secondWake, correctedWake).replace(`${ITEMS_HEADER}\n`, `${ITEMS_HEADER}\n${items.join('\n')}\n`), receipts);
+  assert.deepEqual(latestRules(corrected.text, { ledgerPath: corrected.ledgerPath }), [], 'a new corrective wake covering both current items clears the gap');
+});
+
 test('a second Items registry cannot hide an otherwise omitted dispatched owner', () => {
   const hidden = item({ writeSet: '["src/hidden.mjs"]', dispatchRef: 'receipts/worker-1.json' });
   const candidate = fixture(`${v2()}\n${ITEMS_HEADER}\n${hidden}\n`, {

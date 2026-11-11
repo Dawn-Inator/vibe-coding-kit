@@ -4,6 +4,11 @@ Run this procedure at every delivered heartbeat wake. Use the project adapter's 
 checker commands where available; command substitutions change invocation only. The categories and decisions
 below remain required for every project.
 
+When no timer delivered, use the [due probe](../SKILL.md#wake-mechanism) on each meaningful event. Run a full
+audit on the first meaningful event at or after the configured interval from the last full audit, before
+unrelated next-batch work. A probe result never schedules a wake; if no meaningful event arrives there is no
+wall-clock guarantee.
+
 ## Sweep
 
 Read and reconcile each of these ten sources, recording what was actually checked in the wake's `sources:`
@@ -16,7 +21,8 @@ line:
 3. **Worker reports**: every result or interim update since the last wake.
 4. **Direction and drift**: the project's declared work matrix, or identify what remains unchecked.
 5. **Current memory and resume context**: read on initial resume; thereafter record meaningful changes and
-   unresolved handoff context.
+   unresolved handoff context. On Kit upgrade/resume, read the actual pinned managed-tree skill; distinguish
+   installed, projected/generated, and actually read copies. A stale primary projection is not active policy.
 6. **External backlog**: read the configured source and timestamp the read. If unavailable, record a specific
    blocker and an `owner` item for the missing access/decision.
 7. **Worker health**: current evidence from host tools and expected duration; do not infer live activity from
@@ -58,10 +64,18 @@ Every dispatch gets an accepted receipt path in `dispatch_ref`. Validate that re
 owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
 active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
 
-At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. If no
-additional split is needed, still write `re-split: rows()` and `splittable: 0/0`. State the counting
-scope so the numerator and denominator are reproducible. Every blocker must name the concrete unavailable
+At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. If there are no
+Items to assess, write `re-split: rows()` and `splittable: 0/0`. State the counting
+scope so the numerator and denominator are reproducible. In v2, `P` counts **all valid rows assessed**,
+including dispatched rows and rows that were not newly split; `D` counts newly dispatched independent units.
+For example, if one of three assessed rows yields a new dispatch, record `splittable: 1/3` and identify all
+three row ids and evidence. Do not use historical denominators for v2. Every blocker must name the concrete unavailable
 resource, decision, or dependency and its owner. Never use subjective completion percentages.
+
+On adoption or resume, reconcile each active Item separately using the original request/accepted receipt,
+private final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata
+does not prove completion. Do not bulk-mark old dispatched rows done, broaden a row beyond the accepted scope,
+or turn routine delegable work into an owner decision. Keep operational status distinct from acceptance criteria.
 
 ## Check and preserve
 
@@ -70,6 +84,10 @@ Append the new heartbeat section and run the configured strict latest checker. T
 the current Items metadata. A failed check is not current certification: fix the new section and check again.
 Legacy wake sections may remain readable for history, but cannot certify the current v2 format. Preserve all
 prior wake bytes and append only.
+
+Preserve historical wake bytes. A red current audit remains uncertified: append a corrective audit and claim
+current certification only after the checker reports `certifiesCurrent: true`. A red audit never blocks
+separately authorized business work or ending the session.
 
 The audit is advisory. Report stale, blocked, unlanded, or inconsistent work with evidence. Do not kill or
 restart workers, perform finishes or merges, archive sessions, clean branches/worktrees, or delete anything

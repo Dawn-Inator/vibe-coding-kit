@@ -609,6 +609,20 @@ test('re-split: every blocked/deferred row needs a verdict and the splittable to
   assert.deepEqual(latestRules(wake(WAKE_A, { rows: { 6: 'empty -- `git log a..b` is empty' } })), [], 'no open rows: nothing to enumerate');
 });
 
+test('historical re-split keeps the original rows-with-proof denominator', () => {
+  const outcomes = 're-split: rows(r6: split->dispatched C0; r7: cannot-split: owner-gated)';
+  const historical = wake(WAKE_A, {
+    ...twoOpen,
+    extra: `${outcomes}\nsplittable: 1/1`,
+  });
+  assert.deepEqual(latestRules(historical), [], 'legacy history counts tagged cannot-split proofs in the denominator');
+  const v2StyleDenominator = wake(WAKE_A, {
+    ...twoOpen,
+    extra: `${outcomes}\nsplittable: 1/2`,
+  });
+  assert.deepEqual(latestRules(v2StyleDenominator), ['splittable-mismatch'], 'the current-v2 assessed-row denominator must not rewrite historical meaning');
+});
+
 test('re-split: a bare "none" in prep-ahead/audit is rejected while an open row lacks a proof', () => {
   const lazy = wake(WAKE_A, { ...twoOpen, extra: 're-split: prep-ahead(none — nothing to prepare today) lessons(done) audit(none — audited yesterday) rows(r6: cannot-split: owner-gated)\nsplittable: 0/1' });
   const found = checkLedger(lazy, { latest: true });

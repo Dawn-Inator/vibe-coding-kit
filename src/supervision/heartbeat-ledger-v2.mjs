@@ -230,8 +230,12 @@ function validateV2Wake(text, wake, items, findings) {
   if (wake.layout.count !== 10) add(findings, 'v2-layout', `${loc}: current heartbeat/v2 audits require the ten-row layout`);
   if (!lines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line))) add(findings, 'v2-contract-missing', `${loc}: latest wake must contain contract: heartbeat/v2`);
   validateDecomposition(text, wake, items, findings);
-  const resplit = lines.find((line) => /^\s*re-split:/i.test(line));
+  const resplitLines = lines.filter((line) => /^\s*re-split:/i.test(line));
+  const resplit = resplitLines[0];
   if (!resplit || !/rows\s*\(/i.test(resplit)) add(findings, 'resplit-rows-missing', `${loc}: latest wake requires re-split rows(...) even when no rows are blocked/deferred`);
+  if (resplitLines.length > 1) add(findings, 'v2-resplit-duplicate', `${loc}: latest wake must contain exactly one re-split line; found ${resplitLines.length}`);
+  const splittableCount = [...lines.join('\n').matchAll(/\bsplittable:\s*\d+\s*\/\s*\d+/gi)].length;
+  if (splittableCount > 1) add(findings, 'v2-splittable-duplicate', `${loc}: latest wake must contain exactly one splittable token; found ${splittableCount}`);
 }
 
 // Shared API: extraChecks receives normalized {text, wakes, items, latestWake, ledgerPath} and returns findings.

@@ -63,5 +63,6 @@
   "worktrees/worktree-core.test.mjs",
   "worktrees/writable-tree.test.mjs",
   "supervision/heartbeat-history.test.mjs",
-  "supervision/heartbeat-ledger-api.test.mjs"
+  "supervision/heartbeat-ledger-api.test.mjs",
+  "supervision/heartbeat-audit-due.test.mjs"
 ]
