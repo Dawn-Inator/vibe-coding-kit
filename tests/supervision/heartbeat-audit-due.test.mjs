@@ -107,6 +107,22 @@ test('invalid and future full-wake timestamps fail closed with explicit reasons'
   assert.equal(future.lastAuditAt, '2026-01-01T10:31:00.000Z');
 });
 
+test('strict calendar validation rejects rollover dates and accepts leap days and offsets', () => {
+  for (const heading of ['2026-02-30T10:20Z', '2026-04-31T10:20Z']) {
+    const report = heartbeatAuditDue(fullWake(heading), { now: new Date('2026-05-02T10:30:00Z') });
+    assert.equal(report.due, true);
+    assert.equal(report.reason, 'invalid-audit-timestamp');
+  }
+
+  const leapDay = heartbeatAuditDue(fullWake('2024-02-29T10:20Z'), { now: new Date('2024-02-29T10:40:00Z') });
+  assert.equal(leapDay.reason, 'interval-elapsed');
+  assert.equal(leapDay.lastAuditAt, '2024-02-29T10:20:00.000Z');
+
+  const offset = heartbeatAuditDue(fullWake('2026-01-01T05:20-05:00'), { now: new Date('2026-01-01T10:40:00Z') });
+  assert.equal(offset.reason, 'interval-elapsed');
+  assert.equal(offset.lastAuditAt, '2026-01-01T10:20:00.000Z');
+});
+
 test('invalid now and interval values throw', () => {
   assert.throws(() => heartbeatAuditDue('', { now: '2026-01-01T10:30Z' }), /now must be a valid Date/);
   assert.throws(() => heartbeatAuditDue('', { now: new Date(Number.NaN) }), /now must be a valid Date/);
@@ -132,5 +148,6 @@ test('CLI valid due and not-due decisions both exit zero; invalid args and IO fa
   assert.equal(runCli(recent.path, '--now', NOW.toISOString()).status, 0);
   assert.equal(runCli(old.path, '--now', NOW.toISOString()).status, 0);
   assert.notEqual(runCli(recent.path, '--minutes', '0').status, 0);
+  assert.notEqual(runCli(recent.path, '--now', '2026-02-30T10:30:00Z').status, 0);
   assert.notEqual(runCli(join(recent.dir, 'missing.md')).status, 0);
 });

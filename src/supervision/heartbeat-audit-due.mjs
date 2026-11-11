@@ -3,6 +3,29 @@
 import { parseWakes } from './check-heartbeat-ledger.mjs';
 
 const TEN_ROW_NUMBERS = Array.from({ length: 10 }, (_, index) => index + 1);
+const ISO_DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:?\d{2})?$/i;
+
+/** Strict ISO calendar parser shared by ledger and CLI timestamp handling. */
+export function parseStrictIsoTimestamp(value, { requireTimezone = false } = {}) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(ISO_DATE_TIME_RE);
+  if (!match || (requireTimezone && !match[8])) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText = '00', fractionText, timezone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthLengths = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > monthLengths[month - 1] ||
+      hour > 23 || minute > 59 || second > 59) return null;
+  const normalizedTimezone = timezone?.toUpperCase() ?? 'Z';
+  const normalized = `${yearText}-${monthText}-${dayText}T${hourText}:${minuteText}:${secondText}${fractionText ? `.${fractionText}` : ''}${normalizedTimezone}`;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
 
 function isFullTenRowWake(wake) {
   if (wake.layout.count !== 10 || wake.rows.length !== TEN_ROW_NUMBERS.length) return false;
@@ -31,11 +54,13 @@ export function heartbeatAuditDue(text, { now = new Date(), intervalMinutes = 20
   if (!wake) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'no-full-ten-row-audit' };
   }
-  if (!Number.isFinite(wake.timeMs)) {
+  const rawTimestamp = wake.heading.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/i)?.[0];
+  const strictTimestamp = parseStrictIsoTimestamp(rawTimestamp);
+  if (strictTimestamp === null || !Number.isFinite(wake.timeMs) || strictTimestamp !== wake.timeMs) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'invalid-audit-timestamp', line: wake.line };
   }
 
-  const lastAuditAt = new Date(wake.timeMs).toISOString();
+  const lastAuditAt = new Date(strictTimestamp).toISOString();
   if (wake.timeMs > now.getTime()) {
     return { ...common, due: true, lastAuditAt, nextDueAt: null, reason: 'future-audit-timestamp', line: wake.line };
   }

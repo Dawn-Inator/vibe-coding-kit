@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { exitDrained } from '../lib/exit-drained.mjs';
-import { heartbeatAuditDue } from './heartbeat-audit-due.mjs';
+import { heartbeatAuditDue, parseStrictIsoTimestamp } from './heartbeat-audit-due.mjs';
 
 function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
   try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
@@ -27,11 +27,11 @@ function parseArgs(args) {
       if (value === undefined || value.startsWith('--')) throw new TypeError(`${arg} requires a value`);
       index += 1;
       if (arg === '--now') {
-        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
+        const timestamp = parseStrictIsoTimestamp(value, { requireTimezone: true });
+        if (timestamp === null) {
           throw new TypeError('--now must be an ISO date with a timezone');
         }
-        now = new Date(value);
-        if (!Number.isFinite(now.getTime())) throw new TypeError('--now must be a valid ISO date');
+        now = new Date(timestamp);
       } else {
         minutes = Number(value);
         if (!Number.isFinite(minutes) || minutes <= 0) throw new TypeError('--minutes must be a finite number greater than 0');

@@ -194,7 +194,8 @@ export const STATE_LEGEND = [
   '  AND an `owner ←` item naming the blocker in the Items table.',
   '  In Decomposition, include every current non-done Item with its concrete next step and disposition dispatched|continuing|blocked|owner|done.',
   '  Every accepted dispatch is only an accepted request; record later active/final/landed evidence separately. Never infer execution from acceptance.',
-  '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. P counts every valid assessed row, including dispatched rows; D counts new dispatches. If no Items are assessed, use rows() and 0/0.',
+  '  rows(...) verdicts: split->dispatched <new unit> | cannot-split: <tagged proof> | continuing: <current activity/private-final evidence> for an already dispatched unit. Use real Item/wake-cell IDs.',
+  '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. D counts new dispatches; P counts all valid assessed verdicts, including continuing. If no additional split assessment is needed, rows() and 0/0 are valid when Decomposition covers every unfinished Item.',
   '  Add one Decomposition data row per current non-done Item; the emitted table is intentionally empty until populated. Do not leave ready items.',
 ];
 
@@ -289,7 +290,7 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
     'The next re-arm is refused if this wake writes no ledger block.',
     'Between timer wakes: a worker interim notification (background work still running, no terminal result) gets an EMPTY reply.',
     `Without a delivered timer: on every meaningful human request, resume, private final, landing, or newly surfaced blocker, run ${command(commands, 'due', ledger, seconds)}. If JSON says due=true, re-arm if available and finish this full audit before unrelated next-batch work; otherwise handle the event normally. No event means no guaranteed wall-clock wake; this probe schedules nothing.`,
-    'For v2 splittable D/P, P counts every valid row assessed (including dispatched and not newly split rows); D counts new dispatches. State row ids and evidence. Preserve older wake denominators unchanged.',
+    'For v2 rows(...), use split->dispatched <new unit>, cannot-split: <tagged proof>, or continuing: <current activity/private-final evidence> for already-dispatched work; use real Item/wake-cell IDs. D counts new dispatches and P counts all valid assessed verdicts. rows() and 0/0 are valid with no additional split assessment when Decomposition covers every unfinished Item. Preserve older wake denominators unchanged.',
   ].join('\n');
 }
 

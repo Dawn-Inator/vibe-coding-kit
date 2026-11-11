@@ -621,6 +621,12 @@ test('historical re-split keeps the original rows-with-proof denominator', () =>
     extra: `${outcomes}\nsplittable: 1/2`,
   });
   assert.deepEqual(latestRules(v2StyleDenominator), ['splittable-mismatch'], 'the current-v2 assessed-row denominator must not rewrite historical meaning');
+
+  const currentOnlyVerdict = wake(WAKE_A, {
+    ...twoOpen,
+    extra: 're-split: rows(r6: continuing: activity probe.json; r7: cannot-split: owner-gated)\nsplittable: 0/1',
+  });
+  assert.ok(latestRules(currentOnlyVerdict).includes('resplit-verdict-invalid'), 'the current-v2 continuing assessment syntax is not retroactively accepted for blocked legacy rows');
 });
 
 test('re-split: a bare "none" in prep-ahead/audit is rejected while an open row lacks a proof', () => {

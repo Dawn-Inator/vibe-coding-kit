@@ -169,7 +169,54 @@ test('every open Items row needs one matching decomposition and no ready disposi
   assert.ok(latestRules(mismatch.text, { ledgerPath: mismatch.ledgerPath }).length > 0, 'decomposition owner and disposition must match current item status/owner');
 });
 
-test('current v2 split counts include accepted independent dispatches and all assessed rows', () => {
+test('current v2 permits a continuing activity assessment for an already-dispatched item', () => {
+  const active = item({
+    owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
+    writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
+  });
+  const decompositionRows = ['| I1 | probe current activity | continuing | agent:worker-1 | activity probe.json |'];
+  const extra = 're-split: rows(I1: continuing: activity probe.json)\nsplittable: 0/1';
+  const acceptedAssessment = fixture(v2({
+    items: [active], decompositionRows, includeResplit: false, includeSplitCount: false, extra,
+  }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
+  assert.deepEqual(latestRules(acceptedAssessment.text, { ledgerPath: acceptedAssessment.ledgerPath }), [], 'continuing is an assessed outcome, not a new dispatch');
+
+  const wrongDispatchCount = fixture(v2({
+    items: [active], decompositionRows, includeResplit: false, includeSplitCount: false,
+    extra: extra.replace('splittable: 0/1', 'splittable: 1/1'),
+  }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
+  assert.ok(latestRules(wrongDispatchCount.text, { ledgerPath: wrongDispatchCount.ledgerPath }).includes('splittable-mismatch'), 'continuing does not increment the dispatch numerator');
+});
+
+test('current v2 continuing assessments require one existing active dispatched item', () => {
+  const active = item({
+    owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
+    writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
+  });
+  const decomp = ['| I1 | probe current activity | continuing | agent:worker-1 | activity probe.json |'];
+  const receipts = { 'receipts/worker-1.json': accepted('agent:worker-1') };
+  const base = { items: [active], decompositionRows: decomp, includeResplit: false, includeSplitCount: false };
+
+  const unknown = fixture(v2({ ...base, extra: 're-split: rows(I999: continuing: activity probe.json)\nsplittable: 0/1' }), receipts);
+  assert.ok(latestRules(unknown.text, { ledgerPath: unknown.ledgerPath }).some((rule) => rule.startsWith('resplit-row-')), 'an assessment for a nonexistent item is rejected');
+
+  const duplicate = fixture(v2({ ...base, extra: 're-split: rows(I1: continuing: activity probe.json; I1: continuing: second activity probe.json)\nsplittable: 0/1' }), receipts);
+  assert.ok(latestRules(duplicate.text, { ledgerPath: duplicate.ledgerPath }).includes('resplit-row-duplicate'), 'an item can be assessed only once');
+
+  const done = item({
+    status: 'done -- `work completed`', mode: 'read-only', writeSet: '[]', dispatchRef: '-',
+  });
+  const inactive = fixture(v2({
+    items: [done],
+    decompositionRows: ['| I1 | record completion | done | worker-1 | `work completed` |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: continuing: activity probe.json)\nsplittable: 0/1',
+  }));
+  assert.ok(latestRules(inactive.text, { ledgerPath: inactive.ledgerPath }).some((rule) => rule.startsWith('resplit-')), 'continuing cannot assess an item that is no longer active-dispatched');
+});
+
+test('current v2 split counts include explicitly assessed accepted independent dispatches', () => {
   const workers = [
     { id: 'I1', owner: 'agent:worker-1', path: 'src/one.mjs' },
     { id: 'I2', owner: 'agent:worker-2', path: 'src/two.mjs' },
@@ -188,22 +235,13 @@ test('current v2 split counts include accepted independent dispatches and all as
   const splitRows = workers.map(({ id, owner }) => `${id}: split->dispatched ${owner}`).join('; ');
 
   const good = fixture(v2({ items, decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${splitRows})\nsplittable: 3/3` }), receipts);
-  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'three accepted workers with disjoint exact file sets are three valid assessments');
+  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'three explicitly assessed accepted workers with disjoint exact file sets pass');
 
   const wrongDenominator = fixture(v2({ items, decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${splitRows})\nsplittable: 3/0` }), receipts);
-  assert.ok(latestRules(wrongDenominator.text, { ledgerPath: wrongDenominator.ledgerPath }).includes('splittable-mismatch'), 'a zero denominator cannot hide three current dispatch outcomes');
+  assert.ok(latestRules(wrongDenominator.text, { ledgerPath: wrongDenominator.ledgerPath }).includes('splittable-mismatch'), 'a zero denominator cannot hide three explicit assessments');
 });
 
-test('current v2 rejects duplicate split audit and count markers', () => {
-  const duplicateMarkers = fixture(v2({
-    includeResplit: false,
-    includeSplitCount: false,
-    extra: 're-split: rows()\nsplittable: 0/0\nre-split: rows()\nsplittable: 0/0',
-  }));
-  assert.ok(latestRules(duplicateMarkers.text, { ledgerPath: duplicateMarkers.ledgerPath }).length > 0, 'duplicate audit markers cannot be silently accepted by first-match parsing');
-});
-
-test('current v2 denominator includes a tagged cannot-split proof alongside a dispatch', () => {
+test('current v2 counts an explicit blocked proof with an independent dispatch', () => {
   const dispatch = item({
     id: 'I1', owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
     writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
@@ -220,12 +258,21 @@ test('current v2 denominator includes a tagged cannot-split proof alongside a di
   const good = fixture(v2({ items: [dispatch, blocked], decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${mixedRows})\nsplittable: 1/2` }), {
     'receipts/worker-1.json': accepted('agent:worker-1'),
   });
-  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'one dispatch and one tagged blocker are both assessed');
+  assert.deepEqual(latestRules(good.text, { ledgerPath: good.ledgerPath }), [], 'one explicit dispatch and one tagged blocker are both assessed');
 
   const wrong = fixture(v2({ items: [dispatch, blocked], decompositionRows, includeResplit: false, includeSplitCount: false, extra: `re-split: rows(${mixedRows})\nsplittable: 1/1` }), {
     'receipts/worker-1.json': accepted('agent:worker-1'),
   });
-  assert.ok(latestRules(wrong.text, { ledgerPath: wrong.ledgerPath }).includes('splittable-mismatch'), 'the denominator must include both valid outcomes');
+  assert.ok(latestRules(wrong.text, { ledgerPath: wrong.ledgerPath }).includes('splittable-mismatch'), 'the denominator must include both explicit valid outcomes');
+});
+
+test('current v2 rejects duplicate split audit and count markers', () => {
+  const duplicateMarkers = fixture(v2({
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows()\nsplittable: 0/0\nre-split: rows()\nsplittable: 0/0',
+  }));
+  assert.ok(latestRules(duplicateMarkers.text, { ledgerPath: duplicateMarkers.ledgerPath }).length > 0, 'duplicate audit markers cannot be silently accepted by first-match parsing');
 });
 
 test('v2 registry scope ignores auxiliary tables and rejects missing metadata on the real Items registry', () => {

@@ -96,12 +96,16 @@ with its own evidence. The orchestrator must provide the same receipt for its ow
 
 Every new wake includes a `### Decomposition` table with columns `item | next_step | disposition | owner |
 evidence`. List every current non-done Item. Allowed dispositions are `dispatched`, `continuing`, `blocked`,
-`owner`, and `done`; there is no `ready` disposition at the end of an audit. If there are no Items to assess,
-end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
+`owner`, and `done`; there is no `ready` disposition at the end of an audit. If there is no additional split
+assessment, end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
 do not leave an unassessed item implicit. `splittable: D/P` is newly dispatched independent units over **all
-valid rows assessed in this v2 wake**, including rows already dispatched or not newly split. State assessed row
-ids and evidence. Historical wake denominators retain their old meaning; do not rewrite them or apply that old
-denominator rule to v2.
+valid rows assessed in this v2 wake: `split->dispatched <new unit>` for a new dispatch, `cannot-split: <tagged
+proof>`, or `continuing: <current activity/private-final evidence>` for an already dispatched unit. `D` counts
+new dispatches; `P` counts all three valid verdict types. Use only real Item or wake-cell IDs and cite the
+evidence for each. If no additional split assessment is needed, `rows()` and `0/0` remain valid when the full
+Decomposition table covers every unfinished Item; do not re-dispatch existing work just to fill the count.
+Historical wake denominators retain their old meaning; do not rewrite them or apply that old denominator rule
+to v2.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
 the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection

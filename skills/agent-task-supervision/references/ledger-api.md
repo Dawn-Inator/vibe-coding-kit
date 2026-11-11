@@ -17,11 +17,14 @@ metadata in legacy rows is not completion evidence. Never bulk-mark historical d
 their accepted scope, or reclassify ordinary delegable work as an owner-domain decision. Keep actual status
 (accepted, active, final, landed, blocked) separate from acceptance criteria.
 
-In v2, `splittable: D/P` uses all valid rows assessed for `P`, including rows already dispatched and rows not
-newly split; `D` is new dispatches. Keep the older denominator semantics only in preserved historical wakes.
-Do not rewrite historical denominators. If the latest current audit is red, append a corrective audit and
-claim certification only when the normalized report has `certifiesCurrent: true`. A red audit does not block
-separately authorized business work or ending the session.
+In v2, each assessed row uses one of three verdicts: `split->dispatched <new unit>`,
+`cannot-split: <tagged proof>`, or `continuing: <current activity/private-final evidence>` for an already
+dispatched unit. IDs must be real Item or wake-cell IDs. `D` counts new dispatches; `P` counts all valid assessed
+rows, including continuing rows. When no additional split assessment is needed, `rows()` and `0/0` remain valid
+if Decomposition lists every unfinished Item; do not force redispatch. Keep older denominator semantics only in
+preserved historical wakes. Do not rewrite historical denominators. If the latest current audit is red, append
+a corrective audit and claim certification only when the normalized report has `certifiesCurrent: true`. A red
+audit does not block separately authorized business work or ending the session.
 
 ## One normalized report
 

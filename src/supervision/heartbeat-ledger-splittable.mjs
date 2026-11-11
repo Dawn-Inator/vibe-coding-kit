@@ -27,6 +27,7 @@ const OPEN_RE = /^(blocked|deferred)\s*(?:←|<-)\s*(\S.*)$/i;
 const ITEM_BLOCKED_RE = /^blocked\s*(?:←|<-)\s*(\S.*)$/i;
 const SPLIT_RE = /^split\s*(?:→|->)\s*dispatched\s+(\S.*)$/i;
 const CANNOT_RE = /^cannot-split\s*:\s*(\S.*)$/i;
+const CONTINUING_RE = /^continuing\s*:\s*(\S.*)$/i;
 const ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
 const TOKEN_RE = /\bsplittable:\s*(\d+)\s*\/\s*(\d+)/i;
 
@@ -45,8 +46,8 @@ function groupOf(line, name) {
   return null;
 }
 
-/** Entries of a `rows(...)` group: [{id, verdict: 'dispatched'|'cannot-split'|'invalid', detail, proof}]. */
-export function parseRowVerdicts(group) {
+/** Entries of a `rows(...)` group: [{id, verdict: 'dispatched'|'cannot-split'|'continuing'|'invalid', detail, proof}]. */
+export function parseRowVerdicts(group, { allowContinuing = false } = {}) {
   return String(group ?? '')
     .split(';')
     .map((part) => part.trim())
@@ -57,6 +58,8 @@ export function parseRowVerdicts(group) {
       const body = entry[2].trim();
       const id = normId(entry[1]);
       if (SPLIT_RE.test(body)) return { id, verdict: 'dispatched', detail: body, proof: null };
+      const continuing = body.match(CONTINUING_RE);
+      if (allowContinuing && continuing) return { id, verdict: 'continuing', detail: body, evidence: continuing[1].trim(), proof: null };
       const cannot = body.match(CANNOT_RE);
       if (cannot) {
         const proof = findBlockedProofTag(cannot[1]);
@@ -90,14 +93,28 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   const findings = [];
   const line = sectionLines.find((l) => /^\s*re-split:/i.test(l));
   const group = line ? groupOf(line, 'rows') : null;
-  const verdicts = group === null ? [] : parseRowVerdicts(group);
+  const verdicts = group === null ? [] : parseRowVerdicts(group, { allowContinuing: requireAudit });
   const byId = new Map(verdicts.filter((v) => v.id).map((v) => [v.id, v]));
   const labels = (rows) => rows.map((r) => r.label).join(', ');
 
   if (requireAudit) {
+    const knownRows = new Set([
+      ...(cells ?? []).map((cell) => normId(`r${cell.key}`)),
+      ...(itemRows ?? []).map((row) => row.id ? normId(row.id) : null).filter(Boolean),
+    ]);
+    const activeRows = new Set([
+      ...(cells ?? []).filter((cell) => /^(?:in-flight|dispatched)\b/i.test(String(cell.state ?? '').trim())).map((cell) => normId(`r${cell.key}`)),
+      ...(itemRows ?? []).filter((row) => /^dispatched\b/i.test(String(row.status ?? '').trim())).map((row) => normId(row.id)),
+    ]);
     const seenIds = new Set();
     for (const verdict of verdicts) {
       if (!verdict.id) continue;
+      if (!knownRows.has(verdict.id)) {
+        findings.push(err('resplit-row-unknown', `${loc}: rows(...) references ${verdict.id}, which is not present in the wake rows or Items registry`));
+      }
+      if (verdict.verdict === 'continuing' && !activeRows.has(verdict.id)) {
+        findings.push(err('resplit-continuing-inactive', `${loc}: ${verdict.id} may use continuing only while its wake row is in-flight/dispatched or its Item status is dispatched`));
+      }
       if (seenIds.has(verdict.id)) {
         findings.push(err('resplit-row-duplicate', `${loc}: rows(...) contains more than one verdict for ${verdict.id}; each assessed row must appear once`));
       }
@@ -128,7 +145,7 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   }
 
   const uniqueValidVerdicts = requireAudit
-    ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split'].includes(v.verdict))
+    ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split', 'continuing'].includes(v.verdict))
     : null;
   const dispatched = requireAudit
     ? uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').length

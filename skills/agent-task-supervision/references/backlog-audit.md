@@ -64,13 +64,17 @@ Every dispatch gets an accepted receipt path in `dispatch_ref`. Validate that re
 owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
 active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
 
-At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. If there are no
-Items to assess, write `re-split: rows()` and `splittable: 0/0`. State the counting
-scope so the numerator and denominator are reproducible. In v2, `P` counts **all valid rows assessed**,
-including dispatched rows and rows that were not newly split; `D` counts newly dispatched independent units.
-For example, if one of three assessed rows yields a new dispatch, record `splittable: 1/3` and identify all
-three row ids and evidence. Do not use historical denominators for v2. Every blocker must name the concrete unavailable
-resource, decision, or dependency and its owner. Never use subjective completion percentages.
+At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. The v2 `rows(...)`
+group accepts three verdicts: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or
+`continuing: <current activity/private-final evidence>` for an already dispatched unit. Use only IDs from real
+Items or wake cells. `D` counts new dispatches; `P` counts all valid assessed verdicts, including `continuing`.
+For example, with one already-dispatched item continuing and one new dispatch, use
+`rows(<existing-item-id>: continuing: <active session evidence>; <blocked-row-id>: split->dispatched <new unit>)`
+and `splittable: 1/2`; replace placeholders with actual IDs and evidence. If no additional split assessment is
+needed, `rows()` and `0/0` remain valid even with ongoing Items, provided Decomposition lists every unfinished
+Item; do not force a redispatch to fill the count. Do not use historical denominators for v2. Every blocker must
+name the concrete unavailable resource, decision, or dependency and its owner. Never use subjective completion
+percentages.
 
 On adoption or resume, reconcile each active Item separately using the original request/accepted receipt,
 private final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata
