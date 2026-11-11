@@ -98,38 +98,20 @@ the two roles distinct:
 | Parent coordinator | `tracking`; nonempty `children` array | honest owner/repository/worktree; `mode: read-only`, `write_set: []`, `dispatch_ref` empty or `-`; no worker acceptance receipt | disposition `continuing`; `continuing: tracking <source-ref>` cites current child-state evidence; never count it active |
 | Leaf worker | `dispatched`; omit `children` or use `[]` | owner/repository/worktree/mode/exact `write_set`; real accepted receipt in `dispatch_ref` | disposition `continuing`; `continuing: active <source-ref>` or `continuing: private-final <source-ref>` cites leaf evidence |
 
-Parent `children` arrays must contain unique IDs of existing Items; reject self-links, cycles, and dangling
-IDs. Keep both roles in this one registry. Children completing does not complete the parent: it remains
-unfinished until its own coordination acceptance criteria pass. Do not force the parent to spawn, claim worker
-acceptance or write authority, bypass leaf work or receipts, count the parent active, or hide unknown legacy
-state behind tracking.
+Parent `children` arrays must contain unique existing Item IDs; reject self-links, cycles, and dangling IDs.
+Keep both roles in this one registry. Children completing does not complete a parent: keep it unfinished until
+its own criteria pass. Do not force parents to spawn, claim worker acceptance/write authority, bypass leaf work
+or receipts, count parents active, or hide unknown legacy state behind tracking. Leaf dispatches require
+accurate owner/repository/worktree/mode/exact write set and a matching accepted receipt; acceptance is not
+activity or landing evidence. See the [backlog audit](references/backlog-audit.md) for receipt and row rules.
 
-Each dispatched leaf row must identify `mode` as `write` or `read-only`, an explicit repository and worktree, and
-`write_set` as a JSON array of exact relative file paths. Do not use directory-wide paths or globs; a literal
-placeholder such as `[id]` is allowed when it is the actual filename. `dispatch_ref` points to an accepted
-receipt JSON containing `tool`, `event: "accepted"`, `agent_id` matching the row owner, and one returned
-`task_name`, `agent_id`, `session_id`, or `id` matching that owner. The receipt proves only that the request
-was accepted; it does not prove that work is active, complete, or landed. Record each later state transition
-with its own evidence. The orchestrator must provide the same receipt for its own dispatches.
-
-Every new wake includes a `### Decomposition` table with columns `item | next_step | disposition | owner |
-evidence`. List every current non-done Item. Allowed dispositions are `dispatched`, `continuing`, `blocked`,
-`owner`, and `done`; there is no `ready` disposition at the end of an audit. If there is no additional split
-assessment, end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
-do not leave an unassessed item implicit. `splittable: D/P` is newly dispatched independent units over **all
-valid rows assessed in this v2 wake: `split->dispatched <new unit>` for a new dispatch, `cannot-split: <tagged
-proof>`, `continuing: active <source-ref>` or `continuing: private-final <source-ref>` for a leaf, and
-`continuing: tracking <source-ref>` for a parent coordinator. Parent tracking cites current child-state evidence
-and does not make that row an active worker. Leaf references cite current probe/tool output or a private final,
-not an acceptance receipt. The orchestrator must resolve and cross-check references against original evidence;
-the checker validates only kind and nonempty reference, not authenticity. Do not add a separate child or
-activity-receipt registry. `D` counts new dispatches; `P` counts all valid assessed verdicts, including parent
-tracking. Use only real Item or wake-cell IDs. If no additional
-split assessment is needed, `rows()` and `0/0` remain valid when
-the full Decomposition table covers every unfinished Item; do not re-dispatch existing work just to fill the
-count. A wake's contract version selects its denominator, not the CLI read mode: unmarked legacy history keeps
-its proof-only denominator, while `heartbeat/v2` uses all valid assessed rows even when inspected with
-non-certifying `--history`. Do not rewrite historical wakes or apply the legacy rule to v2.
+Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) covering
+all non-done Items. Dispositions are `dispatched`, `continuing`, `blocked`, `owner`, or `done` (never `ready`).
+With no new split assessment, `rows()` / `0/0` is valid when Decomposition covers all unfinished Items; do not
+redispatch to fill the count. For v2 verdict syntax and source evidence, see the [backlog audit](references/backlog-audit.md).
+`D` is new dispatches; v2 `P` is all valid assessed verdicts, including parent tracking. The wake contract
+determines the denominator, not CLI mode: unmarked legacy wakes keep the proof-only denominator; `heartbeat/v2`
+uses all valid assessed rows even under non-certifying `--history`. Preserve historical wake bytes.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
 the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection

@@ -103,9 +103,14 @@ test('knowledge contract keeps aggregate parent tracking separate from dispatche
   assert.match(skill, /`mode: read-only`, `write_set: \[\]`, `dispatch_ref` empty or `-`; no worker acceptance receipt/);
   assert.match(skill, /leaf worker \| `dispatched`; omit `children` or use `\[\]`/);
   assert.match(skill, /real accepted receipt in `dispatch_ref`/);
-  assert.match(skill, /parent tracking cites current child-state evidence and does not make that row an active worker/);
-  assert.match(skill, /continuing: tracking <source-ref>` for a parent coordinator/);
-  assert.match(skill, /do not force the parent to spawn/);
+  assert.match(skill, /continuing: tracking <source-ref>` cites current child-state evidence; never count it active/);
+  assert.match(skill, /do not force parents to spawn/);
+});
+
+test('knowledge artifact: supervision skill fits the existing consumer entry budget', () => {
+  const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../skills/agent-task-supervision/SKILL.md'), 'utf8');
+  assert.ok(Buffer.byteLength(skill, 'utf8') <= 12_288,
+    'agent-task-supervision SKILL.md must fit the consumer generated-entry limit');
 });
 
 test('HEARTBEAT_LEDGER_RE overrides the ledger path pattern', () => {
