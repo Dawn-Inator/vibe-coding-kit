@@ -2,6 +2,9 @@
 
 ## 问题:为什么需要这个机制
 
+> 本文早期示例描述的是历史账本格式。当前写入请按 `heartbeat/v2`：保留旧段落，只追加带独立
+> `contract: heartbeat/v2` 标记的新段。统一报告 API 和 CLI 读模式见文末「当前格式与 API」。
+
 当一个编排会话同时管理多个 subagent、跨越较长时间运行时,会出现两类单靠编排者的"当下注意力"很难
 自己发现的问题:
 
@@ -75,7 +78,10 @@ Nova 的心跳最终收敛成三件事,每一件都是被前几版的失败逼�
 
 每次唤醒的详细内容只追加进一个会话级账本文件(放在会话草稿目录下,例如
 `.workspace/task/<session>/heartbeat.md`)。每段以 `----` 分隔,标题固定为 `## <ISO 时间> wake (10-row ledger)`,
-带一行 `sources:` 说明这次查了哪些发现渠道,再加一张十类目逐行表。表里每一行只能是几种固定状态之一,
+紧接独立的 `contract: heartbeat/v2` 行,带一行 `sources:` 说明这次查了哪些发现渠道,再加一张十类目逐行表。
+当前格式还需要 `### Decomposition` 表,逐项列出所有未完成事项及具体下一步,以及独立的 `re-split: rows(...)`
+和 `splittable: D/P` 行。`## Items` 表在原有字段后增加 owner、repository、worktree、mode、write_set 和
+dispatch_ref。表里每一行只能是几种固定状态之一,
 `blocked` 必须点名一个排他资源,`deferred` 必须写明它在等的输入和不超过 20 分钟的预计时间,同一个输入连续
 两次唤醒都在 deferred 就必须升级——这些判据由一个机械检查器逐行验证,因为"自己给自己打分的账本"迟早会
 变成文字游戏。检查器只看最新一段(`--latest`),历史段落作为记录保留、永不为了过检查被改写。
@@ -99,26 +105,20 @@ Nova 的心跳最终收敛成三件事,每一件都是被前几版的失败逼�
 测试会话用脚本整份重写了账本,标记跟着消失,门形同虚设。**独立的、只由武装脚本追加的计数文件,抗得住
 "某个脚本把账本整个重新生成"这种操作。**
 
-### "能不能拆"的默认答案是能
+### 每次唤醒都重新拆解
 
-检查器如果只问"有没有可拆的?",得到的答案是写给检查器的:上一次唤醒写了 `blocked ← <另一个单元> unlanded output`,
-这一次照抄,检查器看到"点名了一个资源"就放行,而这条阻塞其实可以直接基于那个未落地分支开工、只让最后的落地等待。
-真实事故里这样的行挂了几个小时,主人一句"看看能不能拆解并行"就立刻翻出一批当场可开工的单元。根因有四层:答案是写给检查器而不是主人的;
-问题是开放式的而不是预设式的;上一轮的答案成了下一轮的锚,检查只在很久之后才变红;写"没有"没有任何代价。
+当前 `heartbeat/v2` 要求每个唤醒都重新评估 `## Items` 中所有未完成事项,在 Decomposition 表列出 ID、具体下一步、
+`dispatched | continuing | blocked | owner | done` 处置、负责人和证据。没有 `ready` 留到审计结束。确有空闲且独立的
+工作单元时,本轮就派发;接受回执只证明请求被接受,不能证明 worker 已 active、已私下终报或已落地,这些状态需要分别举证。
 
-所以规则反过来:**默认答案是能拆,"不能"才是例外,而且要逐项证明。** 每次唤醒,表里每个 `blocked ←` / `deferred ←` 行
-(以及登记表里每个 `blocked ←` 行)都要在唤醒段落的 `re-split:` 行里拿到一个裁决:`split→dispatched <单元>`,或者
-`cannot-split: <带标签的证明>`。证明只有几种固定标签:`needs-landed: production effect`(这一步要生产影响,必须等已落地的 SHA)、
-`branch-unstable: <分支> rewritten in the last 60 min`、`owner-gated`、`same-file conflict: <文件路径>`。
-只在等另一个单元的未落地分支或产出,而没有这些标签,检查器直接判红(`blocked-on-unlanded-branch-defaults-free`),
-`heartbeat:sweep` 则把它列为空闲候选,第一步是"begin on <branch>, land after it"。
-只要还有行没有合法裁决,`prep-ahead(none — …)` 和 `audit(none — …)` 就被拒绝。唤醒段落还要写
-`splittable: <本次派发数>/<带证明的阻塞行数>`,检查器核对它与裁决一致,对话框状态行也带上它。
+段尾独立写 `re-split: rows(...)` 与 `splittable: D/P`;无可继续拆的事项时也写 `re-split: rows()` 和
+`splittable: 0/0`。`D/P` 是本轮派发的独立单元数与完成拆分评估的事项数,需在账本中说明统计范围。旧历史段落继续保留,
+不为了当前格式改写;旧格式的检查结果只能用于历史阅读,不能当作当前审计通过。
 
 ### 对话框每次只一行
 
-账本是详细记录的地方,对话框只回一行:`[heartbeat] in-flight N · xx% · splittable: D/P · blocked: <none|item>`,其中的
-数字和百分比必须是真实的,只有出现异常时才展开。这条规则的背景很朴素:状态长文每次唤醒都要消耗一整轮
+账本是详细记录的地方,对话框只回一行,用有证据的 active、dispatched、landed、splittable 与 blocked 数量,不报主观百分比。
+只有出现异常时才展开。这条规则的背景很朴素:状态长文每次唤醒都要消耗一整轮
 上下文,而且没人读;把详情放进账本、把对话框压到一行,既保住了可审计性,又省下了每个周期的成本。
 同样的道理也适用于 worker 的中间通知:后台工作还在跑、没有终态结果的通知,回复为空,不复述、不重打状态行。
 
@@ -214,3 +214,23 @@ Nova 后来把边界写死:心跳这一步的唯一职责是"要不要转介"的
 采用时需要自己决定的只有这几样:门槛的具体数字、间隔(默认 20 分钟)、账本的位置、十类目里哪些对你的项目
 有意义,以及你自己的漂移探针。工具和规则本身——单一武装入口、续期门、一行状态、前置 hook、公告式收尾检测、
 机械发现——可以原样使用。
+
+## 当前格式与 API
+
+新项目和新唤醒统一使用 `heartbeat/v2`。使用 Kit 的规范化 API,不要在项目中复制检查器或另建返回数组的包装：
+
+```js
+import { inspectHeartbeatLedger } from './src/supervision/heartbeat-ledger-api.mjs';
+
+const report = inspectHeartbeatLedger(markdown, { mode: 'current', latest: true, ledgerPath });
+```
+
+报告固定包含 `schemaVersion`、`mode`、`contract`、`certifiesCurrent`、`passed`、唤醒/Items 数量、解析记录和统一格式的
+`findings`。`passed` 只表示所选模式没有错误;只有 `certifiesCurrent: true` 才表示当前 v2 检查通过。
+
+- 默认 CLI 与 `--latest` 都是严格 current 检查。
+- `--history [--latest]` 只读旧格式历史,始终非认证并返回非零退出码;旧 `--latest --legacy` 是弃用兼容别名。
+- `--items` 只检查 Items 清单,不认证当前心跳。
+- `--json` 输出统一报告格式。接受派发请求的回执不代表工作已 active、已有私有终报或已落地。
+
+Kit skill、完整账本字段、各 CLI 模式和权限边界见 [Heartbeat ledger format and API](../../skills/agent-task-supervision/references/ledger-api.md)。

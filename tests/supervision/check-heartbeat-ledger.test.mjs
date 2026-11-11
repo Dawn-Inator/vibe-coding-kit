@@ -472,21 +472,40 @@ function runCli(args) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
 }
 
-test('CLI: historical inspection stays green, red input reports missing rows, and usage errors exit 2', () => {
+test('CLI: history inspection is explicitly non-certifying, default mode is strict current, and usage errors exit 2', () => {
   const dir = mkdtempTracked('hb-ledger-');
   const ledger = join(dir, 'heartbeat.md');
   writeFileSync(ledger, wake('2026-01-01T10:00Z', { omit: [2, 3] }));
-  const red = runCli([ledger]);
+  const red = runCli([ledger, '--history', '--json']);
+  const redReport = JSON.parse(red.stdout);
   assert.equal(red.status, 1);
-  assert.equal(red.stdout.trim().split('\n').length, 2);
-  assert.match(red.stdout, /RED \[row-missing\]/);
+  assert.equal(redReport.mode, 'history');
+  assert.equal(redReport.passed, false);
+  assert.equal(redReport.certifiesCurrent, false);
+  assert.ok(redReport.findings.some((finding) => finding.rule === 'row-missing'));
 
-  writeFileSync(ledger, wake('2026-01-01T10:00Z') + items('| I1 | landing:abc1234 | x | dispatched w1 | - |'));
-  // This pre-v2 fixture is historical material. It may pass the legacy whole-file parser,
-  // but --latest is reserved for current heartbeat/v2 certification.
-  assert.equal(runCli(['--', ledger]).status, 0);
-  assert.equal(runCli(['--', ledger, '--latest']).status, 1);
-  assert.equal(runCli([ledger, '--items']).status, 0);
+  writeFileSync(ledger, wake('2026-01-01T10:00Z') + items('| I1 | landing:abc1234 | x | dispatched w1 | owner: session:w1 |'));
+  const historical = runCli([ledger, '--history', '--json']);
+  const historicalReport = JSON.parse(historical.stdout);
+  assert.equal(historical.status, 1, 'history mode is non-certifying even when validation passes');
+  assert.equal(historicalReport.mode, 'history');
+  assert.equal(historicalReport.passed, true);
+  assert.equal(historicalReport.certifiesCurrent, false);
+  assert.ok(!/check-heartbeat-ledger: OK/.test(historical.stdout));
+
+  const strict = runCli([ledger, '--json']);
+  const strictReport = JSON.parse(strict.stdout);
+  assert.equal(strict.status, 1, 'default mode must require the current v2 contract');
+  assert.equal(strictReport.mode, 'current');
+  assert.equal(strictReport.certifiesCurrent, false);
+  assert.ok(strictReport.findings.some((finding) => finding.rule === 'v2-contract-missing'));
+
+  const inventory = runCli([ledger, '--items', '--json']);
+  const inventoryReport = JSON.parse(inventory.stdout);
+  assert.equal(inventory.status, 0, 'valid inventory succeeds without certifying an audit');
+  assert.equal(inventoryReport.mode, 'items');
+  assert.equal(inventoryReport.passed, true);
+  assert.equal(inventoryReport.certifiesCurrent, false);
 
   assert.equal(runCli([]).status, 2);
   assert.equal(runCli([join(dir, 'missing.md')]).status, 2);

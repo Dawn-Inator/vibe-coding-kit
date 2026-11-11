@@ -138,7 +138,8 @@ test('--latest requires the newest contract marker and cannot downgrade after v2
   assert.deepEqual(checkLedger(legacyOnly.text), [], 'legacy parser keeps historical ledger behavior');
   const historical = spawnSync(process.execPath, [CLI, legacyOnly.ledgerPath, '--latest', '--legacy'], { encoding: 'utf8' });
   assert.equal(historical.status, 1);
-  assert.match(historical.stdout, /legacy-read-only/);
+  assert.match(historical.stdout, /HISTORY INSPECTION ONLY/);
+  assert.match(historical.stdout, /deprecated-legacy-alias/);
 });
 
 test('every open Items row needs one matching decomposition and no ready disposition remains', () => {

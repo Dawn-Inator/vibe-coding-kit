@@ -494,8 +494,14 @@ function hasAudit(rows, unit, itemId) {
 async function main() {
   const args = process.argv.slice(2).filter((arg) => arg !== '--');
   const flags = new Set(args.filter((arg) => arg.startsWith('--')));
-  const target = args.find((arg, i) => !arg.startsWith('--') && args[i - 1] !== '--now');
-  const known = new Set(['--latest', '--items', '--legacy', '--json']);
+  const modeFlags = ['--latest', '--history', '--items', '--legacy'];
+  const positionals = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--now') { i += 1; continue; }
+    if (!args[i].startsWith('--')) positionals.push(args[i]);
+  }
+  const target = positionals[0];
+  const known = new Set(['--latest', '--history', '--items', '--legacy', '--json', '--now']);
   const nowAt = args.indexOf('--now');
   const nowText = nowAt >= 0 ? args[nowAt + 1] : null;
   const now = nowText ? new Date(nowText) : new Date();
@@ -507,8 +513,12 @@ async function main() {
       return;
     }
   }
-  if (!target || [...flags].some((flag) => !known.has(flag)) || (flags.has('--latest') && flags.has('--items')) || (flags.has('--legacy') && (!flags.has('--latest') || flags.has('--items')))) {
-    process.stderr.write('usage: check-heartbeat-ledger.mjs <ledger> [--latest [--legacy] | --items] [--json] [--now <ISO>]\n');
+  const itemsMode = flags.has('--items');
+  const historyMode = flags.has('--history') || flags.has('--legacy');
+  const invalidModes = (itemsMode && (historyMode || flags.has('--latest'))) || (flags.has('--history') && flags.has('--legacy'));
+  const repeatedModeFlags = modeFlags.some((flag) => args.filter((arg) => arg === flag).length > 1);
+  if (!target || positionals.length !== 1 || [...flags].some((flag) => !known.has(flag)) || invalidModes || repeatedModeFlags || (nowAt >= 0 && args.filter((arg) => arg === '--now').length > 1)) {
+    process.stderr.write('usage: check-heartbeat-ledger.mjs <ledger> [--latest | --history [--latest] | --legacy [--latest] | --items] [--json] [--now <ISO>]\n');
     exitDrained(2);
     return;
   }
@@ -521,31 +531,33 @@ async function main() {
     return;
   }
   const ledgerPath = resolve(process.cwd(), target);
-  let findings;
-  if (flags.has('--items')) findings = checkItems(text, { now });
-  else if (flags.has('--latest') && !flags.has('--legacy')) {
-    const { checkHeartbeatV2 } = await import('./heartbeat-ledger-v2.mjs');
-    findings = checkHeartbeatV2(text, { now, ledgerPath });
-  } else findings = checkLedger(text, { latest: flags.has('--latest'), now });
-  if (flags.has('--legacy')) findings.push({ severity: 'advisory', rule: 'legacy-read-only', message: 'legacy latest mode is historical inspection only and cannot certify the current heartbeat/v2 audit' });
-  const failed = findings.some((finding) => finding.severity !== 'advisory') || flags.has('--legacy');
+  const mode = itemsMode ? 'items' : historyMode ? 'history' : 'current';
+  const { inspectHeartbeatLedger } = await import('./heartbeat-ledger-api.mjs');
+  const report = inspectHeartbeatLedger(text, {
+    mode,
+    latest: mode === 'history' ? flags.has('--latest') : true,
+    now,
+    ledgerPath,
+  });
+  if (flags.has('--legacy')) report.findings.push({ severity: 'advisory', rule: 'deprecated-legacy-alias', message: '--legacy is deprecated; use --history' });
+  const failed = !report.passed || mode === 'history';
   if (flags.has('--json')) {
-    const itemsMode = flags.has('--items');
-    const payload = itemsMode
-      ? { path: target, mode: 'items', tableCount: parseItemTables(text).length, findings }
-      : { path: target, mode: 'wakes', wakeCount: parseWakes(text).length, latest: flags.has('--latest'), findings, ...(flags.has('--legacy') ? { certifiesCurrent: false } : {}) };
+    const payload = { path: target, ...report };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     exitDrained(failed ? 1 : 0);
     return;
   }
-  if (!failed) {
-    for (const finding of findings) process.stdout.write(`ADVISORY [${finding.rule}] ${finding.message}\n`);
-    process.stdout.write(`check-heartbeat-ledger: OK ${target}\n`);
-    exitDrained(0);
-    return;
+  if (mode === 'history') process.stdout.write(`check-heartbeat-ledger: HISTORY INSPECTION ONLY ${target}\n`);
+  else if (mode === 'items') process.stdout.write(`check-heartbeat-ledger: ITEMS INSPECTION ${target}\n`);
+  for (const finding of report.findings) {
+    process.stdout.write(`${finding.severity === 'advisory' ? 'ADVISORY' : 'RED'} [${finding.rule}] ${finding.message}\n`);
   }
-  for (const finding of findings) process.stdout.write(`${finding.severity === 'advisory' ? 'ADVISORY' : 'RED'} [${finding.rule}] ${finding.message}\n`);
-  exitDrained(failed ? 1 : 0);
+  if (mode === 'history') {
+    if (report.findings.length === 0) process.stdout.write('No historical violations found; this inspection cannot certify the current audit.\n');
+  } else if (mode === 'items') {
+    if (report.passed) process.stdout.write('No Items findings.\n');
+  } else if (report.passed) process.stdout.write(`check-heartbeat-ledger: OK ${target}\n`);
+  exitDrained(mode === 'history' ? 1 : (failed ? 1 : 0));
 }
 
 if (isMainModule(import.meta.url)) main();

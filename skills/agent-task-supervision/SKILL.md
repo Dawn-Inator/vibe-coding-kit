@@ -71,9 +71,10 @@ At every timer wake, the orchestrator itself must:
 ## Ledger contract
 
 Keep the ten existing category rows and their `sources:` evidence line. Each new wake section must use the
-latest heading marker `contract: heartbeat/v2`; retain older wake bytes as historical records. Do not rewrite
-the file. The current `## Items` table keeps its existing `id | source | item | status | evidence` fields and
-adds, in order, `owner | repository | worktree | mode | write_set | dispatch_ref`.
+existing `## <ISO time> wake (10-row ledger)` heading plus a standalone `contract: heartbeat/v2` line; retain
+older wake bytes as historical records. Do not rewrite the file. The current `## Items` table keeps its
+existing `id | source | item | status | evidence` fields and adds, in order,
+`owner | repository | worktree | mode | write_set | dispatch_ref`.
 
 Each dispatched row must identify `mode` as `write` or `read-only`, an explicit repository and worktree, and
 `write_set` as a JSON array of exact relative file paths. Do not use directory-wide paths or globs; a literal
@@ -90,9 +91,9 @@ and `splittable: 0/0`, including when no blockers remain. Add the current row de
 do not leave an unassessed item implicit. `splittable: D/P` is a count of newly dispatched independent units
 over rows assessed for splitting, with the denominator and evidence defined in that wake.
 
-Run the configured strict latest checker after appending the wake. A missing v2 marker or incomplete current
-format fails current certification. A legacy inspection mode may still read historic sections, but must never
-certify them as a current v2 audit.
+Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
+the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
+and Items inventory are useful read modes, but neither can certify a current v2 audit.
 
 ## Reporting and end of session
 
