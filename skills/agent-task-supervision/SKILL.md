@@ -101,14 +101,16 @@ the two roles distinct:
 Parent `children` arrays must contain unique existing Item IDs; reject self-links, cycles, and dangling IDs.
 Keep both roles in this one registry. Children completing does not complete a parent: keep it unfinished until
 its own criteria pass. Do not force parents to spawn, claim worker acceptance/write authority, bypass leaf work
-or receipts, count parents active, or hide unknown legacy state behind tracking. Leaf dispatches require
-accurate owner/repository/worktree/mode/exact write set and a matching accepted receipt; acceptance is not
-activity or landing evidence. See the [backlog audit](references/backlog-audit.md) for receipt and row rules.
+or receipts, count parents active, or hide unknown legacy state behind tracking. Each leaf needs an accepted
+receipt path matching its owner and dispatch; an orchestrator uses the same receipt for its own dispatches.
+Parent tracking has no receipt. Acceptance does not prove that work is active, complete, or landed. See the
+[backlog audit](references/backlog-audit.md) for validation details.
 
 Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) covering
 all non-done Items. Dispositions are `dispatched`, `continuing`, `blocked`, `owner`, or `done` (never `ready`).
 With no new split assessment, `rows()` / `0/0` is valid when Decomposition covers all unfinished Items; do not
-redispatch to fill the count. For v2 verdict syntax and source evidence, see the [backlog audit](references/backlog-audit.md).
+redispatch to fill the count. Write the exact terminal markers `re-split: rows()` and `splittable: 0/0`.
+For v2 verdict syntax and source evidence, see the [backlog audit](references/backlog-audit.md).
 `D` is new dispatches; v2 `P` is all valid assessed verdicts, including parent tracking. The wake contract
 determines the denominator, not CLI mode: unmarked legacy wakes keep the proof-only denominator; `heartbeat/v2`
 uses all valid assessed rows even under non-certifying `--history`. Preserve historical wake bytes.
