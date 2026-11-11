@@ -1,7 +1,7 @@
 // Versioned live heartbeat audit. Historical ledger rules stay in check-heartbeat-ledger.mjs;
 // this module owns the current-wake contract shared by projects using the starter kit.
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, resolve, sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { checkItems, checkLedger, parseWakes } from './check-heartbeat-ledger.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
 
@@ -32,12 +32,16 @@ const splitTable = (lines, headingIndex) => {
 
 function itemTable(text) {
   const lines = text.split('\n');
+  const tables = [];
+  let headingCount = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (!/^#{1,6}\s+Items\s*$/i.test(lines[i])) continue;
+    headingCount += 1;
     const table = splitTable(lines, i);
-    if (table) return table;
+    if (table) tables.push(table);
   }
-  return null;
+  if (!tables.length) return null;
+  return { ...tables[0], headingCount };
 }
 
 function sectionFor(text, wake) {
@@ -61,6 +65,23 @@ function findNamedTable(lines, title) {
 function value(row, key) { return String(row?.[key] ?? '').trim(); }
 function add(findings, rule, message, severity = 'error') { findings.push({ severity, rule, message }); }
 
+function resolveExistingPrefix(path) {
+  let cursor = resolve(path);
+  const suffix = [];
+  while (true) {
+    try { return resolve(realpathSync(cursor), ...suffix); }
+    catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) return resolve(cursor, ...suffix);
+      suffix.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function isWithin(root, candidate) { return candidate === root || candidate.startsWith(`${root}${sep}`); }
+
 function validateReceipt(row, options, findings) {
   const owner = value(row, 'owner');
   const ref = value(row, 'dispatch_ref');
@@ -83,41 +104,67 @@ function validateReceipt(row, options, findings) {
   const baseDir = options.baseDir || (options.ledgerPath ? dirname(resolve(options.ledgerPath)) : process.cwd());
   const worktree = value(row, 'worktree');
   const worktreeRoot = worktree ? (isAbsolute(worktree) ? worktree : resolve(baseDir, worktree)) : baseDir;
+  let canonicalRoot;
+  try { canonicalRoot = resolveExistingPrefix(worktreeRoot); }
+  catch (error) {
+    add(findings, 'v2-worktree-path', `item ${row.id}: cannot resolve declared worktree ${worktree}: ${error.message}`);
+    canonicalRoot = resolve(worktreeRoot);
+  }
+  const canonicalPaths = [];
   for (const rawPath of paths) {
     const path = rawPath.replaceAll('\\', '/');
     const segments = path.split('/').filter((part) => part !== '' && part !== '.');
     const normalizedPath = segments.join('/');
-    const glob = /[*?{}]/.test(path) || segments.some((part) => part.includes('[') && !/^\[[A-Za-z_][A-Za-z0-9_.-]*\]$/.test(part));
+    // Paths are literal repo-relative filenames; square brackets are valid in Next.js dynamic
+    // route names such as [locale] and [...slug], and are never expanded as globs here.
+    const glob = /[*?{}]/.test(path);
     if (!path || isAbsolute(rawPath) || path.startsWith('/') || /^[A-Za-z]:\//.test(path) || segments.includes('..') || glob || path.endsWith('/')) {
       add(findings, 'v2-write-set-path', `item ${row.id}: write_set path must be an exact repo-relative file path: ${rawPath}`);
       continue;
     }
     const candidate = resolve(worktreeRoot, normalizedPath);
+    let canonicalCandidate;
+    try { canonicalCandidate = resolveExistingPrefix(candidate); }
+    catch (error) {
+      add(findings, 'v2-write-set-path', `item ${row.id}: cannot resolve write_set path ${rawPath}: ${error.message}`);
+      canonicalPaths.push(normalizedPath);
+      continue;
+    }
+    if (!isWithin(canonicalRoot, canonicalCandidate)) {
+      add(findings, 'v2-write-set-escape', `item ${row.id}: write_set path resolves outside its declared worktree: ${rawPath}`);
+      canonicalPaths.push(normalizedPath);
+      continue;
+    }
     // Existing directories are rejected; nonexistent literal file paths are valid for new files.
     if (existsSync(candidate) && statSync(candidate).isDirectory()) add(findings, 'v2-write-set-directory', `item ${row.id}: write_set must name files, not a directory: ${rawPath}`);
-    paths[paths.indexOf(rawPath)] = normalizedPath;
+    canonicalPaths.push(relative(canonicalRoot, canonicalCandidate).split(sep).join('/'));
   }
   if (!ref) {
     add(findings, 'v2-dispatch-receipt', `item ${row.id}: dispatched work needs dispatch_ref to an accepted JSON receipt`);
-    return paths;
+    return canonicalPaths;
   }
   const receiptPath = isAbsolute(ref) ? ref : resolve(baseDir, ref);
   let receipt;
   try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
   catch (error) {
     add(findings, 'v2-dispatch-receipt', `item ${row.id}: cannot read dispatch receipt ${ref}: ${error.message}`);
-    return paths;
+    return canonicalPaths;
+  }
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    add(findings, 'v2-dispatch-receipt', `item ${row.id}: dispatch receipt must be a JSON object`);
+    return canonicalPaths;
   }
   const observed = receipt?.result && [receipt.result.task_name, receipt.result.agent_id, receipt.result.session_id, receipt.result.id]
     .find((id) => typeof id === 'string' && id.trim());
   if (!TOOL_RE.test(String(receipt.tool ?? '')) || receipt.event !== 'accepted' || receipt.agent_id !== owner || observed !== owner) {
     add(findings, 'v2-dispatch-receipt', `item ${row.id}: receipt must be accepted and its observed returned ID must match owner ${owner}`);
   }
-  return paths;
+  return canonicalPaths;
 }
 
 function validateRegistry(table, options, findings) {
   if (!table) { add(findings, 'v2-items-missing', 'v2 requires one ## Items registry table'); return []; }
+  if (table.headingCount > 1) add(findings, 'v2-items-duplicate', `v2 requires exactly one ## Items registry; found ${table.headingCount}`);
   for (const col of REQUIRED_ITEM_COLUMNS) if (!table.headers.includes(col)) add(findings, 'v2-item-column', `## Items is missing required header column ${col}`);
   const active = [];
   const seen = new Set();
@@ -158,7 +205,7 @@ function validateDecomposition(text, wake, items, findings) {
     if (!itemById.has(key)) add(findings, 'v2-decomposition-unknown-item', `${loc}: Decomposition references unknown Item ID ${key || '(empty)'}`);
     else {
       const status = value(itemById.get(key), 'status').toLowerCase();
-      const matches = disposition === 'done' ||
+      const matches = (disposition === 'done' && status.startsWith('done')) ||
         (disposition === 'dispatched' && status.startsWith('dispatched')) ||
         (disposition === 'continuing' && status.startsWith('dispatched')) ||
         (disposition === 'blocked' && status.startsWith('blocked')) ||
@@ -173,7 +220,7 @@ function validateDecomposition(text, wake, items, findings) {
     if (/^done\b/i.test(value(item, 'status'))) continue;
     const entry = decomposed.get(id);
     if (!entry) add(findings, 'v2-decomposition-item-missing', `${loc}: non-done item ${id} needs one Decomposition row`);
-    else if (['dispatched', 'continuing'].includes(value(entry, 'disposition').toLowerCase()) && (!value(entry, 'owner') || !value(item, 'owner') || value(entry, 'owner') !== value(item, 'owner'))) add(findings, 'v2-decomposition-owner', `${loc}: ${id} Decomposition owner must be nonempty and match its registry owner`);
+    else if (value(entry, 'disposition').toLowerCase() !== 'done' && (!value(entry, 'owner') || !value(item, 'owner') || value(entry, 'owner') !== value(item, 'owner'))) add(findings, 'v2-decomposition-owner', `${loc}: ${id} Decomposition owner must be nonempty and match its registry owner`);
   }
 }
 

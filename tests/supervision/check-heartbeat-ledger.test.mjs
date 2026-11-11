@@ -9,6 +9,9 @@ import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
 
+// These unit tests exercise the historical parser API directly. Current --latest certification,
+// including the required v2 marker and registry, is covered by heartbeat-v2-contract.test.mjs.
+
 after(cleanupTempDirs);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +25,7 @@ const GOOD = {
 const SOURCES = 'sources: sweep(✓) landings(✓) reports(✓) drift-matrix(✓) memory/handoff(✓ at resume) external-backlog(✓ 2026-01-01T09:30Z) worker-health(✓)';
 
 // One wake section. `rows` overrides individual row states by number; `omit` drops rows; `sources` toggles the line.
-function wake(time, { rows = {}, omit = [], sources = true, sourcesLine = SOURCES, heading, extra = '' } = {}) {
+function wake(time, { rows = {}, omit = [], sources = true, sourcesLine = SOURCES, heading, extra } = {}) {
   const lines = ['----', heading ?? `## ${time} wake (10-row ledger)`];
   if (sources) lines.push(sourcesLine);
   lines.push('', '| # | category | state |', '| --- | --- | --- |');
@@ -32,7 +35,9 @@ function wake(time, { rows = {}, omit = [], sources = true, sourcesLine = SOURCE
     const state = rows[num] ?? GOOD[num] ?? 'empty -- `git log a..b` is empty';
     lines.push(`| ${num} | ${name} | ${state} |`);
   });
-  return `${lines.join('\n')}\n${extra ? `${extra}\n` : ''}`;
+  const hasOpenRows = Object.values(rows).some((state) => /^(?:blocked|deferred)\s*(?:←|<-)/i.test(state));
+  const footer = extra ?? (hasOpenRows ? '' : 're-split: rows()\nsplittable: 0/0');
+  return `${lines.join('\n')}\n${footer ? `${footer}\n` : ''}`;
 }
 
 const rules = (findings) => findings.map((f) => f.rule);
@@ -107,9 +112,23 @@ test('--latest ignores red history but still grades the newest section', () => {
   assert.deepEqual(rules(checkLedger(badNewest, { latest: true })), ['row-missing']);
 });
 
-test('the category names are the ones the supervision skill uses', () => {
+test('the ten-row ledger stays alongside the canonical ten-source backlog sweep', () => {
   const skill = readSkillText('agent-task-supervision').replace(/\s+/g, ' ').toLowerCase();
-  for (const name of CATEGORIES) assert.ok(skill.includes(name), `skill does not mention category "${name}"`);
+  const sources = [
+    'Dispatches and worker health',
+    'Landings and handoffs',
+    'Worker reports',
+    'Direction and drift',
+    'Current memory and resume context',
+    'External backlog',
+    'Worker health',
+    'Registry integrity',
+    'Independent work',
+    'Completion and boundaries',
+  ];
+  assert.equal(CATEGORIES.length, sources.length);
+  assert.match(skill, /keep the ten existing category rows/);
+  for (const source of sources) assert.ok(skill.toLowerCase().includes(source.toLowerCase()), `canonical backlog audit is missing "${source}"`);
 });
 
 // ---- `unchanged` shorthand ----
@@ -255,14 +274,12 @@ test('drift row: under --latest an empty/done drift row must cite the matrix or 
 
 // ---- Audit of the skill's checkable claims ----
 
-test('skill claims: the allowed state forms, sources tokens and checker bullets are all in the skill text', () => {
+test('skill claims: the current v2 contract, decomposition dispositions and dispatch receipts are documented', () => {
   const skill = readSkillText('agent-task-supervision');
-  for (const form of ['in-flight', 'dispatched', 'blocked ←', 'deferred ←', 'empty —', 'done —', 'unchanged —']) assert.ok(skill.includes(form), form);
-  for (const token of ['sweep(✓)', 'landings(✓)', 'reports(✓)', 'drift-matrix(✓)', 'memory/handoff(✓ at resume)', 'external-backlog(✓ <timestamp>|blocked ← <reason>)', 'worker-health(✓)']) {
-    assert.ok(skill.includes(token), token);
-  }
-  assert.ok(skill.includes('rows 2–9'));
-  assert.ok(skill.includes('--latest') && skill.includes('--items'));
+  for (const form of ['contract: heartbeat/v2', 'dispatched', 'continuing', 'blocked', 'owner', 'done', 'rows()', 'splittable: 0/0']) assert.ok(skill.includes(form), form);
+  assert.match(skill, /accepted receipt path/);
+  assert.match(skill, /does not prove that work is active, complete, or landed/);
+  assert.match(skill, /same receipt for its own dispatches/);
 });
 
 test('skill claims: the glyph forms the skill shows (← and —) are accepted, a bare dash-less state is not', () => {
@@ -455,7 +472,7 @@ function runCli(args) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
 }
 
-test('CLI: exit 0 green, exit 1 with one line per red row, exit 2 on usage', () => {
+test('CLI: historical inspection stays green, red input reports missing rows, and usage errors exit 2', () => {
   const dir = mkdtempTracked('hb-ledger-');
   const ledger = join(dir, 'heartbeat.md');
   writeFileSync(ledger, wake('2026-01-01T10:00Z', { omit: [2, 3] }));
@@ -465,7 +482,10 @@ test('CLI: exit 0 green, exit 1 with one line per red row, exit 2 on usage', () 
   assert.match(red.stdout, /RED \[row-missing\]/);
 
   writeFileSync(ledger, wake('2026-01-01T10:00Z') + items('| I1 | landing:abc1234 | x | dispatched w1 | - |'));
-  assert.equal(runCli(['--', ledger, '--latest']).status, 0);
+  // This pre-v2 fixture is historical material. It may pass the legacy whole-file parser,
+  // but --latest is reserved for current heartbeat/v2 certification.
+  assert.equal(runCli(['--', ledger]).status, 0);
+  assert.equal(runCli(['--', ledger, '--latest']).status, 1);
   assert.equal(runCli([ledger, '--items']).status, 0);
 
   assert.equal(runCli([]).status, 2);
@@ -580,6 +600,7 @@ test('re-split: a bare "none" in prep-ahead/audit is rejected while an open row 
 
 test('re-split: Items registry blocked rows are enumerated too', () => {
   const registry = items('| I12 | report:a | follow-up | blocked ← claude/a unlanded output; same-file conflict: src/a.ts | - |', '| I13 | report:b | other | dispatched w2 | - |');
-  assert.deepEqual(latestRules(wake(WAKE_A) + registry), ['resplit-rows-missing', 'splittable-missing']);
+  assert.deepEqual(latestRules(wake(WAKE_A, { extra: '' }) + registry), ['resplit-rows-missing', 'splittable-missing']);
+  assert.deepEqual(latestRules(wake(WAKE_A, { extra: 're-split: rows()\nsplittable: 0/0' }) + registry), ['resplit-row-unverdicted']);
   assert.deepEqual(latestRules(wake(WAKE_A, { extra: 're-split: rows(I-12: cannot-split: same-file conflict: src/a.ts)\nsplittable: 0/1' }) + registry), []);
 });

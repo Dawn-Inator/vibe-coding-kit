@@ -37,6 +37,8 @@
   "supervision/heartbeat-arm.test.mjs",
   "supervision/heartbeat-ledger-sources.test.mjs",
   "supervision/heartbeat-ledger-unchanged.test.mjs",
+  "supervision/heartbeat-v2-contract.test.mjs",
+  "supervision/heartbeat-v2-guards.test.mjs",
   "supervision/heartbeat-sweep-free.test.mjs",
   "supervision/heartbeat-sweep.test.mjs",
   "worktrees/ai-idle-check.test.mjs",

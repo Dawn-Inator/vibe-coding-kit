@@ -10,6 +10,7 @@ import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import {
+  DEFAULT_COMMANDS,
   DEFAULT_LEDGER_PATH_RE,
   PROBE_SECONDS,
   SOURCES_TEMPLATE,
@@ -54,11 +55,22 @@ test('parseArgs: a real heartbeat needs a ledger that matches the pattern; the p
   assert.throws(() => parseArgs(['--ledger', 'notes/heartbeat.md']), /--ledger must match/);
   assert.throws(() => parseArgs(['--ledger', LEDGER_REL, '--minutes', '0']), /positive number/);
   assert.throws(() => parseArgs(['--bogus']), /unknown argument/);
-  assert.deepEqual(parseArgs(['--', '--ledger', LEDGER_REL]), { seconds: 1200, probe: false, ledger: LEDGER_REL });
+  assert.deepEqual(parseArgs(['--', '--ledger', LEDGER_REL]), { seconds: 1200, probe: false, ledger: LEDGER_REL, commands: DEFAULT_COMMANDS });
   assert.equal(parseArgs(['--ledger', LEDGER_REL, '--minutes', '15']).seconds, 900);
   assert.equal(parseArgs(['--ledger', LEDGER_REL, '--seconds', '90']).seconds, 90);
-  assert.deepEqual(parseArgs(['--probe']), { seconds: PROBE_SECONDS, probe: true, ledger: null });
+  assert.deepEqual(parseArgs(['--probe']), { seconds: PROBE_SECONDS, probe: true, ledger: null, commands: DEFAULT_COMMANDS });
   assert.equal(PROBE_SECONDS, 75);
+});
+
+test('project command mappings flow into the checklist and re-arm command', () => {
+  const commands = { ...DEFAULT_COMMANDS, check: 'pnpm project:heartbeat-check -- {ledger} --latest', sweep: 'pnpm project:heartbeat-sweep -- {ledger}' };
+  const args = parseArgs(['--ledger', LEDGER_REL, '--commands', JSON.stringify({ check: commands.check, sweep: commands.sweep })]);
+  assert.deepEqual(args.commands, commands);
+  const message = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: WAKE_NOW, commands: args.commands });
+  assert.match(message, /pnpm project:heartbeat-check -- \.workspace\/2026-01-01-demo\/heartbeat\.md --latest/);
+  assert.match(message, /pnpm project:heartbeat-sweep -- \.workspace\/2026-01-01-demo\/heartbeat\.md/);
+  assert.match(message, /node \.vibe-coding\/kit\/src\/supervision\/heartbeat-arm\.mjs --ledger \.workspace\/2026-01-01-demo\/heartbeat\.md/);
+  assert.match(message, /--commands/);
 });
 
 test('HEARTBEAT_LEDGER_RE overrides the ledger path pattern', () => {
@@ -82,16 +94,17 @@ test('checkLedgerBeforeArm: arming k+1 needs at least k-1 wake sections', () => 
   assert.equal(checkLedgerBeforeArm(sections(2), 3), null);
 });
 
-test('formatWakeMessage: re-arm first, one chat line, no project-specific commands, ASCII only', () => {
+test('formatWakeMessage: re-arm first, one countable chat line, shared Node defaults', () => {
   const now = new Date('2026-01-01T10:20:05Z');
   const text = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now });
   assert.ok(text.indexOf('re-arm FIRST') < text.indexOf('(2) audit'));
   assert.ok(text.includes(`## 2026-01-01T10:20Z wake (10-row ledger)`));
   assert.ok(text.includes(STATUS_LINE_FORMAT));
-  assert.ok(text.includes(`pnpm check:heartbeat-ledger -- ${LEDGER_REL} --latest`));
-  assert.ok(text.includes('pnpm heartbeat:check-stall'));
+  assert.ok(text.includes(`node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs ${LEDGER_REL} --latest`));
+  assert.ok(text.includes('node .vibe-coding/kit/cli.mjs worktree status --stale'));
   assert.ok(!text.includes('worktree:'));
-  assert.ok(/^[\x20-\x7e\n·✓←—]*$/.test(text), 'checklist should stay English-neutral (the skill\'s own glyphs aside)');
+  assert.match(text, /active N · dispatched X · landed Y · splittable: D\/P/);
+  assert.doesNotMatch(text, /\b\d+%/, 'the status line does not invent a subjective completion percentage');
   const probe = formatWakeMessage({ seconds: 75, probe: true, ledger: null, now });
   assert.match(probe, /^HEARTBEAT_PROBE delivered 10:20:05/);
 });
@@ -162,24 +175,33 @@ test('CLI: usage errors exit 2 and the probe needs no ledger and logs nothing', 
 function extractBlock(message) {
   const lines = message.split('\n');
   const start = lines.findIndex((line) => line === '  ----');
-  const end = lines.findIndex((line, i) => i > start && line.startsWith('  | ') && line.includes(CATEGORIES.at(-1)));
+  const end = lines.findIndex((line, i) => i > start && /^  splittable:\s*\d+\/\d+\s*$/.test(line));
   assert.ok(start >= 0 && end > start, 'wake message must carry the ledger block');
   return lines.slice(start, end + 1).map((line) => line.slice(2)).join('\n');
 }
 
 function runChecker(cwd, text) {
   const file = join(cwd, 'wake-ledger.md');
-  writeFileSync(file, text);
+  const withItems = /^(#{1,6})\s+Items\s*$/m.test(text)
+    ? text
+    : `${text}\n\n## Items\n\n| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n`;
+  writeFileSync(file, withItems);
   return spawnSync(process.execPath, [CHECKER, file, '--latest'], { cwd, encoding: 'utf8' });
 }
 
 const WAKE_NOW = new Date('2026-01-01T10:20:05Z');
 
-test('ledgerTemplate: one row per checker category, in order', () => {
-  const rows = ledgerTemplate('2026-01-01T10:20Z').filter((line) => /^\| \d+ \|/.test(line));
+test('ledgerTemplate: one row per checker category and the explicit empty v2 audit scaffold', () => {
+  const template = ledgerTemplate('2026-01-01T10:20Z');
+  const rows = template.filter((line) => /^\| \d+ \|/.test(line));
   assert.equal(rows.length, CATEGORIES.length);
   rows.forEach((row, i) => assert.ok(row.startsWith(`| ${i + 1} | ${CATEGORIES[i]} |`), row));
   assert.match(rows[0], /\(1a\) <state>; \(1b\) <state>/);
+  assert.ok(template.includes('## 2026-01-01T10:20Z wake (10-row ledger)'));
+  assert.ok(template.includes('contract: heartbeat/v2'));
+  assert.ok(template.includes('### Decomposition'));
+  assert.ok(template.includes('re-split: rows()'));
+  assert.ok(template.includes('splittable: 0/0'));
 });
 
 // Fills the printed block the way a model would: one allowed state per row (row 10 cites the matrix),
@@ -201,7 +223,8 @@ function fillBlock(block, rowStates = {}) {
     .replace('<timestamp>', '2026-01-01T10:20Z')
     .replace('(1a) <state>; (1b) <state>', '(1a) in-flight unit-a; (1b) empty -- `ls .todolist` = nothing free')
     .replace(/^\| (\d+) \| ([^|]+) \| <state> \|$/gm, (_, num, name) => `| ${num} | ${name} | ${states[num]} |`)
-    .concat('\n\nre-split: rows(r4: cannot-split: owner-gated; r5: split->dispatched reviewer-2)\nsplittable: 1/1');
+    .replace(/^\| <item id>[^\n]*\n?/m, '')
+    .replace('re-split: rows()\nsplittable: 0/0', 're-split: prep-ahead(dispatched P1) lessons(done) audit(dispatched A1) rows(r4: cannot-split: owner-gated; r5: split->dispatched reviewer-2)\nsplittable: 1/1');
 }
 
 test('wake message: the printed block passes the real checker once every placeholder is filled', () => {
@@ -239,11 +262,11 @@ test('sources template: the skill\'s tokens, in the skill\'s order, with the bac
     SOURCES_TEMPLATE,
     'sources: sweep(✓) landings(✓) reports(✓) drift-matrix(✓) memory/handoff(✓ at resume) external-backlog(✓ <timestamp>) worker-health(✓)',
   );
-  const skill = readSkillText('agent-task-supervision');
-  for (const token of ['sweep(✓)', 'landings(✓)', 'reports(✓)', 'drift-matrix(✓)', 'memory/handoff(✓ at resume)', 'worker-health(✓)']) {
-    assert.ok(skill.includes(token) && SOURCES_TEMPLATE.includes(token), token);
+  const skill = readSkillText('agent-task-supervision').toLowerCase();
+  for (const source of ['dispatches and worker health', 'landings and handoffs', 'worker reports', 'direction and drift', 'current memory and resume context', 'external backlog', 'worker health', 'registry integrity', 'independent work', 'completion and boundaries']) {
+    assert.ok(skill.includes(source), `backlog audit is missing source ${source}`);
   }
-  assert.ok(skill.includes('external-backlog(✓ <timestamp>|blocked ← <reason>)'));
+  assert.ok(SOURCES_TEMPLATE.includes('external-backlog(✓ <timestamp>)'));
 });
 
 test('legend: every state form of the skill is listed, with the unchanged conditions and the blocked-backlog rule', () => {
@@ -255,18 +278,18 @@ test('legend: every state form of the skill is listed, with the unchanged condit
   assert.match(legend, /first\s+wake.*deferred last wake.*row 10/s);
   assert.match(legend, /external-backlog\(blocked ← <reason>\)\s+AND an `owner ←` item/);
   assert.match(legend, /unchecked: <units>/);
+  assert.match(legend, /accepted request; record later active\/final\/landed evidence separately\. Never infer execution from acceptance/);
   const text = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: WAKE_NOW });
   for (const line of STATE_LEGEND) assert.ok(text.includes(`  ${line}`), line);
 });
 
 test('wake message: audit steps include the re-split and dispatch line', () => {
   const text = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: WAKE_NOW });
-  assert.match(text, /4\. decomposition: if fewer workers are in flight than free independent units, re-split/);
-  assert.ok(text.indexOf('discovery first') < text.indexOf('4. decomposition'));
-  assert.match(text, /default answer is YES/);
-  assert.match(text, /cannot-split: <tagged proof>/);
-  assert.match(text, /splittable: D\/P/);
-  assert.ok(text.includes('run ONCE: pnpm check:heartbeat-ledger'));
+  assert.match(text, /4\. re-split immediately: decompose every remaining non-done Item/);
+  assert.ok(text.indexOf('discovery first') < text.indexOf('4. re-split immediately'));
+  assert.match(text, /every accepted dispatch is only an accepted request/i);
+  assert.match(text, /standalone `re-split: rows\(\.\.\.\)` and `splittable: D\/P` lines/);
+  assert.ok(text.includes(`run ONCE: node .vibe-coding/kit/src/supervision/check-heartbeat-ledger.mjs ${LEDGER_REL} --latest`));
 });
 
 test('keepAwakeCommand / holdIdleAwake: darwin spawns caffeinate tied to the pid; others and failures are silent', () => {

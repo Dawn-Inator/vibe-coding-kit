@@ -49,6 +49,56 @@ test('adopt keeps the common body, frontmatter and relative assets intact', () =
   assert.equal(result.provenance.mode, 'adopt');
 });
 
+test('heartbeat adopt keeps one common audit contract in both platform projections', () => {
+  const f = fixture();
+  const common = [
+    '---',
+    'name: agent-task-supervision',
+    'description: Shared heartbeat audit contract.',
+    '---',
+    '',
+    '# Heartbeat audit',
+    '',
+    'contract: heartbeat/v2',
+    'Keep ten category rows, current open-item decomposition and exact accepted dispatch receipts.',
+    '<!-- BEGIN: claude-only -->',
+    'Claude arm command',
+    '<!-- END: claude-only -->',
+    '<!-- BEGIN: agent-only -->',
+    'Codex arm command',
+    '<!-- END: agent-only -->',
+  ].join('\n');
+  putSkill(f.commonRoot, 'agent-task-supervision', common, { 'references/audit.md': 'same audit requirements' });
+  putExtension(f.localRoot, 'agent-task-supervision', '---\nname: agent-task-supervision\n---\nlocal policy');
+  assert.throws(() => composeSkill({
+    name: 'agent-task-supervision',
+    commonRoot: f.commonRoot,
+    localRoot: f.localRoot,
+    mode: 'adopt',
+  }), /adopt mode cannot include EXTENSION/);
+
+  const clean = fixture();
+  putSkill(clean.commonRoot, 'agent-task-supervision', common, { 'references/audit.md': 'same audit requirements' });
+
+  const projections = ['claude', 'agents'].map((platform) => composeSkill({
+    name: 'agent-task-supervision',
+    commonRoot: clean.commonRoot,
+    localRoot: clean.localRoot,
+    mode: 'adopt',
+    platform,
+  }));
+  for (const projection of projections) {
+    assert.match(projection.content, /contract: heartbeat\/v2/);
+    assert.match(projection.content, /ten category rows, current open-item decomposition and exact accepted dispatch receipts/);
+    assert.doesNotMatch(projection.content, /local policy/);
+    assert.equal(projection.files.get('references/audit.md').toString(), 'same audit requirements');
+  }
+  assert.match(projections[0].content, /Claude arm command/);
+  assert.doesNotMatch(projections[0].content, /Codex arm command/);
+  assert.match(projections[1].content, /Codex arm command/);
+  assert.doesNotMatch(projections[1].content, /Claude arm command/);
+});
+
 test('extend composes the two aligned native-layer skills from public bodies plus project appendices', () => {
   const f = fixture();
   for (const name of ['agent-orchestration-guardrails', 'agent-task-supervision']) {
