@@ -52,7 +52,6 @@ import {
 } from './heartbeat-blocked-reason.mjs';
 import { gradeSources, parseIsoMs } from './heartbeat-ledger-sources.mjs';
 import { checkSplittable } from './heartbeat-ledger-splittable.mjs';
-import { createUnchangedTracker } from './heartbeat-ledger-unchanged.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
 
 // Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
@@ -75,13 +74,16 @@ export const CATEGORIES = [
   'session hygiene',
   'deployable-unit drift',
 ];
+export const LEGACY_CATEGORIES = [
+  'review', 'history/handoff', 'tooling fixes', 'release prep',
+  'worker follow-ups', 'centralized verification', 'session hygiene', 'per-stage drift',
+];
 
-export const WAKE_HEADING_RE = /^#{1,6}\s+.*wake \(10-row ledger[^)]*\)\s*$/i;
+export const WAKE_HEADING_RE = /^#{1,6}\s+.*wake \((8|10)-row ledger[^)]*\)\s*$/i;
 const HEADING_TIME_RE = /^#{1,6}\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 const HEADING_ISO_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?/;
 const SECTION_END_RE = /^(#{1,6}\s|-{3,}\s*$)/;
 const SOURCES_RE = /^\s*sources:\s*\S/i;
-const DRIFT_ROW = 10;
 const DRIFT_MATRIX_RE = /matrix|unchecked\s*:/i;
 const ROW_RE = /^\|\s*(\d+)\s*\|([^|]*)\|(.*)\|\s*$/;
 const ARROW = '(?:←|<-)';
@@ -90,8 +92,40 @@ const VAGUE_RESOURCE_RE = /^(in[- ]?flight|busy|running|working|pending|waiting)
 const DEFERRED_RE = new RegExp(`^deferred\\s*${ARROW}\\s*(.+?)\\s+ETA\\s*(?:<=|≤)\\s*20\\s*m\\b`, 'i');
 // Evidence is a backticked command/output or a commit SHA (7-40 hex characters, at least one a digit).
 const EVIDENCE_RE = /`[^`]+`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/i;
+const LEGACY_EVIDENCE_RE = /`[^`]+`|\b[0-9a-f]{7,40}\b/i;
 const ALLOWED_STATES = 'in-flight / dispatched / blocked / deferred / empty / done / unchanged';
 const UNIT_RE = /^(?:in-flight|dispatched)\s*:?\s+\S/i;
+const CHECKER_GUARD_GATE_RE = /\b(checker|guard|gate)\b/i;
+const BACKTICK_RE = /`[^`]+`/;
+
+function createLayoutUnchangedTracker() {
+  let previous = new Map();
+  let current = new Map();
+  let layoutCount = null;
+  return {
+    startWake(layout) {
+      if (layoutCount !== null && layoutCount !== layout.count) previous = new Map();
+      layoutCount = layout.count;
+      current = new Map();
+    },
+    check(key, state, kind, layout) {
+      const unchanged = /^unchanged\b/i.test(state.trim());
+      const previousKind = previous.get(key);
+      current.set(key, unchanged ? (previousKind ?? 'unknown') : kind);
+      if (!unchanged) return null;
+      const rowNumber = /^(?:1a|1b)$/.test(key) ? 1 : Number(key);
+      if (rowNumber === layout.goalRow || rowNumber === layout.driftRow) {
+        if (layout.count === 10) return 'only rows 2-9 may use it; the goal row (1a/1b) and the drift row (10) are restated every wake';
+        return `only rows 1-${layout.driftRow - 1} may use it; the drift row (${layout.driftRow}) must be restated every wake`;
+      }
+      if (previousKind === undefined || previousKind === 'unknown') return 'there is no valid previous-wake state for this category to carry forward';
+      if (previousKind === 'deferred') return 'the previous wake was deferred last wake; restate it so the repeated-deferral rule can see its input';
+      if (!BACKTICK_RE.test(state)) return 'it must cite the command rerun this wake in backticks';
+      return null;
+    },
+    endWake() { previous = current; },
+  };
+}
 
 export function countWakeSections(text) {
   return text.split('\n').filter((line) => WAKE_HEADING_RE.test(line)).length;
@@ -107,9 +141,14 @@ export function parseWakes(text) {
   const wakes = [];
   for (let i = 0; i < lines.length; i += 1) {
     if (!WAKE_HEADING_RE.test(lines[i])) continue;
-    const wake = { heading: lines[i].trim(), line: i + 1, lineNumber: i + 1, headingLine: i + 1, layout: { count: 10, reviewRow: 2, driftRow: 10, goalRow: 1 }, headingOk: HEADING_TIME_RE.test(lines[i]), sources: false, sourcesLine: null, rows: [] };
+    const count = Number(lines[i].match(WAKE_HEADING_RE)?.[1] ?? 10);
+    const layout = count === 8
+      ? { count: 8, reviewRow: 1, driftRow: 8, goalRow: null }
+      : { count: 10, reviewRow: 2, driftRow: 10, goalRow: 1 };
+    const wake = { heading: lines[i].trim(), line: i + 1, lineNumber: i + 1, headingLine: i + 1, layout, headingOk: count === 8 || HEADING_TIME_RE.test(lines[i]), sources: false, sourcesLine: null, rows: [] };
     wake.sectionLines = [];
     const headingLevel = (lines[i].match(/^#+/)?.[0] ?? '##').length;
+    let expectedRow = 1;
     for (let j = i + 1; j < lines.length; j += 1) {
       const nextHeadingLevel = lines[j].match(/^(#+)\s/)?.[1].length;
       if ((nextHeadingLevel && nextHeadingLevel <= headingLevel) || /^-{3,}\s*$/.test(lines[j])) break;
@@ -119,7 +158,19 @@ export function parseWakes(text) {
         wake.sourcesLine = lines[j].trim();
       }
       const row = lines[j].match(ROW_RE);
-      if (row) wake.rows.push({ num: Number(row[1]), category: row[2].trim(), state: row[3].trim(), line: j + 1, lineNumber: j + 1 });
+      if (row) {
+        const num = Number(row[1]);
+        if (layout.count === 10) {
+          // Preserve the ten-row parser's duplicate/out-of-range visibility. Only OLD8 ignores
+          // appended follow-up rows after its sequential core run.
+          wake.rows.push({ num, category: row[2].trim(), state: row[3].trim(), line: j + 1, lineNumber: j + 1 });
+        } else if (expectedRow <= layout.count) {
+          if (num === expectedRow) {
+            wake.rows.push({ num, category: row[2].trim(), state: row[3].trim(), line: j + 1, lineNumber: j + 1 });
+            expectedRow += 1;
+          } else expectedRow = layout.count + 1;
+        }
+      }
     }
     wake.timeMs = parseIsoMs(lines[i].match(HEADING_ISO_RE)?.[0]);
     wakes.push(wake);
@@ -131,7 +182,7 @@ export function parseWakes(text) {
 function stateCells(wake, red) {
   const cells = [];
   for (const row of wake.rows) {
-    if (row.num !== 1) {
+    if (wake.layout.goalRow !== row.num) {
       cells.push({ key: String(row.num), state: row.state, row });
       continue;
     }
@@ -163,7 +214,7 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
   }
   const first = latest ? wakes.length - 1 : 0;
   const ownerRows = parseItems(text).rows.filter((row) => itemKind(row.status) === 'owner');
-  const unchanged = createUnchangedTracker();
+  const unchanged = createLayoutUnchangedTracker();
   let previousInputs = new Map();
   // Every wake is walked, so the `unchanged` carry-forward and the deferred-input memory are right even
   // when only the newest section is graded; findings are kept for the graded sections only.
@@ -174,32 +225,38 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
       if (graded) findings.push({ rule, message: `${wake.heading} (line ${line}): ${message}` });
     };
     if (!wake.headingOk) red('heading-time', wake.line, 'heading must be "## <ISO time> wake (10-row ledger)", e.g. 2026-01-01T12:00Z');
-    if (!wake.sources) red('sources-missing', wake.line, 'missing a "sources:" line naming the discovery channels this wake consulted');
-    if (latest && graded && wake.sourcesLine) {
+    if (wake.layout.count === 10 && !wake.sources) red('sources-missing', wake.line, 'missing a "sources:" line naming the discovery channels this wake consulted');
+    if (latest && graded && wake.layout.count === 8 && !wake.sourcesLine) red('sources-missing', wake.line, 'newest wake has no "sources:" line naming the discovery channels this wake consulted');
+    if (latest && graded && wake.layout.count === 8 && wake.sourcesLine) {
+      for (const finding of gradeSources(wake.sourcesLine, { wakeMs: wake.timeMs, ownerRows })) red(finding.rule, wake.line, finding.message);
+    } else if (latest && graded && wake.sourcesLine) {
       for (const finding of gradeSources(wake.sourcesLine, { wakeMs: wake.timeMs, ownerRows })) red(finding.rule, wake.line, finding.message);
     }
 
+    if (w > 0 && wakes[w - 1].layout.count !== wake.layout.count) previousInputs = new Map();
     const counts = new Map();
     for (const row of wake.rows) counts.set(row.num, (counts.get(row.num) || 0) + 1);
-    CATEGORIES.forEach((name, index) => {
+    const categories = wake.layout.count === 8 ? LEGACY_CATEGORIES : CATEGORIES;
+    if (wake.layout.count === 8 && wake.rows.length !== wake.layout.count) red('row-count', wake.line, `found ${wake.rows.length} category row(s), expected exactly ${wake.layout.count} (numbered 1..${wake.layout.count})`);
+    categories.forEach((name, index) => {
       const seen = counts.get(index + 1) || 0;
-      if (seen === 0) red('row-missing', wake.line, `row ${index + 1} (${name}) is missing`);
+      if (seen === 0 && wake.layout.count === 10) red('row-missing', wake.line, `row ${index + 1} (${name}) is missing`);
       if (seen > 1) red('row-duplicate', wake.line, `row ${index + 1} (${name}) appears ${seen} times, expected exactly once`);
     });
     for (const num of counts.keys()) {
-      if (num < 1 || num > CATEGORIES.length) red('row-number', wake.line, `row number ${num} is outside 1..${CATEGORIES.length}`);
+      if (num < 1 || num > wake.layout.count) red('row-number', wake.line, `row number ${num} is outside 1..${wake.layout.count}`);
     }
 
-    unchanged.startWake();
+    unchanged.startWake(wake.layout);
     for (const cell of stateCells(wake, red)) {
       const where = cell.row.line;
       const label = `row ${cell.key}`;
       const kind = kindOf(cell.state);
-      const problem = unchanged.check(cell.key, cell.state, kind);
+      const problem = unchanged.check(cell.key, cell.state, kind, wake.layout);
       if (kind === 'unchanged') {
         if (problem) red('unchanged-shorthand', where, `${label}: "unchanged -- \`<command rerun this wake>\`" is not allowed here: ${problem}; got "${cell.state}"`);
       } else if (kind === 'unknown') {
-        red('state-unknown', where, `${label}: state must start with ${ALLOWED_STATES}; got "${cell.state}"`);
+        red(wake.layout.count === 8 ? 'unknown-state' : 'state-unknown', where, `${label}: state must start with ${ALLOWED_STATES}; got "${cell.state}"`);
       } else if (kind === 'in-flight' || kind === 'dispatched') {
         if (!UNIT_RE.test(cell.state)) red('unit-missing', where, `${label}: ${kind} must name the agent or unit as "${kind} <unit>"; got "${cell.state}"`);
       } else if (kind === 'blocked') {
@@ -218,14 +275,16 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
         else if (previousInputs.get(cell.key) === input) {
           red('deferred-repeat', where, `${label}: deferred on "${input}" two wakes in a row -- escalate to dispatched or blocked <- <resource>`);
         }
-      } else if ((kind === 'empty' || kind === 'done') && !EVIDENCE_RE.test(cell.state)) {
-        red('evidence-missing', where, `${label}: ${kind} needs evidence (a backticked command/output or a commit SHA)`);
+      } else if ((kind === 'empty' || kind === 'done') && !(wake.layout.count === 8 ? LEGACY_EVIDENCE_RE : EVIDENCE_RE).test(cell.state)) {
+        red(wake.layout.count === 8 ? `${kind}-evidence` : 'evidence-missing', where, `${label}: ${kind} needs evidence (a backticked command/output or a commit SHA)`);
+      } else if (kind === 'done' && cell.row.num === wake.layout.reviewRow && CHECKER_GUARD_GATE_RE.test(cell.state) && !BACKTICK_RE.test(cell.state)) {
+        red('review-checker-landing-needs-command', where, `review row ${wake.layout.reviewRow} cites a checker, guard, or gate landing and must include the command run in backticks, not only a SHA`);
       }
-      const since = blockedStreaks.observe(cell.key, kind, cell.state, wake.timeMs);
+      const since = blockedStreaks.observe(`${wake.layout.count}:${cell.key}`, kind, cell.state, wake.timeMs);
       if (since !== null) red('blocked-stale', where, staleStreakMessage(label, since).replace(`${label}: `, ''));
       const freeze = freezeProblem(cell.state, wake.timeMs);
       if (freeze) red(freeze.rule, where, `${label}: ${freeze.detail}`);
-      if (latest && cell.key === String(DRIFT_ROW) && (kind === 'empty' || kind === 'done') && !DRIFT_MATRIX_RE.test(cell.state)) {
+      if (latest && cell.key === String(wake.layout.driftRow) && (kind === 'empty' || kind === 'done') && !DRIFT_MATRIX_RE.test(cell.state)) {
         red('drift-matrix-missing', where, `${label}: the drift row must cite a check against the declared stage x unit matrix, or name the units not checked ("unchecked: <units>"); got "${cell.state}"`);
       }
     }
@@ -234,7 +293,9 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
     if (latest && graded) {
       const itemRows = parseItems(text).rows.map((row) => ({ id: row.id, status: row.status }));
       const cells = stateCells(wake, () => {});
-      for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit })) findings.push(finding);
+      if (wake.layout.goalRow) {
+        for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit })) findings.push(finding);
+      }
     }
   }
   return findings;
@@ -245,7 +306,11 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
 const ITEMS_HEADING_RE = /^#{1,6}\s+Items\s*$/i;
 const SOURCE_RE = /^(memory|handoff|report|landing|owner|sweep|audit|goal):\S/i;
 // The hard categories an `owner <-` item may cite (the supervision skill's list).
-const OWNER_CATEGORY_RE = /irreversible|security|cost|owner decision/i;
+// The four hard Owner-decision categories are accepted in English and Chinese.
+const OWNER_CATEGORY_RE = /(irreversible|security boundary|significant cost|owner decision(?: domain)?|不可逆|安全边界|显著成本|owner\s*决策域|决策域)/i;
+// This records that applicable standing authorization / prior decisions were checked. It is
+// evidence in the ledger only; this checker does not grant authorization or decide coverage.
+const AUTH_CHECK_RE = /(checked|核对|已检查|检查|standing authorization|prior[- ]authorization|既定授权|既定决策)/i;
 const REPLAY_RE = /replays:([\w./-]+)=(\d+)/gi;
 
 function itemKind(status) {
@@ -371,9 +436,8 @@ export function checkItems(text, { now = new Date() } = {}) {
       const resource = row.status.match(BLOCKED_RE)?.[1];
       if (!resource || VAGUE_RESOURCE_RE.test(resource.trim())) red('item-blocked', row, 'blocked must name an exclusive resource as "blocked <- <resource>"');
     } else if (kind === 'owner') {
-      const proof = row.status.match(new RegExp(`^owner\\s*${ARROW}\\s*(\\S.*?)\\s*\\+\\s*(\\S.*)$`, 'i'));
-      if (!proof) red('item-owner-proof', row, 'owner <- needs "<hard category> + <authorization checked and why it does not cover this>"');
-      else if (!OWNER_CATEGORY_RE.test(proof[1])) red('item-owner-category', row, `owner <- must cite a hard category (irreversible / security boundary / significant cost / owner decision); got "${proof[1]}"`);
+      if (!OWNER_CATEGORY_RE.test(row.status)) red('item-owner-category', row, `owner <- must cite a hard category (irreversible / security boundary / significant cost / owner decision domain; 不可逆 / 安全边界 / 显著成本 / Owner决策域); got "${row.status}"`);
+      if (!AUTH_CHECK_RE.test(row.status)) red('item-owner-authorization-note', row, 'owner <- must record which standing authorization or prior decision was checked and why it does not cover this item');
     }
     for (const match of `${row.status} ${row.evidence}`.matchAll(REPLAY_RE)) {
       const unit = match[1];

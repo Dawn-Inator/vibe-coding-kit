@@ -227,6 +227,7 @@ function validateDecomposition(text, wake, items, findings) {
 function validateV2Wake(text, wake, items, findings) {
   const lines = sectionFor(text, wake);
   const loc = `${wake.heading} (line ${wake.line})`;
+  if (wake.layout.count !== 10) add(findings, 'v2-layout', `${loc}: current heartbeat/v2 audits require the ten-row layout`);
   if (!lines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line))) add(findings, 'v2-contract-missing', `${loc}: latest wake must contain contract: heartbeat/v2`);
   validateDecomposition(text, wake, items, findings);
   const resplit = lines.find((line) => /^\s*re-split:/i.test(line));
