@@ -97,6 +97,17 @@ test('event fallback names the canonical due CLI and makes the first eligible ev
   assert.match(skill, /its JSON `due` field is authoritative/i);
 });
 
+test('knowledge contract keeps aggregate parent tracking separate from dispatched leaf work', () => {
+  const skill = readSkillText('agent-task-supervision').replace(/\s+/g, ' ').toLowerCase();
+  assert.match(skill, /parent coordinator \| `tracking`; nonempty `children` array/);
+  assert.match(skill, /`mode: read-only`, `write_set: \[\]`, `dispatch_ref` empty or `-`; no worker acceptance receipt/);
+  assert.match(skill, /leaf worker \| `dispatched`; omit `children` or use `\[\]`/);
+  assert.match(skill, /real accepted receipt in `dispatch_ref`/);
+  assert.match(skill, /parent tracking cites current child-state evidence and does not make that row an active worker/);
+  assert.match(skill, /continuing: tracking <source-ref>` for a parent coordinator/);
+  assert.match(skill, /do not force the parent to spawn/);
+});
+
 test('HEARTBEAT_LEDGER_RE overrides the ledger path pattern', () => {
   const env = { HEARTBEAT_LEDGER_RE: '^notes/[a-z]+/hb\\.md$' };
   assert.equal(parseArgs(['--ledger', 'notes/demo/hb.md'], env).ledger, 'notes/demo/hb.md');
@@ -163,7 +174,9 @@ test('CLI --template is read-only and its filled output passes strict checking',
   assert.match(result.stdout, /^HEARTBEAT_TEMPLATE -- read-only; no wake delivered\n/);
   assert.match(result.stdout, /sources: sweep\(✓\).*external-backlog\(✓ <timestamp>\)/);
   assert.match(result.stdout, /\| id \| source \| item \| status \| evidence \| owner \| repository \| worktree \| mode \| write_set \| dispatch_ref \| children \|/);
-  assert.match(result.stdout, /children is a JSON array of unique IDs already in this one Items registry/);
+  assert.match(result.stdout, /children is a nonempty JSON array of unique existing Item IDs/);
+  assert.match(result.stdout, /Parent: status `tracking`.*dispatch_ref is empty or `-` \(no worker acceptance receipt\)/);
+  assert.match(result.stdout, /Leaf: status `dispatched`.*real accepted dispatch receipt must match the worker authorization/);
   assert.equal(existsSync(ledger), false, 'template mode must not create a ledger');
   assert.equal(existsSync(arms), false, 'template mode must not append an arm log');
 

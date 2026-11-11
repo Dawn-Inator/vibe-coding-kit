@@ -7,6 +7,11 @@ rows(...)` and `splittable: D/P` lines. The `## Items` registry keeps its origin
 `owner | repository | worktree | mode | write_set | dispatch_ref`. The [backlog audit](backlog-audit.md)
 defines the required row content and evidence.
 
+The optional `children` column is only for parent coordination. A parent row is `status: tracking` with a
+nonempty array of unique existing Item IDs, read-only metadata (`write_set: []`), and no accepted dispatch receipt
+(`dispatch_ref` empty or `-`). It is not an active worker. A leaf row is `status: dispatched` and requires its
+real accepted receipt and accurate write scope. Keep both roles in the same Items registry.
+
 Older 8/10 wake records remain readable for historical inspection. Reading one successfully does not make it
 a current audit. Do not migrate or rewrite old wake sections merely to satisfy current certification; only
 active Items and the first newly appended wake use the current contract.
@@ -18,13 +23,13 @@ their accepted scope, or reclassify ordinary delegable work as an owner-domain d
 (accepted, active, final, landed, blocked) separate from acceptance criteria.
 
 In v2, each assessed row uses one of three verdict classes: `split->dispatched <new unit>`,
-`cannot-split: <tagged proof>`, or a typed `continuing` verdict: `active <source-ref>`,
-`private-final <source-ref>`, or `tracking <source-ref>` for a genuine aggregate parent. `active` and
-`private-final` apply to leaves; `tracking` cites current child-state evidence. Use a non-placeholder reference to the raw probe/tool result or
-private final. Acceptance alone is not activity evidence. The orchestrator resolves and cross-checks source
-references against the original tool evidence; the checker validates only verdict kind and nonempty reference,
-not authenticity. Do not create a separate child or activity-receipt registry. IDs must be real Item or wake-cell
-IDs. `D` counts new dispatches; `P` counts all valid assessed rows, including every continuing kind. When no
+`cannot-split: <tagged proof>`, or a typed `continuing` verdict: `active <source-ref>` or
+`private-final <source-ref>` for a leaf, and `tracking <source-ref>` for a parent coordinator. Parent tracking
+cites current child-state evidence and is not active leaf work. Use non-placeholder references to current raw
+probe/tool results or private finals. Leaf acceptance alone is not activity evidence. The orchestrator resolves
+and cross-checks references against original tool evidence; the checker validates only verdict kind and nonempty
+reference, not authenticity. Do not create separate child or activity-receipt registries. IDs must be real Item
+or wake-cell IDs. `D` counts new dispatches; `P` counts all valid assessed rows, including parent tracking. When no
 additional split assessment is needed, `rows()` and `0/0` remain valid if Decomposition lists every unfinished
 Item; do not force redispatch. A wake's contract marker, not the CLI read mode, selects denominator semantics:
 unmarked legacy 8/10 wakes keep the proof-only denominator, while `heartbeat/v2` uses all valid assessed rows

@@ -90,15 +90,21 @@ older wake bytes as historical records. Do not rewrite the file. The current `##
 existing `id | source | item | status | evidence` fields and adds, in order,
 `owner | repository | worktree | mode | write_set | dispatch_ref`.
 
-An optional `children` JSON-array column may be appended after `dispatch_ref` for genuine aggregate
-coordination. Aggregate arrays are nonempty and contain unique IDs of existing Items; reject self-links,
-cycles, and dangling IDs. Leaves may omit it or use `[]`. Track each child in this single registry. Parent rows still need honest owner, repository,
-worktree, mode, write set (`[]` for read-only), and accepted dispatch evidence; never claim acceptance or write
-authority the worker did not receive. Children completing does not complete the parent: keep it unfinished
-until the parent's own acceptance criteria pass. Use parent tracking only for real coordination, not to bypass
-leaf work or receipts or to hide unknown legacy state.
+An optional `children` JSON-array column may be appended after `dispatch_ref` for aggregate coordination. Keep
+the two roles distinct:
 
-Each dispatched row must identify `mode` as `write` or `read-only`, an explicit repository and worktree, and
+| Role | Items status and children | Metadata and receipt | Decomposition and `rows(...)` |
+| --- | --- | --- | --- |
+| Parent coordinator | `tracking`; nonempty `children` array | honest owner/repository/worktree; `mode: read-only`, `write_set: []`, `dispatch_ref` empty or `-`; no worker acceptance receipt | disposition `continuing`; `continuing: tracking <source-ref>` cites current child-state evidence; never count it active |
+| Leaf worker | `dispatched`; omit `children` or use `[]` | owner/repository/worktree/mode/exact `write_set`; real accepted receipt in `dispatch_ref` | disposition `continuing`; `continuing: active <source-ref>` or `continuing: private-final <source-ref>` cites leaf evidence |
+
+Parent `children` arrays must contain unique IDs of existing Items; reject self-links, cycles, and dangling
+IDs. Keep both roles in this one registry. Children completing does not complete the parent: it remains
+unfinished until its own coordination acceptance criteria pass. Do not force the parent to spawn, claim worker
+acceptance or write authority, bypass leaf work or receipts, count the parent active, or hide unknown legacy
+state behind tracking.
+
+Each dispatched leaf row must identify `mode` as `write` or `read-only`, an explicit repository and worktree, and
 `write_set` as a JSON array of exact relative file paths. Do not use directory-wide paths or globs; a literal
 placeholder such as `[id]` is allowed when it is the actual filename. `dispatch_ref` points to an accepted
 receipt JSON containing `tool`, `event: "accepted"`, `agent_id` matching the row owner, and one returned
@@ -112,13 +118,13 @@ evidence`. List every current non-done Item. Allowed dispositions are `dispatche
 assessment, end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
 do not leave an unassessed item implicit. `splittable: D/P` is newly dispatched independent units over **all
 valid rows assessed in this v2 wake: `split->dispatched <new unit>` for a new dispatch, `cannot-split: <tagged
-proof>`, `continuing: active <source-ref>`, `continuing: private-final <source-ref>`, or
-`continuing: tracking <source-ref>` for an already dispatched unit. A tracking reference cites current child
-status evidence for an aggregate row. Use a non-placeholder citation to current probe/tool output or private
-final, not an acceptance receipt. The orchestrator must resolve and cross-check that citation against the
-original tool evidence; the checker validates only the declared kind and nonempty reference, not its
-authenticity. Do not add a separate child or activity-receipt registry. `D` counts new dispatches; `P` counts all
-valid assessed verdicts, including each continuing kind. Use only real Item or wake-cell IDs. If no additional
+proof>`, `continuing: active <source-ref>` or `continuing: private-final <source-ref>` for a leaf, and
+`continuing: tracking <source-ref>` for a parent coordinator. Parent tracking cites current child-state evidence
+and does not make that row an active worker. Leaf references cite current probe/tool output or a private final,
+not an acceptance receipt. The orchestrator must resolve and cross-check references against original evidence;
+the checker validates only kind and nonempty reference, not authenticity. Do not add a separate child or
+activity-receipt registry. `D` counts new dispatches; `P` counts all valid assessed verdicts, including parent
+tracking. Use only real Item or wake-cell IDs. If no additional
 split assessment is needed, `rows()` and `0/0` remain valid when
 the full Decomposition table covers every unfinished Item; do not re-dispatch existing work just to fill the
 count. A wake's contract version selects its denominator, not the CLI read mode: unmarked legacy history keeps

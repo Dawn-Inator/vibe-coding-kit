@@ -209,18 +209,18 @@ export const STATE_LEGEND = [
   '  AND an `owner ←` item naming the blocker in the Items table.',
   '  In Decomposition, include every current non-done Item with its concrete next step and disposition dispatched|continuing|blocked|owner|done.',
   '  Every accepted dispatch is only an accepted request; record later active/final/landed evidence separately. Never infer execution from acceptance.',
-  '  rows(...) verdicts: split->dispatched <new unit> | cannot-split: <tagged proof> | continuing: active <source-ref> | continuing: private-final <source-ref> | continuing: tracking <source-ref> for a real parent aggregate. Cite actual current tool/child-state evidence, never acceptance alone; use real Item/wake-cell IDs.',
+  '  rows(...) verdicts: split->dispatched <new unit> | cannot-split: <tagged proof> | continuing: active <source-ref> | continuing: private-final <source-ref> for a leaf | continuing: tracking <source-ref> for a parent coordinator. Cite current child-state evidence for tracking; parent is not an active worker.',
   '  The orchestrator resolves and cross-checks source refs against original tool evidence; the checker validates only kind/ref syntax. Do not add an activity-receipt JSON registry.',
   '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. D counts new dispatches; P counts all valid assessed verdicts, including continuing. If no additional split assessment is needed, rows() and 0/0 are valid when Decomposition covers every unfinished Item.',
   '  Add one Decomposition data row per current non-done Item; the emitted table is intentionally empty until populated. Do not leave ready items.',
 ];
 
 const OPTIONAL_CHILDREN_GUIDE = [
-  'Optional Items registry extension (append `children` after `dispatch_ref` only for true aggregates; aggregate arrays must be nonempty):',
+  'Optional Items registry extension (append `children` after `dispatch_ref` only for true aggregate parents; parent arrays must be nonempty):',
   '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |',
-  'For leaf Items omit the column or use `[]`; children is a JSON array of unique IDs already in this one Items registry. No self-links, cycles, or dangling IDs.',
-  'Keep owner, repository, worktree, mode, write_set, and accepted receipt/write scope accurate; read-only rows use write_set `[]`. Never invent acceptance or writer authority.',
-  'Children finishing does not finish their parent before its own acceptance criteria pass. Do not bypass leaf work/receipts or hide unknown legacy state.',
+  'Parent: status `tracking`; children is a nonempty JSON array of unique existing Item IDs; no self-links, cycles, or dangling IDs. Parent mode is `read-only`, write_set is `[]`, and dispatch_ref is empty or `-` (no worker acceptance receipt).',
+  'Leaf: status `dispatched`; omit children or use `[]`; mode, exact write_set, and real accepted dispatch receipt must match the worker authorization. Never invent acceptance or writer authority.',
+  'Children finishing does not finish the parent before its own acceptance criteria pass. Parent is not an active worker and need not spawn. Keep all Items in this one registry; do not bypass leaf work/receipts or hide unknown legacy state.',
 ];
 
 export function formatLedgerTemplate(now = new Date(), { includeChildrenGuide = false } = {}) {
@@ -308,8 +308,9 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
     '     Check every accepted dispatch for evidence it became active; re-split stale/idle work or record its concrete blocker.',
     `Ledger: APPEND this block to ${ledger} (never rewrite or regenerate the file; keep the heading time as-is):`,
     ...formatLedgerTemplate(now).split('\n').map((line) => `  ${line}`),
-    '  Keep ## Items with id/source/item/status/evidence followed by owner | repository | worktree | mode | write_set | dispatch_ref.',
-    '  A dispatched row needs mode write|read-only, explicit repository/worktree, JSON exact relative file array (no broad paths/globs), and accepted receipt path.',
+    '  Keep ## Items with id/source/item/status/evidence followed by owner | repository | worktree | mode | write_set | dispatch_ref; optional children follows dispatch_ref for true parent aggregates.',
+    '  Parent coordinator: Items status tracking, nonempty children JSON of unique existing Item IDs, mode read-only, write_set [], dispatch_ref empty or -; no accepted worker receipt, not active. Decomposition continuing; rows(...) continuing: tracking <source-ref> cites current child-state evidence.',
+    '  Leaf: Items status dispatched with real accepted dispatch receipt, owner/repository/worktree/mode/exact write_set. Decomposition continuing; rows(...) continuing: active <source-ref> or continuing: private-final <source-ref>.',
     '  dispatch_ref proves acceptance only: tool, event=accepted, agent_id=owner, and returned task_name|agent_id|session_id|id=owner. It does not prove running or completion.',
     '  Decomposition lists all current non-done Items; dispositions dispatched|continuing|blocked|owner|done; standalone re-split: rows(...) and splittable: D/P lines are required even without blockers; no ready at end.',
     `  then run ONCE: ${command(commands, 'check', ledger, seconds)} (fix every red row)`,

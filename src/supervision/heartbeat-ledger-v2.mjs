@@ -4,6 +4,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { checkItems, checkLedger, parseWakes } from './check-heartbeat-ledger.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
+import { isConcreteCoordinationField } from './heartbeat-ledger-tracking.mjs';
 
 const REQUIRED_ITEM_COLUMNS = ['id', 'source', 'item', 'status', 'evidence', 'owner', 'repository', 'worktree', 'mode', 'write_set', 'dispatch_ref'];
 const DECOMP_COLUMNS = ['item', 'next_step', 'disposition', 'owner', 'evidence'];
@@ -85,9 +86,9 @@ function isWithin(root, candidate) { return candidate === root || candidate.star
 function validateReceipt(row, options, findings) {
   const owner = value(row, 'owner');
   const ref = value(row, 'dispatch_ref');
-  if (!owner) add(findings, 'v2-dispatch-owner', `item ${row.id}: dispatched work needs an owner task/session ID`);
-  if (!value(row, 'repository')) add(findings, 'v2-repository', `item ${row.id}: dispatched work needs an explicit repository`);
-  if (!value(row, 'worktree')) add(findings, 'v2-worktree', `item ${row.id}: dispatched work needs an explicit worktree`);
+  if (!isConcreteCoordinationField(owner)) add(findings, 'v2-dispatch-owner', `item ${row.id}: dispatched work needs a concrete owner task/session ID`);
+  if (!isConcreteCoordinationField(row.repository)) add(findings, 'v2-repository', `item ${row.id}: dispatched work needs an explicit repository`);
+  if (!isConcreteCoordinationField(row.worktree)) add(findings, 'v2-worktree', `item ${row.id}: dispatched work needs an explicit worktree`);
   const mode = value(row, 'mode');
   if (!['write', 'read-only'].includes(mode)) add(findings, 'v2-mode', `item ${row.id}: mode must be write or read-only`);
   let paths;

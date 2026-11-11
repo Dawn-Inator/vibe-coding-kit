@@ -1,5 +1,11 @@
 const value = (row, key) => String(row?.[key] ?? '').trim();
 const isTracking = (row) => /^tracking\b/i.test(value(row, 'status'));
+const NONCONCRETE_FIELDS = new Set(['-', '—', 'none', 'unknown', 'n-a', 'n/a', 'todo', 'tbd', '?', '未知', '待补']);
+
+export function isConcreteCoordinationField(field) {
+  const normalized = String(field ?? '').trim().toLowerCase();
+  return normalized.length > 0 && !NONCONCRETE_FIELDS.has(normalized);
+}
 
 /** Validate optional parent tracking rows and their child graph. */
 export function checkTrackingRows(rows = []) {
@@ -15,8 +21,9 @@ export function checkTrackingRows(rows = []) {
   for (const row of rows.filter(isTracking)) {
     const id = value(row, 'id');
     for (const key of ['owner', 'repository', 'worktree']) {
-      if (!value(row, key)) add('tracking-parent-metadata', row, `tracking parent needs a nonempty ${key}`);
+      if (!isConcreteCoordinationField(row[key])) add('tracking-parent-metadata', row, `tracking parent needs a concrete ${key}`);
     }
+    if (!isConcreteCoordinationField(row.evidence)) add('tracking-parent-evidence', row, 'tracking parent needs meaningful coordination evidence, not a placeholder');
     if (value(row, 'mode').toLowerCase() !== 'read-only') add('tracking-parent-mode', row, 'tracking parent mode must be read-only');
     let writeSet;
     try { writeSet = JSON.parse(value(row, 'write_set')); }

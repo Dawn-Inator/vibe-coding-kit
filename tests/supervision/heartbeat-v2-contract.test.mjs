@@ -488,6 +488,64 @@ test('tracking items require read-only tracking metadata and cannot claim dispat
   rejected(tracker({ dispatchRef: 'receipts/fake-tracker.json' }), 'fake dispatch receipt');
 });
 
+test('tracking metadata and coordination evidence reject blank and placeholder values', () => {
+  const placeholders = ['', '-', '—', 'none', 'unknown', 'n-a', 'n/a', 'todo', 'tbd', '?', '未知', '待补'];
+  const parentFor = (field, value) => item({
+    id: 'I1', source: 'report:tracker', item: 'track child work', status: 'tracking', evidence: 'tracking plan',
+    owner: 'agent:tracker', repository: 'repo-a', worktree: 'worktrees/tracker', mode: 'read-only',
+    writeSet: '[]', dispatchRef: '-', children: '["I2"]', [field]: value,
+  });
+  const child = item({
+    id: 'I2', source: 'report:leaf', item: 'finished leaf work', status: 'done -- `work completed`', evidence: '`work completed`',
+    owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf', mode: 'read-only', writeSet: '[]', dispatchRef: '-', children: '[]',
+  });
+
+  for (const [field, rule] of [
+    ['owner', 'tracking-parent-metadata'],
+    ['repository', 'tracking-parent-metadata'],
+    ['worktree', 'tracking-parent-metadata'],
+    ['evidence', 'tracking-parent-evidence'],
+  ]) {
+    for (const value of placeholders) {
+      const candidate = fixture(v2({
+        items: [parentFor(field, value), child],
+        includeChildren: true,
+        decompositionRows: [
+          '| I1 | track child work | continuing | agent:tracker | tracking progress.md |',
+          '| I2 | record completed leaf | done | agent:leaf | `work completed` |',
+        ],
+        includeResplit: false,
+        includeSplitCount: false,
+        extra: 're-split: rows(I1: continuing: tracking progress.md)\nsplittable: 0/1',
+      }));
+      assert.ok(latestRules(candidate.text, { ledgerPath: candidate.ledgerPath }).includes(rule), `tracking ${field} placeholder ${JSON.stringify(value)} must be rejected`);
+    }
+  }
+});
+
+test('dispatched owner, repository and worktree placeholders fail even when the receipt matches', () => {
+  const placeholders = ['', '-', '—', 'none', 'unknown', 'n-a', 'n/a', 'todo', 'tbd', '?', '未知', '待补'];
+  for (const [field, rule] of [
+    ['owner', 'v2-dispatch-owner'],
+    ['repository', 'v2-repository'],
+    ['worktree', 'v2-worktree'],
+  ]) {
+    for (const value of placeholders) {
+      const owner = field === 'owner' ? value : 'agent:worker-1';
+      const row = item({
+        id: 'I1', source: 'report:worker-1', item: 'implement leaf unit', status: 'dispatched agent:worker-1', evidence: '-',
+        owner, repository: field === 'repository' ? value : 'repo-a', worktree: field === 'worktree' ? value : 'worktrees/worker-1',
+        mode: 'write', writeSet: '["src/leaf.mjs"]', dispatchRef: 'receipts/worker-1.json',
+      });
+      const candidate = fixture(v2({
+        items: [row],
+        decompositionRows: [`| I1 | implement leaf unit | dispatched | ${owner} | receipts/worker-1.json |`],
+      }), { 'receipts/worker-1.json': accepted(owner) });
+      assert.ok(latestRules(candidate.text, { ledgerPath: candidate.ledgerPath }).includes(rule), `dispatched ${field} placeholder ${JSON.stringify(value)} must fail despite a receipt bound to that value`);
+    }
+  }
+});
+
 test('a second Items registry cannot hide an otherwise omitted dispatched owner', () => {
   const hidden = item({ writeSet: '["src/hidden.mjs"]', dispatchRef: 'receipts/worker-1.json' });
   const candidate = fixture(`${v2()}\n${ITEMS_HEADER}\n${hidden}\n`, {
