@@ -169,10 +169,17 @@ test('review of a checker, guard, or gate landing requires a command, not a bare
 test('owner registry accepts the historical English form and an equivalent Chinese authorization proof', () => {
   // Keep the exact punctuation and proof shape from the LingoFly I5 fixture / integration oracle.
   const english = ownerRegistryRow('owner ← significant cost; checked prior-authorization.md, credential rotation is outside its scope');
-  const chinese = ownerRegistryRow('owner ← 显著成本；已核对既定授权清单，本次凭证轮换不在其范围内');
+  const chineseChecked = ownerRegistryRow('owner ← 显著成本；已检查既有授权清单，本次凭证轮换不在其范围内');
+  const chineseVerified = ownerRegistryRow('owner ← 显著成本；已核对既定授权清单，本次凭证轮换不在其范围内');
 
   assert.deepEqual(rulesOf(checkItems(english)), []);
-  assert.deepEqual(rulesOf(checkItems(chinese)), []);
+  assert.deepEqual(rulesOf(checkItems(chineseChecked)), []);
+  assert.deepEqual(rulesOf(checkItems(chineseVerified)), []);
+
+  for (const category of ['不可逆', '安全边界', '显著成本', 'Owner 决策域']) {
+    const row = ownerRegistryRow(`owner ← ${category}；已核对既定授权，本次操作不在其范围内`);
+    assert.deepEqual(rulesOf(checkItems(row)), [], category);
+  }
 });
 
 test('owner registry distinguishes a missing hard category from a missing authorization note', () => {
@@ -181,4 +188,17 @@ test('owner registry distinguishes a missing hard category from a missing author
 
   assert.ok(rulesOf(checkItems(noCategory)).includes('item-owner-category'));
   assert.ok(rulesOf(checkItems(noAuthorizationNote)).includes('item-owner-authorization-note'));
+});
+
+test('owner authorization note needs an actual check and a reason the prior authority does not cover the item', () => {
+  const incompleteProofs = [
+    'owner ← significant cost; standing authorization',
+    'owner ← 显著成本；既定授权',
+    'owner ← significant cost; checked prior-authorization.md',
+    'owner ← significant cost; credential rotation is outside that authorization scope',
+  ];
+
+  for (const status of incompleteProofs) {
+    assert.deepEqual(rulesOf(checkItems(ownerRegistryRow(status))), ['item-owner-authorization-note'], status);
+  }
 });

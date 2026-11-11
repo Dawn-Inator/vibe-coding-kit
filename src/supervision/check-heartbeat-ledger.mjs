@@ -310,7 +310,8 @@ const SOURCE_RE = /^(memory|handoff|report|landing|owner|sweep|audit|goal):\S/i;
 const OWNER_CATEGORY_RE = /(irreversible|security boundary|significant cost|owner decision(?: domain)?|不可逆|安全边界|显著成本|owner\s*决策域|决策域)/i;
 // This records that applicable standing authorization / prior decisions were checked. It is
 // evidence in the ledger only; this checker does not grant authorization or decide coverage.
-const AUTH_CHECK_RE = /(checked|核对|已检查|检查|standing authorization|prior[- ]authorization|既定授权|既定决策)/i;
+const AUTH_CHECK_RE = /(checked|核对|已检查|已核对|检查|复核|已复核)/i;
+const AUTH_COVERAGE_GAP_RE = /(?:does\s+not\s+cover|doesn't\s+cover|doesnt\s+cover|not\s+cover(?:ed)?|outside\s+(?:its|the)\s+scope|not\s+in\s+(?:its|that|the)\s+(?:scope|list)|no\s+(?:standing\s+)?authorization\s+covers|不在[^，,;]{0,24}(?:范围|清单)|不覆盖|不涵盖|未覆盖|未涵盖|不属于[^，,;]{0,16}(?:范围|清单))/i;
 const REPLAY_RE = /replays:([\w./-]+)=(\d+)/gi;
 
 function itemKind(status) {
@@ -437,7 +438,7 @@ export function checkItems(text, { now = new Date() } = {}) {
       if (!resource || VAGUE_RESOURCE_RE.test(resource.trim())) red('item-blocked', row, 'blocked must name an exclusive resource as "blocked <- <resource>"');
     } else if (kind === 'owner') {
       if (!OWNER_CATEGORY_RE.test(row.status)) red('item-owner-category', row, `owner <- must cite a hard category (irreversible / security boundary / significant cost / owner decision domain; 不可逆 / 安全边界 / 显著成本 / Owner决策域); got "${row.status}"`);
-      if (!AUTH_CHECK_RE.test(row.status)) red('item-owner-authorization-note', row, 'owner <- must record which standing authorization or prior decision was checked and why it does not cover this item');
+      if (!AUTH_CHECK_RE.test(row.status) || !AUTH_COVERAGE_GAP_RE.test(row.status)) red('item-owner-authorization-note', row, 'owner <- must record which standing authorization or prior decision was checked and why it does not cover this item');
     }
     for (const match of `${row.status} ${row.evidence}`.matchAll(REPLAY_RE)) {
       const unit = match[1];

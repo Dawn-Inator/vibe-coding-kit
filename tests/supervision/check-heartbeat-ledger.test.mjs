@@ -418,7 +418,7 @@ test('registry: a blocked item names an exclusive resource, an owner item cites 
   assert.deepEqual(checkItems(items('| I1 | report:w1 | x | blocked ← port 3000 held by w2 | - |')), []);
   const owner = (status) => checkItems(items(`| I1 | owner:msg | x | ${status} | - |`));
   assert.deepEqual(rules(owner('owner <- irreversible')), ['item-owner-authorization-note']);
-  assert.deepEqual(rules(owner('owner <- + checked')), ['item-owner-category']);
+  assert.deepEqual(rules(owner('owner <- + checked')), ['item-owner-category', 'item-owner-authorization-note']);
   assert.deepEqual(rules(owner('owner <- it is hard + checked, not covered')), ['item-owner-category']);
   for (const category of ['irreversible', 'security boundary', 'significant cost', 'owner decision']) {
     assert.deepEqual(owner(`owner ← ${category} + standing authorization checked, does not cover this`), [], category);
