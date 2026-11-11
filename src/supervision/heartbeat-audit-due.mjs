@@ -54,7 +54,7 @@ export function heartbeatAuditDue(text, { now = new Date(), intervalMinutes = 20
   if (!wake) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'no-full-ten-row-audit' };
   }
-  const rawTimestamp = wake.heading.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/i)?.[0];
+  const rawTimestamp = wake.heading.replace(/^#{1,6}\s+/, '').trim().split(/\s+/, 1)[0];
   const strictTimestamp = parseStrictIsoTimestamp(rawTimestamp);
   if (strictTimestamp === null || !Number.isFinite(wake.timeMs) || strictTimestamp !== wake.timeMs) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'invalid-audit-timestamp', line: wake.line };

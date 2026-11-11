@@ -7,7 +7,11 @@ below remain required for every project.
 When no timer delivered, use the [due probe](../SKILL.md#wake-mechanism) on each meaningful event. Run a full
 audit on the first meaningful event at or after the configured interval from the last full audit, before
 unrelated next-batch work. A probe result never schedules a wake; if no meaningful event arrives there is no
-wall-clock guarantee.
+wall-clock guarantee. For this event-driven path or first audit after resume, render the canonical block with
+`node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --template`. This is read-only and does not claim a
+delivered wake. Fill its source and row-state tokens from checks actually performed; empty and done cells need
+evidence, row 1 requires separate `(1a)` and `(1b)` states, and row 10 must cite the matrix or name unchecked
+units. Append only after every placeholder is replaced, then run strict current validation.
 
 ## Sweep
 
@@ -64,17 +68,31 @@ Every dispatch gets an accepted receipt path in `dispatch_ref`. Validate that re
 owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
 active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
 
+For a true aggregate coordination Item, the single `## Items` registry may append an optional `children` JSON
+array after `dispatch_ref`. For an aggregate it must be nonempty and contain unique IDs of Items already in
+that registry; reject self-links, cycles, and dangling IDs. A leaf may omit the column or use `[]`. Keep each parent's owner, repository,
+worktree, mode, write set (`[]` for read-only), and accepted dispatch receipt accurate; never claim acceptance
+or write authority the worker did not receive. Children all finishing does not finish the parent until the
+parent's own acceptance criteria pass. Do not use a parent to bypass child delivery/receipts or hide unknown
+legacy child state.
+
 At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. The v2 `rows(...)`
-group accepts three verdicts: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or
-`continuing: <current activity/private-final evidence>` for an already dispatched unit. Use only IDs from real
-Items or wake cells. `D` counts new dispatches; `P` counts all valid assessed verdicts, including `continuing`.
-For example, with one already-dispatched item continuing and one new dispatch, use
-`rows(<existing-item-id>: continuing: <active session evidence>; <blocked-row-id>: split->dispatched <new unit>)`
-and `splittable: 1/2`; replace placeholders with actual IDs and evidence. If no additional split assessment is
-needed, `rows()` and `0/0` remain valid even with ongoing Items, provided Decomposition lists every unfinished
-Item; do not force a redispatch to fill the count. Do not use historical denominators for v2. Every blocker must
-name the concrete unavailable resource, decision, or dependency and its owner. Never use subjective completion
-percentages.
+group accepts three verdict classes: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or a typed
+`continuing` verdict: `active <source-ref>`, `private-final <source-ref>`, or `tracking <source-ref>` for an
+already-dispatched unit. `active` and `private-final` apply to leaves; `tracking` applies only to an aggregate
+and cites current child-state evidence. A continuing reference must cite actual current probe/tool
+output or private final, for example:
+`continuing: active heartbeat-branches output line 4`; a tracking reference points to current child-state
+evidence for that parent. Acceptance alone is not activity evidence. The
+orchestrator resolves and cross-checks the reference against the original tool evidence; the checker validates
+only the declared kind and nonempty reference and does not authenticate it. Do not create an activity-receipt
+JSON registry. Use only IDs from real Items or wake cells. `D` counts new dispatches; `P` counts all valid
+assessed verdicts, including continuing. If no additional split assessment is needed, `rows()` and `0/0` remain
+valid even with ongoing Items, provided Decomposition lists every unfinished Item; do not force a redispatch to
+fill the count. The wake contract marker controls denominator semantics, not CLI mode: unmarked legacy 8/10
+wakes keep the proof-only denominator; `heartbeat/v2` uses all valid assessed rows even under non-certifying
+`--history`. Every blocker must name the concrete unavailable
+resource, decision, or dependency and its owner. Never use subjective completion percentages.
 
 On adoption or resume, reconcile each active Item separately using the original request/accepted receipt,
 private final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata

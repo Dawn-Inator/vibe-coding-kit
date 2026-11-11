@@ -215,3 +215,19 @@ test('(1b) idle with ready or unknown registry work produces non-blocking adviso
   assert.ok(findings.every((finding) => finding.severity === 'advisory'), 'readiness guidance must not add a certification error');
 });
 
+test('tracking parents do not create idle-work advisories while leaf unknown work remains visible', () => {
+  const childrenDone = directGuardFindings([
+    { id: 'I-1', status: 'tracking', children: '["I-2"]' },
+    { id: 'I-2', status: 'done — child shipped' },
+  ], 'empty -- `worker probe` found none');
+  assert.deepEqual(childrenDone, [], 'a parent row is registry structure, not undispatched worker capacity or completion');
+
+  const withLeafUnknown = directGuardFindings([
+    { id: 'I-1', status: 'tracking', children: '["I-2"]' },
+    { id: 'I-2', status: 'done — child shipped' },
+    { id: 'I-3', status: 'pending review' },
+  ], 'empty -- `worker probe` found none');
+  assert.deepEqual(withLeafUnknown.map((finding) => finding.rule), ['decompose-now-1b-idle']);
+  assert.match(withLeafUnknown[0].message, /1 undispatched non-terminal row/);
+});
+

@@ -629,6 +629,34 @@ test('historical re-split keeps the original rows-with-proof denominator', () =>
   assert.ok(latestRules(currentOnlyVerdict).includes('resplit-verdict-invalid'), 'the current-v2 continuing assessment syntax is not retroactively accepted for blocked legacy rows');
 });
 
+test('--history --latest uses marked-v2 counts while preserving unmarked legacy denominators', () => {
+  const dir = mkdtempTracked('hb-ledger-v2-history-');
+  const ledger = join(dir, 'heartbeat.md');
+  const inspect = (text) => {
+    writeFileSync(ledger, text);
+    const result = runCli([ledger, '--history', '--latest', '--json']);
+    assert.equal(result.status, 1, 'history inspection remains non-certifying even when the selected wake passes');
+    return JSON.parse(result.stdout);
+  };
+
+  const mixed = 're-split: rows(r6: split->dispatched C0; r7: cannot-split: owner-gated)\nsplittable: 1/2';
+  const marked = inspect(wake(WAKE_A, { ...twoOpen, extra: `contract: heartbeat/v2\n${mixed}` }));
+  assert.equal(marked.passed, true, 'marked v2 counts every valid assessed row in history mode');
+  assert.ok(!marked.findings.some((finding) => finding.rule.startsWith('splittable-')), '1/2 is the marked-v2 mixed assessment denominator');
+
+  const unmarked = inspect(wake(WAKE_A, { ...twoOpen, extra: mixed.replace('splittable: 1/2', 'splittable: 1/1') }));
+  assert.equal(unmarked.passed, true, 'unmarked historical wakes keep the original with-proof denominator');
+  assert.ok(!unmarked.findings.some((finding) => finding.rule.startsWith('splittable-')), 'legacy 1/1 meaning remains unchanged');
+
+  const doneItems = items('| I1 | report:leaf | completed leaf work | done -- `work completed` | `work completed` |');
+  const continuingWake = wake(WAKE_A, {
+    extra: 'contract: heartbeat/v2\nre-split: rows(I1: continuing: private-final worker-1/final)\nsplittable: 0/1',
+  });
+  const continuing = inspect(`${continuingWake}${doneItems}`);
+  assert.equal(continuing.passed, true, 'historical typed continuing assessments do not bind to the current Item status');
+  assert.ok(!continuing.findings.some((finding) => /continuing.*status|status.*continuing/i.test(finding.message)), 'a now-done leaf does not create a spurious continuing-status finding');
+});
+
 test('re-split: a bare "none" in prep-ahead/audit is rejected while an open row lacks a proof', () => {
   const lazy = wake(WAKE_A, { ...twoOpen, extra: 're-split: prep-ahead(none — nothing to prepare today) lessons(done) audit(none — audited yesterday) rows(r6: cannot-split: owner-gated)\nsplittable: 0/1' });
   const found = checkLedger(lazy, { latest: true });

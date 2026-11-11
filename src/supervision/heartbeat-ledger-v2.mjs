@@ -166,13 +166,16 @@ function validateRegistry(table, options, findings) {
   if (!table) { add(findings, 'v2-items-missing', 'v2 requires one ## Items registry table'); return []; }
   if (table.headingCount > 1) add(findings, 'v2-items-duplicate', `v2 requires exactly one ## Items registry; found ${table.headingCount}`);
   for (const col of REQUIRED_ITEM_COLUMNS) if (!table.headers.includes(col)) add(findings, 'v2-item-column', `## Items is missing required header column ${col}`);
+  if (table.headers.includes('children') && table.headers.indexOf('children') !== table.headers.indexOf('dispatch_ref') + 1) {
+    add(findings, 'v2-item-column-order', 'optional ## Items column children must immediately follow dispatch_ref');
+  }
   const active = [];
   const seen = new Set();
   for (const row of table.rows) {
     if (seen.has(value(row, 'id'))) add(findings, 'v2-item-id-duplicate', `item ${value(row, 'id') || '(no id)'}: duplicate registry ID`);
     seen.add(value(row, 'id'));
     if (/^ready$/i.test(value(row, 'status'))) add(findings, 'v2-item-ready', `item ${value(row, 'id')}: ready is not a valid end-of-wake status`);
-    if (!/^(?:dispatched\b|done\b|blocked\b|owner\b)/i.test(value(row, 'status'))) add(findings, 'v2-item-status', `item ${value(row, 'id')}: status must be dispatched / done / blocked / owner`);
+    if (!/^(?:dispatched\b|tracking\b|done\b|blocked\b|owner\b)/i.test(value(row, 'status'))) add(findings, 'v2-item-status', `item ${value(row, 'id')}: status must be dispatched / tracking / done / blocked / owner`);
     if (/^dispatched\b/i.test(value(row, 'status'))) {
       if (!value(row, 'evidence')) add(findings, 'v2-dispatch-evidence', `item ${value(row, 'id')}: active dispatched work needs evidence`);
       const paths = validateReceipt(row, options, findings);
@@ -207,7 +210,7 @@ function validateDecomposition(text, wake, items, findings) {
       const status = value(itemById.get(key), 'status').toLowerCase();
       const matches = (disposition === 'done' && status.startsWith('done')) ||
         (disposition === 'dispatched' && status.startsWith('dispatched')) ||
-        (disposition === 'continuing' && status.startsWith('dispatched')) ||
+        (disposition === 'continuing' && (status.startsWith('dispatched') || status.startsWith('tracking'))) ||
         (disposition === 'blocked' && status.startsWith('blocked')) ||
         (disposition === 'owner' && status.startsWith('owner'));
       if (!matches) add(findings, 'v2-decomposition-status', `${loc}: ${key} disposition ${disposition} does not match current Item status ${status}`);

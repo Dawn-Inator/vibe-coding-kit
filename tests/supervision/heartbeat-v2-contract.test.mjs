@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkLedger } from '../../src/supervision/check-heartbeat-ledger.mjs';
-import { checkHeartbeatV2 } from '../../src/supervision/heartbeat-ledger-v2.mjs';
+import { checkHeartbeatV2, parseItemsV2 } from '../../src/supervision/heartbeat-ledger-v2.mjs';
 
 after(cleanupTempDirs);
 
@@ -25,9 +25,16 @@ const ITEMS_HEADER = [
   '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |',
   '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
 ].join('\n');
+const ITEMS_HEADER_WITH_CHILDREN = [
+  '## Items',
+  '',
+  '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+].join('\n');
 
-function item({ id = 'I1', source = 'report:worker-1', item = 'implement feature', status = 'dispatched worker-1', evidence = '-', owner = 'worker-1', repository = 'repo-a', worktree = '/worktrees/worker-1', mode = 'write', writeSet = '[]', dispatchRef = 'receipts/worker-1.json' } = {}) {
-  return `| ${id} | ${source} | ${item} | ${status} | ${evidence} | ${owner} | ${repository} | ${worktree} | ${mode} | ${writeSet} | ${dispatchRef} |`;
+function item({ id = 'I1', source = 'report:worker-1', item = 'implement feature', status = 'dispatched worker-1', evidence = '-', owner = 'worker-1', repository = 'repo-a', worktree = '/worktrees/worker-1', mode = 'write', writeSet = '[]', dispatchRef = 'receipts/worker-1.json', children } = {}) {
+  const row = `| ${id} | ${source} | ${item} | ${status} | ${evidence} | ${owner} | ${repository} | ${worktree} | ${mode} | ${writeSet} | ${dispatchRef} |`;
+  return children === undefined ? row : `${row.slice(0, -2)} | ${children} |`;
 }
 
 function decomposition(rows = []) {
@@ -49,6 +56,7 @@ function v2({
   includeResplit = true,
   includeSplitCount = true,
   includeDecomposition = true,
+  includeChildren = false,
 } = {}) {
   const section = [
     '----',
@@ -65,7 +73,7 @@ function v2({
     ...(includeDecomposition ? ['', decomposition(decompositionRows)] : []),
     extra,
   ].filter(Boolean).join('\n');
-  return `${section}\n\n${ITEMS_HEADER}\n${items.join('\n')}\n`;
+  return `${section}\n\n${includeChildren ? ITEMS_HEADER_WITH_CHILDREN : ITEMS_HEADER}\n${items.join('\n')}\n`;
 }
 
 function fixture(text, receipts = {}, prepare = () => {}) {
@@ -174,8 +182,8 @@ test('current v2 permits a continuing activity assessment for an already-dispatc
     owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
     writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
   });
-  const decompositionRows = ['| I1 | probe current activity | continuing | agent:worker-1 | activity probe.json |'];
-  const extra = 're-split: rows(I1: continuing: activity probe.json)\nsplittable: 0/1';
+  const decompositionRows = ['| I1 | probe current activity | continuing | agent:worker-1 | active probe/tool-result.json |'];
+  const extra = 're-split: rows(I1: continuing: active probe/tool-result.json)\nsplittable: 0/1';
   const acceptedAssessment = fixture(v2({
     items: [active], decompositionRows, includeResplit: false, includeSplitCount: false, extra,
   }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
@@ -186,6 +194,32 @@ test('current v2 permits a continuing activity assessment for an already-dispatc
     extra: extra.replace('splittable: 0/1', 'splittable: 1/1'),
   }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
   assert.ok(latestRules(wrongDispatchCount.text, { ledgerPath: wrongDispatchCount.ledgerPath }).includes('splittable-mismatch'), 'continuing does not increment the dispatch numerator');
+
+  const privateFinal = fixture(v2({
+    items: [active],
+    decompositionRows: ['| I1 | inspect worker result | continuing | agent:worker-1 | private-final worker-1/final |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: continuing: private-final worker-1/final)\nsplittable: 0/1',
+  }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
+  assert.deepEqual(latestRules(privateFinal.text, { ledgerPath: privateFinal.ledgerPath }), [], 'a concrete private-final reference is a valid continuing assessment');
+
+  for (const reference of [
+    'accepted receipt only',
+    'probe/tool-result.json',
+    'archived probe/tool-result.json',
+    'active TODO',
+    'private-final TBD',
+  ]) {
+    const invalidEvidence = fixture(v2({
+      items: [active],
+      decompositionRows: [`| I1 | probe current activity | continuing | agent:worker-1 | ${reference} |`],
+      includeResplit: false,
+      includeSplitCount: false,
+      extra: `re-split: rows(I1: continuing: ${reference})\nsplittable: 0/1`,
+    }), { 'receipts/worker-1.json': accepted('agent:worker-1') });
+    assert.ok(latestRules(invalidEvidence.text, { ledgerPath: invalidEvidence.ledgerPath }).includes('resplit-verdict-invalid'), `continuing evidence ${reference} must be rejected`);
+  }
 });
 
 test('current v2 continuing assessments require one existing active dispatched item', () => {
@@ -193,14 +227,14 @@ test('current v2 continuing assessments require one existing active dispatched i
     owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
     writeSet: '["src/one.mjs"]', dispatchRef: 'receipts/worker-1.json',
   });
-  const decomp = ['| I1 | probe current activity | continuing | agent:worker-1 | activity probe.json |'];
+  const decomp = ['| I1 | probe current activity | continuing | agent:worker-1 | active probe/tool-result.json |'];
   const receipts = { 'receipts/worker-1.json': accepted('agent:worker-1') };
   const base = { items: [active], decompositionRows: decomp, includeResplit: false, includeSplitCount: false };
 
-  const unknown = fixture(v2({ ...base, extra: 're-split: rows(I999: continuing: activity probe.json)\nsplittable: 0/1' }), receipts);
+  const unknown = fixture(v2({ ...base, extra: 're-split: rows(I999: continuing: active probe/tool-result.json)\nsplittable: 0/1' }), receipts);
   assert.ok(latestRules(unknown.text, { ledgerPath: unknown.ledgerPath }).some((rule) => rule.startsWith('resplit-row-')), 'an assessment for a nonexistent item is rejected');
 
-  const duplicate = fixture(v2({ ...base, extra: 're-split: rows(I1: continuing: activity probe.json; I1: continuing: second activity probe.json)\nsplittable: 0/1' }), receipts);
+  const duplicate = fixture(v2({ ...base, extra: 're-split: rows(I1: continuing: active probe/tool-result.json; I1: continuing: active second/tool-result.json)\nsplittable: 0/1' }), receipts);
   assert.ok(latestRules(duplicate.text, { ledgerPath: duplicate.ledgerPath }).includes('resplit-row-duplicate'), 'an item can be assessed only once');
 
   const done = item({
@@ -211,7 +245,7 @@ test('current v2 continuing assessments require one existing active dispatched i
     decompositionRows: ['| I1 | record completion | done | worker-1 | `work completed` |'],
     includeResplit: false,
     includeSplitCount: false,
-    extra: 're-split: rows(I1: continuing: activity probe.json)\nsplittable: 0/1',
+    extra: 're-split: rows(I1: continuing: active probe/tool-result.json)\nsplittable: 0/1',
   }));
   assert.ok(latestRules(inactive.text, { ledgerPath: inactive.ledgerPath }).some((rule) => rule.startsWith('resplit-')), 'continuing cannot assess an item that is no longer active-dispatched');
 });
@@ -335,6 +369,123 @@ test('a corrective latest wake must cover every later non-done registry addition
   });
   const corrected = fixture(withWakeHistory(firstWake, secondWake, correctedWake).replace(`${ITEMS_HEADER}\n`, `${ITEMS_HEADER}\n${items.join('\n')}\n`), receipts);
   assert.deepEqual(latestRules(corrected.text, { ledgerPath: corrected.ledgerPath }), [], 'a new corrective wake covering both current items clears the gap');
+});
+
+test('tracking parents and nested trackers validate without claiming dispatch ownership', () => {
+  const parent = (id, children, overrides = {}) => item({
+    id,
+    source: `report:${id.toLowerCase()}`,
+    item: `track child work for ${id}`,
+    status: 'tracking',
+    evidence: 'tracking parent plan',
+    owner: `agent:${id.toLowerCase()}`,
+    repository: 'repo-a',
+    worktree: `worktrees/${id.toLowerCase()}`,
+    mode: 'read-only',
+    writeSet: '[]',
+    dispatchRef: '-',
+    children: '[]',
+    ...overrides,
+  });
+  const leaf = item({
+    id: 'I3', source: 'report:leaf', item: 'implement leaf unit', status: 'dispatched agent:leaf',
+    evidence: 'accepted dispatch', owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf',
+    mode: 'write', writeSet: '["src/leaf.mjs"]', dispatchRef: 'receipts/leaf.json', children: '[]',
+  });
+  const items = [
+    parent('I1', [], { children: '["I2"]' }),
+    parent('I2', [], { children: '["I3"]' }),
+    leaf,
+  ];
+  const decompositionRows = [
+    '| I1 | track child completion | continuing | agent:i1 | tracking parent/progress.md |',
+    '| I2 | track leaf completion | continuing | agent:i2 | tracking child/progress.md |',
+    '| I3 | implement leaf unit | dispatched | agent:leaf | receipts/leaf.json |',
+  ];
+  const nested = fixture(v2({
+    items, includeChildren: true, decompositionRows, includeResplit: false, includeSplitCount: false,
+    extra: 're-split: rows(I1: continuing: tracking parent/progress.md; I2: continuing: tracking child/progress.md)\nsplittable: 0/2',
+  }), { 'receipts/leaf.json': accepted('agent:leaf') });
+  assert.deepEqual(latestRules(nested.text, { ledgerPath: nested.ledgerPath }), [], 'tracking may nest and a real accepted receipt belongs only to the dispatched leaf');
+  assert.equal(parseItemsV2(nested.text).rows.find((row) => row.id === 'I2').children, '["I3"]', 'optional children metadata is parsed from Items');
+
+  const completedLeaf = item({
+    id: 'I2', source: 'report:leaf', item: 'finished leaf unit', status: 'done -- `work completed`',
+    evidence: '`work completed`', owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf',
+    mode: 'read-only', writeSet: '[]', dispatchRef: '-', children: '[]',
+  });
+  const parentWithDoneChild = fixture(v2({
+    items: [parent('I1', [], { children: '["I2"]' }), completedLeaf],
+    includeChildren: true,
+    decompositionRows: [
+      '| I1 | retain tracking until reviewed | continuing | agent:i1 | tracking parent/review.md |',
+      '| I2 | record completed leaf | done | agent:leaf | `work completed` |',
+    ],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: continuing: tracking parent/review.md)\nsplittable: 0/1',
+  }));
+  assert.deepEqual(latestRules(parentWithDoneChild.text, { ledgerPath: parentWithDoneChild.ledgerPath }), [], 'all children being done does not auto-complete the tracking parent');
+});
+
+test('tracking graph rejects dangling, self, duplicate and cyclic child references', () => {
+  const parent = (id, children) => item({
+    id, source: `report:${id.toLowerCase()}`, item: 'track child work', status: 'tracking', evidence: 'tracking plan',
+    owner: `agent:${id.toLowerCase()}`, repository: 'repo-a', worktree: `worktrees/${id.toLowerCase()}`,
+    mode: 'read-only', writeSet: '[]', dispatchRef: '-', children: JSON.stringify(children),
+  });
+  const validRows = (ids) => ids.map((id) => `| ${id} | track child work | continuing | agent:${id.toLowerCase()} | tracking ${id.toLowerCase()}/progress.md |`);
+  const cases = [
+    { name: 'dangling', items: [parent('I1', ['I9'])], ids: ['I1'] },
+    { name: 'self', items: [parent('I1', ['I1'])], ids: ['I1'] },
+    { name: 'duplicate', items: [parent('I1', ['I2', 'I2']), parent('I2', [])], ids: ['I1', 'I2'] },
+    { name: 'cycle', items: [parent('I1', ['I2']), parent('I2', ['I1'])], ids: ['I1', 'I2'] },
+  ];
+  for (const current of cases) {
+    const candidate = fixture(v2({
+      items: current.items,
+      includeChildren: true,
+      decompositionRows: validRows(current.ids),
+      includeResplit: false,
+      includeSplitCount: false,
+      extra: `re-split: rows(${current.ids.map((id) => `${id}: continuing: tracking ${id.toLowerCase()}/progress.md`).join('; ')})\nsplittable: 0/${current.ids.length}`,
+    }));
+    const findings = checkHeartbeatV2(candidate.text, { ledgerPath: candidate.ledgerPath });
+    assert.ok(findings.some((finding) => /children|tracking/i.test(`${finding.rule} ${finding.message}`)), `${current.name} child graph must be rejected`);
+  }
+});
+
+test('tracking items require read-only tracking metadata and cannot claim dispatch receipts', () => {
+  const tracker = (overrides = {}) => item({
+    id: 'I1', source: 'report:tracker', item: 'track child work', status: 'tracking', evidence: 'tracking plan',
+    owner: 'agent:tracker', repository: 'repo-a', worktree: 'worktrees/tracker', mode: 'read-only',
+    writeSet: '[]', dispatchRef: '-', children: '["I2"]', ...overrides,
+  });
+  const child = item({
+    id: 'I2', source: 'report:leaf', item: 'finished leaf unit', status: 'done -- `work completed`', evidence: '`work completed`',
+    owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf', mode: 'read-only', writeSet: '[]', dispatchRef: '-', children: '[]',
+  });
+  const rejected = (parentRow, label) => {
+    const candidate = fixture(v2({
+      items: [parentRow, child],
+      includeChildren: true,
+      decompositionRows: [
+        '| I1 | track child work | continuing | agent:tracker | tracking progress.md |',
+        '| I2 | record completed leaf | done | agent:leaf | `work completed` |',
+      ],
+      includeResplit: false,
+      includeSplitCount: false,
+      extra: 're-split: rows(I1: continuing: tracking progress.md)\nsplittable: 0/1',
+    }));
+    const findings = checkHeartbeatV2(candidate.text, { ledgerPath: candidate.ledgerPath });
+    assert.ok(findings.some((finding) => /tracking|dispatch|mode|work.?set|owner|worktree|repository/i.test(`${finding.rule} ${finding.message}`)), `${label} tracking metadata must be rejected`);
+  };
+
+  rejected(tracker({ mode: 'write', writeSet: '["src/claimed-parent.mjs"]' }), 'writer mode');
+  rejected(tracker({ owner: '' }), 'missing owner');
+  rejected(tracker({ repository: '' }), 'missing repository');
+  rejected(tracker({ worktree: '' }), 'missing worktree');
+  rejected(tracker({ dispatchRef: 'receipts/fake-tracker.json' }), 'fake dispatch receipt');
 });
 
 test('a second Items registry cannot hide an otherwise omitted dispatched owner', () => {

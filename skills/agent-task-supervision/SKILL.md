@@ -41,7 +41,11 @@ work. Earlier events get their normal event handling and do not count as a full 
 event once an event is due. Interim worker notifications are not meaningful events unless they surface a
 blocker or new evidence. The CLI probe is `node .vibe-coding/kit/src/supervision/heartbeat-audit-due-cli.mjs
 <ledger> [--minutes 20 --json]`; its JSON `due` field is authoritative. It schedules nothing and grants no
-hook or wake capability.
+hook or wake capability. To prepare an event audit without arming a timer, render the canonical read-only
+block with `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --template`. It prints a template only; it
+does not claim a delivered wake or write files. Fill every source and state from checks actually performed,
+append only the completed block, then run strict current validation. Never append unfilled placeholders or
+claim unchecked work as complete.
 
 The configured adapter may provide project-specific command strings for `arm`, `due`, `check`, `sweep`,
 `inflight`, and `branches`; invocation overrides must not alter audit obligations. The Kit arm template accepts
@@ -86,6 +90,14 @@ older wake bytes as historical records. Do not rewrite the file. The current `##
 existing `id | source | item | status | evidence` fields and adds, in order,
 `owner | repository | worktree | mode | write_set | dispatch_ref`.
 
+An optional `children` JSON-array column may be appended after `dispatch_ref` for genuine aggregate
+coordination. Aggregate arrays are nonempty and contain unique IDs of existing Items; reject self-links,
+cycles, and dangling IDs. Leaves may omit it or use `[]`. Track each child in this single registry. Parent rows still need honest owner, repository,
+worktree, mode, write set (`[]` for read-only), and accepted dispatch evidence; never claim acceptance or write
+authority the worker did not receive. Children completing does not complete the parent: keep it unfinished
+until the parent's own acceptance criteria pass. Use parent tracking only for real coordination, not to bypass
+leaf work or receipts or to hide unknown legacy state.
+
 Each dispatched row must identify `mode` as `write` or `read-only`, an explicit repository and worktree, and
 `write_set` as a JSON array of exact relative file paths. Do not use directory-wide paths or globs; a literal
 placeholder such as `[id]` is allowed when it is the actual filename. `dispatch_ref` points to an accepted
@@ -100,12 +112,18 @@ evidence`. List every current non-done Item. Allowed dispositions are `dispatche
 assessment, end with `re-split: rows()` and `splittable: 0/0`. Add the current row details to `rows(...)` as needed;
 do not leave an unassessed item implicit. `splittable: D/P` is newly dispatched independent units over **all
 valid rows assessed in this v2 wake: `split->dispatched <new unit>` for a new dispatch, `cannot-split: <tagged
-proof>`, or `continuing: <current activity/private-final evidence>` for an already dispatched unit. `D` counts
-new dispatches; `P` counts all three valid verdict types. Use only real Item or wake-cell IDs and cite the
-evidence for each. If no additional split assessment is needed, `rows()` and `0/0` remain valid when the full
-Decomposition table covers every unfinished Item; do not re-dispatch existing work just to fill the count.
-Historical wake denominators retain their old meaning; do not rewrite them or apply that old denominator rule
-to v2.
+proof>`, `continuing: active <source-ref>`, `continuing: private-final <source-ref>`, or
+`continuing: tracking <source-ref>` for an already dispatched unit. A tracking reference cites current child
+status evidence for an aggregate row. Use a non-placeholder citation to current probe/tool output or private
+final, not an acceptance receipt. The orchestrator must resolve and cross-check that citation against the
+original tool evidence; the checker validates only the declared kind and nonempty reference, not its
+authenticity. Do not add a separate child or activity-receipt registry. `D` counts new dispatches; `P` counts all
+valid assessed verdicts, including each continuing kind. Use only real Item or wake-cell IDs. If no additional
+split assessment is needed, `rows()` and `0/0` remain valid when
+the full Decomposition table covers every unfinished Item; do not re-dispatch existing work just to fill the
+count. A wake's contract version selects its denominator, not the CLI read mode: unmarked legacy history keeps
+its proof-only denominator, while `heartbeat/v2` uses all valid assessed rows even when inspected with
+non-certifying `--history`. Do not rewrite historical wakes or apply the legacy rule to v2.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
 the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection

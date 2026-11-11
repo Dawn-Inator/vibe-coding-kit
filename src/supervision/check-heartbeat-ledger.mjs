@@ -52,6 +52,7 @@ import {
 } from './heartbeat-blocked-reason.mjs';
 import { gradeSources, parseIsoMs } from './heartbeat-ledger-sources.mjs';
 import { checkSplittable } from './heartbeat-ledger-splittable.mjs';
+import { checkTrackingRows, isTrackingItemState } from './heartbeat-ledger-tracking.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
 
 // Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
@@ -317,6 +318,7 @@ const REPLAY_RE = /replays:([\w./-]+)=(\d+)/gi;
 function itemKind(status) {
   const text = status.trim();
   if (/^ready$/i.test(text)) return 'ready';
+  if (isTrackingItemState(text)) return 'tracking';
   if (new RegExp(`^owner\\s*${ARROW}`, 'i').test(text)) return 'owner';
   if (/^blocked\b/i.test(text)) return 'blocked';
   if (/^dispatched\s*:?\s+\S/i.test(text)) return 'dispatched';
@@ -424,6 +426,7 @@ export function checkItems(text, { now = new Date() } = {}) {
     findings.push({ rule: 'item-outside-table', message: `item ${stray.id || '(no id)'} (line ${stray.line}): row sits outside the "## Items" table -- move it inside, rows below a later section are invisible to this checker` });
   }
   const duplicateLines = new Set(findDuplicateItemIds(rows).map((dup) => dup.line));
+  findings.push(...checkTrackingRows(rows));
   const history = new Map();
   for (const row of rows) {
     if (!row.id) red('item-id', row, 'row has no id');

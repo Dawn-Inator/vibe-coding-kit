@@ -17,14 +17,21 @@ metadata in legacy rows is not completion evidence. Never bulk-mark historical d
 their accepted scope, or reclassify ordinary delegable work as an owner-domain decision. Keep actual status
 (accepted, active, final, landed, blocked) separate from acceptance criteria.
 
-In v2, each assessed row uses one of three verdicts: `split->dispatched <new unit>`,
-`cannot-split: <tagged proof>`, or `continuing: <current activity/private-final evidence>` for an already
-dispatched unit. IDs must be real Item or wake-cell IDs. `D` counts new dispatches; `P` counts all valid assessed
-rows, including continuing rows. When no additional split assessment is needed, `rows()` and `0/0` remain valid
-if Decomposition lists every unfinished Item; do not force redispatch. Keep older denominator semantics only in
-preserved historical wakes. Do not rewrite historical denominators. If the latest current audit is red, append
-a corrective audit and claim certification only when the normalized report has `certifiesCurrent: true`. A red
-audit does not block separately authorized business work or ending the session.
+In v2, each assessed row uses one of three verdict classes: `split->dispatched <new unit>`,
+`cannot-split: <tagged proof>`, or a typed `continuing` verdict: `active <source-ref>`,
+`private-final <source-ref>`, or `tracking <source-ref>` for a genuine aggregate parent. `active` and
+`private-final` apply to leaves; `tracking` cites current child-state evidence. Use a non-placeholder reference to the raw probe/tool result or
+private final. Acceptance alone is not activity evidence. The orchestrator resolves and cross-checks source
+references against the original tool evidence; the checker validates only verdict kind and nonempty reference,
+not authenticity. Do not create a separate child or activity-receipt registry. IDs must be real Item or wake-cell
+IDs. `D` counts new dispatches; `P` counts all valid assessed rows, including every continuing kind. When no
+additional split assessment is needed, `rows()` and `0/0` remain valid if Decomposition lists every unfinished
+Item; do not force redispatch. A wake's contract marker, not the CLI read mode, selects denominator semantics:
+unmarked legacy 8/10 wakes keep the proof-only denominator, while `heartbeat/v2` uses all valid assessed rows
+even under non-certifying `--history`. Do not rewrite historical wakes. If the latest current audit is red,
+append a corrective audit and claim
+certification only when the normalized report has `certifiesCurrent: true`. A red audit does not block separately
+authorized business work or ending the session.
 
 ## One normalized report
 

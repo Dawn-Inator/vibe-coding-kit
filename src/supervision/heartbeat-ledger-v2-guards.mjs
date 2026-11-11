@@ -105,7 +105,9 @@ function capacity(items, wake) {
   const match = row?.state.match(/capacity\s+in-flight\s*=\s*(\d+)\s+free\s*=\s*(\d+)/i);
   const statuses = items.map((item) => String(item.status ?? '').trim());
   const ready = statuses.filter((status) => /^ready$/i.test(status)).length;
-  const unfiled = statuses.filter((status) => /^ready$/i.test(status) || !/^(?:dispatched\b|done\b|blocked\b|owner\b)/i.test(status)).length;
+  const unfiled = statuses.filter((status) => !/^tracking\b/i.test(status) && (
+    /^ready$/i.test(status) || !/^(?:dispatched\b|done\b|blocked\b|owner\b)/i.test(status)
+  )).length;
   const oneB = row?.state.match(/\(1b\)\s*([\s\S]*)$/i)?.[1]?.trim() ?? '';
   const findings = [];
   if (ready > 0) findings.push(advisory('decompose-now', `${wake.heading}: ${ready} Items row(s) still say ready at wake end; split and dispatch them now, or reclassify them as blocked/owner with proof`));

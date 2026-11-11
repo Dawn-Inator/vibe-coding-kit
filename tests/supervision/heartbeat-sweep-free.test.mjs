@@ -179,6 +179,25 @@ test('a ready row nobody dispatched is FREE', () => {
   assert.deepEqual(r.free.map((f) => [f.id, f.kind, f.firstStep]), [['I1', 'ready-undispatched', 'sweep:worktree cleanup candidate']]);
 });
 
+test('tracking parents are not free or complete, and their real children retain activity counts', () => {
+  const fx = makeRepo();
+  const rows = [
+    { ...row('I1', 'tracking', 'parent objective'), children: '["I2", "I3"]' },
+    row('I2', 'dispatched ALPHA', 'active child'),
+    row('I3', 'done — child shipped', 'completed child'),
+    row('I4', 'blocked ← waiting for I1', 'wait for parent objective'),
+  ];
+  const r = run(rows, fx, { psLines: ['node agent ALPHA'] });
+
+  assert.equal(r.inFlight, 1, 'the parent does not inflate active worker counts and the dispatched child remains active');
+  assert.deepEqual(r.inFlightUnits, ['ALPHA (live)']);
+  assert.deepEqual(freeIds(r), [], 'a pure tracking parent is not an undispatched candidate');
+  assert.deepEqual(r.stale.map((entry) => entry.id), [], 'completed children do not complete their parent');
+  assert.deepEqual(r.blocked.map(({ id, cls, why }) => [id, cls, why]), [
+    ['I4', 'dependency', 'waiting on open I1'],
+  ], 'a blocker waiting on the tracking parent remains unresolved until that parent is explicitly done');
+});
+
 test('summary counts dispatched units once, live worktree:end processes of this ledger session not already named, and owner/time blocks', () => {
   const fx = makeRepo();
   const rows = [

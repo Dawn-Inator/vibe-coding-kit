@@ -21,6 +21,7 @@
 // Usage:
 //   pnpm heartbeat:arm -- --probe                                   # 75 s delivery probe, no ledger
 //   pnpm heartbeat:arm -- --ledger .workspace/task/<yyyy-mm-dd>-<topic-slug>/heartbeat.md   # 20 min
+//   node heartbeat-arm.mjs --template                              # read-only ledger template, no wake/arming
 //   pnpm heartbeat:arm -- --ledger <path> --minutes 15
 //   pnpm heartbeat:arm -- --ledger <path> --seconds 90              # tests
 // Claude Code's Bash tool stops a run_in_background command after 30 minutes unless the call passes a larger
@@ -97,12 +98,17 @@ export function resolveLedgerRe(env = process.env) {
 export function parseArgs(argv, env = process.env) {
   let seconds = DEFAULT_INTERVAL_MINUTES * 60;
   let probe = false;
+  let template = false;
+  let intervalSpecified = false;
+  let commandsSpecified = false;
   let ledger = null;
   let commands = DEFAULT_COMMANDS;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--') continue;
-    if (arg === '--probe') {
+    if (arg === '--template') {
+      template = true;
+    } else if (arg === '--probe') {
       probe = true;
       seconds = PROBE_SECONDS;
     } else if (arg === '--ledger') {
@@ -110,10 +116,12 @@ export function parseArgs(argv, env = process.env) {
       if (!ledger) throw new Error('--ledger needs a path');
       i += 1;
     } else if (arg === '--commands') {
+      commandsSpecified = true;
       try { commands = normalizeCommands(JSON.parse(argv[i + 1])); }
       catch (error) { throw new Error(`--commands needs a valid JSON mapping: ${error.message}`); }
       i += 1;
     } else if (arg === '--minutes' || arg === '--seconds') {
+      intervalSpecified = true;
       const value = Number(argv[i + 1]);
       if (!Number.isFinite(value) || value <= 0) throw new Error(`${arg} needs a positive number`);
       seconds = arg === '--minutes' ? Math.round(value * 60) : Math.round(value);
@@ -121,6 +129,12 @@ export function parseArgs(argv, env = process.env) {
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
+  }
+  if (template) {
+    if (probe || intervalSpecified || ledger || commandsSpecified) {
+      throw new Error('--template cannot be combined with --probe, --ledger, --minutes, --seconds, or --commands');
+    }
+    return { template: true };
   }
   if (ledger && !resolveLedgerRe(env).test(ledger)) {
     throw new Error(`--ledger must match ${LEDGER_PATH_EXAMPLE} (got ${ledger})`);
@@ -185,7 +199,8 @@ export function ledgerTemplate(wakeIso) {
 export const STATE_LEGEND = [
   '<state> = in-flight <unit> | dispatched <unit> | blocked ← <named exclusive resource>',
   '          | deferred ← <input> ETA <=20m | empty — `<command run this wake>` = <result>',
-  '          | done — `<command>` or <commit sha>',
+  '          | done — `<command>` = <result> or <landed commit sha>',
+  '  Row 1 must answer `(1a)` and `(1b)` separately. Empty and done states need evidence; blocked names its exclusive resource; deferred names its input and ETA <=20m.',
   '          | unchanged — `<command rerun this wake>`',
   '  unchanged: rows 2-9 only, for a state that did not change since the previous wake; never on the first',
   '  wake, on a row that was deferred last wake, on row 1 (1a/1b) or on row 10.',
@@ -194,10 +209,24 @@ export const STATE_LEGEND = [
   '  AND an `owner ←` item naming the blocker in the Items table.',
   '  In Decomposition, include every current non-done Item with its concrete next step and disposition dispatched|continuing|blocked|owner|done.',
   '  Every accepted dispatch is only an accepted request; record later active/final/landed evidence separately. Never infer execution from acceptance.',
-  '  rows(...) verdicts: split->dispatched <new unit> | cannot-split: <tagged proof> | continuing: <current activity/private-final evidence> for an already dispatched unit. Use real Item/wake-cell IDs.',
+  '  rows(...) verdicts: split->dispatched <new unit> | cannot-split: <tagged proof> | continuing: active <source-ref> | continuing: private-final <source-ref> | continuing: tracking <source-ref> for a real parent aggregate. Cite actual current tool/child-state evidence, never acceptance alone; use real Item/wake-cell IDs.',
+  '  The orchestrator resolves and cross-checks source refs against original tool evidence; the checker validates only kind/ref syntax. Do not add an activity-receipt JSON registry.',
   '  End with standalone `re-split: rows(...)` and `splittable: D/P` lines. D counts new dispatches; P counts all valid assessed verdicts, including continuing. If no additional split assessment is needed, rows() and 0/0 are valid when Decomposition covers every unfinished Item.',
   '  Add one Decomposition data row per current non-done Item; the emitted table is intentionally empty until populated. Do not leave ready items.',
 ];
+
+const OPTIONAL_CHILDREN_GUIDE = [
+  'Optional Items registry extension (append `children` after `dispatch_ref` only for true aggregates; aggregate arrays must be nonempty):',
+  '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |',
+  'For leaf Items omit the column or use `[]`; children is a JSON array of unique IDs already in this one Items registry. No self-links, cycles, or dangling IDs.',
+  'Keep owner, repository, worktree, mode, write_set, and accepted receipt/write scope accurate; read-only rows use write_set `[]`. Never invent acceptance or writer authority.',
+  'Children finishing does not finish their parent before its own acceptance criteria pass. Do not bypass leaf work/receipts or hide unknown legacy state.',
+];
+
+export function formatLedgerTemplate(now = new Date(), { includeChildrenGuide = false } = {}) {
+  const wakeIso = `${now.toISOString().slice(0, 16)}Z`;
+  return [...ledgerTemplate(wakeIso), ...STATE_LEGEND, ...(includeChildrenGuide ? OPTIONAL_CHILDREN_GUIDE : [])].join('\n');
+}
 
 export function keepAwakeCommand(platform, pid) {
   return platform === 'darwin' ? ['caffeinate', ['-i', '-w', String(pid)]] : null;
@@ -262,7 +291,6 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
       `\`${command(commands, 'arm', LEDGER_PATH_EXAMPLE, seconds)}\` (background shell).`
     );
   }
-  const wakeIso = `${now.toISOString().slice(0, 16)}Z`;
   return [
     `HEARTBEAT due ${stamp} (interval ${Math.max(1, Math.round(seconds / 60))} min) -- ledger: ${ledger}`,
     `Order: (1) re-arm FIRST: ${command(commands, 'arm', ledger, seconds)} (background${rearmHint(seconds)}), (2) audit, (3) ledger, (4) one chat line.`,
@@ -279,8 +307,7 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
     '  4. re-split immediately: decompose every remaining non-done Item, dispatch each free independent unit, and assign a clear owner and exact file write set.',
     '     Check every accepted dispatch for evidence it became active; re-split stale/idle work or record its concrete blocker.',
     `Ledger: APPEND this block to ${ledger} (never rewrite or regenerate the file; keep the heading time as-is):`,
-    ...ledgerTemplate(wakeIso).map((line) => `  ${line}`),
-    ...STATE_LEGEND.map((line) => `  ${line}`),
+    ...formatLedgerTemplate(now).split('\n').map((line) => `  ${line}`),
     '  Keep ## Items with id/source/item/status/evidence followed by owner | repository | worktree | mode | write_set | dispatch_ref.',
     '  A dispatched row needs mode write|read-only, explicit repository/worktree, JSON exact relative file array (no broad paths/globs), and accepted receipt path.',
     '  dispatch_ref proves acceptance only: tool, event=accepted, agent_id=owner, and returned task_name|agent_id|session_id|id=owner. It does not prove running or completion.',
@@ -290,7 +317,7 @@ export function formatWakeMessage({ seconds, probe, ledger, now, commands = DEFA
     'The next re-arm is refused if this wake writes no ledger block.',
     'Between timer wakes: a worker interim notification (background work still running, no terminal result) gets an EMPTY reply.',
     `Without a delivered timer: on every meaningful human request, resume, private final, landing, or newly surfaced blocker, run ${command(commands, 'due', ledger, seconds)}. If JSON says due=true, re-arm if available and finish this full audit before unrelated next-batch work; otherwise handle the event normally. No event means no guaranteed wall-clock wake; this probe schedules nothing.`,
-    'For v2 rows(...), use split->dispatched <new unit>, cannot-split: <tagged proof>, or continuing: <current activity/private-final evidence> for already-dispatched work; use real Item/wake-cell IDs. D counts new dispatches and P counts all valid assessed verdicts. rows() and 0/0 are valid with no additional split assessment when Decomposition covers every unfinished Item. Preserve older wake denominators unchanged.',
+    'For v2 rows(...), use split->dispatched <new unit>, cannot-split: <tagged proof>, continuing: active <source-ref>, continuing: private-final <source-ref>, or continuing: tracking <source-ref> for a true aggregate parent. Cite current raw tool/child-state evidence; acceptance alone is not activity evidence. The orchestrator cross-checks original tool results; the checker validates only kind/ref syntax. No activity-receipt JSON registry or separate child registry. Use real Item/wake-cell IDs. D counts new dispatches and P counts all valid assessed verdicts; rows() and 0/0 remain valid with no additional split assessment when Decomposition covers every unfinished Item. Preserve older wake denominators unchanged.',
   ].join('\n');
 }
 
@@ -299,7 +326,13 @@ function sleep(ms) {
 }
 
 export async function runHeartbeatArm(argv = process.argv.slice(2), deps = {}) {
-  const { seconds, probe, ledger, commands } = parseArgs(argv, deps.env ?? process.env);
+  const parsed = parseArgs(argv, deps.env ?? process.env);
+  if (parsed.template) {
+    const message = `HEARTBEAT_TEMPLATE -- read-only; no wake delivered\n${formatLedgerTemplate(deps.now?.() ?? new Date(), { includeChildrenGuide: true })}`;
+    (deps.stdout ?? process.stdout).write(`${message}\n`);
+    return message;
+  }
+  const { seconds, probe, ledger, commands } = parsed;
   if (!probe) {
     const text = existsSync(ledger) ? readFileSync(ledger, 'utf8') : '';
     const armsPath = armsPathFor(ledger);

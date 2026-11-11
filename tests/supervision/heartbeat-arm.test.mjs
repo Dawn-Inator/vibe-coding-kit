@@ -63,6 +63,17 @@ test('parseArgs: a real heartbeat needs a ledger that matches the pattern; the p
   assert.equal(PROBE_SECONDS, 75);
 });
 
+test('parseArgs: --template is an exclusive read-only mode', () => {
+  assert.deepEqual(parseArgs(['--template']), { template: true });
+  for (const args of [
+    ['--template', '--probe'],
+    ['--template', '--ledger', LEDGER_REL],
+    ['--template', '--minutes', '20'],
+    ['--template', '--seconds', '5'],
+    ['--template', '--commands', '{}'],
+  ]) assert.throws(() => parseArgs(args), /cannot be combined with/);
+});
+
 test('project command mappings flow into the checklist and re-arm command', () => {
   const commands = { ...DEFAULT_COMMANDS, check: 'pnpm project:heartbeat-check -- {ledger} --latest', sweep: 'pnpm project:heartbeat-sweep -- {ledger}', due: 'pnpm project:heartbeat-due -- {ledger} --minutes {minutes} --json' };
   const args = parseArgs(['--ledger', LEDGER_REL, '--commands', JSON.stringify({ check: commands.check, sweep: commands.sweep, due: commands.due })]);
@@ -120,7 +131,12 @@ test('formatWakeMessage: re-arm first, one countable chat line, shared Node defa
   assert.match(text, /Without a delivered timer: on every meaningful human request, resume, private final, landing, or newly surfaced blocker/);
   assert.match(text, /If JSON says due=true, re-arm if available and finish this full audit before unrelated next-batch work/);
   assert.match(text, /No event means no guaranteed wall-clock wake; this probe schedules nothing/);
-  assert.match(text, /P counts every valid row assessed \(including dispatched and not newly split rows\)/);
+  assert.match(text, /continuing: active <source-ref> \| continuing: private-final <source-ref>/);
+  assert.match(text, /continuing: tracking <source-ref> for a true aggregate parent/);
+  assert.match(text, /Cite current raw tool\/child-state evidence; acceptance alone is not activity evidence/);
+  assert.match(text, /No activity-receipt JSON registry/);
+  assert.match(text, /D counts new dispatches and P counts all valid assessed verdicts/);
+  assert.match(text, /rows\(\) and 0\/0 are valid when Decomposition covers every unfinished Item/);
   assert.match(text, /active N · dispatched X · landed Y · splittable: D\/P/);
   assert.doesNotMatch(text, /\b\d+%/, 'the status line does not invent a subjective completion percentage');
   const probe = formatWakeMessage({ seconds: 75, probe: true, ledger: null, now });
@@ -138,6 +154,24 @@ test('the rendered due command invokes the real read-only CLI and returns JSON',
   const cli = spawnSync(process.execPath, [DUE_CLI, match[2], '--minutes', match[3], '--now', now, '--json'], { cwd, encoding: 'utf8' });
   assert.equal(cli.status, 0, cli.stderr);
   assert.equal(JSON.parse(cli.stdout).due, true);
+});
+
+test('CLI --template is read-only and its filled output passes strict checking', () => {
+  const { cwd, ledger, arms } = fixture();
+  const result = spawnSync(process.execPath, [CLI, '--template'], { cwd, encoding: 'utf8', timeout: 2000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^HEARTBEAT_TEMPLATE -- read-only; no wake delivered\n/);
+  assert.match(result.stdout, /sources: sweep\(✓\).*external-backlog\(✓ <timestamp>\)/);
+  assert.match(result.stdout, /\| id \| source \| item \| status \| evidence \| owner \| repository \| worktree \| mode \| write_set \| dispatch_ref \| children \|/);
+  assert.match(result.stdout, /children is a JSON array of unique IDs already in this one Items registry/);
+  assert.equal(existsSync(ledger), false, 'template mode must not create a ledger');
+  assert.equal(existsSync(arms), false, 'template mode must not append an arm log');
+
+  const block = result.stdout.slice(result.stdout.indexOf('----'));
+  const unfilled = runChecker(cwd, `# heartbeat\n\n${block}\n`);
+  assert.equal(unfilled.status, 1, 'an unfilled template is not a valid audit');
+  const filled = runChecker(cwd, `# heartbeat\n\n${fillBlock(block)}\n`);
+  assert.equal(filled.status, 0, filled.stdout);
 });
 
 test('formatWakeMessage: the re-arm line keeps the armed interval and warns about the Bash background limit', () => {
@@ -238,6 +272,7 @@ test('ledgerTemplate: one row per checker category and the explicit empty v2 aud
 // Fills the printed block the way a model would: one allowed state per row (row 10 cites the matrix),
 // the backlog timestamp with the wake time. `rowStates` overrides individual rows by number.
 function fillBlock(block, rowStates = {}) {
+  const wakeTimestamp = block.match(/^## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) wake/m)?.[1] ?? '2026-01-01T10:20Z';
   const defaults = {
     2: 'in-flight reviewer-1',
     3: 'dispatched status-writer',
@@ -251,7 +286,7 @@ function fillBlock(block, rowStates = {}) {
   };
   const states = { ...defaults, ...rowStates };
   return block
-    .replace('<timestamp>', '2026-01-01T10:20Z')
+    .replace('<timestamp>', wakeTimestamp)
     .replace('(1a) <state>; (1b) <state>', '(1a) in-flight unit-a; (1b) empty -- `ls .todolist` = nothing free')
     .replace(/^\| (\d+) \| ([^|]+) \| <state> \|$/gm, (_, num, name) => `| ${num} | ${name} | ${states[num]} |`)
     .replace(/^\| <item id>[^\n]*\n?/m, '')

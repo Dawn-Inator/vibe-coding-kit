@@ -108,7 +108,13 @@ test('invalid and future full-wake timestamps fail closed with explicit reasons'
 });
 
 test('strict calendar validation rejects rollover dates and accepts leap days and offsets', () => {
-  for (const heading of ['2026-02-30T10:20Z', '2026-04-31T10:20Z']) {
+  for (const heading of [
+    '2026-02-30T10:20Z',
+    '2026-04-31T10:20Z',
+    '2026-01-01T10:20+oops',
+    '2026-01-01T10:20Zjunk',
+    '2026-01-01T10:20Zsuffix',
+  ]) {
     const report = heartbeatAuditDue(fullWake(heading), { now: new Date('2026-05-02T10:30:00Z') });
     assert.equal(report.due, true);
     assert.equal(report.reason, 'invalid-audit-timestamp');
@@ -121,6 +127,12 @@ test('strict calendar validation rejects rollover dates and accepts leap days an
   const offset = heartbeatAuditDue(fullWake('2026-01-01T05:20-05:00'), { now: new Date('2026-01-01T10:40:00Z') });
   assert.equal(offset.reason, 'interval-elapsed');
   assert.equal(offset.lastAuditAt, '2026-01-01T10:20:00.000Z');
+
+  const compactOffset = heartbeatAuditDue(fullWake('2026-01-01T15:20+0530'), { now: new Date('2026-01-01T10:40:00Z') });
+  assert.equal(compactOffset.lastAuditAt, '2026-01-01T09:50:00.000Z');
+
+  const legacyZoneLess = heartbeatAuditDue(fullWake('2026-01-01T10:20'), { now: new Date('2026-01-01T10:40:00Z') });
+  assert.equal(legacyZoneLess.lastAuditAt, '2026-01-01T10:20:00.000Z');
 });
 
 test('invalid now and interval values throw', () => {

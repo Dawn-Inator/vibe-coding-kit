@@ -191,7 +191,7 @@ export async function warmFree(rows, ctx) {
   }
   await idx.warm(jobs);
 }
-const statusKind = (status) => (/^(blocked|owner|dispatched|done|ready)\b/i.exec(status.trim())?.[1] ?? 'other').toLowerCase();
+const statusKind = (status) => (/^(blocked|owner|dispatched|done|ready|tracking)\b/i.exec(status.trim())?.[1] ?? 'other').toLowerCase();
 const wordRe = (word, flags = '') => new RegExp(`(^|[^A-Za-z0-9-])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9-])`, flags);
 
 // Unit names a `dispatched` status hands out: the head before any "(" / "->" / ";" detail.

@@ -27,7 +27,9 @@ const OPEN_RE = /^(blocked|deferred)\s*(?:←|<-)\s*(\S.*)$/i;
 const ITEM_BLOCKED_RE = /^blocked\s*(?:←|<-)\s*(\S.*)$/i;
 const SPLIT_RE = /^split\s*(?:→|->)\s*dispatched\s+(\S.*)$/i;
 const CANNOT_RE = /^cannot-split\s*:\s*(\S.*)$/i;
-const CONTINUING_RE = /^continuing\s*:\s*(\S.*)$/i;
+const CONTINUING_RE = /^continuing\s*:\s*(active|private-final|tracking)\s+(\S.*)$/i;
+const CONTINUING_PLACEHOLDER_RE = /^(?:-|none|unknown|n\/?a|tbd|todo|\?)$/i;
+const ACCEPTANCE_ONLY_RE = /\b(?:acceptance[- ]only|(?:accepted|acceptance)\s+(?:receipt|evidence)\s+only)\b/i;
 const ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
 const TOKEN_RE = /\bsplittable:\s*(\d+)\s*\/\s*(\d+)/i;
 
@@ -59,7 +61,13 @@ export function parseRowVerdicts(group, { allowContinuing = false } = {}) {
       const id = normId(entry[1]);
       if (SPLIT_RE.test(body)) return { id, verdict: 'dispatched', detail: body, proof: null };
       const continuing = body.match(CONTINUING_RE);
-      if (allowContinuing && continuing) return { id, verdict: 'continuing', detail: body, evidence: continuing[1].trim(), proof: null };
+      if (allowContinuing && continuing) {
+        const evidenceKind = continuing[1].toLowerCase();
+        const evidenceRef = continuing[2].trim();
+        if (!CONTINUING_PLACEHOLDER_RE.test(evidenceRef) && !ACCEPTANCE_ONLY_RE.test(evidenceRef)) {
+          return { id, verdict: 'continuing', detail: body, evidenceKind, evidenceRef, proof: null };
+        }
+      }
       const cannot = body.match(CANNOT_RE);
       if (cannot) {
         const proof = findBlockedProofTag(cannot[1]);
@@ -89,11 +97,12 @@ export function openRows({ cells = [], itemRows = [] }) {
  */
 export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAudit = false }) {
   const open = openRows({ cells, itemRows });
-  if (open.length === 0 && !requireAudit) return [];
+  const v2Format = requireAudit || sectionLines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line));
+  if (open.length === 0 && !v2Format) return [];
   const findings = [];
   const line = sectionLines.find((l) => /^\s*re-split:/i.test(l));
   const group = line ? groupOf(line, 'rows') : null;
-  const verdicts = group === null ? [] : parseRowVerdicts(group, { allowContinuing: requireAudit });
+  const verdicts = group === null ? [] : parseRowVerdicts(group, { allowContinuing: v2Format });
   const byId = new Map(verdicts.filter((v) => v.id).map((v) => [v.id, v]));
   const labels = (rows) => rows.map((r) => r.label).join(', ');
 
@@ -106,14 +115,19 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
       ...(cells ?? []).filter((cell) => /^(?:in-flight|dispatched)\b/i.test(String(cell.state ?? '').trim())).map((cell) => normId(`r${cell.key}`)),
       ...(itemRows ?? []).filter((row) => /^dispatched\b/i.test(String(row.status ?? '').trim())).map((row) => normId(row.id)),
     ]);
+    const trackingRows = new Set((itemRows ?? []).filter((row) => /^tracking\b/i.test(String(row.status ?? '').trim())).map((row) => normId(row.id)));
     const seenIds = new Set();
     for (const verdict of verdicts) {
       if (!verdict.id) continue;
       if (!knownRows.has(verdict.id)) {
         findings.push(err('resplit-row-unknown', `${loc}: rows(...) references ${verdict.id}, which is not present in the wake rows or Items registry`));
       }
-      if (verdict.verdict === 'continuing' && !activeRows.has(verdict.id)) {
-        findings.push(err('resplit-continuing-inactive', `${loc}: ${verdict.id} may use continuing only while its wake row is in-flight/dispatched or its Item status is dispatched`));
+      if (verdict.verdict === 'continuing') {
+        const isTrackingParent = trackingRows.has(verdict.id);
+        const validKind = verdict.evidenceKind === 'tracking' ? isTrackingParent : !isTrackingParent && activeRows.has(verdict.id);
+        if (!validKind) {
+          findings.push(err('resplit-continuing-kind', `${loc}: ${verdict.id} may use continuing: tracking only for a tracking parent, and continuing: active/private-final only for dispatched work or an active wake row`));
+        }
       }
       if (seenIds.has(verdict.id)) {
         findings.push(err('resplit-row-duplicate', `${loc}: rows(...) contains more than one verdict for ${verdict.id}; each assessed row must appear once`));
@@ -126,7 +140,8 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
     findings.push(err('resplit-rows-missing', `${loc}: ${open.length} row(s) are blocked/deferred (${labels(open)}); the default answer to "can it be split?" is yes, so the wake's "re-split:" line must carry rows(<id>: split->dispatched <unit> | <id>: cannot-split: <tagged proof>; ...) for every one — proofs: ${PROOF_TAG_HELP}`));
   } else {
     for (const v of verdicts.filter((x) => x.verdict === 'invalid')) {
-      findings.push(err('resplit-verdict-invalid', `${loc}: rows(...) entry "${v.id ?? ''} ${v.detail}" must be "split->dispatched <unit>" or "cannot-split: <tagged proof>" (${PROOF_TAG_HELP})`));
+      const continuingHelp = v2Format ? ' or "continuing: active|private-final|tracking <source-ref>"' : '';
+      findings.push(err('resplit-verdict-invalid', `${loc}: rows(...) entry "${v.id ?? ''} ${v.detail}" must be "split->dispatched <unit>" or "cannot-split: <tagged proof>"${continuingHelp} (${PROOF_TAG_HELP})`));
     }
     const missing = open.filter((r) => !byId.has(r.id));
     if (missing.length > 0) {
@@ -144,22 +159,22 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
     }
   }
 
-  const uniqueValidVerdicts = requireAudit
+  const uniqueValidVerdicts = v2Format
     ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split', 'continuing'].includes(v.verdict))
     : null;
-  const dispatched = requireAudit
+  const dispatched = v2Format
     ? uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').length
     : verdicts.filter((v) => v.verdict === 'dispatched').length;
   const withProof = verdicts.filter((v) => v.verdict === 'cannot-split').length;
-  const assessed = requireAudit
+  const assessed = v2Format
     ? uniqueValidVerdicts.length
     : withProof;
   const token = sectionLines.join('\n').match(TOKEN_RE);
   if (!token) {
-    const denominator = requireAudit ? 'assessed-rows' : 'rows-with-proof';
+    const denominator = v2Format ? 'assessed-rows' : 'rows-with-proof';
     findings.push(err('splittable-missing', `${loc}: add "splittable: <dispatched-this-wake>/${denominator}" (here ${dispatched}/${assessed}) to the wake and to the chat status line`));
   } else if (group !== null && (Number(token[1]) !== dispatched || Number(token[2]) !== assessed)) {
-    const denominator = requireAudit ? 'assessed' : 'with proof';
+    const denominator = v2Format ? 'assessed' : 'with proof';
     findings.push(err('splittable-mismatch', `${loc}: "splittable: ${token[1]}/${token[2]}" does not match the rows(...) verdicts (${dispatched} dispatched / ${assessed} ${denominator})`));
   }
   return findings;
