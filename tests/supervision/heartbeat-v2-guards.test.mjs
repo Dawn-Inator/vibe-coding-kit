@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import { checkHeartbeatV2 } from '../../src/supervision/heartbeat-ledger-v2.mjs';
+import { checkV2Guards } from '../../src/supervision/heartbeat-ledger-v2-guards.mjs';
 
 after(cleanupTempDirs);
 
@@ -74,6 +75,16 @@ const accepted = (owner) => ({
 });
 const findingsFor = (candidate) => checkHeartbeatV2(candidate.text, { ledgerPath: candidate.ledgerPath, now: new Date('2026-01-01T11:00:00Z') });
 const rulesFor = (candidate, rule) => findingsFor(candidate).filter((finding) => finding.rule === rule);
+
+function directGuardFindings(items, oneB) {
+  const latestWake = {
+    heading: '## 2026-01-01T10:40Z wake (10-row ledger)',
+    line: 1,
+    rows: [{ num: 1, state: `(1a) done -- \`goal checked\`; (1b) ${oneB}` }],
+    sectionLines: [],
+  };
+  return checkV2Guards({ items, wakes: [latestWake], latestWake });
+}
 
 test('three repeated owner-gated verdicts exempt only a matching owner Item, case-insensitively', () => {
   const decision = 'owner <- owner decision + checked standing authorization does not cover this decision';
@@ -182,5 +193,25 @@ test('capacity does not count an accepted dispatch receipt as evidence of active
   const findings = findingsFor(candidate);
   assert.deepEqual(findings.filter((finding) => finding.severity === 'error'), []);
   assert.equal(findings.filter((finding) => finding.rule === 'decompose-now-capacity-unknown').length, 1, 'an accepted dispatch receipt cannot certify the claimed active-worker count');
+});
+
+test('ready registry rows produce a non-blocking decompose-now advisory', () => {
+  const findings = directGuardFindings([
+    { id: 'I-1', status: 'ready' },
+    { id: 'I-2', status: 'ready' },
+  ], 'done -- `backlog checked`');
+
+  assert.deepEqual(findings.map((finding) => finding.rule), ['decompose-now']);
+  assert.ok(findings.every((finding) => finding.severity === 'advisory'), 'readiness guidance must not add a certification error');
+});
+
+test('(1b) idle with ready or unknown registry work produces non-blocking advisories', () => {
+  const findings = directGuardFindings([
+    { id: 'I-1', status: 'ready' },
+    { id: 'I-2', status: 'pending review' },
+  ], 'empty -- `worker probe` found none');
+
+  assert.deepEqual(findings.map((finding) => finding.rule), ['decompose-now', 'decompose-now-1b-idle']);
+  assert.ok(findings.every((finding) => finding.severity === 'advisory'), 'readiness guidance must not add a certification error');
 });
 

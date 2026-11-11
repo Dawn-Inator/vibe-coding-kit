@@ -103,8 +103,15 @@ function standingAuth(items, wake) {
 function capacity(items, wake) {
   const row = wake.rows.find((entry) => entry.num === 1);
   const match = row?.state.match(/capacity\s+in-flight\s*=\s*(\d+)\s+free\s*=\s*(\d+)/i);
-  if (!match) return [];
-  return [advisory('decompose-now-capacity-unknown', `${wake.heading}: capacity in-flight=${match[1]} free=${match[2]} is recorded, but the ledger has no host-active evidence to verify live worker capacity`)];
+  const statuses = items.map((item) => String(item.status ?? '').trim());
+  const ready = statuses.filter((status) => /^ready$/i.test(status)).length;
+  const unfiled = statuses.filter((status) => /^ready$/i.test(status) || !/^(?:dispatched\b|done\b|blocked\b|owner\b)/i.test(status)).length;
+  const oneB = row?.state.match(/\(1b\)\s*([\s\S]*)$/i)?.[1]?.trim() ?? '';
+  const findings = [];
+  if (ready > 0) findings.push(advisory('decompose-now', `${wake.heading}: ${ready} Items row(s) still say ready at wake end; split and dispatch them now, or reclassify them as blocked/owner with proof`));
+  if (/^(blocked|empty|unchanged)\b/i.test(oneB) && unfiled > 0) findings.push(advisory('decompose-now-1b-idle', `${wake.heading}: (1b) is blocked/empty while Items has ${unfiled} undispatched non-terminal row(s); decompose before reporting (1b) idle`));
+  if (match) findings.push(advisory('decompose-now-capacity-unknown', `${wake.heading}: capacity in-flight=${match[1]} free=${match[2]} is recorded, but the ledger has no host-active evidence to verify live worker capacity`));
+  return findings;
 }
 
 export function checkV2Guards({ wakes, items, latestWake }) {

@@ -85,7 +85,7 @@ with its own evidence. The orchestrator must provide the same receipt for its ow
 
 Every new wake includes a `### Decomposition` table with columns `item | next_step | disposition | owner |
 evidence`. List every current non-done Item. Allowed dispositions are `dispatched`, `continuing`, `blocked`,
-`owner`, and `done`; there is no `ready` disposition at the end of an audit. End with `require re-split: rows()`
+`owner`, and `done`; there is no `ready` disposition at the end of an audit. End with `re-split: rows()`
 and `splittable: 0/0`, including when no blockers remain. Add the current row details to `rows(...)` as needed;
 do not leave an unassessed item implicit. `splittable: D/P` is a count of newly dispatched independent units
 over rows assessed for splitting, with the denominator and evidence defined in that wake.

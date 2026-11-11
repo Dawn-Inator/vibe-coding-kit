@@ -45,8 +45,8 @@ Every dispatch gets an accepted receipt path in `dispatch_ref`. Validate that re
 owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
 active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
 
-At the end of the decomposition section write `require re-split: rows(...)` and `splittable: D/P`. If no
-additional split is needed, still write `require re-split: rows()` and `splittable: 0/0`. State the counting
+At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. If no
+additional split is needed, still write `re-split: rows()` and `splittable: 0/0`. State the counting
 scope so the numerator and denominator are reproducible. Every blocker must name the concrete unavailable
 resource, decision, or dependency and its owner. Never use subjective completion percentages.
 
