@@ -31,6 +31,19 @@ line:
 Use the configured sweeper/checker as evidence, then reconcile its output manually into the registry. A probe
 that is absent or unavailable is recorded as unchecked or blocked; it is not silently treated as complete.
 
+`Sources` examples must keep every channel and mark each check as completed. Replace `<read-at>` with the
+actual ISO timestamp when the external tracker was read:
+
+`sources: WORKER-HEALTH(OK) reports(ok checked) memory/handoff(ok at resume) sweep(ok) drift-matrix(OK) landings(ok) external-backlog(ok <read-at>)`
+
+If the tracker is inaccessible, state the concrete permission blocker and add an `owner` Item for that
+decision. Replace `<permission>` with the specific missing access or approval:
+
+`sources: WORKER-HEALTH(OK) reports(ok checked) memory/handoff(ok at resume) sweep(ok) drift-matrix(OK) landings(ok) external-backlog:tracker(BLOCKED <- <permission>)`
+
+The blocked source token does not stand alone: the matching owner Item must identify the tracker access
+blocker and its evidence. Do not use a placeholder timestamp or permission reason in a completed audit.
+
 ## Re-split and dispatch
 
 For every current non-done Item, record a row in `### Decomposition` with its id, concrete next action,
