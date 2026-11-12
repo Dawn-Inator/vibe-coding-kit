@@ -300,6 +300,45 @@ test("projection retains reported rows, evidence and raw statuses; tracking pare
 	assert.equal(state.source.readOnly, true);
 });
 
+test("projected evidence uses only available source location and attribution", () => {
+	const report = {
+		mode: "items",
+		findings: [],
+		items: [
+			{
+				id: "I1",
+				item: "missing line",
+				status: "done",
+				evidence: "reported claim",
+				source: "  ",
+			},
+			{
+				id: "I2",
+				item: "known line",
+				status: "done",
+				evidence: "checked claim",
+				source: "report:r2",
+				line: 7,
+			},
+		],
+	};
+	const state = projectHeartbeatTask({
+		report,
+		root: PROJECT_ROOT,
+		threadId: THREAD,
+		path: PROJECT_LEDGER,
+		contentHash: "evidence",
+		modifiedAt: "2026-01-01T00:00:00Z",
+	});
+	assert.equal(state.objectives[0].evidence[0].verification, "reported");
+	assert.equal(state.objectives[0].evidence[0].reference, PROJECT_LEDGER);
+	assert.equal(state.objectives[1].evidence[0].verification, "reported");
+	assert.equal(
+		state.objectives[1].evidence[0].reference,
+		`${PROJECT_LEDGER}#L7; source=report:r2`,
+	);
+});
+
 test("nested tracking hierarchies flatten to real leaves once and shared-child DAGs stay visible", () => {
 	const report = {
 		mode: "items",

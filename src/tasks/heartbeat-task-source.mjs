@@ -252,16 +252,18 @@ function mapStatus(raw) {
 
 function rowEvidence(row, path) {
 	const summary = String(row.evidence ?? "").trim();
-	return summary
-		? [
-				{
-					summary,
-					verification: "reported",
-					kind: "heartbeat-item",
-					reference: `${path}#L${row.line}; source=${row.source ?? ""}`,
-				},
-			]
-		: [];
+	if (!summary) return [];
+	const location =
+		Number.isInteger(row.line) && row.line > 0 ? `${path}#L${row.line}` : path;
+	const source = String(row.source ?? "").trim();
+	return [
+		{
+			summary,
+			verification: "reported",
+			kind: "heartbeat-item",
+			reference: source ? `${location}; source=${source}` : location,
+		},
+	];
 }
 
 /** Project an inspected Items inventory into a read-only shared task view. */
