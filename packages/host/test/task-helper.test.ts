@@ -185,6 +185,51 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       task: TaskState | null;
     };
     assert.equal(otherChat.task, null);
+    const inventoryCount = 4_000;
+    const inventoryLines = Array.from(
+      { length: inventoryCount },
+      (_, index) =>
+        `| I${index} | request | Inventory ${index} | custom-status-${index} | Evidence ${index} |`,
+    );
+    await mkdir(join(root, "kit"), { recursive: true });
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs" } }),
+    );
+    await writeFile(
+      join(root, "kit/heartbeat-ledger-api.mjs"),
+      `export function inspectHeartbeatLedger(text,{mode}) {
+        const rows=text.split('\\n').map((line,index)=>({line,index})).filter(({line})=>line.startsWith('| I'));
+        const items=rows.map(({line,index})=>{const cells=line.slice(1,-1).split('|').map(cell=>cell.trim());return {id:cells[0],source:cells[1],item:cells[2],status:cells[3],evidence:cells[4],line:index+1};});
+        const findings=mode==='items'?items.map(item=>({severity:'error',rule:'invalid-status',message:'invalid status '+item.status+' at item '+item.id})):[];
+        return {mode,certifiesCurrent:false,passed:false,wakes:[],items,findings};
+      }`,
+    );
+    await writeFile(
+      join(root, "heartbeat.md"),
+      [
+        "# Supervision",
+        "thread: inventory-chat",
+        "## Items",
+        "| id | source | item | status | evidence |",
+        "| --- | --- | --- | --- | --- |",
+        ...inventoryLines,
+        "",
+      ].join("\n"),
+    );
+    const projectHeartbeat = (await request("get", {}, "inventory-chat")).result as {
+      heartbeat: { status: string; itemCount: number; itemStatusCounts: Record<string, number> };
+      task: TaskState | null;
+      taskSource: { status: string; path: string; error: string };
+    };
+    assert.equal(projectHeartbeat.heartbeat.status, "ready");
+    assert.equal(projectHeartbeat.heartbeat.itemCount, inventoryCount);
+    assert.deepEqual(projectHeartbeat.heartbeat.itemStatusCounts, { unknown: inventoryCount });
+    assert.equal(projectHeartbeat.task, null);
+    assert.equal(projectHeartbeat.taskSource.status, "error");
+    assert.ok(projectHeartbeat.taskSource.path.endsWith("/heartbeat.md"));
+    assert.ok(projectHeartbeat.taskSource.error.length <= 2_001);
+    assert.ok(Buffer.byteLength(JSON.stringify(projectHeartbeat)) < 192 * 1024);
     await helper.stop();
     helper = new GoalProgressHelper({ ...options, runtime: runtime(root) });
     await helper.start();

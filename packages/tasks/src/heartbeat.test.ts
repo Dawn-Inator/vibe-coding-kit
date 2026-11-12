@@ -100,6 +100,37 @@ test("project heartbeat view is independent of chat associations and isolated by
   }
 });
 
+test("large project inventory keeps status aggregation bounded and preserves source totals", async () => {
+  const f = await fixture();
+  try {
+    const count = 4_000;
+    const rows = Array.from(
+      { length: count },
+      (_, index) =>
+        `| I${index} | request | Item ${index} | custom-status-${index} | Evidence ${index} |`,
+    );
+    await writeFile(
+      f.source,
+      [
+        "# Supervision",
+        "## Items",
+        "| id | source | item | status | evidence |",
+        "| --- | --- | --- | --- | --- |",
+        ...rows,
+        "",
+      ].join("\n"),
+    );
+    const view = await f.service.projectView(f.project);
+    assert.equal(view.status, "ready");
+    assert.equal(view.itemCount, count);
+    assert.deepEqual(view.itemStatusCounts, { unknown: count });
+    assert.equal(Object.keys(view.itemStatusCounts).length, 1);
+    assert.ok(Buffer.byteLength(JSON.stringify(view)) < 192 * 1024);
+  } finally {
+    await f.close();
+  }
+});
+
 test("first unique association latches; an initially ambiguous set requires selection", async () => {
   const f = await fixture();
   try {

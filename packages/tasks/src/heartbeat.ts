@@ -79,6 +79,27 @@ interface ProjectedHeartbeatTask extends Omit<HeartbeatTaskState, "source"> {
   };
 }
 const TASK_SOURCE_PANEL_BYTES = 128 * 1024;
+const HEARTBEAT_ITEM_STATUS_BUCKETS = new Set([
+  "done",
+  "completed",
+  "blocked",
+  "dispatched",
+  "in-flight",
+  "active",
+  "pending",
+  "deferred",
+  "owner",
+  "cancelled",
+]);
+function countItemStatuses(items: readonly { status?: string }[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const token = shortened(item.status, 64).split(/\s+/)[0]?.toLowerCase() || "unknown";
+    const bucket = HEARTBEAT_ITEM_STATUS_BUCKETS.has(token) ? token : "unknown";
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
+  }
+  return counts;
+}
 function compactProjectedTask(sourceTask: HeartbeatTaskState): ProjectedHeartbeatTask {
   const itemStatusEntries = Object.entries(sourceTask.source.itemStatuses);
   const linkRisks = sourceTask.source.linkRisks ?? [];
@@ -438,11 +459,7 @@ export class HeartbeatService {
         explicitNext && Number.isFinite(Date.parse(explicitNext))
           ? new Date(explicitNext).toISOString()
           : (source?.cadence?.nextDueAt ?? null);
-      const itemStatusCounts: Record<string, number> = {};
-      for (const item of inventoryItems) {
-        const token = shortened(item.status, 64).split(/\s+/)[0]?.toLowerCase() || "unknown";
-        itemStatusCounts[token] = (itemStatusCounts[token] ?? 0) + 1;
-      }
+      const itemStatusCounts = countItemStatuses(inventoryItems);
       const view = compactView({
         status: report.status,
         sourcePath: source?.path ?? null,
@@ -732,25 +749,7 @@ export class HeartbeatService {
         explicitNext && Number.isFinite(Date.parse(explicitNext))
           ? new Date(explicitNext).toISOString()
           : cadenceNextWake;
-      const itemStatusCounts: Record<string, number> = {};
-      for (const item of inventory.items) {
-        const token = shortened(item.status, 64).split(/\s+/)[0]?.toLowerCase() || "unknown";
-        const status = [
-          "done",
-          "completed",
-          "blocked",
-          "dispatched",
-          "in-flight",
-          "active",
-          "pending",
-          "deferred",
-          "owner",
-          "cancelled",
-        ].includes(token)
-          ? token
-          : "unknown";
-        itemStatusCounts[status] = (itemStatusCounts[status] ?? 0) + 1;
-      }
+      const itemStatusCounts = countItemStatuses(inventory.items);
       const view: HeartbeatView = compactView({
         ...empty,
         status: "ready",
@@ -993,7 +992,7 @@ export class HeartbeatService {
         task: null,
         sourcePath: view.sourcePath,
         ...(view.contentHash ? { contentHash: view.contentHash } : {}),
-        error: String(error),
+        error: shortened(String(error), 2_000),
       };
     }
   }
