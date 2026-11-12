@@ -5,6 +5,8 @@ import {
 	readMarkdownRecords,
 	writeMarkdownRecords,
 	withMarkdownLock,
+	verifyTaskHistoryHead,
+	writeTaskHistoryHead,
 } from "./markdown-records.mjs";
 import {
 	taskMarkdownPaths,
@@ -98,15 +100,20 @@ export class TaskSourceRelations {
 			)
 				throw new Error("Invalid source migration record");
 		}
+		await verifyTaskHistoryHead(paths.heartbeat, threadId, data.records);
+		if (data.exists)
+			await writeTaskHistoryHead(paths.heartbeat, threadId, data.records);
 		return data;
 	}
 	async write(threadId, records) {
 		await this.beforeWrite?.();
-		await writeMarkdownRecords(taskMarkdownPaths(this.root, threadId).history, {
+		const paths = taskMarkdownPaths(this.root, threadId);
+		await writeMarkdownRecords(paths.history, {
 			kind: "task-progress",
 			identity: threadId,
 			records,
 		});
+		await writeTaskHistoryHead(paths.heartbeat, threadId, records);
 	}
 	async getUnlocked(threadId) {
 		const data = await this.load(threadId);

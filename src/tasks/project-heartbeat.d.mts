@@ -39,6 +39,7 @@ export interface ReadProjectHeartbeatOptions {
 	maxFiles?: number;
 	maxDepth?: number;
 	intervalMinutes?: number;
+	/** @deprecated Ignored; all observation is read-only. */
 	migrate?: boolean;
 }
 

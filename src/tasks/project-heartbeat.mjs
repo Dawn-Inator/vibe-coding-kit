@@ -1,11 +1,12 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
-import {
-	heartbeatAuditDue,
-} from "../supervision/heartbeat-ledger-api.mjs";
+import { heartbeatAuditDue } from "../supervision/heartbeat-ledger-api.mjs";
 import { parseStrictIsoTimestamp } from "../supervision/heartbeat-audit-due.mjs";
-import { inspectHeartbeatLedgerPair, migrateHeartbeatLedgerPair, readHeartbeatLedgerPair } from "../supervision/heartbeat-ledger-files.mjs";
+import {
+	inspectHeartbeatLedgerPair,
+	readHeartbeatLedgerPair,
+} from "../supervision/heartbeat-ledger-files.mjs";
 import { discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
 import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
 
@@ -37,17 +38,23 @@ function lastRecordedWakeAt(report, now) {
 	return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
-async function readCanonicalSource(projectRoot, path, now, intervalMinutes, migrate = false) {
+async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
 	const { path: canonicalPath, info } = await resolveProjectLedgerPath(
 		projectRoot,
 		path,
 	);
 	if (info.size > MAX_BYTES)
 		throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
-	let pair = readHeartbeatLedgerPair({ root: projectRoot, path: canonicalPath });
-	if (Buffer.byteLength(pair.headText, "utf8") + Buffer.byteLength(pair.historyText, "utf8") > MAX_BYTES)
+	const pair = readHeartbeatLedgerPair({
+		root: projectRoot,
+		path: canonicalPath,
+	});
+	if (
+		Buffer.byteLength(pair.headText, "utf8") +
+			Buffer.byteLength(pair.historyText, "utf8") >
+		MAX_BYTES
+	)
 		throw new Error("Paired heartbeat ledger exceeds the 8 MiB read limit");
-	if (migrate) pair = migrateHeartbeatLedgerPair({ root: projectRoot, path: canonicalPath });
 	const current = inspectHeartbeatLedgerPair(pair, {
 		mode: "current",
 		latest: true,
@@ -69,7 +76,7 @@ async function readCanonicalSource(projectRoot, path, now, intervalMinutes, migr
 		path: canonicalPath,
 		contentHash: pair.contentHash,
 		modifiedAt: pair.modifiedAt || info.mtime.toISOString(),
-		historyPath: pair.historyPath,
+		historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
 		lastRecordedAt: lastRecordedWakeAt(history, now),
 		current,
 		history,
@@ -89,7 +96,6 @@ export async function readProjectHeartbeat({
 	maxFiles = 2500,
 	maxDepth = 5,
 	intervalMinutes,
-	migrate = false,
 } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError("Project heartbeat requires an absolute project root");
@@ -126,7 +132,6 @@ export async function readProjectHeartbeat({
 				requestedPath,
 				now,
 				intervalMinutes,
-				migrate,
 			);
 		} catch (error) {
 			return resultWithoutSource(
@@ -202,10 +207,6 @@ export async function readProjectHeartbeat({
 	const source = bestRecorded ?? bestInventory;
 	if (!source) return resultWithoutSource(discovery, "none", "none");
 	const basis = bestRecorded ? "latest-recorded-wake" : "items-inventory";
-	if (migrate && source) {
-		const refreshed = await readCanonicalSource(projectRoot, source.path, now, intervalMinutes, true);
-		return { schemaVersion: 1, projectRoot, status: "ready", source: refreshed, discovery, basis };
-	}
 	return {
 		schemaVersion: 1,
 		projectRoot,

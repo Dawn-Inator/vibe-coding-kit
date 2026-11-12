@@ -11,3 +11,15 @@ export function withMarkdownLock<T>(
 	key: string,
 	work: () => Promise<T>,
 ): Promise<T>;
+/** Internal guard for the authoritative typed record sequence. */
+export function verifyTaskHistoryHead(
+	path: string,
+	identity: string,
+	records: unknown[],
+): Promise<void>;
+/** Publish a projection and history-prefix proof, without rewriting an unchanged head. */
+export function writeTaskHistoryHead(
+	path: string,
+	identity: string,
+	records: unknown[],
+): Promise<void>;

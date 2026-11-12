@@ -58,16 +58,62 @@ SHA-256 隔离：
 <project>/heartbeat.md.legacy                           # 迁移保留的旧文件原始字节
 ```
 
-使用 Kit `readHeartbeatLedgerPair({root, path})` 兼容读取旧单文件或完整文件对；它是只读的。使用
+使用 Kit `readHeartbeatLedgerPair({root, path})` 兼容读取旧单文件或完整文件对；它是只读的。UI 展示、自动
+发现和普通读取都不能迁移一个仍由其他 writer 使用的旧台账；旧单文件在所有者明确接管之前保持原状，报告
+来源就是该头部文件。使用
 `inspectHeartbeatLedgerPair(pair, options)` 校验逻辑完整台账，并让每条 wake/Items 行指向真实来源文件和行号。
 `mode: 'items'` 只读当前头部的 Items；history/current 模式读取完整逻辑历史。来源行号可能落在头部或
-companion，消费者应展示 API 提供的物理来源。
+companion，消费者应展示 API 提供的物理来源。`readProjectHeartbeat` 的 `source.historyPath` 对 legacy
+单文件等于原始 `headPath`；对 paired ledger 指向 companion。配对历史中的 archived wakes 指向 companion，
+当前头部 wakes 和 Items 指向 head。
 
-旧单文件转为双文件属于显式迁移，调用 `migrateHeartbeatLedgerPair({root, path})`。它保留原始完整字节到
-`.legacy`，将既有 wake 历史复制到带版本标记的 companion，并在头部保留最新 wake 与 Items。迁移可在
-可验证的中断状态下安全重试；如果 companion、备份和当前头部内容冲突，必须 fail closed 并保留两边，不能
-自动选择或覆盖。新 wake 使用 `appendHeartbeatWake({root, path, wakeText})` 或
-`writeHeartbeatLedgerPair({root, path, text})`，不能再直接追加到分离后的头部文件。
+旧单文件转为双文件属于 writer-owned 显式切换：只有 writer 在整个事务期间停止旧 writer 并确认台账
+quiescent 后，才能设置 `legacyWritersQuiescent: true` 并传入新鲜的 `expectedContentHash`。先读：
+
+```js
+const pair = readHeartbeatLedgerPair({ root, path });
+const writeOptions = {
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: pair.contentHash,
+};
+migrateHeartbeatLedgerPair(writeOptions);
+```
+
+这个 flag 是调用方对真实 writer 状态的断言；Kit 的跨进程互斥锁只协调 Kit writers，不能停止或锁住仍在
+直接追加旧文件的外部 writer。不能由发现、UI display 或只读 API 触发切换。写入会检查新鲜哈希；发生
+版本冲突就 fail closed。完成切换时，原始完整字节保留到 `.legacy`，既有 wake 历史复制到带版本标记的
+companion，最新 wake 与 Items 留在头部。新 wake 使用 `appendHeartbeatWake` 或
+`writeHeartbeatLedgerPair` 并提供相同所有权断言和刚读取的 `expectedContentHash`，不能再直接追加到头部。
+
+如果 history 已落盘而发布 head 中断，`readHeartbeatLedgerPair` 会拒绝将不完整 pair 当成完整台账；用只读
+`readHeartbeatLedgerPairVersion({root, path})` 获取当前原始 hash，再把 hash 和 ownership 断言传给
+`recoverHeartbeatLedgerPair`。Kit 会校验 v3 history body、不可变备份、计划 head 与旧 head hash，仅当当前
+head 仍等于旧 head 或计划 head 时才完成发布；其他情况是冲突，禁止手工编辑任一副本。
+
+```js
+const rawVersion = readHeartbeatLedgerPairVersion({ root, path });
+recoverHeartbeatLedgerPair({
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: rawVersion.contentHash,
+});
+```
+
+对已有 pair 的每次普通写入都重新读取 hash，再设置 ownership assertion：
+
+```js
+const current = readHeartbeatLedgerPair({ root, path });
+appendHeartbeatWake({
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: current.contentHash,
+  wakeText,
+});
+```
 
 `readProjectHeartbeat` 可独立显示配置来源或项目中最近记录的来源。它不证明工作仍在运行，时间戳也不能当作
 实时活动证据。项目显示与当前聊天的任务绑定仍是两个概念；项目卡片显示的来源可以和任务绑定来源不同。

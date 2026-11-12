@@ -1,162 +1,320 @@
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, resolve } from 'node:path';
-import { parseWakes } from './check-heartbeat-ledger.mjs';
-import { inspectHeartbeatLedger } from './heartbeat-ledger-api.mjs';
-import { resolveProjectLedgerPathSync, validateProjectLedgerSidecarSync } from '../tasks/project-ledger-path.mjs';
-import { atomicCreateFileSync, atomicWriteFileSync } from '../tasks/task-io.mjs';
+import { createHash } from "node:crypto";
+import {
+	closeSync,
+	existsSync,
+	openSync,
+	readFileSync,
+	realpathSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	fsyncSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { parseWakes, WAKE_HEADING_RE } from "./check-heartbeat-ledger.mjs";
+import { inspectHeartbeatLedger } from "./heartbeat-ledger-api.mjs";
+import {
+	resolveProjectLedgerPathSync,
+	validateProjectLedgerSidecarSync,
+} from "../tasks/project-ledger-path.mjs";
+import {
+	atomicCreateFileSync,
+	atomicWriteFileSync,
+} from "../tasks/task-io.mjs";
 
-const HISTORY_VERSION = 1;
-const WAKE = /^#{1,6}\s+\d{4}-\d\d-\d\dT\S+\s+wake\b.*$/i;
-const HISTORY_MARKER = /^<!-- heartbeat-history:v1 source=([^\s>]+)(?: pending=([a-f0-9]{64}))? -->\n/;
-const HEAD_MARKER = /^<!-- heartbeat-head:v1 source=([^\s>]+) history=([^\s>]+) -->\n/;
-
+const WAKE = WAKE_HEADING_RE;
+const HEAD = /^<!-- heartbeat-head:v2 source=([^\s>]+) history=([^\s>]+) -->\n/;
+const HISTORY =
+	/^<!-- heartbeat-history:v3 source=([^\s>]+) body=([a-f0-9]{64}) base=([a-f0-9]{64}) bytes=(\d+) backup=([a-f0-9]{64}) previous=([a-f0-9]{64}) planned=([A-Za-z0-9+/=]+) -->\n/;
+const OLD_HISTORY =
+	/^<!-- heartbeat-history:v1 source=([^\s>]+)(?: pending=([a-f0-9]{64}))? -->\n/;
+const sha = (text) => createHash("sha256").update(text).digest("hex");
 export function heartbeatLedgerPairPaths(path) {
-	if (typeof path !== 'string' || !path.trim()) throw new TypeError('path is required');
-	const headPath = resolve(path);
-	const name = basename(headPath);
-	const historyPath = name.toLowerCase() === 'heartbeat.md'
-		? resolve(dirname(headPath), 'taskhistory.md')
-		: resolve(dirname(headPath), `${name.replace(/\.md$/i, '')}.taskhistory.md`);
+	if (typeof path !== "string" || !path.trim())
+		throw new TypeError("path is required");
+	const headPath = resolve(path),
+		name = basename(headPath);
+	const historyPath =
+		name.toLowerCase() === "heartbeat.md"
+			? resolve(dirname(headPath), "taskhistory.md")
+			: resolve(
+					dirname(headPath),
+					`${name.replace(/\.md$/i, "")}.taskhistory.md`,
+				);
 	return { headPath, historyPath, legacyBackupPath: `${headPath}.legacy` };
 }
-
 function safePaths(root, path) {
-	if (typeof root !== 'string' || !root.trim() || !isAbsolute(root)) throw new TypeError('root must be an absolute path');
-	if (typeof path !== 'string' || !path.trim()) throw new TypeError('path is required');
-	const canonicalRoot = realpathSync(root);
-	const requested = resolve(canonicalRoot, path);
-	if (basename(requested).toLowerCase() === 'taskhistory.md' || requested.endsWith('.taskhistory.md') || requested.endsWith('.legacy') || /\.tmp(?:-|$)/i.test(requested)) throw new Error('History, backup, and temporary files cannot be used as heartbeat heads');
-	const { path: canonicalHead } = resolveProjectLedgerPathSync(canonicalRoot, requested);
+	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
+		throw new TypeError("root must be an absolute path");
+	if (typeof path !== "string" || !path.trim())
+		throw new TypeError("path is required");
+	const canonicalRoot = realpathSync(root),
+		requested = resolve(canonicalRoot, path);
+	if (
+		basename(requested).toLowerCase() === "taskhistory.md" ||
+		requested.endsWith(".taskhistory.md") ||
+		requested.endsWith(".legacy") ||
+		requested.endsWith(".lock") ||
+		/\.tmp(?:-|$)/i.test(requested)
+	)
+		throw new Error(
+			"History, backup, lock, and temporary files cannot be used as heartbeat heads",
+		);
+	const { path: canonicalHead } = resolveProjectLedgerPathSync(
+		canonicalRoot,
+		requested,
+	);
 	const paths = heartbeatLedgerPairPaths(canonicalHead);
-	for (const companion of [paths.historyPath, paths.legacyBackupPath]) {
-		const validated = validateProjectLedgerSidecarSync(canonicalRoot, companion);
-		if (validated.exists && validated.path !== companion) throw new Error('Heartbeat companion paths cannot be symlinks');
+	for (const companion of [
+		paths.historyPath,
+		paths.legacyBackupPath,
+		`${paths.headPath}.lock`,
+	]) {
+		const validated = validateProjectLedgerSidecarSync(
+			canonicalRoot,
+			companion,
+		);
+		if (validated.exists && validated.path !== companion)
+			throw new Error("Heartbeat companion paths cannot be symlinks");
 	}
-	if (canonicalHead === paths.historyPath) throw new Error('History files cannot be used as heartbeat heads');
+	if (canonicalHead === paths.historyPath)
+		throw new Error("History files cannot be used as heartbeat heads");
 	return { ...paths, root: canonicalRoot };
 }
-
-function sha(text) { return createHash('sha256').update(text, 'utf8').digest('hex'); }
 function atomicWrite(path, text) {
 	const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
 	atomicWriteFileSync(path, text, { mode });
 }
+function withWriterLock(paths, work) {
+	const lock = `${paths.headPath}.lock`;
+	let fd;
+	try {
+		fd = openSync(lock, "wx", 0o600);
+	} catch (error) {
+		if (error?.code === "EEXIST")
+			throw new Error("Heartbeat writer lock is held or requires recovery");
+		throw error;
+	}
+	try {
+		writeFileSync(fd, `${process.pid}\n`);
+		fsyncSync(fd);
+		return work();
+	} finally {
+		closeSync(fd);
+		unlinkSync(lock);
+	}
+}
+function requireOwnership(options) {
+	if (options.legacyWritersQuiescent !== true)
+		throw new Error(
+			"Heartbeat writes require explicit exclusive ownership and quiescent legacy writers",
+		);
+	if (
+		typeof options.expectedContentHash !== "string" ||
+		!/^[a-f0-9]{64}$/.test(options.expectedContentHash)
+	)
+		throw new Error(
+			"Heartbeat writes require expectedContentHash from a fresh read",
+		);
+}
+function assertExpected(paths, expected) {
+	const head = readFileSync(paths.headPath, "utf8");
+	const history = existsSync(paths.historyPath)
+		? readFileSync(paths.historyPath, "utf8")
+		: "";
+	if (sha(`${head}\0${history}`) !== expected)
+		throw new Error(
+			"Heartbeat version conflict: source changed since observation",
+		);
+}
 function splitWakeSections(text) {
-	const lines = text.split('\n');
+	const lines = text.split("\n");
 	const sections = [];
 	let start = -1;
-	for (let i = 0; i < lines.length; i += 1) {
+	for (let i = 0; i < lines.length; i++) {
 		if (!WAKE.test(lines[i])) continue;
-		if (start >= 0) sections.push(lines.slice(start, i).join('\n'));
+		if (start >= 0) sections.push(lines.slice(start, i).join("\n"));
 		start = i;
 	}
-	if (start >= 0) sections.push(lines.slice(start).join('\n'));
+	if (start >= 0) sections.push(lines.slice(start).join("\n"));
 	return sections;
 }
-function wakeCore(section) {
-	return section.replace(/\n#{1,6}\s+Items\s*(?:\n|$)[\s\S]*$/i, '').replace(/(?:\n-{3,}[ \t]*)+\s*$/, '').trimEnd();
-}
-function stripItems(section) { return section.replace(/\n#{1,6}\s+Items\s*(?:\n|$)[\s\S]*$/i, ''); }
+// Remove only superseded wake sections; independent headings, inventory and unknown text survive.
 function latestHead(text) {
-	const sections = splitWakeSections(text);
-	if (!sections.length) return text;
-	const last = sections.at(-1);
-	const index = text.lastIndexOf(last);
-	const prefix = text.slice(0, index);
-	const firstWake = text.search(/^#{1,6}\s+\d{4}-\d\d-\d\dT\S+\s+wake\b.*$/im);
-	const leading = firstWake >= 0 ? text.slice(0, firstWake) : prefix;
-	const trailing = text.slice(index + last.length);
-	return `${leading}${last}${trailing}`;
+	const lines = text.split(/(?<=\n)/);
+	const starts = [];
+	for (let i = 0; i < lines.length; i++)
+		if (WAKE.test(lines[i].trimEnd())) starts.push(i);
+	if (starts.length < 2) return text;
+	const remove = new Set();
+	for (const start of starts.slice(0, -1)) {
+		const level = /^#+/.exec(lines[start])[0].length;
+		let end = start + 1;
+		while (end < lines.length) {
+			const heading = /^(#{1,6})\s+/.exec(lines[end]);
+			if (heading && heading[1].length <= level) break;
+			end++;
+		}
+		remove.add(start);
+		for (let i = start + 1; i < end; i++) {
+			// Wake table rows and their source line belong to the archived record. Preserve
+			// independent prose and comments even when they occur between headings.
+			if (/^\s*(?:\||sources\s*:|[-]{3,}\s*$)/i.test(lines[i])) remove.add(i);
+		}
+	}
+	return lines.filter((_, i) => !remove.has(i)).join("");
 }
 function appendHead(previous, wake) {
-	const match = /^#{1,6}\s+\d{4}-\d\d-\d\dT\S+\s+wake\b.*$/im.exec(previous);
-	const itemIndex = previous.search(/^#{1,6}\s+Items\s*$/im);
-	const prefix = match ? previous.slice(0, match.index) : '';
-	const trailing = itemIndex >= 0 ? previous.slice(itemIndex) : '';
-	return `${prefix}${wake}${wake.endsWith('\n') ? '' : '\n'}${trailing}`;
+	// Appending and re-projecting retains every non-wake heading, including Items in any position.
+	return latestHead(
+		`${previous}${previous.endsWith("\n") ? "" : "\n"}${wake}${wake.endsWith("\n") ? "" : "\n"}`,
+	);
 }
-function canonicalHistory(raw, identity, pending = null) {
-	return `<!-- heartbeat-history:v${HISTORY_VERSION} source=${encodeURIComponent(identity)}${pending ? ` pending=${pending}` : ''} -->\n${raw}`;
+function headMarker(paths) {
+	return `<!-- heartbeat-head:v2 source=${encodeURIComponent(paths.headPath)} history=${encodeURIComponent(paths.historyPath)} -->\n`;
 }
 function canonicalHead(raw, paths) {
-	const body = raw.replace(HEAD_MARKER, '');
-	return `<!-- heartbeat-head:v1 source=${encodeURIComponent(paths.headPath)} history=${encodeURIComponent(paths.historyPath)} -->\n${body}`;
+	return headMarker(paths) + latestHead(raw.replace(HEAD, ""));
 }
-function validateHeadReference(raw, paths) {
-	const match = HEAD_MARKER.exec(raw);
-	if (!match) return false;
-	if (decodeURIComponent(match[1]) !== paths.headPath || decodeURIComponent(match[2]) !== paths.historyPath)
-		throw new Error('Heartbeat head references an unrelated history companion');
-	if (!existsSync(paths.historyPath)) throw new Error('Canonical heartbeat head references a missing history companion');
-	return true;
+function historyText(body, head, backup, paths, previousHead) {
+	return `<!-- heartbeat-history:v3 source=${encodeURIComponent(paths.headPath)} body=${sha(body)} base=${sha(head)} bytes=${Buffer.byteLength(head)} backup=${sha(backup)} previous=${sha(previousHead)} planned=${Buffer.from(head, "utf8").toString("base64")} -->\n${body}`;
 }
-function historyBody(text, identity) {
-	const match = HISTORY_MARKER.exec(text);
-	if (!match) throw new Error('Heartbeat history companion has an invalid or unrelated format');
-	if (decodeURIComponent(match[1]) !== identity) throw new Error('Heartbeat history companion belongs to another heartbeat source');
-	return { body: text.slice(match[0].length), pending: match[2] ?? null };
-}
-function logicalText(historyText, headText, identity) {
-	if (!historyText) return headText;
-	const old = historyBody(historyText, identity).body;
-	const prior = splitWakeSections(old);
-	const current = splitWakeSections(headText);
-	if (!prior.length && !current.length) return headText;
-	let overlap = 0;
-	for (let size = Math.min(prior.length, current.length); size > 0; size -= 1) {
-		if (prior.slice(-size).every((part, index) => wakeCore(part) === wakeCore(current[index]))) { overlap = size; break; }
-	}
-	const firstWake = headText.search(/^#{1,6}\s+\d{4}-\d\d-\d\dT\S+\s+wake\b.*$/im);
-	const prelude = firstWake < 0 ? headText : headText.slice(0, firstWake);
-	const itemIndex = headText.search(/^#{1,6}\s+Items\s*$/im);
-	const items = itemIndex < 0 ? '' : headText.slice(itemIndex);
-	const wakes = [...prior, ...current.slice(overlap)].map(stripItems);
-	const wakeText = wakes.filter(Boolean).join('\n');
-	return `${prelude}${wakeText}${wakeText && !wakeText.endsWith('\n') ? '\n' : ''}${items}`;
+function verifiedHistory(paths) {
+	if (!existsSync(paths.historyPath))
+		throw new Error("Heartbeat history companion missing");
+	const history = readFileSync(paths.historyPath, "utf8"),
+		match = HISTORY.exec(history);
+	if (!match || decodeURIComponent(match[1]) !== paths.headPath)
+		throw new Error(
+			"Heartbeat history companion has an invalid, unrelated or incomplete format",
+		);
+	if (!existsSync(paths.legacyBackupPath))
+		throw new Error("Heartbeat pair is incomplete: immutable backup missing");
+	const backup = readFileSync(paths.legacyBackupPath, "utf8"),
+		body = history.slice(match[0].length);
+	const plannedBuffer = Buffer.from(match[7], "base64"),
+		planned = plannedBuffer.toString("utf8");
+	const plannedRef = HEAD.exec(planned);
+	if (
+		sha(backup) !== match[5] ||
+		sha(body) !== match[2] ||
+		plannedBuffer.toString("base64") !== match[7] ||
+		!Buffer.from(planned, "utf8").equals(plannedBuffer) ||
+		sha(plannedBuffer) !== match[3] ||
+		plannedBuffer.length !== Number(match[4]) ||
+		!plannedRef ||
+		decodeURIComponent(plannedRef[1]) !== paths.headPath ||
+		decodeURIComponent(plannedRef[2]) !== paths.historyPath
+	)
+		throw new Error(
+			"Heartbeat pair integrity check failed for history, backup or planned head",
+		);
+	return { history, match, body, planned };
 }
 
 function readPair(paths) {
-	if (!existsSync(paths.headPath)) throw new Error(`Heartbeat ledger does not exist: ${paths.headPath}`);
-	const headText = readFileSync(paths.headPath, 'utf8');
-	const hasHeadReference = validateHeadReference(headText, paths);
-	const headModified = statSync(paths.headPath).mtimeMs;
-	const isLegacy = !existsSync(paths.historyPath) && !hasHeadReference;
-	const historyText = isLegacy ? '' : readFileSync(paths.historyPath, 'utf8');
-	if (!isLegacy) {
-		const marker = HISTORY_MARKER.exec(historyText);
-		const pending = historyBody(historyText, paths.headPath).pending;
-		if (pending && sha(wakeCore(splitWakeSections(headText).at(-1) ?? '')) !== pending) throw new Error('Heartbeat pair write is interrupted; refusing a stale current head until explicit recovery');
+	const headText = readFileSync(paths.headPath, "utf8");
+	const headMatch = HEAD.exec(headText);
+	if (!existsSync(paths.historyPath)) {
+		if (headMatch || /^<!-- heartbeat-head:v\d+\b/.test(headText))
+			throw new Error(
+				"Canonical heartbeat head references a missing history companion",
+			);
+		return {
+			headText,
+			historyText: "",
+			fullText: headText,
+			contentHash: sha(`${headText}\0`),
+			modifiedAt: new Date(statSync(paths.headPath).mtimeMs).toISOString(),
+			headPath: paths.headPath,
+			historyPath: paths.historyPath,
+			isLegacy: true,
+			wakes: parseWakes(headText).map((w) => ({
+				...w,
+				sourcePath: paths.headPath,
+				sourceLine: w.line,
+			})),
+		};
 	}
-	const modifiedAt = new Date(Math.max(headModified, isLegacy ? 0 : statSync(paths.historyPath).mtimeMs)).toISOString();
-	const identity = paths.headPath;
-	const fullText = isLegacy ? headText : logicalText(historyText, headText, identity);
-	const contentHash = sha(`${headText}\0${historyText}`);
-	const headWakes = parseWakes(headText).map((wake) => ({ ...wake, sourcePath: paths.headPath, sourceLine: wake.line }));
-	const body = isLegacy ? '' : historyBody(historyText, paths.headPath).body;
-	const archiveSegments = splitWakeSections(body);
-	const headSegments = splitWakeSections(headText);
-	let overlap = 0;
-	for (let size = Math.min(archiveSegments.length, headSegments.length); size > 0; size -= 1) {
-		if (archiveSegments.slice(-size).every((part, index) => wakeCore(part) === wakeCore(headSegments[index]))) { overlap = size; break; }
-	}
-	const archivedWakes = isLegacy ? [] : parseWakes(body).map((wake) => ({ ...wake, sourcePath: paths.historyPath, sourceLine: wake.line + 1 }));
-	const liveWakes = headWakes.slice(overlap);
-	return { headText, historyText, fullText, contentHash, modifiedAt, headPath: paths.headPath, historyPath: paths.historyPath, isLegacy, wakes: [...archivedWakes, ...liveWakes] };
+	const { history, match, body } = verifiedHistory(paths);
+	if (!headMatch)
+		throw new Error("Heartbeat pair is incomplete: head reference missing");
+	if (
+		decodeURIComponent(headMatch[1]) !== paths.headPath ||
+		decodeURIComponent(headMatch[2]) !== paths.historyPath
+	)
+		throw new Error("Heartbeat head references an unrelated history companion");
+	const bytes = Number(match[4]),
+		buffer = Buffer.from(headText, "utf8");
+	if (
+		!Number.isSafeInteger(bytes) ||
+		bytes < Buffer.byteLength(headMatch[0]) ||
+		bytes > buffer.length ||
+		sha(buffer.subarray(0, bytes)) !== match[3]
+	)
+		throw new Error(
+			"Heartbeat pair is incomplete or current head was modified; recovery required",
+		);
+	const suffix = buffer.subarray(bytes).toString("utf8");
+	const fullText = `${body}${body.endsWith("\n") || !suffix ? "" : "\n"}${suffix}`;
+	const archive = parseWakes(body).map((w) => ({
+		...w,
+		sourcePath: paths.historyPath,
+		sourceLine: w.line + 1,
+	}));
+	const prefixLines =
+		buffer.subarray(0, bytes).toString("utf8").split("\n").length - 1;
+	const appended = parseWakes(suffix).map((w) => ({
+		...w,
+		sourcePath: paths.headPath,
+		sourceLine: w.line + prefixLines,
+	}));
+	return {
+		headText,
+		historyText: history,
+		fullText,
+		contentHash: sha(`${headText}\0${history}`),
+		modifiedAt: new Date(
+			Math.max(
+				statSync(paths.headPath).mtimeMs,
+				statSync(paths.historyPath).mtimeMs,
+			),
+		).toISOString(),
+		headPath: paths.headPath,
+		historyPath: paths.historyPath,
+		isLegacy: false,
+		wakes: [...archive, ...appended],
+	};
 }
-
 export function readHeartbeatLedgerPair({ root, path }) {
-	const paths = safePaths(root, path);
-	return readPair(paths);
+	return readPair(safePaths(root, path));
 }
 
-/** Inspect a pair with the same synchronous inspector used for legacy single-file ledgers. */
-export function inspectHeartbeatLedgerPair(pair, { mode = 'current', latest = true, now = new Date(), inspect = inspectHeartbeatLedger, ...options } = {}) {
-	if (!pair || typeof pair.headText !== 'string' || typeof pair.fullText !== 'string') throw new TypeError('A heartbeat ledger pair is required');
-	const text = mode === 'items' ? pair.headText : pair.fullText;
+export function inspectHeartbeatLedgerPair(
+	pair,
+	{
+		mode = "current",
+		latest = true,
+		now = new Date(),
+		inspect = inspectHeartbeatLedger,
+		...options
+	} = {},
+) {
+	if (
+		!pair ||
+		typeof pair.headText !== "string" ||
+		typeof pair.fullText !== "string"
+	)
+		throw new TypeError("A heartbeat ledger pair is required");
+	const text = mode === "items" ? pair.headText : pair.fullText;
 	const report = inspect(text, { mode, latest, now, ...options });
-	if (mode !== 'items') {
-		const headInventory = inspect(pair.headText, { mode: 'items', latest: true, now, ...options });
+	if (mode !== "items") {
+		const headInventory = inspect(pair.headText, {
+			mode: "items",
+			latest: true,
+			now,
+			...options,
+		});
 		report.items = headInventory.items;
 		report.itemCount = headInventory.itemCount;
 		report.tables = headInventory.tables;
@@ -164,7 +322,8 @@ export function inspectHeartbeatLedgerPair(pair, { mode = 'current', latest = tr
 	let sourceIndex = 0;
 	for (const wake of report.wakes ?? []) {
 		let source = pair.wakes?.[sourceIndex++];
-		while (source && source.heading !== wake.heading) source = pair.wakes?.[sourceIndex++];
+		while (source && source.heading !== wake.heading)
+			source = pair.wakes?.[sourceIndex++];
 		if (!source) continue;
 		const logicalWakeLine = wake.line;
 		wake.sourcePath = source.sourcePath;
@@ -182,79 +341,151 @@ export function inspectHeartbeatLedgerPair(pair, { mode = 'current', latest = tr
 			row.lineNumber = row.sourceLine;
 		}
 	}
-	report.items = report.items.map((item) => ({ ...item, sourcePath: pair.headPath, sourceLine: item.line }));
+	report.items = report.items.map((item) => ({
+		...item,
+		sourcePath: pair.headPath,
+		sourceLine: item.line,
+	}));
 	report.tables = (report.tables ?? []).map((table) => ({
 		...table,
-		rows: table.rows.map((item) => ({ ...item, sourcePath: pair.headPath, sourceLine: item.line })),
+		rows: table.rows.map((item) => ({
+			...item,
+			sourcePath: pair.headPath,
+			sourceLine: item.line,
+		})),
 	}));
 	return report;
 }
 
-export function migrateHeartbeatLedgerPair({ root, path }) {
-	const paths = safePaths(root, path);
-	if (!existsSync(paths.headPath)) throw new Error(`Heartbeat ledger does not exist: ${paths.headPath}`);
-	const original = readFileSync(paths.headPath, 'utf8');
-	if (HEAD_MARKER.test(original) && !existsSync(paths.historyPath)) throw new Error('Canonical heartbeat head references a missing history companion; refusing to rebuild history from a truncated head');
+function migrateLocked(paths, options) {
+	assertExpected(paths, options.expectedContentHash);
+	const original = readFileSync(paths.headPath, "utf8");
+	if (
+		!existsSync(paths.historyPath) &&
+		/^<!-- heartbeat-head:v\d+\b/.test(original)
+	)
+		throw new Error(
+			"Canonical heartbeat head references a missing history companion",
+		);
 	if (existsSync(paths.historyPath)) {
-		const existing = readFileSync(paths.historyPath, 'utf8');
-		const identity = paths.headPath;
-		const existingBody = historyBody(existing, identity).body;
-		const backup = existsSync(paths.legacyBackupPath) ? readFileSync(paths.legacyBackupPath, 'utf8') : null;
-		if (backup && backup !== original) return readPair(paths); // completed migration; history is already canonical
-		// An interrupted history-first migration is recoverable only when the immutable backup proves
-		// the companion was written for these exact original bytes.
-		if (!HISTORY_MARKER.test(existing)) throw new Error('Refusing to overwrite an unrelated heartbeat history companion');
-		if (!backup) throw new Error('Heartbeat migration is incomplete: history exists without its immutable legacy backup');
-		if (backup !== original) throw new Error('Heartbeat migration is incomplete and the current head differs from its immutable legacy backup');
-		const nextHead = canonicalHead(latestHead(existingBody), paths);
-		atomicWrite(paths.headPath, nextHead);
-		return readPair(paths);
-	}
-	if (existsSync(paths.legacyBackupPath)) {
-		if (readFileSync(paths.legacyBackupPath, 'utf8') !== original) throw new Error('Immutable legacy backup already exists with different content');
-	} else {
-		atomicCreateFileSync(paths.legacyBackupPath, original, { mode: 0o600 });
-	}
-	const verifiedBackup = readFileSync(paths.legacyBackupPath, 'utf8');
-	if (verifiedBackup !== original) throw new Error('Legacy backup verification failed');
-	const history = canonicalHistory(original, paths.headPath);
+		const history = readFileSync(paths.historyPath, "utf8");
+		if (HISTORY.test(history)) return readPair(paths);
+		const old = OLD_HISTORY.exec(history);
+		if (!old || old[2] || decodeURIComponent(old[1]) !== paths.headPath)
+			throw new Error(
+				"Refusing unrelated or incomplete heartbeat history companion",
+			);
+		if (!existsSync(paths.legacyBackupPath))
+			throw new Error(
+				"Heartbeat migration incomplete: immutable backup missing",
+			);
+		const backup = readFileSync(paths.legacyBackupPath, "utf8");
+		if (backup !== original || history.slice(old[0].length) !== original)
+			throw new Error(
+				"Heartbeat migration incomplete: original and verified backup differ",
+			);
+	} else if (existsSync(paths.legacyBackupPath)) {
+		if (readFileSync(paths.legacyBackupPath, "utf8") !== original)
+			throw new Error(
+				"Immutable legacy backup already exists with different content",
+			);
+	} else if (
+		!atomicCreateFileSync(paths.legacyBackupPath, original, { mode: 0o600 })
+	)
+		throw new Error("Heartbeat backup was concurrently created");
+	if (readFileSync(paths.legacyBackupPath, "utf8") !== original)
+		throw new Error("Heartbeat backup verification failed");
+	assertExpected(paths, options.expectedContentHash);
+	const head = canonicalHead(original, paths),
+		history = historyText(original, head, original, paths, original);
 	atomicWrite(paths.historyPath, history);
-	const verifiedHistory = readFileSync(paths.historyPath, 'utf8');
-	if (historyBody(verifiedHistory, paths.headPath).body !== original) throw new Error('Heartbeat history verification failed');
-	atomicWrite(paths.headPath, canonicalHead(latestHead(original), paths));
-	return readPair(paths);
-}
-
-export function writeHeartbeatLedgerPair({ root, path, text }) {
-	if (typeof text !== 'string') throw new TypeError('text must be a string');
-	const paths = safePaths(root, path);
-	if (!existsSync(paths.historyPath)) migrateHeartbeatLedgerPair({ root, path });
-	const prior = readPair(paths);
-	const wakes = splitWakeSections(text);
-	const wake = wakes.at(-1);
-	if (!wake) throw new Error('Heartbeat writer requires at least one wake section');
-	const body = historyBody(prior.historyText, paths.headPath).body;
-	const combined = `${body}${body.endsWith('\n') ? '' : '\n'}${wake}\n`;
-	const history = canonicalHistory(combined, paths.headPath, sha(wakeCore(wake)));
-	atomicWrite(paths.historyPath, history);
-	if (historyBody(readFileSync(paths.historyPath, 'utf8'), paths.headPath).body !== combined) throw new Error('Heartbeat history verification failed');
-	atomicWrite(paths.headPath, canonicalHead(latestHead(text), paths));
-	atomicWrite(paths.historyPath, canonicalHistory(combined, paths.headPath));
-	return readPair(paths);
-}
-
-export function appendHeartbeatWake({ root, path, wakeText }) {
-	if (typeof wakeText !== 'string' || !splitWakeSections(wakeText).length) throw new TypeError('wakeText must contain a wake section');
-	const paths = safePaths(root, path);
-	if (!existsSync(paths.historyPath)) migrateHeartbeatLedgerPair({ root, path });
-	const prior = readPair(paths);
-	const body = historyBody(prior.historyText, paths.headPath).body;
-	const cleanWake = splitWakeSections(wakeText).at(-1);
-	const nextHistory = `${body}${body.endsWith('\n') ? '' : '\n'}${cleanWake}\n`;
-	atomicWrite(paths.historyPath, canonicalHistory(nextHistory, paths.headPath, sha(wakeCore(cleanWake))));
-	if (historyBody(readFileSync(paths.historyPath, 'utf8'), paths.headPath).body !== nextHistory) throw new Error('Heartbeat history verification failed');
-	const head = canonicalHead(appendHead(prior.headText, cleanWake), paths);
+	options.beforeHeadPublish?.();
+	if (readFileSync(paths.headPath, "utf8") !== original)
+		throw new Error(
+			"Heartbeat version conflict before head publication; backup and history retained",
+		);
 	atomicWrite(paths.headPath, head);
-	atomicWrite(paths.historyPath, canonicalHistory(nextHistory, paths.headPath));
 	return readPair(paths);
+}
+/** Caller asserts exclusive control over legacy writers for the entire transaction. */
+export function migrateHeartbeatLedgerPair(options) {
+	requireOwnership(options);
+	const paths = safePaths(options.root, options.path);
+	return withWriterLock(paths, () => migrateLocked(paths, options));
+}
+function writeLocked(paths, options, kind) {
+	assertExpected(paths, options.expectedContentHash);
+	const prior = readPair(paths);
+	if (prior.isLegacy)
+		throw new Error(
+			"Explicitly migrate the quiescent legacy ledger before writing",
+		);
+	const marker = HISTORY.exec(prior.historyText),
+		body = prior.historyText.slice(marker[0].length);
+	const input = kind === "append" ? options.wakeText : options.text;
+	if (typeof input !== "string")
+		throw new TypeError("Heartbeat writer requires text");
+	const wake = splitWakeSections(input).at(-1);
+	if (!wake)
+		throw new Error("Heartbeat writer requires at least one wake section");
+	// Incorporate any manual suffix by its validated byte boundary before writing the new wake.
+	const bytes = Number(marker[4]);
+	const suffix = Buffer.from(prior.headText).subarray(bytes).toString("utf8");
+	const historyBody = `${body}${body.endsWith("\n") || !suffix ? "" : "\n"}${suffix}${(suffix || body).endsWith("\n") ? "" : "\n"}${wake}${wake.endsWith("\n") ? "" : "\n"}`;
+	const head = canonicalHead(
+		kind === "append"
+			? appendHead(prior.headText.replace(HEAD, ""), wake)
+			: input,
+		paths,
+	);
+	const backup = readFileSync(paths.legacyBackupPath, "utf8");
+	assertExpected(paths, options.expectedContentHash);
+	atomicWrite(
+		paths.historyPath,
+		historyText(historyBody, head, backup, paths, prior.headText),
+	);
+	options.beforeHeadPublish?.();
+	if (readFileSync(paths.headPath, "utf8") !== prior.headText)
+		throw new Error(
+			"Heartbeat version conflict before head publication; committed history retained for recovery",
+		);
+	atomicWrite(paths.headPath, head);
+	return readPair(paths);
+}
+export function writeHeartbeatLedgerPair(options) {
+	requireOwnership(options);
+	const paths = safePaths(options.root, options.path);
+	return withWriterLock(paths, () => writeLocked(paths, options, "write"));
+}
+export function appendHeartbeatWake(options) {
+	requireOwnership(options);
+	const paths = safePaths(options.root, options.path);
+	return withWriterLock(paths, () => writeLocked(paths, options, "append"));
+}
+
+/** Read raw version without interpreting the pair, including interrupted transactions. */
+export function readHeartbeatLedgerPairVersion({ root, path }) {
+	const paths = safePaths(root, path);
+	const head = readFileSync(paths.headPath, "utf8");
+	const history = existsSync(paths.historyPath)
+		? readFileSync(paths.historyPath, "utf8")
+		: "";
+	return { contentHash: sha(`${head}\0${history}`) };
+}
+/** Finish a history-first transaction only if the current head is exactly its old or planned head. */
+export function recoverHeartbeatLedgerPair(options) {
+	requireOwnership(options);
+	const paths = safePaths(options.root, options.path);
+	return withWriterLock(paths, () => {
+		assertExpected(paths, options.expectedContentHash);
+		const { match, planned } = verifiedHistory(paths);
+		const current = readFileSync(paths.headPath, "utf8");
+		if (current !== planned && sha(current) !== match[6])
+			throw new Error(
+				"Heartbeat recovery conflict: current head differs from the previous and planned heads",
+			);
+		assertExpected(paths, options.expectedContentHash);
+		if (current !== planned) atomicWrite(paths.headPath, planned);
+		return readPair(paths);
+	});
 }

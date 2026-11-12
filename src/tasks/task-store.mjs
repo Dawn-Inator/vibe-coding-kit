@@ -2,11 +2,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { atomicWriteFile } from "./task-io.mjs";
 import {
 	readMarkdownRecords,
 	writeMarkdownRecords,
 	withMarkdownLock,
+	verifyTaskHistoryHead,
+	writeTaskHistoryHead,
 } from "./markdown-records.mjs";
 import { calculateTaskProgress } from "./task-contract.mjs";
 
@@ -357,36 +358,25 @@ export class TaskStore {
 					.map((event) => ({ type: "task-event", event })),
 			);
 			dirty = true;
-			if (persist)
-				await writeMarkdownRecords(paths.history, {
-					kind: "task-progress",
-					identity: threadId,
-					records: data.records,
-				});
 			data.exists = true;
 			events.push(...legacy.events.slice(events.length));
 		}
-		if (persist && events.length)
-			await this.writeHead(threadId, events.at(-1).state);
+		try {
+			await verifyTaskHistoryHead(paths.heartbeat, threadId, data.records);
+		} catch (error) {
+			throw new TaskStoreError("TASK_HISTORY_CORRUPT", error.message);
+		}
+		if (persist && dirty)
+			await writeMarkdownRecords(paths.history, {
+				kind: "task-progress",
+				identity: threadId,
+				records: data.records,
+			});
+		if (persist && data.exists)
+			await writeTaskHistoryHead(paths.heartbeat, threadId, data.records);
 		return { ...data, events, dirty, partialTail: legacy.partialTail };
 	}
-	async writeHead(threadId, state) {
-		const lines = state.objectives
-			.flatMap((o) => [
-				`- [${o.status}] ${o.title}`,
-				...o.items.map((i) => `  - [${i.status}] ${i.title}`),
-			])
-			.join("\n");
-		const payload = JSON.stringify(
-			{ schemaVersion: 1, kind: "task-heartbeat", identity: threadId, state },
-			null,
-			2,
-		);
-		await atomicWriteFile(
-			this.paths(threadId).heartbeat,
-			`# ${state.title.replace(/[\r\n]/g, " ")}\n\nRevision: ${state.revision}\n\n${lines}\n\n\`\`\`json task-heartbeat-v1\n${payload}\n\`\`\`\n`,
-		);
-	}
+
 	async replay(threadId) {
 		return (await this.load(threadId)).events;
 	}
@@ -476,12 +466,13 @@ export class TaskStore {
 					identity: threadId,
 					records: target.records,
 				});
-				const last =
-					imported.length > target.events.length
-						? imported.at(-1)
-						: target.events.at(-1);
-				if (last) await this.writeHead(threadId, last.state);
 			}
+			if (target.exists || additions.length)
+				await writeTaskHistoryHead(
+					this.paths(threadId).heartbeat,
+					threadId,
+					target.records,
+				);
 			return {
 				migrated: additions.length > 0,
 				importedEvents: Math.max(0, imported.length - target.events.length),
@@ -549,12 +540,13 @@ export class TaskStore {
 				state,
 			});
 			const paths = this.paths(threadId);
+			const records = [...loaded.records, { type: "task-event", event }];
 			await writeMarkdownRecords(paths.history, {
 				kind: "task-progress",
 				identity: threadId,
-				records: [...loaded.records, { type: "task-event", event }],
+				records,
 			});
-			await this.writeHead(threadId, state);
+			await writeTaskHistoryHead(paths.heartbeat, threadId, records);
 			return { state, duplicate: false };
 		});
 	}
