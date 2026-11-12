@@ -39,7 +39,7 @@ const ledger = (rows) =>
 	].join("\n");
 
 function projectRoot() {
-	return mkdtempTracked("heartbeat-task-source-");
+	return realpathSync(mkdtempTracked("heartbeat-task-source-"));
 }
 
 const PROJECT_ROOT = realpathSync(projectRoot());
@@ -59,6 +59,7 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	);
 	const todoLedger = join(root, ".todolist", "heartbeat.md");
 	const fenced = join(root, "docs", "example.md");
+	const fencedNamed = join(root, "docs", "heartbeat-fenced.md");
 	const invalidWake = join(root, "docs", "invalid-wake.md");
 	const markerOnly = join(root, "docs", "marker-only.md");
 	const fencedWake = join(root, "docs", "fenced-wake.md");
@@ -66,7 +67,7 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	const legacy10 = join(root, "docs", "legacy-10.md");
 	writeFileSync(
 		workspaceLedger,
-		`${ledger([["I1", "report:r1", "check status", "done", "`receipt`", "[]"]])}\nthread: ${THREAD}\n`,
+		`${ledger([["I1", "report:r1", "check status", "done", "`receipt`", "[]"]])}\n## not-a-time wake (10-row ledger)\nthread: ${THREAD}\n`,
 	);
 	writeFileSync(
 		todoLedger,
@@ -75,6 +76,10 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	writeFileSync(
 		fenced,
 		`\`\`\`md\n${ledger([["I3", "report:r3", THREAD, "done", "`receipt`", "[]"]])}\n\`\`\`\n`,
+	);
+	writeFileSync(
+		fencedNamed,
+		`\`\`\`md\n${ledger([["I4", "report:r4", "fenced", "done", "`receipt`", "[]"]])}\n## 2026-01-01T10:00Z wake (10-row ledger)\n\`\`\`\n`,
 	);
 	writeFileSync(invalidWake, "# API\ncontract: heartbeat/v2\n## not-a-time wake (10-row ledger)\n");
 	writeFileSync(markerOnly, "# Example\ncontract: heartbeat/v2\n");
@@ -122,6 +127,13 @@ test("discovery rejects out-of-root explicit bindings and requires exact thread 
 		discoverHeartbeatLedgers({ root, threadId: "   " }),
 		/thread ID/i,
 	);
+	const explicit = join(root, "backlog.md");
+	writeFileSync(
+		explicit,
+		`${ledger([["I2", "report:r2", "configured source", "done", "`receipt`", "[]"]])}\n## not-a-time wake (10-row ledger)\n`,
+	);
+	const bound = await discoverHeartbeatLedgers({ root, threadId: THREAD, ledgerPath: explicit });
+	assert.deepEqual(bound, [{ path: realpathSync(explicit), associated: false }]);
 });
 
 test("discovery associates only one exact standalone thread metadata field", async () => {

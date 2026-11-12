@@ -118,7 +118,7 @@ export async function discoverHeartbeatLedgers({
 				/heartbeat/i.test(basename(path)) ||
 				(explicitRealPath && path === explicitRealPath);
 			// Discovery uses parsed API output as a signal, never a second ledger-format validator.
-			if (!hasDatedWake && !(report.wakeCount === 0 && named && report.itemCount)) return;
+			if (!hasDatedWake && !(named && report.itemCount)) return;
 			candidates.set(path, {
 				path,
 				associated: isAssociatedThread(text, threadId),
