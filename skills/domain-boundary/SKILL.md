@@ -58,6 +58,16 @@ existing contracts. For bucket and object-key layout, use
 
 ## Required Checks
 
+- Before a DNS cutover, inventory every record type attached to each affected name, including apex records.
+  Check CNAME conflicts with MX, TXT, and other existing records; preserve mail delivery and domain
+  authentication records. If the provider cannot serve the intended apex target alongside existing
+  records, use a provider-supported ALIAS/flattening capability or an approved stable ingress. Confirm
+  the current DNS edition and API support, and obtain approval for any new cost before proceeding. Do
+  not hardcode CDN edge A-record IPs, delete mail/authentication records to make a cutover fit, or
+  silently change the canonical hostname. After cutover, verify public DNS answers and provider
+  readback, confirm MX/TXT records remain unchanged, and check HTTPS on the intended canonical host.
+- Keep the detailed DNS record inventory, provider capability evidence, and cutover procedure in the
+  project's DNS authority; this Skill defines the required safety checks, not provider-specific values.
 - For OAuth, auth-provider redirect URLs, universal links, and app links: update the actual
   allowlist/IaC or runtime config source, not just a comment or doc note.
 - For web/admin/mobile CSP changes: only add sources that already satisfy this boundary, or are approved
