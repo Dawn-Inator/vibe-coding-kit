@@ -7,6 +7,8 @@ description: Use when designing, reviewing, or migrating static frontend publica
 
 Apply the portable delivery contracts in [the kit guidance](../../guidance/static-frontend-delivery.md) when a project publishes static frontend artifacts.
 
+This is a publication sub-contract: use [object-storage-layout](../object-storage-layout/SKILL.md) for bucket and general key layout, and [domain-boundary](../domain-boundary/SKILL.md) for hostnames, CDN domains, DNS, and endpoint ownership.
+
 - Classify each project, environment, surface, revision, purpose, and artifact lifecycle before defining keys or cache rules.
 - Keep immutable public assets, revalidated public documents, private backend templates, private archives, and stable private live pointers distinct. Declare keys as slash-terminated directory prefixes or exact object keys, and distinguish viewer access from origin access.
 - Require safe versioned object keys, disjoint artifact prefixes, explicit access and caching, declared retention and rollback windows, and one complete publication exclusion strategy: fenced ownership on every mutation or a durable non-expiring mutex held through host flip, pointer update, and garbage collection.
