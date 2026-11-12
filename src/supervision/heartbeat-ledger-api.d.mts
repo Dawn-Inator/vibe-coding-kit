@@ -59,6 +59,31 @@ export interface HeartbeatFinding {
 	[key: string]: unknown;
 }
 
+/** Raw v2 registry row passed to extra checks before findings are normalized. */
+export interface HeartbeatCheckRow {
+	line: number;
+	id?: string;
+	source?: string;
+	item?: string;
+	status?: string;
+	evidence?: string;
+	owner?: string;
+	repository?: string;
+	worktree?: string;
+	mode?: string;
+	write_set?: string;
+	dispatch_ref?: string;
+	[key: string]: unknown;
+}
+
+/** Raw extra-check finding; severity is optional and normalized by the API. */
+export interface HeartbeatCheckFinding {
+	severity?: "error" | "advisory";
+	rule?: string;
+	message: string;
+	[key: string]: unknown;
+}
+
 export interface HeartbeatInspectionReport {
 	schemaVersion: 1;
 	mode: HeartbeatInspectionMode;
@@ -76,7 +101,7 @@ export interface HeartbeatInspectionReport {
 export interface HeartbeatCheckContext {
 	text: string;
 	wakes: HeartbeatWake[];
-	items: HeartbeatItem[];
+	items: HeartbeatCheckRow[];
 	latestWake: HeartbeatWake;
 	ledgerPath: string | null;
 }
@@ -86,7 +111,7 @@ export interface InspectHeartbeatLedgerOptions {
 	latest?: boolean;
 	now?: Date;
 	ledgerPath?: string;
-	extraChecks?: ((context: HeartbeatCheckContext) => HeartbeatFinding[] | void) | ((context: HeartbeatCheckContext) => HeartbeatFinding[] | void)[];
+	extraChecks?: ((context: HeartbeatCheckContext) => HeartbeatCheckFinding[] | void) | ((context: HeartbeatCheckContext) => HeartbeatCheckFinding[] | void)[];
 }
 
 export interface HeartbeatAuditDueOptions {
