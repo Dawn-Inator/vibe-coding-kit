@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -12,6 +13,7 @@ const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
 
 const ledger = (thread = "", legacy = false) =>
   `# Supervision\nthread: ${thread}\n## 2026-11-11T10:00:00Z wake (${legacy ? 8 : 10}-row ledger)\n${legacy ? "" : "contract: heartbeat/v2"}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | test | blocked | waiting |\n`;
+const threadKey = (thread: string) => createHash("sha256").update(thread).digest("hex");
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "task-heartbeat-test-"));
   const project = resolve(root, "project");
@@ -80,7 +82,7 @@ test("project heartbeat view is independent of chat associations and isolated by
   try {
     const absent = await f.service.projectView(f.project);
     assert.equal(absent.status, "none");
-    await assert.rejects(readFile(resolve(f.root, "data", "heartbeat", "bindings.json")), {
+    await assert.rejects(readFile(resolve(f.root, "data", "bindings.json")), {
       code: "ENOENT",
     });
     await writeFile(f.source, ledger("some-other-chat"));
@@ -91,13 +93,15 @@ test("project heartbeat view is independent of chat associations and isolated by
     const project = await f.service.projectView(f.project);
     const otherProject = await f.service.projectView(secondProject);
     assert.equal(project.sourcePath, await realpath(f.source));
+    assert.equal(project.historyPath, project.sourcePath);
     assert.equal(otherProject.sourcePath, await realpath(secondLedger));
     assert.equal(project.status, "ready");
     assert.equal(project.status, otherProject.status);
     assert.ok(project.basis === "items-inventory" || project.basis === "latest-recorded-wake");
     const history = await f.service.projectHistory(f.project);
     assert.equal(history.sourcePath, await realpath(f.source));
-    await assert.rejects(readFile(resolve(f.root, "data", "heartbeat", "bindings.json")), {
+    assert.equal(history.historyPath, history.sourcePath);
+    await assert.rejects(readFile(resolve(f.root, "data", "bindings.json")), {
       code: "ENOENT",
     });
   } finally {
@@ -149,8 +153,16 @@ test("pinned Kit inspector pages the bound source independently from the project
   ].join("\n");
   const source = resolve(f.project, "heartbeat-bound.md");
   const latest = resolve(f.project, "heartbeat-latest.md");
-  const localEventsPath = resolve(f.project, ".workspace/codex-task-progress/events.jsonl");
-  await mkdir(resolve(f.project, ".workspace/codex-task-progress"), { recursive: true });
+  const localEventsPath = resolve(
+    f.project,
+    ".workspace/codex-task-progress/tasks/v3",
+    threadKey("actual-chat"),
+    "taskhistory.md",
+  );
+  await mkdir(
+    resolve(f.project, ".workspace/codex-task-progress/tasks/v3", threadKey("actual-chat")),
+    { recursive: true },
+  );
   await writeFile(source, sourceText);
   await writeFile(latest, latestText);
   await writeFile(localEventsPath, '{"type":"local-task.event","keep":true}\n');
@@ -162,6 +174,11 @@ test("pinned Kit inspector pages the bound source independently from the project
     const page = await service.history("actual-chat", f.project, { limit: 1 });
     assert.equal(page.error, undefined);
     assert.equal(page.sourcePath, await realpath(source));
+    assert.equal(page.historyPath, await realpath(source));
+    await assert.rejects(
+      readFile(resolve(await realpath(f.project), "heartbeat-bound.taskhistory.md")),
+      { code: "ENOENT" },
+    );
     assert.equal(page.total, 2);
     assert.match(String(page.wakes[0]?.heading), /2026-11-11T11:00Z/);
     assert.equal(page.wakes[0]?.line, 24);
@@ -172,7 +189,15 @@ test("pinned Kit inspector pages the bound source independently from the project
       line: number;
     }[];
     assert.equal(rows.length, 10);
-    assert.deepEqual(rows[0], { num: 1, category: "audit 1", state: "done", line: 28 });
+    assert.deepEqual(rows[0], {
+      num: 1,
+      category: "audit 1",
+      state: "done",
+      line: 28,
+      sourcePath: await realpath(source),
+    });
+    assert.equal(page.wakes[0]?.sourcePath, await realpath(source));
+    assert.equal(page.historyPath, await realpath(source));
     assert.ok(page.nextCursor);
     const older = await service.history("actual-chat", f.project, {
       cursor: page.nextCursor,
@@ -258,10 +283,9 @@ test("first unique association latches; an initially ambiguous set requires sele
     const ambiguous = await ambiguousService.view("chat-A", f.project);
     assert.equal(ambiguous?.status, "candidates");
     assert.equal(ambiguous?.candidates.length, 2);
-    assert.equal(
-      (await ambiguousService.taskProjection("chat-A", f.project)).status,
-      "pending-selection",
-    );
+    const ambiguousTask = await ambiguousService.taskProjection("chat-A", f.project);
+    assert.equal(ambiguousTask.status, "pending-selection");
+    assert.match(ambiguousTask.error ?? "", /Multiple heartbeat ledgers/);
     ambiguousService.close();
   } finally {
     await f.close();
@@ -311,10 +335,9 @@ test("incomplete file and depth scans block automatic selection but allow explic
     });
     const pending = await fileLimited.view("chat-A", f.project);
     assert.equal(pending?.discoveryComplete, false);
-    assert.equal(
-      (await fileLimited.taskProjection("chat-A", f.project)).status,
-      "pending-selection",
-    );
+    const fileLimitedTask = await fileLimited.taskProjection("chat-A", f.project);
+    assert.equal(fileLimitedTask.status, "pending-selection");
+    assert.match(fileLimitedTask.error ?? "", /discovery was incomplete/);
     const selected = await fileLimited.bind(
       "chat-A",
       pending?.candidates[0]?.path ?? f.source,
@@ -334,10 +357,9 @@ test("incomplete file and depth scans block automatic selection but allow explic
     });
     const depthView = await depthLimited.view("chat-Z", f.project);
     assert.equal(depthView?.discoveryComplete, false);
-    assert.equal(
-      (await depthLimited.taskProjection("chat-Z", f.project)).status,
-      "pending-selection",
-    );
+    const depthLimitedTask = await depthLimited.taskProjection("chat-Z", f.project);
+    assert.equal(depthLimitedTask.status, "pending-selection");
+    assert.match(depthLimitedTask.error ?? "", /discovery was incomplete/);
     const projectView = await depthLimited.projectView(f.project);
     assert.equal(projectView.status, "ready");
     assert.match(projectView.warning ?? "", /discovery was incomplete/);
@@ -449,29 +471,31 @@ test("unrecognized paths cannot be bound", async () => {
   }
 });
 
-test("observations are deduplicated across refresh and service restart", async () => {
+test("source relation survives cache deletion and restart without JSON bindings or observed event logs", async () => {
   const f = await fixture();
   try {
     await writeFile(f.source, ledger("chat-A"));
     await f.service.view("chat-A", f.project);
     await f.service.view("chat-A", f.project);
+    const historyPath = resolve(f.root, "data/tasks/v3", threadKey("chat-A"), "taskhistory.md");
+    assert.match(await readFile(historyPath, "utf8"), /source-binding/);
+    await rm(resolve(f.root, "data/.tmpcache"), { recursive: true, force: true });
+    await rm(f.source);
     const reopened = new HeartbeatService(resolve(f.root, "data"), {
       kitPath: f.kitPath,
       refreshMs: 0,
     });
-    await reopened.view("chat-A", f.project);
-    await rm(f.source);
     const stale = await reopened.view("chat-A", f.project);
     assert.equal(stale?.status, "stale");
     reopened.close();
     const { readdir } = await import("node:fs/promises");
-    const files = await readdir(resolve(f.root, "data/heartbeat"));
-    const log = files.find((name) => name.endsWith(".jsonl"));
-    assert.ok(log);
-    const lines = (await readFile(resolve(f.root, "data/heartbeat", log), "utf8"))
-      .trim()
-      .split("\n");
-    assert.equal(lines.length, 1);
+    const activeFiles = await readdir(resolve(f.root, "data"));
+    assert.equal(activeFiles.includes("bindings.json"), false);
+    assert.equal(
+      activeFiles.some((name) => name.endsWith(".jsonl")),
+      false,
+    );
+    assert.match(await readFile(historyPath, "utf8"), /source-binding/);
   } finally {
     await f.close();
   }

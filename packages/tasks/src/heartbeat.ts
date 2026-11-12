@@ -4,9 +4,14 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type {
+  HeartbeatInspectionReport,
+  HeartbeatWake,
+  InspectHeartbeatLedgerOptions,
+} from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type { HeartbeatTaskState } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import {
-  appendDurableLine,
+  atomicCreateFile,
   atomicWriteFile,
   ensurePrivateDirectory,
 } from "../../store/src/atomic.js";
@@ -23,6 +28,7 @@ export interface HeartbeatFinding {
 export interface HeartbeatView {
   status: "none" | "candidates" | "ready" | "stale" | "error";
   sourcePath: string | null;
+  historyPath?: string;
   candidates: HeartbeatCandidate[];
   refreshedAt: string;
   modifiedAt: string | null;
@@ -56,6 +62,7 @@ export interface HeartbeatHistoryPage {
   nextCursor: string | null;
   total: number;
   sourcePath: string | null;
+  historyPath?: string;
   contentHash?: string;
   itemStatuses?: Record<string, string>;
   error?: string;
@@ -64,6 +71,7 @@ export interface HeartbeatTaskProjection {
   status: "none" | "candidates" | "pending-selection" | "ready" | "stale" | "error";
   task: ProjectedHeartbeatTask | null;
   sourcePath: string | null;
+  historyPath?: string;
   contentHash?: string;
   itemStatuses?: Record<string, string>;
   error?: string;
@@ -203,23 +211,8 @@ function compactProjectedTask(sourceTask: HeartbeatTaskState): ProjectedHeartbea
   }
   return task;
 }
-interface KitReport {
-  mode: "items" | "current" | "history";
-  certifiesCurrent: boolean;
-  passed: boolean;
-  wakes: Record<string, unknown>[];
-  items: {
-    id: string;
-    item?: string;
-    status?: string;
-    evidence?: string;
-    line?: number;
-    children?: unknown;
-    [field: string]: unknown;
-  }[];
-  findings: HeartbeatFinding[];
-}
-type Inspector = (text: string, options: Record<string, unknown>) => KitReport;
+type KitReport = HeartbeatInspectionReport;
+type Inspector = (text: string, options: InspectHeartbeatLedgerOptions) => KitReport;
 export interface HeartbeatOptions {
   kitPath?: string;
   fallbackKitPath?: string | null;
@@ -228,6 +221,9 @@ export interface HeartbeatOptions {
   maxDepth?: number;
   now?: () => Date;
   prepareWrite?: () => Promise<void>;
+  recordsRoot?: string;
+  cacheRoot?: string;
+  legacyHeartbeatRoots?: string[];
 }
 interface ProjectConfig {
   heartbeat?: {
@@ -239,11 +235,6 @@ interface ProjectConfig {
     maxDepth?: number;
   };
 }
-interface HeartbeatBinding {
-  path: string;
-  origin: "automatic" | "explicit";
-}
-type HeartbeatBindingValue = HeartbeatBinding | null;
 interface CacheEntry {
   cwd: string;
   time: number;
@@ -258,9 +249,13 @@ const within = (root: string, path: string) => {
 type HeartbeatTaskSourceApi = typeof import("vibe-coding-kit/src/tasks/heartbeat-task-source.mjs");
 type HeartbeatAuditApi = typeof import("vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs");
 type ProjectHeartbeatApi = typeof import("vibe-coding-kit/src/tasks/project-heartbeat.mjs");
+type RelationsApi = typeof import("vibe-coding-kit/src/tasks/task-source-relations.mjs");
+type PairFilesApi = typeof import("vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs");
 let heartbeatTaskSourceApi: Promise<HeartbeatTaskSourceApi> | undefined;
 let heartbeatAuditApi: Promise<HeartbeatAuditApi> | undefined;
 let projectHeartbeatApi: Promise<ProjectHeartbeatApi> | undefined;
+let relationsApi: Promise<RelationsApi> | undefined;
+let pairFilesApi: Promise<PairFilesApi> | undefined;
 function loadHeartbeatTaskSourceApi(): Promise<HeartbeatTaskSourceApi> {
   heartbeatTaskSourceApi ??= import("vibe-coding-kit/src/tasks/heartbeat-task-source.mjs");
   return heartbeatTaskSourceApi;
@@ -272,6 +267,14 @@ function loadHeartbeatAuditApi(): Promise<HeartbeatAuditApi> {
 function loadProjectHeartbeatApi(): Promise<ProjectHeartbeatApi> {
   projectHeartbeatApi ??= import("vibe-coding-kit/src/tasks/project-heartbeat.mjs");
   return projectHeartbeatApi;
+}
+function loadRelationsApi(): Promise<RelationsApi> {
+  relationsApi ??= import("vibe-coding-kit/src/tasks/task-source-relations.mjs");
+  return relationsApi;
+}
+function loadPairFilesApi(): Promise<PairFilesApi> {
+  pairFilesApi ??= import("vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs");
+  return pairFilesApi;
 }
 const PANEL_BYTES = 192 * 1024;
 const shortened = (value: unknown, max = 500): string => {
@@ -296,17 +299,27 @@ function compactItem(item: Record<string, unknown>): Record<string, unknown> {
     ["line", typeof item.line === "number" ? item.line : null],
   ]);
 }
-function compactWake(wake: Record<string, unknown>): Record<string, unknown> {
-  const rows = Array.isArray(wake.rows) ? wake.rows : [];
+type TransportWake = Omit<HeartbeatWake, "rows"> & {
+  sourcePath?: string;
+  sourceLine?: number;
+  rows: Array<HeartbeatWake["rows"][number] & { sourcePath?: string; sourceLine?: number }>;
+};
+function transportWake(wake: TransportWake): TransportWake {
+  return { ...wake, rows: wake.rows.map((row) => ({ ...row })) };
+}
+function compactWake(wake: TransportWake): Record<string, unknown> {
+  const rows = wake.rows;
   return {
     heading: shortened(wake.heading, 240),
     timeMs: typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs) ? wake.timeMs : null,
-    line: typeof wake.line === "number" ? wake.line : null,
-    rows: rows.slice(0, 10).map((row: Record<string, unknown>) => ({
-      num: typeof row.num === "number" ? row.num : null,
+    line: wake.sourceLine ?? wake.line,
+    ...(wake.sourcePath ? { sourcePath: wake.sourcePath } : {}),
+    rows: rows.slice(0, 10).map((row) => ({
+      num: row.num,
       category: shortened(row.category, 150),
       state: shortened(row.state, 500),
-      line: typeof row.line === "number" ? row.line : null,
+      line: row.sourceLine ?? row.line,
+      ...(row.sourcePath ? { sourcePath: row.sourcePath } : {}),
     })),
     rowCount: rows.length,
     truncated: true,
@@ -320,7 +333,7 @@ function compactView(view: HeartbeatView): HeartbeatView {
     candidateCount: view.candidateCount ?? view.candidates.length,
     itemStatusCounts: view.itemStatusCounts ?? {},
     items: view.items.slice(0, 20).map(compactItem),
-    wakes: view.wakes.slice(-5).map(compactWake),
+    wakes: view.wakes.slice(-5),
     candidates: view.candidates.slice(0, 40),
     findings: view.findings.slice(0, 30).map((finding) => ({
       severity: shortened(finding.severity, 20),
@@ -347,79 +360,55 @@ function compactView(view: HeartbeatView): HeartbeatView {
 /** Read-only ledger consumer. It never arms timers or writes project/Kit files. */
 export class HeartbeatService {
   readonly #root: string;
+  readonly #cacheRoot: string;
+  readonly #legacyHeartbeatRoots: string[];
   readonly #options: HeartbeatOptions;
-  readonly #bindings = new Map<string, HeartbeatBindingValue>();
   readonly #cache = new Map<string, CacheEntry>();
   readonly #projectCache = new Map<string, { time: number; value: HeartbeatView }>();
   readonly #last = new Map<string, HeartbeatView>();
   readonly #watchers = new Map<string, FSWatcher>();
-  readonly #observed = new Map<string, string>();
   readonly #pending = new Map<string, Promise<HeartbeatView | null>>();
-  readonly #loaded: Promise<void>;
-  readonly #restored = new Set<string>();
-  #saveQueue: Promise<void> = Promise.resolve();
+  #restored = new Set<string>();
 
   constructor(root: string, options: HeartbeatOptions = {}) {
-    this.#root = resolve(root, "heartbeat");
-    this.#options = options;
-    this.#loaded = this.#loadBindings();
-  }
-
-  async #loadBindings(): Promise<void> {
-    try {
-      const parsed: unknown = JSON.parse(
-        await readFile(resolve(this.#root, "bindings.json"), "utf8"),
-      );
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        for (const [key, value] of Object.entries(parsed)) {
-          if (value === null) this.#bindings.set(key, null);
-          else if (typeof value === "string")
-            this.#bindings.set(key, { path: value, origin: "explicit" });
-          else if (value && typeof value === "object" && !Array.isArray(value)) {
-            const binding = value as Partial<HeartbeatBinding>;
-            if (
-              typeof binding.path === "string" &&
-              (binding.origin === "automatic" || binding.origin === "explicit")
-            )
-              this.#bindings.set(key, { path: binding.path, origin: binding.origin });
-          }
-        }
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-
-  async #prepareWritable(): Promise<void> {
-    await this.#options.prepareWrite?.();
-    await ensurePrivateDirectory(this.#root);
-  }
-
-  async #persistBinding(threadId: string, binding: HeartbeatBindingValue): Promise<void> {
-    this.#bindings.set(threadId, binding);
-    await this.#prepareWritable();
-    const serialized = JSON.stringify(Object.fromEntries(this.#bindings));
-    const save = this.#saveQueue.then(() =>
-      atomicWriteFile(resolve(this.#root, "bindings.json"), serialized),
+    this.#root = resolve(options.recordsRoot ?? root);
+    this.#cacheRoot = resolve(
+      options.cacheRoot ?? root,
+      ...(options.cacheRoot ? [] : [".tmpcache"]),
     );
-    this.#saveQueue = save.catch(() => undefined);
-    await save;
+    this.#legacyHeartbeatRoots = options.legacyHeartbeatRoots ?? [];
+    this.#options = options;
+  }
+
+  async #relations() {
+    const { TaskSourceRelations } = await loadRelationsApi();
+    return new TaskSourceRelations(this.#root, {
+      legacyHeartbeatRoots: this.#legacyHeartbeatRoots,
+      ...(this.#options.prepareWrite ? { beforeWrite: this.#options.prepareWrite } : {}),
+    });
   }
 
   async #restore(threadId: string): Promise<void> {
     if (this.#restored.has(threadId)) return;
     try {
       const saved = JSON.parse(
-        await readFile(resolve(this.#root, `${hash(threadId)}.snapshot.json`), "utf8"),
-      ) as { key: string; view: HeartbeatView };
-      if (saved.view.status === "ready" && saved.view.sourcePath && saved.view.contentHash) {
+        await readFile(resolve(this.#cacheRoot, `${hash(threadId)}.snapshot.json`), "utf8"),
+      ) as { view?: HeartbeatView };
+      if (saved.view?.status === "ready" && saved.view.sourcePath && saved.view.contentHash)
         this.#last.set(threadId, compactView(saved.view));
-        this.#observed.set(threadId, saved.key);
-      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     this.#restored.add(threadId);
+  }
+
+  async #cacheSnapshot(threadId: string, view: HeartbeatView): Promise<void> {
+    await ensurePrivateDirectory(this.#cacheRoot);
+    await atomicCreateFile(resolve(this.#cacheRoot, ".gitignore"), "*\n");
+    await atomicWriteFile(
+      resolve(this.#cacheRoot, `${hash(threadId)}.snapshot.json`),
+      JSON.stringify({ view }),
+    );
   }
 
   #now(): Date {
@@ -452,6 +441,9 @@ export class HeartbeatService {
           : {}),
       });
       const source = report.source;
+      const sourcePair = source
+        ? (await loadPairFilesApi()).readHeartbeatLedgerPair({ root, path: source.path })
+        : null;
       const inventoryItems = source?.inventory.items ?? [];
       const discovery = report.discovery;
       const discoveryWarning = discovery.complete
@@ -466,6 +458,9 @@ export class HeartbeatService {
       const view = compactView({
         status: report.status,
         sourcePath: source?.path ?? null,
+        ...(sourcePair
+          ? { historyPath: sourcePair.isLegacy ? sourcePair.headPath : sourcePair.historyPath }
+          : {}),
         candidates: [],
         refreshedAt,
         modifiedAt: source?.modifiedAt ?? null,
@@ -475,7 +470,8 @@ export class HeartbeatService {
         certifiesCurrent: source?.current.certifiesCurrent ?? false,
         passed: source?.current.passed ?? false,
         items: inventoryItems,
-        wakes: source?.history.wakes.map((wake) => ({ ...wake })) ?? [],
+        wakes:
+          source?.history.wakes.slice(-5).map((wake) => compactWake(transportWake(wake))) ?? [],
         findings: source?.current.findings ?? [],
         itemCount: inventoryItems.length,
         wakeCount: source?.history.wakeCount ?? 0,
@@ -591,7 +587,6 @@ export class HeartbeatService {
   }
 
   async view(threadId: string, cwd: string): Promise<HeartbeatView | null> {
-    await this.#loaded;
     const cached = this.#cache.get(threadId);
     const now = this.#now().getTime();
     if (cached?.cwd === cwd && now - cached.time < (this.#options.refreshMs ?? 30_000))
@@ -631,10 +626,7 @@ export class HeartbeatService {
       itemsTruncated: false,
       wakesTruncated: false,
     };
-    const binding = this.#bindings.get(threadId);
-    if (binding === null) return null;
-    let source = binding?.path;
-    let sourceOrigin = binding?.origin;
+    let source: string | undefined;
     try {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
@@ -646,7 +638,7 @@ export class HeartbeatService {
       const { discoverHeartbeatLedgerSources } = await loadHeartbeatTaskSourceApi();
       const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
       const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
-      const discoveryLedgerPath = source ?? config.heartbeat?.ledgerPath;
+      const discoveryLedgerPath = config.heartbeat?.ledgerPath;
       const discovery = await discoverHeartbeatLedgerSources({
         root,
         threadId,
@@ -655,84 +647,53 @@ export class HeartbeatService {
         ...(maxDepth === undefined ? {} : { maxDepth }),
       });
       const candidates = discovery.candidates;
-      if (source === undefined) {
-        const previouslyObserved = this.#last.get(threadId)?.sourcePath;
-        if (previouslyObserved) {
-          source = previouslyObserved;
-          sourceOrigin = "automatic";
-          await this.#persistBinding(threadId, { path: source, origin: "automatic" });
-        } else if (!discovery.complete) {
-          return compactView({
-            ...empty,
-            candidates,
-            candidateCount: candidates.length,
-            discoveryComplete: false,
-            discoveryVisitedFiles: discovery.visitedFiles,
-            discoveryLimits: discovery.limits,
-            discoveryReasons: discovery.reasons,
-            error:
-              "Automatic task-source association is unresolved because project discovery is incomplete; the runtime cannot confirm this chat's task source yet.",
-          });
-        } else {
-          const associated = candidates.filter((candidate) => candidate.associated);
-          if (associated.length > 1)
-            return compactView({
-              ...empty,
-              candidates,
-              candidateCount: candidates.length,
-              discoveryComplete: true,
-              discoveryVisitedFiles: discovery.visitedFiles,
-              discoveryLimits: discovery.limits,
-              discoveryReasons: discovery.reasons,
-            });
-          if (associated.length === 0) {
-            if (candidates.length)
-              return compactView({
-                ...empty,
-                candidates,
-                candidateCount: candidates.length,
-                discoveryComplete: true,
-                discoveryVisitedFiles: discovery.visitedFiles,
-                discoveryLimits: discovery.limits,
-                discoveryReasons: discovery.reasons,
-              });
-            return null;
-          }
-          source = associated[0]?.path;
-          if (source) {
-            sourceOrigin = "automatic";
-            await this.#persistBinding(threadId, { path: source, origin: "automatic" });
-          }
-        }
-      }
-      const selectedCandidate = candidates.find((candidate) => candidate.path === source);
-      if (!selectedCandidate)
-        throw new Error(
-          "The bound chat task source is absent from the current project scan; it remains read-only while the runtime reconciles source status.",
-        );
-      if (sourceOrigin === "automatic" && !selectedCandidate.associated)
-        throw new Error(
-          "The automatic chat task-source association is no longer confirmed; the source remains read-only while the runtime reconciles task authority.",
-        );
+      const relation = await (await this.#relations()).resolve(threadId, {
+        projectRoot: root,
+        discovery,
+      });
+      if (relation.status === "none") return null;
+      if (relation.status === "candidates" || relation.status === "pending-selection")
+        return compactView({
+          ...empty,
+          status: "candidates",
+          candidates,
+          candidateCount: candidates.length,
+          discoveryComplete: discovery.complete,
+          discoveryVisitedFiles: discovery.visitedFiles,
+          discoveryLimits: discovery.limits,
+          discoveryReasons: discovery.reasons,
+        });
+      source = relation.binding?.path;
+      if (relation.status === "stale")
+        return compactView({
+          ...(this.#last.get(threadId) ?? empty),
+          status: "stale",
+          sourcePath: source ?? null,
+          refreshedAt: now,
+          certifiesCurrent: false,
+          error: relation.error ?? "The bound chat task source is stale and remains read-only.",
+        });
       if (!source) return null;
       this.#observeFile(threadId, source);
+      const pairApi = await loadPairFilesApi();
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source });
       const info = await stat(source);
-      if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
-      const text = await readFile(source, "utf8");
+      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
+        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const text = pair.fullText;
       const inspect = await this.#inspector(root, config);
-      const current = inspect(text, {
-        mode: "current",
-        latest: true,
-        ledgerPath: source,
-        now: this.#now(),
-      });
-      const history = inspect(text, {
-        mode: "history",
-        latest: false,
-        ledgerPath: source,
-        now: this.#now(),
-      });
-      const inventory = inspect(text, { mode: "items", ledgerPath: source, now: this.#now() });
+      const pairInspector = pairApi.inspectHeartbeatLedgerPair;
+      const inspectPair = (mode: "current" | "history" | "items", latest = true) =>
+        pairInspector(pair, {
+          mode,
+          latest,
+          ...(source ? { ledgerPath: source } : {}),
+          now: this.#now(),
+          inspect,
+        });
+      const current = inspectPair("current");
+      const history = inspectPair("history", false);
+      const inventory = inspectPair("items");
       const times = history.wakes
         .map((wake) => wake.timeMs)
         .filter((time): time is number => typeof time === "number" && Number.isFinite(time));
@@ -757,6 +718,7 @@ export class HeartbeatService {
         ...empty,
         status: "ready",
         sourcePath: source,
+        historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
         candidates,
         candidateCount: candidates.length,
         discoveryComplete: discovery.complete,
@@ -764,41 +726,21 @@ export class HeartbeatService {
         discoveryLimits: discovery.limits,
         discoveryReasons: discovery.reasons,
         modifiedAt: info.mtime.toISOString(),
-        contentHash: hash(text),
+        contentHash: pair.contentHash,
         lastWakeAt: lastTime === null ? null : new Date(lastTime).toISOString(),
         nextWakeAt,
         cadenceMinutes,
         certifiesCurrent: current.certifiesCurrent,
         passed: current.passed,
         items: inventory.items,
-        wakes: history.wakes,
+        wakes: history.wakes.slice(-5).map(compactWake),
         findings: current.findings,
         itemCount: inventory.items.length,
         wakeCount: history.wakes.length,
         itemStatusCounts,
       });
       this.#last.set(threadId, view);
-      const eventKey = `${source}:${view.contentHash}`;
-      if (this.#observed.get(threadId) !== eventKey) {
-        await this.#prepareWritable();
-        await appendDurableLine(
-          resolve(this.#root, `${hash(threadId)}.jsonl`),
-          JSON.stringify({
-            type: "heartbeat.observed",
-            threadId,
-            observedAt: now,
-            sourcePath: source,
-            contentHash: view.contentHash,
-            lastWakeAt: view.lastWakeAt,
-            certifiesCurrent: view.certifiesCurrent,
-          }),
-        );
-        this.#observed.set(threadId, eventKey);
-        await atomicWriteFile(
-          resolve(this.#root, `${hash(threadId)}.snapshot.json`),
-          JSON.stringify({ key: eventKey, view }),
-        );
-      }
+      await this.#cacheSnapshot(threadId, view);
       return view;
     } catch (error) {
       const previous = this.#last.get(threadId);
@@ -824,11 +766,17 @@ export class HeartbeatService {
     const limit = options.limit ?? 5;
     if (!Number.isInteger(limit) || limit < 1 || limit > 10)
       throw new Error("Heartbeat history limit must be 1–10.");
-    const empty = (sourcePath: string | null, error?: string, contentHash?: string) => ({
+    const empty = (
+      sourcePath: string | null,
+      error?: string,
+      contentHash?: string,
+      historyPath?: string,
+    ) => ({
       wakes: [],
       nextCursor: null,
       total: 0,
       sourcePath,
+      ...(historyPath ? { historyPath } : {}),
       ...(contentHash ? { contentHash } : {}),
       ...(error ? { error: shortened(error, 2_000) } : {}),
     });
@@ -846,6 +794,7 @@ export class HeartbeatService {
         view.sourcePath,
         view.error ?? `Heartbeat task source is ${view.status}.`,
         view.contentHash,
+        view.historyPath,
       );
     try {
       const root = await this.#project(cwd);
@@ -853,22 +802,25 @@ export class HeartbeatService {
       const sourcePath = await realpath(view.sourcePath);
       if (!within(root, sourcePath) || sourcePath !== view.sourcePath)
         throw new Error("Bound heartbeat source changed outside its verified project path.");
-      const info = await stat(sourcePath);
-      if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
-      const text = await readFile(sourcePath, "utf8");
-      const contentHash = hash(text);
+      const pairApi = await loadPairFilesApi();
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: sourcePath });
+      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
+        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
         return empty(
           sourcePath,
           "Heartbeat ledger changed while reading history; refresh before using its audit history.",
           contentHash,
+          pair.isLegacy ? pair.headPath : pair.historyPath,
         );
       const inspect = await this.#inspector(root, config);
-      const report = inspect(text, {
+      const report = pairApi.inspectHeartbeatLedgerPair(pair, {
         mode: "history",
         latest: false,
         ledgerPath: sourcePath,
         now: this.#now(),
+        inspect,
       });
       if (report.mode !== "history")
         throw new Error("Kit heartbeat inspector did not return a History report.");
@@ -887,10 +839,11 @@ export class HeartbeatService {
         nextCursor: remaining > 0 ? String(remaining) : null,
         total: report.wakes.length,
         sourcePath,
+        historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
         contentHash,
       };
     } catch (error) {
-      return empty(view.sourcePath, String(error), view.contentHash);
+      return empty(view.sourcePath, String(error), view.contentHash, view.historyPath);
     }
   }
 
@@ -926,7 +879,28 @@ export class HeartbeatService {
     const source = report.source;
     if (!source || source.path !== view.sourcePath)
       return { wakes: [], nextCursor: null, total: 0, sourcePath: view.sourcePath };
-    const wakesAll = source.history.wakes;
+    const pairApi = await loadPairFilesApi();
+    const pair = pairApi.readHeartbeatLedgerPair({ root, path: source.path });
+    if (pair.contentHash !== source.contentHash)
+      return {
+        wakes: [],
+        nextCursor: null,
+        total: 0,
+        sourcePath: source.path,
+        historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
+        contentHash: pair.contentHash,
+        error:
+          "Heartbeat ledger changed while reading history; refresh before using its audit history.",
+      };
+    const inspect = await this.#inspector(root, config);
+    const history = pairApi.inspectHeartbeatLedgerPair(pair, {
+      mode: "history",
+      latest: false,
+      ledgerPath: source.path,
+      now: this.#now(),
+      inspect,
+    });
+    const wakesAll = history.wakes;
     const end = before === null ? wakesAll.length : Math.min(before, wakesAll.length);
     const records = wakesAll.slice(Math.max(0, end - limit), end).reverse();
     const wakes: Record<string, unknown>[] = [];
@@ -940,14 +914,25 @@ export class HeartbeatService {
     return {
       wakes,
       nextCursor: remaining > 0 ? String(remaining) : null,
-      total: source.history.wakeCount,
+      total: history.wakeCount,
       sourcePath: source.path,
+      historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
+      contentHash: pair.contentHash,
     };
   }
 
   /** Returns the canonical Kit projection only for a fresh, successfully read source ledger. */
   async taskProjection(threadId: string, cwd: string): Promise<HeartbeatTaskProjection> {
     const view = await this.view(threadId, cwd);
+    if (view?.status === "stale" && view.sourcePath)
+      return {
+        status: "stale",
+        task: null,
+        sourcePath: view.sourcePath,
+        ...(view.historyPath ? { historyPath: view.historyPath } : {}),
+        ...(view.contentHash ? { contentHash: view.contentHash } : {}),
+        ...(view.error ? { error: view.error } : {}),
+      };
     if (!view?.sourcePath && view?.status === "candidates") {
       const associatedCount = view.candidates.filter((candidate) => candidate.associated).length;
       const discoveryTruncated =
@@ -960,7 +945,7 @@ export class HeartbeatService {
           sourcePath: null,
           error:
             view.error ??
-            (discoveryTruncated
+            (discoveryTruncated || view.discoveryComplete === false
               ? "Heartbeat discovery was incomplete, so the runtime cannot confirm this chat's task-source association yet."
               : "Multiple heartbeat ledgers carry this chat association; task-source authority is unresolved while project Heartbeat remains available separately."),
         };
@@ -989,10 +974,11 @@ export class HeartbeatService {
     try {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
-      const info = await stat(view.sourcePath);
-      if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
-      const text = await readFile(view.sourcePath, "utf8");
-      const contentHash = hash(text);
+      const pairApi = await loadPairFilesApi();
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: view.sourcePath });
+      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
+        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
         return {
           status: "stale",
@@ -1002,10 +988,11 @@ export class HeartbeatService {
           error: "Heartbeat ledger changed during projection; refresh before using its task view.",
         };
       const inspect = await this.#inspector(root, config);
-      const inspected = inspect(text, {
+      const inspected = pairApi.inspectHeartbeatLedgerPair(pair, {
         mode: "items",
         ledgerPath: view.sourcePath,
         now: this.#now(),
+        inspect,
       });
       if (inspected.mode !== "items")
         throw new Error("Kit heartbeat inspector did not return an Items report.");
@@ -1017,13 +1004,14 @@ export class HeartbeatService {
         threadId,
         path: view.sourcePath,
         contentHash,
-        modifiedAt: info.mtime.toISOString(),
+        modifiedAt: pair.modifiedAt,
       });
       const task = compactProjectedTask(canonicalTask);
       return {
         status: "ready",
         task,
         sourcePath: view.sourcePath,
+        ...(view.historyPath ? { historyPath: view.historyPath } : {}),
         contentHash,
         itemStatuses: task.source.itemStatuses,
       };
@@ -1039,7 +1027,6 @@ export class HeartbeatService {
   }
 
   async bind(threadId: string, path: string | null, cwd: string): Promise<HeartbeatView | null> {
-    await this.#loaded;
     if (path !== null) {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
@@ -1058,9 +1045,9 @@ export class HeartbeatService {
       const absolutePath = await realpath(requestedPath).catch(() => requestedPath);
       if (!candidates.some((candidate) => candidate.path === absolutePath))
         throw new Error("Heartbeat source must be a discovered project ledger.");
-      await this.#persistBinding(threadId, { path: absolutePath, origin: "explicit" });
+      await (await this.#relations()).set(threadId, { path: absolutePath, origin: "explicit" });
     } else {
-      await this.#persistBinding(threadId, null);
+      await (await this.#relations()).set(threadId, null);
       this.#watchers.get(threadId)?.close();
       this.#watchers.delete(threadId);
     }

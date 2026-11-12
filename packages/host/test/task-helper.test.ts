@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  migrateHeartbeatLedgerPair,
+  readHeartbeatLedgerPair,
+} from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import { GoalProgressIpcClient, GoalProgressIpcClientError } from "../../ipc/src/index.js";
 import type {
@@ -66,11 +70,24 @@ function eventPath(root: string, threadId: string) {
     "tasks",
     "v3",
     createHash("sha256").update(threadId).digest("hex"),
+    "taskhistory.md",
+  );
+}
+function legacyEventPath(root: string, threadId: string) {
+  return join(
+    root,
+    "tasks",
+    "v3",
+    createHash("sha256").update(threadId).digest("hex"),
     "events.jsonl",
   );
 }
 function hasCode(code: string) {
   return (error: unknown) => error instanceof GoalProgressIpcClientError && error.code === code;
+}
+async function taskEvents(root: string, threadId: string) {
+  const store = new TaskStore(join(root, ".workspace", "codex-task-progress"));
+  return (await store.history(threadId, { limit: 100 })).events;
 }
 
 test("real Helper IPC supports ordinary task completion, regression, pagination, isolated chats and restart", async () => {
@@ -142,7 +159,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     assert.equal(initializedStorage.mode, "workspace");
     assert.equal(initializedStorage.root, workspaceRoot);
     const recordedEvents = await readFile(eventPath(workspaceRoot, "ordinary-chat"), "utf8");
-    assert.equal(JSON.parse(recordedEvents.trim()).requestId, "init");
+    assert.match(recordedEvents, /"requestId": "init"/);
     await assert.rejects(access(eventPath(paths.root, "ordinary-chat")), { code: "ENOENT" });
     await assert.rejects(access(eventPath(join(paths.root, "tasks"), "ordinary-chat")), {
       code: "ENOENT",
@@ -385,16 +402,26 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     );
     await writeFile(
       join(root, "kit/heartbeat-ledger-api.mjs"),
-      `export function inspectHeartbeatLedger(text, {mode}) { const items=text.includes('large-source')?Array.from({length:2500},(_,i)=>({id:i===0?'H'+('x'.repeat(200)):'H'+i,item:'Source item '+i,status:i%2?'blocked':'done',evidence:'Evidence '+i,line:i+1})): [{id:'H1',item:'Source task',status:'blocked',evidence:'Waiting',line:7}]; return {mode, certifiesCurrent: mode==='current', passed:true, wakeCount:1, itemCount:items.length, wakes:[{heading:'wake',timeMs:1794391200000,rows:[]}], items, findings:[]}; }`,
+      `export function inspectHeartbeatLedger(text, {mode}) { const lines=text.split('\\n'); const headings=lines.filter(line=>/^#{1,6}\\s+.* wake \\(/i.test(line)); const selected=mode==='history'?headings:headings.slice(-1); const wakes=selected.map((heading,index)=>({heading:heading.trim(),timeMs:1794391200000+index,line:lines.indexOf(heading)+1,rows:[]})); const items=text.includes('large-source')?Array.from({length:2500},(_,i)=>({id:i===0?'H'+('x'.repeat(200)):'H'+i,item:'Source item '+i,status:i%2?'blocked':'done',evidence:'Evidence '+i,line:i+1})): [{id:'H1',item:'Source task',status:'blocked',evidence:'Waiting',line:7}]; return {mode, certifiesCurrent: mode==='current', passed:true, wakeCount:wakes.length, itemCount:items.length, wakes, items, findings:[]}; }`,
     );
     await writeFile(ledgerPath, ledger);
     const canonicalLedgerPath = await realpath(ledgerPath);
+    const canonicalRoot = await realpath(root);
+    const legacyPair = readHeartbeatLedgerPair({ root: canonicalRoot, path: canonicalLedgerPath });
+    const paired = migrateHeartbeatLedgerPair({
+      root: canonicalRoot,
+      path: canonicalLedgerPath,
+      legacyWritersQuiescent: true,
+      expectedContentHash: legacyPair.contentHash,
+    });
+    const migratedHead = await readFile(canonicalLedgerPath, "utf8");
+    const migratedHistory = await readFile(paired.historyPath, "utf8");
+    const expectedWakeLine =
+      migratedHistory.split("\n").findIndex((line) => line.includes("2026-11-11T10:00:00Z wake")) +
+      1;
+    assert.equal(await readFile(`${canonicalLedgerPath}.legacy`, "utf8"), ledger);
     await request("bind-heartbeat", { path: ledgerPath });
-    const localEventsPath = eventPath(
-      join(await realpath(root), ".workspace", "codex-task-progress"),
-      "source-chat",
-    );
-    const before = await readFile(localEventsPath, "utf8");
+    const before = await taskEvents(root, "source-chat");
     const projected = (await request("get", {})).result as {
       task: TaskState & {
         source: {
@@ -403,7 +430,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
           presentation: { truncated: boolean; sourceItemCount: number; displayedItemCount: number };
         };
       };
-      taskSource: { status: string; path: string; readOnly: boolean };
+      taskSource: { status: string; path: string; historyPath?: string; readOnly: boolean };
     };
     assert.equal(projected.task.title, "Heartbeat ledger task");
     assert.equal(projected.task.objectives[0]?.status, "completed");
@@ -418,6 +445,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     assert.ok(Buffer.byteLength(JSON.stringify(projected)) < 192 * 1024);
     assert.equal(projected.taskSource.status, "ready");
     assert.equal(projected.taskSource.path, canonicalLedgerPath);
+    assert.equal(projected.taskSource.historyPath, paired.historyPath);
     assert.equal(projected.taskSource.readOnly, true);
     await assert.rejects(
       request("update", {
@@ -428,24 +456,33 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       }),
       hasCode("TASK_SOURCE_READ_ONLY"),
     );
-    assert.equal(await readFile(localEventsPath, "utf8"), before);
+    assert.deepEqual(await taskEvents(root, "source-chat"), before);
     const history = (await request("history", {})).result as {
       history: {
         events: unknown[];
-        wakes: { heading: string; rows: { num: number; state: string }[] }[];
-        source: { path: string; readOnly: boolean };
+        wakes: {
+          heading: string;
+          sourcePath: string;
+          line: number;
+          rows: { num: number; state: string }[];
+        }[];
+        source: { path: string; historyPath: string; readOnly: boolean };
       };
     };
     assert.deepEqual(history.history.events, []);
     assert.equal(history.history.source.path, canonicalLedgerPath);
+    assert.equal(history.history.source.historyPath, paired.historyPath);
     assert.equal(history.history.source.readOnly, true);
     assert.equal(history.history.wakes.length, 1);
-    assert.equal(history.history.wakes[0]?.heading, "wake");
+    assert.match(history.history.wakes[0]?.heading ?? "", /2026-11-11T10:00:00Z wake/);
+    assert.equal(history.history.wakes[0]?.sourcePath, paired.historyPath);
+    assert.equal(history.history.wakes[0]?.line, expectedWakeLine);
     await request("bind-heartbeat", { path: null });
     const restored = (await request("get", {})).result as { task: TaskState };
     assert.equal(restored.task.title, "Dormant local task");
-    assert.equal(await readFile(localEventsPath, "utf8"), before);
-    assert.equal(await readFile(ledgerPath, "utf8"), ledger);
+    assert.deepEqual(await taskEvents(root, "source-chat"), before);
+    assert.equal(await readFile(canonicalLedgerPath, "utf8"), migratedHead);
+    assert.equal(await readFile(paired.historyPath, "utf8"), migratedHistory);
 
     await rm(ledgerPath);
     const ambiguousLedger = ledger
@@ -490,8 +527,17 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
 
     await writeFile(
       join(root, ".codex-task-progress.json"),
-      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs", maxFiles: 1 } }),
+      JSON.stringify({
+        heartbeat: {
+          kitPath: "kit/heartbeat-ledger-api.mjs",
+          maxFiles: 1,
+          ledgerPath: "heartbeat-one.md",
+        },
+      }),
     );
+    // Keep these discovered ledgers unrelated to bounded-chat. The configured explicit
+    // project source is intentionally separate, and the bounded scan must report its
+    // incompleteness without turning this fixture into a genuine multi-association case.
     const boundedLedger = ambiguousLedger.replaceAll("ambiguous-chat", "bounded-chat");
     await writeFile(join(root, "heartbeat-bounded-a.md"), boundedLedger);
     await writeFile(join(root, "heartbeat-bounded-b.md"), boundedLedger);
@@ -523,6 +569,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     assert.equal(bounded.taskSource.status, "pending-selection");
     assert.equal(bounded.heartbeat.discoveryComplete, false);
     assert.equal(bounded.heartbeat.status, "ready");
+    assert.equal(bounded.heartbeat.sourcePath, await realpath(join(root, "heartbeat-one.md")));
     assert.ok(
       bounded.heartbeat.sourcePath,
       "project Heartbeat displays independently of ambiguous chat-task association",
@@ -575,12 +622,8 @@ test("automatic heartbeat authority stays latched through association loss and r
     };
     return client.request({ method: "task.request", params: { action, auth, input } });
   }
-  const localEvents = eventPath(
-    join(await realpath(root), ".workspace", "codex-task-progress"),
-    "sticky-chat",
-  );
   const original =
-    "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n";
+    "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n## 2026-11-11T11:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n";
   let reopened: GoalProgressHelper | undefined;
   let canonicalSourcePath: string | undefined;
   try {
@@ -599,7 +642,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     );
     await writeFile(
       join(root, "kit/heartbeat-ledger-api.mjs"),
-      `export function inspectHeartbeatLedger(text,{mode}) { return { mode, certifiesCurrent:true, passed:true, wakes: mode === "history" ? [{heading:"older",timeMs:1794304800000,line:3,rows:[{num:2,category:"task",state:"active",line:4}]},{heading:"newest",timeMs:1794391200000,line:7,rows:[{num:1,category:"task",state:"done",line:8}]}] : [{heading:"wake",timeMs:1794391200000,rows:[]}], items:[{id:"H1",source:"request",item:"Source task",status:"blocked",evidence:"Waiting",line:6}], findings:[]}; }`,
+      `export function inspectHeartbeatLedger(text,{mode}) { const lines=text.split('\\n'); const headings=lines.filter(line=>/^#{1,6}\\s+.* wake \\(/i.test(line)); const selected=mode==='history'?headings:headings.slice(-1); const wakes=selected.map((heading,index)=>({heading:heading.trim(),timeMs:1794304800000+index*86400000,line:lines.indexOf(heading)+1,rows:[{num:index?1:2,category:'task',state:index?'done':'active',line:lines.indexOf(heading)+2}]})); return { mode, certifiesCurrent:true, passed:true, wakes, items:[{id:"H1",source:"request",item:"Source task",status:"blocked",evidence:"Waiting",line:6}], findings:[]}; }`,
     );
     await writeFile(join(root, "heartbeat-A.md"), original);
     await writeFile(
@@ -608,52 +651,68 @@ test("automatic heartbeat authority stays latched through association loss and r
     );
     await helper.start();
     const initial = (await request("get", {})).result as {
-      taskSource: { status: string; path: string };
+      taskSource: { status: string; path: string; historyPath?: string };
       heartbeat: { status: string; sourcePath: string | null; basis?: string };
     };
     assert.equal(initial.taskSource.status, "ready");
     assert.equal(initial.heartbeat.status, "ready");
     canonicalSourcePath = await realpath(join(root, "heartbeat-A.md"));
     assert.equal(initial.taskSource.path, canonicalSourcePath);
+    assert.equal(initial.taskSource.historyPath, canonicalSourcePath);
+    assert.equal(await readFile(canonicalSourcePath, "utf8"), original);
+    await assert.rejects(access(join(root, "heartbeat-A.taskhistory.md")), { code: "ENOENT" });
     assert.equal(
       await readFile(join(root, ".workspace", "codex-task-progress", ".gitignore"), "utf8"),
       "*\n",
     );
-    const before = await readFile(localEvents, "utf8");
+    const before = await taskEvents(root, "sticky-chat");
     const projectHistory = (await request("heartbeat-history", { limit: 1 })).result as {
       heartbeatHistory: { sourcePath: string | null };
     };
     assert.equal(projectHistory.heartbeatHistory.sourcePath, canonicalSourcePath);
     const firstAuditPage = (await request("history", { limit: 1 })).result as {
       history: {
-        wakes: { heading: string; rows: { num: number; state: string }[] }[];
+        wakes: {
+          heading: string;
+          sourcePath: string;
+          line: number;
+          rows: { num: number; state: string; line: number; sourcePath: string }[];
+        }[];
         nextCursor: string | null;
         total: number;
-        source: { path: string };
+        source: { path: string; historyPath: string };
       };
     };
     assert.equal(firstAuditPage.history.total, 2);
-    assert.equal(firstAuditPage.history.wakes[0]?.heading, "newest");
+    assert.match(firstAuditPage.history.wakes[0]?.heading ?? "", /2026-11-11T11:00:00Z wake/);
+    assert.equal(firstAuditPage.history.wakes[0]?.sourcePath, canonicalSourcePath);
     assert.deepEqual(firstAuditPage.history.wakes[0]?.rows[0], {
       num: 1,
       category: "task",
       state: "done",
-      line: 8,
+      line: firstAuditPage.history.wakes[0]?.line + 1,
+      sourcePath: canonicalSourcePath,
     });
     assert.equal(firstAuditPage.history.source.path, canonicalSourcePath);
+    assert.equal(firstAuditPage.history.source.historyPath, canonicalSourcePath);
+    const expectedNewestLine =
+      original.split("\n").findIndex((line) => line.includes("2026-11-11T11:00:00Z wake")) + 1;
+    assert.equal(firstAuditPage.history.wakes[0]?.line, expectedNewestLine);
+    assert.equal(await readFile(canonicalSourcePath, "utf8"), original);
+    await assert.rejects(access(join(root, "heartbeat-A.taskhistory.md")), { code: "ENOENT" });
     const firstAuditCursor = firstAuditPage.history.nextCursor;
     assert.ok(firstAuditCursor);
     const secondAuditPage = (await request("history", { cursor: firstAuditCursor, limit: 1 }))
       .result as {
       history: { wakes: { heading: string }[]; nextCursor: string | null };
     };
-    assert.equal(secondAuditPage.history.wakes[0]?.heading, "older");
+    assert.match(secondAuditPage.history.wakes[0]?.heading ?? "", /2026-11-11T10:00:00Z wake/);
     assert.equal(secondAuditPage.history.nextCursor, null);
     const refreshedAudit = (await request("history", {})).result as {
       history: { wakes: { heading: string }[]; total: number };
     };
     assert.equal(refreshedAudit.history.total, 2);
-    assert.equal(refreshedAudit.history.wakes[0]?.heading, "newest");
+    assert.match(refreshedAudit.history.wakes[0]?.heading ?? "", /2026-11-11T11:00:00Z wake/);
     await writeFile(join(root, "heartbeat-A.md"), original.replace("sticky-chat", "other-chat"));
     await writeFile(join(root, "heartbeat-C.md"), original);
     const stale = (await request("get", {})).result as {
@@ -670,8 +729,6 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.deepEqual(staleHistory.history.wakes, []);
     assert.equal(staleHistory.history.source.path, canonicalSourcePath);
     assert.ok(staleHistory.history.source.error);
-    const unresolvedWorkspaceRoot = join(await realpath(root), ".workspace", "codex-task-progress");
-    const unresolvedEventsPath = eventPath(unresolvedWorkspaceRoot, "unresolved-chat");
     await localStore.initialize("unresolved-chat", {
       requestId: "unresolved-local",
       expectedRevision: 0,
@@ -679,7 +736,7 @@ test("automatic heartbeat authority stays latched through association loss and r
       reason: "Preexisting ordinary task history",
       objectives: [{ id: "U1", title: "Local task" }],
     });
-    const unresolvedEvents = await readFile(unresolvedEventsPath, "utf8");
+    const unresolvedEvents = await taskEvents(root, "unresolved-chat");
     const unrelatedCandidate = original.replaceAll("sticky-chat", "another-chat");
     await writeFile(join(root, "heartbeat-unrelated.md"), unrelatedCandidate);
     const unresolvedSource = (await request("get", {}, "unresolved-chat")).result as {
@@ -698,8 +755,7 @@ test("automatic heartbeat authority stays latched through association loss and r
       reason: "Preexisting local task history",
       objectives: [{ id: "P1", title: "Local task" }],
     });
-    const pendingEventsPath = eventPath(unresolvedWorkspaceRoot, pendingThreadId);
-    const pendingEvents = await readFile(pendingEventsPath, "utf8");
+    const pendingEvents = await taskEvents(root, pendingThreadId);
     const ambiguousSource = original.replaceAll("sticky-chat", pendingThreadId);
     await writeFile(join(root, "heartbeat-pending-one.md"), ambiguousSource);
     await writeFile(join(root, "heartbeat-pending-two.md"), ambiguousSource);
@@ -718,8 +774,8 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.deepEqual(pendingHistory.history.wakes, []);
     assert.equal(pendingHistory.history.source.path, null);
     assert.ok(pendingHistory.history.source.error);
-    assert.equal(await readFile(unresolvedEventsPath, "utf8"), unresolvedEvents);
-    assert.equal(await readFile(pendingEventsPath, "utf8"), pendingEvents);
+    assert.deepEqual(await taskEvents(root, "unresolved-chat"), unresolvedEvents);
+    assert.deepEqual(await taskEvents(root, pendingThreadId), pendingEvents);
     await assert.rejects(
       request("initialize", {
         requestId: "parallel",
@@ -765,7 +821,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.equal(afterRestart.task, null);
     assert.equal(afterRestart.taskSource.status, "stale");
     assert.equal(afterRestart.taskSource.path, canonicalSourcePath);
-    assert.equal(await readFile(localEvents, "utf8"), before);
+    assert.deepEqual(await taskEvents(root, "sticky-chat"), before);
     await rm(join(root, ".workspace", "codex-task-progress", ".gitignore"));
     await writeFile(
       join(root, "heartbeat-fresh.md"),
@@ -779,12 +835,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.equal(fresh.task?.source?.readOnly, true);
     assert.equal(fresh.task?.source?.path, await realpath(join(root, "heartbeat-fresh.md")));
     assert.equal(fresh.taskSource.status, "ready");
-    await assert.rejects(
-      readFile(
-        eventPath(join(await realpath(root), ".workspace", "codex-task-progress"), "fresh-chat"),
-      ),
-      { code: "ENOENT" },
-    );
+    assert.deepEqual(await taskEvents(root, "fresh-chat"), []);
     assert.equal(
       await readFile(join(root, ".workspace", "codex-task-progress", ".gitignore"), "utf8"),
       "*\n",
@@ -927,8 +978,24 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     title: "Other work",
     objectives: [{ id: "O1", title: "Unrelated delivery" }],
   });
-  const legacyBytes = await readFile(eventPath(paths.root, "legacy-chat"), "utf8");
+  const legacyEvents = (await legacy.history("legacy-chat", { limit: 100 })).events;
   const expectedHistory = await legacy.history("legacy-chat", { limit: 100 });
+  const expectedTask = await legacy.get("legacy-chat");
+  const legacyBytes = `${[...legacyEvents]
+    .reverse()
+    .map((event) => JSON.stringify(event))
+    .join("\n")}\n`;
+  await writeFile(legacyEventPath(paths.root, "legacy-chat"), legacyBytes);
+  await rm(eventPath(paths.root, "legacy-chat"));
+  await rm(
+    join(
+      paths.root,
+      "tasks",
+      "v3",
+      createHash("sha256").update("legacy-chat").digest("hex"),
+      "heartbeat.md",
+    ),
+  );
   const helper = new GoalProgressHelper({
     paths,
     runtime: runtime(workspaceCwd),
@@ -966,13 +1033,17 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     assert.equal(migrated.storage.root, workspaceRoot);
     assert.equal(migrated.task.revision, 2);
     assert.equal(migrated.task.progress.percent, 100);
-    assert.deepEqual(migrated.task, await legacy.get("legacy-chat"));
+    assert.deepEqual(migrated.task, expectedTask);
     const history = (await request("history", { limit: 100 })).result as {
       history: TaskHistoryPage;
     };
     assert.deepEqual(history.history, expectedHistory);
-    assert.equal(await readFile(eventPath(workspaceRoot, "legacy-chat"), "utf8"), legacyBytes);
-    assert.equal(await readFile(eventPath(paths.root, "legacy-chat"), "utf8"), legacyBytes);
+    assert.ok(
+      (await readFile(eventPath(workspaceRoot, "legacy-chat"), "utf8")).includes(
+        '"requestId": "legacy-init"',
+      ),
+    );
+    assert.equal(await readFile(legacyEventPath(paths.root, "legacy-chat"), "utf8"), legacyBytes);
     await assert.rejects(access(eventPath(workspaceRoot, "unrelated-chat")), { code: "ENOENT" });
     await assert.rejects(access(join(forgedCwd, ".workspace", "codex-task-progress")), {
       code: "ENOENT",

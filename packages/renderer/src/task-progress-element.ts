@@ -28,6 +28,7 @@ export interface TaskPanelState {
   source?: {
     kind: "kit-heartbeat";
     path: string;
+    historyPath?: string;
     readOnly: true;
     contentHash?: string;
     error?: string;
@@ -80,6 +81,7 @@ export interface TaskPanelSourceHistory {
   source: {
     kind: "kit-heartbeat";
     path: string | null;
+    historyPath?: string;
     readOnly: true;
     contentHash?: string;
     error?: string;
@@ -104,6 +106,7 @@ export interface TaskPanelResponse {
   taskSource?: {
     status: "candidates" | "pending-selection" | "ready" | "stale" | "error";
     path?: string;
+    historyPath?: string;
     readOnly: true;
     contentHash?: string;
     error?: string;
@@ -431,6 +434,7 @@ export class TaskProgressElement extends LitElement {
       return {
         kind: "kit-heartbeat",
         path: taskSource.path,
+        ...(taskSource.historyPath ? { historyPath: taskSource.historyPath } : {}),
         readOnly: true,
         ...(contentHash !== undefined ? { contentHash } : {}),
         ...(taskSource.error ? { error: taskSource.error } : {}),
@@ -449,6 +453,7 @@ export class TaskProgressElement extends LitElement {
       return {
         kind: "kit-heartbeat",
         path: source.path ?? null,
+        ...(source.historyPath ? { historyPath: source.historyPath } : {}),
         readOnly: true,
         ...(source.contentHash !== undefined ? { contentHash: source.contentHash } : {}),
         ...(source.error ? { error: source.error } : {}),
@@ -620,17 +625,31 @@ export class TaskProgressElement extends LitElement {
           this.data.taskSource?.status === "pending-selection"
             ? (this.data.taskSource.error ?? "The bound ledger is unavailable or stale.")
             : null));
-      return html`${source?.path ? html`<p class="muted">${this.t("Read-only ledger", "只读台账")}: ${source.path}</p>` : nothing}${sourceHistory ? html`<p class="muted">${this.t("Ledger records", "台账记录")}: ${sourceHistory.total}</p>` : nothing}${
+      const historyPath = sourceHistory?.source.historyPath ?? source.historyPath;
+      const pairedHistoryPath = historyPath ?? null;
+      return html`${
+        source?.path
+          ? pairedHistoryPath
+            ? html`<p class="muted">${this.t("Read-only heartbeat source", "只读心跳来源")}: ${source.path}</p><p class="muted">${this.t("History ledger", "历史台账")}: ${pairedHistoryPath}</p>`
+            : html`<p class="muted">${this.t("Read-only ledger", "只读台账")}: ${source.path}</p>`
+          : nothing
+      }${sourceHistory ? html`<p class="muted">${this.t("Ledger records", "台账记录")}: ${sourceHistory.total}</p>` : nothing}${
         sourceError
           ? html`<p class="error">${this.t("Ledger history unavailable", "台账历史不可用")}: ${sourceError}</p>`
           : wakes.length
             ? wakes.map(
                 (wake) =>
-                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.line}</div>` : nothing}${
+                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.sourcePath ? `${String(wake.sourcePath)}:${wake.line}` : wake.line}</div>` : nothing}${
                     Array.isArray(wake.rows)
                       ? wake.rows.map((raw) => {
                           const row = raw as Record<string, unknown>;
-                          return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}</p>`;
+                          const sourcePath =
+                            typeof row.sourcePath === "string" ? row.sourcePath : wake.sourcePath;
+                          const location =
+                            typeof row.line === "number" && sourcePath
+                              ? html`<span> · ${this.t("Source", "来源位置")} ${String(sourcePath)}:${row.line}</span>`
+                              : nothing;
+                          return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}${location}</p>`;
                         })
                       : nothing
                   }</div>`,

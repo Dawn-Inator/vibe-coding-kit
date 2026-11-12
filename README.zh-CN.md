@@ -14,4 +14,10 @@
 
 完成口径：面板只统计已登记清单，不声称知道整个任务的剩余范围。执行状态独立观察；清单勾满但仍在执行、等待或状态未知时，不显示100%或满格进度条。空闲也不代表整体交付完成。模型仍需及时登记新增和收尾工作。
 
-0.4.3 将普通任务记录存到可信聊天工作目录的 `.workspace/codex-task-progress/`，使用 Kit 统一路径接口。普通聊天 History 的权威事件在 `tasks/v3/<thread-sha256>/events.jsonl`；同目录 `snapshot.json` 是可重建快照，不是权威历史。心跳绑定与派生观察缓存按聊天隔离在 `sessions/<thread-sha256>/heartbeat/`，不构成原始心跳台账。原始台账仍由项目配置绑定的路径作为权威来源（例如 `.workspace/task/<session>/heartbeat.md`），插件只读、不迁移。若关联任务来源生效，History 直接读取其绑定台账中的 wake 记录，不另写一份时间线；项目 Heartbeat 卡片可以展示不同来源。旧任务记录按聊天复制迁移并保留原文件，冲突不会静默覆盖。应用支持目录中的 `workspace-storage-index.json` 只保存线程与工作区路径，用于工作目录变化时定位任务历史，不保存时间线或心跳台账。后台程序、通信文件和日志仍位于系统目录。
+普通任务记录使用可信聊天 cwd 对应的 `.workspace/codex-task-progress/`。Kit 按聊天将完整任务事件、Heartbeat 来源绑定和迁移标记写入 `tasks/v3/<thread-sha256>/taskhistory.md`，`heartbeat.md` 是最新状态的可读投影。可重建读取缓存放在工作区 `.tmp/codex-task-progress/<thread-sha256>/`，删除缓存不会丢失任务历史或来源关系。
+
+项目 Heartbeat 台账在完成 writer-owned 切换后以当前头部 `heartbeat.md` 加同目录 `taskhistory.md` 保存完整 wake 历史；自定义头部例如 `release.md` 使用 `release.taskhistory.md`。插件通过 Kit 只读 API 展示和校验，绝不会因 UI 展示或普通读取自动迁移仍在使用中的旧单文件台账；`readProjectHeartbeat` 的兼容参数 `migrate` 也不会执行迁移。未明确 quiesce 并由 writer 接管之前，旧台账继续保持单文件，wake 的来源行指向原始文件。只有负责写入的 owner 在显式取得所有权后，才能调用 Kit 的锁定、版本检查切换 API；并发追加或冲突必须 fail closed，原始文件与副本均保留。
+
+显式切换前，writer 先读取当前版本，再传入 ownership assertion 和刚读取的 hash：`migrateHeartbeatLedgerPair({ root, path, legacyWritersQuiescent: true, expectedContentHash: observed.contentHash })`。`legacyWritersQuiescent` 是调用方断言，要求整个操作期间所有直接写旧文件的 writer 都已停止；Kit 跨进程锁只协调 Kit writers。如果 history-first 写入中断，用 `readHeartbeatLedgerPairVersion` 读取原始版本，再将 hash 和相同 assertion 传给 `recoverHeartbeatLedgerPair`。恢复过程会校验备份和旧/计划 head，不能手工修复半成品文件。
+
+Helper 自有的普通任务历史、来源关系及旧 workspace 路由兼容迁移仍可在首次访问时完成，因为 Helper 拥有这些记录。旧 `events.jsonl`、快照、绑定 JSON 和 `workspace-storage-index.json` 迁移后保留为备份。Kit 将跨 cwd 查找所需的持久路由记录在 Helper app root 的 `task-routing/`；它不是缓存。工作目录变化保留任务历史，但不会复制旧项目的 Heartbeat 来源绑定。后台程序、通信文件和日志仍位于系统目录。

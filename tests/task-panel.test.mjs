@@ -531,6 +531,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         await panel.getByRole("tab", { name: "历史", exact: true }).click();
         await panel.getByText("wake newest", { exact: true }).waitFor();
         assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
         assert.match(await panel.locator("section.panel").innerText(), /Feature · active/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
@@ -563,6 +564,103 @@ test("ordinary chat task panel browser flows", async (t) => {
         await panel.getByRole("button", { name: "刷新台账历史", exact: true }).click();
         await panel.getByText("wake refreshed", { exact: true }).waitFor();
         assert.equal(await panel.getByText("wake older", { exact: true }).count(), 0);
+        await context.close();
+      },
+    );
+    await t.test(
+      "paired Kit history displays its physical ledger and row locations while retaining HEAD identity",
+      async () => {
+        const { context, page, panel } = await open();
+        const headPath = "/repo/.workspace/task/session/heartbeat.md";
+        const historyPath = "/repo/.workspace/task/session/taskhistory.md";
+        await page.evaluate(
+          ({ value, headPath, historyPath, projectHeartbeat }) => {
+            const source = {
+              kind: "kit-heartbeat",
+              path: headPath,
+              historyPath,
+              readOnly: true,
+              contentHash: "head-hash-a",
+            };
+            window.fixture.task = { ...value, source };
+            window.fixture.taskSource = {
+              status: "ready",
+              path: headPath,
+              historyPath,
+              readOnly: true,
+              contentHash: "head-hash-a",
+            };
+            window.fixture.heartbeat = {
+              ...projectHeartbeat,
+              status: "ready",
+              sourcePath: "/repo/.workspace/project/heartbeat.md",
+            };
+            window.fixture.history = {
+              events: [],
+              wakes: [
+                {
+                  heading: "paired task-history wake",
+                  sourcePath: historyPath,
+                  line: 24,
+                  rows: [
+                    {
+                      category: "Review",
+                      state: "complete",
+                      sourcePath: historyPath,
+                      line: 25,
+                    },
+                  ],
+                },
+              ],
+              nextCursor: null,
+              total: 1,
+              source,
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: task, headPath, historyPath, projectHeartbeat: heartbeat },
+        );
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText("paired task-history wake", { exact: true }).waitFor();
+        const scroll = panel.locator(".scroll");
+        assert.match(await scroll.innerText(), /只读心跳来源.*heartbeat\.md/s);
+        assert.match(await scroll.innerText(), /历史台账.*taskhistory\.md/s);
+        assert.match(await scroll.innerText(), /taskhistory\.md:24/);
+        assert.match(await scroll.innerText(), /taskhistory\.md:25/);
+        await mkdir(".playwright-img", { recursive: true });
+        await panel.screenshot({ path: ".playwright-img/task-history-paired-preview.png" });
+
+        const historyCallsBeforeHeartbeatChange = await page.evaluate(
+          () => window.fixture.calls.filter((call) => call.method === "history").length,
+        );
+        await page.evaluate(() => {
+          window.fixture.heartbeat.sourcePath = "/repo/.workspace/project/other-heartbeat.md";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await scroll.innerText(), /paired task-history wake/);
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          ),
+          historyCallsBeforeHeartbeatChange,
+          "project heartbeat identity does not alter the task's HEAD-bound history context",
+        );
+
+        await page.evaluate(
+          ({ headPath, historyPath }) => {
+            window.fixture.task.source = {
+              ...window.fixture.task.source,
+              path: "/repo/.workspace/task/other-session/heartbeat.md",
+            };
+            window.fixture.history.source.path = headPath;
+            window.fixture.history.source.historyPath = historyPath;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { headPath, historyPath },
+        );
+        await scroll.getByText(/did not match the bound source/).waitFor();
+        assert.doesNotMatch(await scroll.innerText(), /paired task-history wake/);
         await context.close();
       },
     );

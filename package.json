@@ -29,7 +29,7 @@
     "@lucide/icons": "^1.37.0",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "lit": "^3.3.3",
-    "vibe-coding-kit": "github:Dawn-Inator/vibe-coding-kit#5ce3ff484aee635875b221550ea461eb3679a937",
+    "vibe-coding-kit": "github:Dawn-Inator/vibe-coding-kit#f624accaa14b01b7691379a0a7f3b3c4a79501d0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

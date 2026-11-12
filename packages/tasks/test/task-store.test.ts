@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -199,9 +199,9 @@ test("rescope preserves removed entries as cancelled and reopening changes the c
   assert.equal(reopened.state.progress.total, 2);
 });
 
-test("restart reconstructs missing/corrupt snapshot and repairs incomplete log tail", async () => {
+test("restart rebuilds a missing Markdown head while preserving legacy backups and rejecting corruption", async () => {
   const { store, root } = await setup();
-  const initial = await store.initialize("thread", {
+  await store.initialize("thread", {
     requestId: "init",
     expectedRevision: 0,
     reason: "Task",
@@ -209,18 +209,58 @@ test("restart reconstructs missing/corrupt snapshot and repairs incomplete log t
     objectives,
   });
   const directory = join(root, "tasks", "v3", createHash("sha256").update("thread").digest("hex"));
-  await writeFile(join(directory, "snapshot.json"), "broken");
-  await appendFile(join(directory, "events.jsonl"), '{"truncated":');
+  const updated = await store.update("thread", {
+    requestId: "start-build",
+    expectedRevision: 1,
+    reason: "Begin implementation",
+    changes: [{ targetId: "C1.1", status: "active" }],
+  });
+  const historyPath = join(directory, "taskhistory.md");
+  const headPath = join(directory, "heartbeat.md");
+  const historyBefore = await readFile(historyPath, "utf8");
+  const legacyEventsPath = join(directory, "events.jsonl");
+  const legacySnapshotPath = join(directory, "snapshot.json");
+  const legacyEvents = `${(await store.history("thread", { limit: 100 })).events
+    .reverse()
+    .map((event) => JSON.stringify(event))
+    .join("\n")}\n`;
+  const legacySnapshot = '{"legacyBackup":"preserve verbatim"}\n';
+  await writeFile(legacyEventsPath, legacyEvents);
+  await writeFile(legacySnapshotPath, legacySnapshot);
+  const legacyEventsBefore = await readFile(legacyEventsPath, "utf8");
+  const legacySnapshotBefore = await readFile(legacySnapshotPath, "utf8");
+
+  await rm(headPath);
   const restored = await new TaskStore(root).get("thread");
-  assert.deepEqual(restored, initial.state);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "snapshot.json"), "utf8")),
-    initial.state,
+  assert.deepEqual(restored, updated.state);
+  assert.ok((await readFile(headPath, "utf8")).includes("json task-heartbeat-v1"));
+  assert.equal(await readFile(historyPath, "utf8"), historyBefore);
+  assert.equal(await readFile(legacyEventsPath, "utf8"), legacyEventsBefore);
+  assert.equal(await readFile(legacySnapshotPath, "utf8"), legacySnapshotBefore);
+
+  const corruptHead = "# damaged managed task head\n";
+  await writeFile(headPath, corruptHead);
+  await assert.rejects(new TaskStore(root).get("thread"), hasCode("TASK_HISTORY_CORRUPT"));
+  assert.equal(await readFile(headPath, "utf8"), corruptHead);
+  assert.equal(await readFile(historyPath, "utf8"), historyBefore);
+  assert.equal(await readFile(legacyEventsPath, "utf8"), legacyEventsBefore);
+  assert.equal(await readFile(legacySnapshotPath, "utf8"), legacySnapshotBefore);
+
+  const cleanDirectory = join(
+    root,
+    "tasks",
+    "v3",
+    createHash("sha256").update("clean-chat").digest("hex"),
   );
-  assert.equal(
-    (await readFile(join(directory, "events.jsonl"), "utf8")).split("\n").filter(Boolean).length,
-    1,
-  );
+  await store.initialize("clean-chat", {
+    requestId: "clean-init",
+    expectedRevision: 0,
+    reason: "No legacy formats for new chats",
+    title: "Clean task",
+    objectives,
+  });
+  await assert.rejects(access(join(cleanDirectory, "events.jsonl")), { code: "ENOENT" });
+  await assert.rejects(access(join(cleanDirectory, "snapshot.json")), { code: "ENOENT" });
 });
 
 test("thread histories stay isolated and invalid pagination is rejected", async () => {
