@@ -319,6 +319,14 @@ test("projected evidence uses only available source location and attribution", (
 				evidence: "checked claim",
 				source: "report:r2",
 				line: 7,
+				lineNumber: 8,
+			},
+			{
+				id: "I3",
+				item: "legacy line number",
+				status: "done",
+				evidence: "legacy claim",
+				lineNumber: 9,
 			},
 		],
 	};
@@ -336,6 +344,11 @@ test("projected evidence uses only available source location and attribution", (
 	assert.equal(
 		state.objectives[1].evidence[0].reference,
 		`${PROJECT_LEDGER}#L7; source=report:r2`,
+	);
+	assert.equal(state.objectives[2].evidence[0].verification, "reported");
+	assert.equal(
+		state.objectives[2].evidence[0].reference,
+		`${PROJECT_LEDGER}#L9`,
 	);
 });
 

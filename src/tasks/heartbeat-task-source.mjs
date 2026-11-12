@@ -253,8 +253,10 @@ function mapStatus(raw) {
 function rowEvidence(row, path) {
 	const summary = String(row.evidence ?? "").trim();
 	if (!summary) return [];
-	const location =
-		Number.isInteger(row.line) && row.line > 0 ? `${path}#L${row.line}` : path;
+	const line = [row.line, row.lineNumber].find(
+		(value) => Number.isInteger(value) && value > 0,
+	);
+	const location = line === undefined ? path : `${path}#L${line}`;
 	const source = String(row.source ?? "").trim();
 	return [
 		{
