@@ -247,8 +247,10 @@ export function validateStaticFrontendDelivery(value) {
     }
     if (!['public', 'private'].includes(artifact.originAccess)) {
       add(`${base}.artifact.originAccess`, 'value.enum', 'originAccess must be public or private.');
-    } else if (artifact.originAccess === 'public' && target.publicOriginApproved !== true) {
-      add(`${base}.publicOriginApproved`, 'access.public-origin-approval', 'A publicly accessible origin requires an explicit project-level approval declaration.');
+    } else if (['private-template', 'private-archive', 'live-pointer'].includes(kind) && artifact.originAccess !== 'private') {
+      add(`${base}.artifact.originAccess`, 'access.private-origin-required', `${kind} must use a private origin.`);
+    } else if (PUBLIC_KINDS.has(kind) && artifact.originAccess === 'public' && target.publicOriginApproved !== true) {
+      add(`${base}.publicOriginApproved`, 'access.public-origin-approval', 'A public artifact using a publicly accessible origin requires an explicit project-level approval declaration.');
     }
 
     if (typeof artifact.cacheControl !== 'string') {

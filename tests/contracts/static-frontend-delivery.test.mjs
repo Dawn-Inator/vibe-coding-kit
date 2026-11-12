@@ -141,6 +141,18 @@ test('supports a public CDN viewer with a private origin and requires explicit a
   assert.equal(validateStaticFrontendDelivery(config).ok, true);
 });
 
+test('private templates, archives, and live pointers cannot use a public origin even with approval', () => {
+  for (const index of [1, 3, 2]) {
+    const config = valid();
+    config.targets[index].artifact.originAccess = 'public';
+    config.targets[index].publicOriginApproved = true;
+    assert.ok(
+      validateStaticFrontendDelivery(config).errors.some(({ code }) => code === 'access.private-origin-required'),
+      `private artifact at target ${index} must reject a public origin`,
+    );
+  }
+});
+
 test('accepts canonical SHA-bound archives and rejects filenames bound to another revision', () => {
   const config = valid();
   config.targets[3].artifact.keySegments[2] = `${revision}.tar.gz.sha256`;
