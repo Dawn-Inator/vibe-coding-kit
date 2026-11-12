@@ -396,19 +396,23 @@ export class HeartbeatService {
       ) as { view?: HeartbeatView };
       if (saved.view?.status === "ready" && saved.view.sourcePath && saved.view.contentHash)
         this.#last.set(threadId, compactView(saved.view));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    } catch {
+      // Cache corruption and unavailable cache paths are misses, never source authority.
     }
     this.#restored.add(threadId);
   }
 
   async #cacheSnapshot(threadId: string, view: HeartbeatView): Promise<void> {
-    await ensurePrivateDirectory(this.#cacheRoot);
-    await atomicCreateFile(resolve(this.#cacheRoot, ".gitignore"), "*\n");
-    await atomicWriteFile(
-      resolve(this.#cacheRoot, `${hash(threadId)}.snapshot.json`),
-      JSON.stringify({ view }),
-    );
+    try {
+      await ensurePrivateDirectory(this.#cacheRoot);
+      await atomicCreateFile(resolve(this.#cacheRoot, ".gitignore"), "*\n");
+      await atomicWriteFile(
+        resolve(this.#cacheRoot, `${hash(threadId)}.snapshot.json`),
+        JSON.stringify({ view }),
+      );
+    } catch {
+      // Persisted task/source records remain authoritative if this rebuildable cache is unwritable.
+    }
   }
 
   #now(): Date {
@@ -638,7 +642,18 @@ export class HeartbeatService {
       const { discoverHeartbeatLedgerSources } = await loadHeartbeatTaskSourceApi();
       const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
       const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
-      const discoveryLedgerPath = config.heartbeat?.ledgerPath;
+      const relations = await this.#relations();
+      const previous = await relations.get(threadId);
+      let storedBindingPath: string | undefined;
+      if (previous.found && previous.binding) {
+        try {
+          const canonicalBinding = await realpath(previous.binding.path);
+          if (within(root, canonicalBinding)) storedBindingPath = canonicalBinding;
+        } catch {
+          // Leave stale/missing path diagnosis to Kit's relation resolver below.
+        }
+      }
+      const discoveryLedgerPath = storedBindingPath ?? config.heartbeat?.ledgerPath;
       const discovery = await discoverHeartbeatLedgerSources({
         root,
         threadId,
@@ -647,7 +662,7 @@ export class HeartbeatService {
         ...(maxDepth === undefined ? {} : { maxDepth }),
       });
       const candidates = discovery.candidates;
-      const relation = await (await this.#relations()).resolve(threadId, {
+      const relation = await relations.resolve(threadId, {
         projectRoot: root,
         discovery,
       });

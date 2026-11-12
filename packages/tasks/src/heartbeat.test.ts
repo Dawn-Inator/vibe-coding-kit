@@ -480,6 +480,18 @@ test("source relation survives cache deletion and restart without JSON bindings 
     const historyPath = resolve(f.root, "data/tasks/v3", threadKey("chat-A"), "taskhistory.md");
     assert.match(await readFile(historyPath, "utf8"), /source-binding/);
     await rm(resolve(f.root, "data/.tmpcache"), { recursive: true, force: true });
+    const recovered = new HeartbeatService(resolve(f.root, "data"), {
+      kitPath: f.kitPath,
+      refreshMs: 0,
+    });
+    const recoveredView = await recovered.view("chat-A", f.project);
+    assert.equal(recoveredView?.status, "ready");
+    assert.equal((await recovered.taskProjection("chat-A", f.project)).status, "ready");
+    const recoveredHistory = await recovered.history("chat-A", f.project);
+    assert.equal(recoveredHistory.total, 1);
+    assert.equal(recoveredHistory.sourcePath, await realpath(f.source));
+    recovered.close();
+
     await rm(f.source);
     const reopened = new HeartbeatService(resolve(f.root, "data"), {
       kitPath: f.kitPath,
@@ -497,6 +509,109 @@ test("source relation survives cache deletion and restart without JSON bindings 
     );
     assert.match(await readFile(historyPath, "utf8"), /source-binding/);
   } finally {
+    await f.close();
+  }
+});
+
+test("corrupt or unavailable heartbeat cache never blocks Kit source, task, or history reads", async () => {
+  const f = await fixture();
+  const cacheRoot = resolve(f.root, "heartbeat-cache");
+  const service = new HeartbeatService(resolve(f.root, "cache-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    cacheRoot,
+    refreshMs: 0,
+  });
+  const services: HeartbeatService[] = [service];
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    assert.equal((await service.view("chat-A", f.project))?.status, "ready");
+    const snapshotPath = resolve(cacheRoot, `${threadKey("chat-A")}.snapshot.json`);
+    await writeFile(snapshotPath, '{"view":');
+
+    const corruptCache = new HeartbeatService(resolve(f.root, "cache-data"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      cacheRoot,
+      refreshMs: 0,
+    });
+    services.push(corruptCache);
+    assert.equal((await corruptCache.view("chat-A", f.project))?.status, "ready");
+    assert.equal((await corruptCache.taskProjection("chat-A", f.project)).status, "ready");
+    assert.equal((await corruptCache.history("chat-A", f.project)).total, 1);
+    assert.equal(JSON.parse(await readFile(snapshotPath, "utf8")).view.status, "ready");
+
+    const blockedCacheRoot = resolve(f.root, "cache-root-is-a-file");
+    await writeFile(blockedCacheRoot, "cache I/O failure");
+    const unavailableCache = new HeartbeatService(resolve(f.root, "cache-data"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      cacheRoot: blockedCacheRoot,
+      refreshMs: 0,
+    });
+    services.push(unavailableCache);
+    assert.equal((await unavailableCache.view("chat-A", f.project))?.status, "ready");
+    assert.equal((await unavailableCache.taskProjection("chat-A", f.project)).status, "ready");
+    const unavailableHistory = await unavailableCache.history("chat-A", f.project);
+    assert.equal(unavailableHistory.total, 1);
+    assert.equal(unavailableHistory.sourcePath, await realpath(f.source));
+    assert.equal(await readFile(blockedCacheRoot, "utf8"), "cache I/O failure");
+
+    const relationHistory = resolve(
+      f.root,
+      "cache-data/tasks/v3",
+      threadKey("chat-A"),
+      "taskhistory.md",
+    );
+    const validRelationHistory = await readFile(relationHistory, "utf8");
+    const corruptRelationHistory = "# damaged authoritative relation history\n";
+    await writeFile(relationHistory, corruptRelationHistory);
+    const authoritativeError = new HeartbeatService(resolve(f.root, "cache-data"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      cacheRoot,
+      refreshMs: 0,
+    });
+    services.push(authoritativeError);
+    const failedClosed = await authoritativeError.view("chat-A", f.project);
+    assert.equal(failedClosed?.status, "stale");
+    assert.match(failedClosed?.error ?? "", /Corrupt Markdown records/);
+    assert.equal(await readFile(relationHistory, "utf8"), corruptRelationHistory);
+    await writeFile(relationHistory, validRelationHistory);
+  } finally {
+    for (const current of services) current.close();
+    await f.close();
+  }
+});
+
+test("a stored source remains readable when discovery budgets hide it from the project scan", async () => {
+  const f = await fixture();
+  const nestedSource = resolve(f.project, ".workspace", "deep", "heartbeat.md");
+  const bounded = new HeartbeatService(resolve(f.root, "data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    maxFiles: 1,
+    maxDepth: 0,
+    refreshMs: 0,
+  });
+  try {
+    await mkdir(resolve(f.project, ".workspace", "deep"), { recursive: true });
+    await writeFile(nestedSource, ledger("chat-A"));
+    const initial = await f.service.view("chat-A", f.project);
+    assert.equal(initial?.status, "ready");
+    assert.equal(initial?.sourcePath, await realpath(nestedSource));
+
+    const current = await bounded.view("chat-A", f.project);
+    assert.equal(current?.status, "ready");
+    assert.equal(current?.sourcePath, await realpath(nestedSource));
+    assert.equal(current?.discoveryComplete, false);
+    assert.deepEqual(current?.discoveryLimits, { maxFiles: 1, maxDepth: 0 });
+    assert.equal((await bounded.taskProjection("chat-A", f.project)).status, "ready");
+    const page = await bounded.history("chat-A", f.project);
+    assert.equal(page.sourcePath, await realpath(nestedSource));
+    assert.equal(page.total, 1);
+  } finally {
+    bounded.close();
     await f.close();
   }
 });
