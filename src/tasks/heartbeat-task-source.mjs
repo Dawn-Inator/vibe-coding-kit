@@ -111,11 +111,14 @@ export async function discoverHeartbeatLedgers({
 			const original = await readFile(path, "utf8");
 			const text = withoutFencedExamples(original);
 			const report = inspectHeartbeatLedger(text, { mode: "items" });
+			const hasDatedWake = report.wakes.some(
+				(wake) => typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
+			);
 			const named =
 				/heartbeat/i.test(basename(path)) ||
 				(explicitRealPath && path === explicitRealPath);
 			// Discovery uses parsed API output as a signal, never a second ledger-format validator.
-			if (!report.wakeCount && !(named && report.itemCount)) return;
+			if (!hasDatedWake && !(report.wakeCount === 0 && named && report.itemCount)) return;
 			candidates.set(path, {
 				path,
 				associated: isAssociatedThread(text, threadId),

@@ -59,6 +59,11 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	);
 	const todoLedger = join(root, ".todolist", "heartbeat.md");
 	const fenced = join(root, "docs", "example.md");
+	const invalidWake = join(root, "docs", "invalid-wake.md");
+	const markerOnly = join(root, "docs", "marker-only.md");
+	const fencedWake = join(root, "docs", "fenced-wake.md");
+	const legacy8 = join(root, "docs", "legacy-8.md");
+	const legacy10 = join(root, "docs", "legacy-10.md");
 	writeFileSync(
 		workspaceLedger,
 		`${ledger([["I1", "report:r1", "check status", "done", "`receipt`", "[]"]])}\nthread: ${THREAD}\n`,
@@ -71,6 +76,11 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 		fenced,
 		`\`\`\`md\n${ledger([["I3", "report:r3", THREAD, "done", "`receipt`", "[]"]])}\n\`\`\`\n`,
 	);
+	writeFileSync(invalidWake, "# API\ncontract: heartbeat/v2\n## not-a-time wake (10-row ledger)\n");
+	writeFileSync(markerOnly, "# Example\ncontract: heartbeat/v2\n");
+	writeFileSync(fencedWake, "```md\n## 2026-01-01T10:00Z wake (10-row ledger)\n```\n");
+	writeFileSync(legacy8, "## 2026-01-01T10:00Z wake (8-row ledger)\n");
+	writeFileSync(legacy10, "## 2026-01-01T10:00Z wake (10-row ledger)\n");
 
 	const candidates = await discoverHeartbeatLedgers({
 		root,
@@ -79,9 +89,11 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	});
 	const canonicalTodo = realpathSync(todoLedger);
 	const canonicalWorkspace = realpathSync(workspaceLedger);
+	const canonicalLegacy8 = realpathSync(legacy8);
+	const canonicalLegacy10 = realpathSync(legacy10);
 	assert.deepEqual(
 		candidates.map((candidate) => candidate.path),
-		[canonicalTodo, canonicalWorkspace].sort(),
+		[canonicalTodo, canonicalWorkspace, canonicalLegacy8, canonicalLegacy10].sort(),
 	);
 	assert.equal(
 		candidates.find((candidate) => candidate.path === canonicalWorkspace)
