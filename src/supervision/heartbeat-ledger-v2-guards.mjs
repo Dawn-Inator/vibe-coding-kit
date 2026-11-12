@@ -1,16 +1,18 @@
 // Reusable heartbeat guidance guards promoted from LingoFly. These checks report ledger evidence;
 // none authorizes an action, terminates a worker, or blocks work by itself.
-import { parseRowVerdicts } from './heartbeat-ledger-splittable.mjs';
+import { normalizeResplitId, parseRowVerdicts } from './heartbeat-ledger-splittable.mjs';
 
 const error = (rule, message) => ({ severity: 'error', rule, message });
 const advisory = (rule, message) => ({ severity: 'advisory', rule, message });
-const normId = (id) => String(id ?? '').replace(/-/g, '').toUpperCase();
+const normId = (id, allowGenericIds = false) => normalizeResplitId(id, { allowGenericIds });
+const isV2Wake = (wake) => wake.sectionLines.some((entry) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(entry));
 const norm = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 const oneB = (wake) => wake.rows.find((row) => row.num === 1)?.state.match(/\(1b\)\s*([\s\S]*)$/i)?.[1]?.trim() ?? '';
 const spans = (text) => [...String(text ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1].trim());
 const reasonKey = (detail) => String(detail).replace(/`[^`]+`/g, '').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
 
 function splitVerdicts(wake) {
+  const allowGenericIds = isV2Wake(wake);
   const line = wake.sectionLines.find((entry) => /^\s*re-split:/i.test(entry));
   if (!line) return [];
   const start = line.search(/rows\s*\(/i);
@@ -26,8 +28,8 @@ function splitVerdicts(wake) {
   }
   if (end < 0) return [];
   const groupStart = opening + 1;
-  return parseRowVerdicts(line.slice(groupStart, end)).filter((v) => v.verdict === 'cannot-split' && v.id).map((v, index) => ({
-    id: normId(v.id), detail: v.detail, key: reasonKey(v.detail), spans: spans(v.detail), proof: v.proof,
+  return parseRowVerdicts(line.slice(groupStart, end), { allowGenericIds }).filter((v) => v.verdict === 'cannot-split' && v.id).map((v, index) => ({
+    id: normId(v.id, allowGenericIds), allowGenericIds, detail: v.detail, key: reasonKey(v.detail), spans: spans(v.detail), proof: v.proof,
     label: line.slice(groupStart, end).split(';')[index]?.trim().split(/[:=\s]/)[0] ?? v.id,
   }));
 }
@@ -40,7 +42,7 @@ function staleSplit(wakes, items) {
   for (const current of verdicts[2]) {
     const before = verdicts.slice(0, 2).map((set) => set.find((v) => v.id === current.id));
     if (before.some((v) => !v || v.key !== current.key)) continue;
-    const isOwnerItem = items.some((row) => normId(row.id) === current.id && /^owner\s*(?:←|<-)/i.test(row.status));
+    const isOwnerItem = items.some((row) => normId(row.id, current.allowGenericIds) === current.id && /^owner\s*(?:←|<-)/i.test(row.status));
     if (current.proof === 'owner-gated' && isOwnerItem) continue;
     const seen = new Set(before.flatMap((v) => v.spans));
     if (current.spans.some((span) => !seen.has(span))) continue;
@@ -89,8 +91,8 @@ function standingAuth(items, wake) {
   for (const row of wake.rows) if (/等\s*Owner|Owner\s*当轮|owner-gated/i.test(row.state)) addWait(`R${row.num}`, row.state);
   for (const verdict of splitVerdicts(wake)) {
     if (!/owner-gated/i.test(verdict.detail)) continue;
-    const wakeRow = wake.rows.find((row) => normId(`r${row.num}`) === verdict.id);
-    const item = items.find((row) => normId(row.id) === verdict.id);
+    const wakeRow = wake.rows.find((row) => normId(`r${row.num}`, verdict.allowGenericIds) === verdict.id);
+    const item = items.find((row) => normId(row.id, verdict.allowGenericIds) === verdict.id);
     addWait(verdict.id, [verdict.detail, wakeRow?.state, item?.item, item?.status].filter(Boolean).join(' '));
   }
   return [...waitMap].flatMap(([label, text]) => {

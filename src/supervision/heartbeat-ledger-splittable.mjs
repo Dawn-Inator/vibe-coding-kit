@@ -34,10 +34,13 @@ const LEGACY_ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
 const V2_ENTRY_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*[:=]?\s*(\S.*)$/i;
 const TOKEN_RE = /\bsplittable:\s*(\d+)\s*\/\s*(\d+)/i;
 
-const normId = (id) => {
+export function normalizeResplitId(id, { allowGenericIds = false } = {}) {
   const value = String(id);
+  // `allowGenericIds` controls which IDs the parser accepts; normalization itself preserves
+  // generic punctuation in both modes so an ID such as A-B never aliases AB.
+  void allowGenericIds;
   return /^I-?\d+$/i.test(value) ? value.replace('-', '').toUpperCase() : value.toUpperCase();
-};
+}
 const err = (rule, message) => ({ severity: 'error', rule, message });
 
 // `name(` ... matching `)`, parentheses inside the group allowed (reasons often cite `(why)`).
@@ -62,7 +65,7 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
       const entry = part.match(allowGenericIds ? V2_ENTRY_RE : LEGACY_ENTRY_RE);
       if (!entry) return { id: null, verdict: 'invalid', detail: part, proof: null };
       const body = entry[2].trim();
-      const id = normId(entry[1]);
+      const id = normalizeResplitId(entry[1], { allowGenericIds });
       if (SPLIT_RE.test(body)) return { id, verdict: 'dispatched', detail: body, proof: null };
       const continuing = body.match(CONTINUING_RE);
       if (allowContinuing && continuing) {
@@ -86,11 +89,11 @@ export function openRows({ cells = [], itemRows = [] }) {
   const out = [];
   for (const cell of cells) {
     const m = String(cell.state ?? '').trim().match(OPEN_RE);
-    if (m) out.push({ id: normId(`r${cell.key}`), label: `r${cell.key}`, kind: m[1].toLowerCase(), reason: m[2].trim() });
+    if (m) out.push({ id: normalizeResplitId(`r${cell.key}`), label: `r${cell.key}`, kind: m[1].toLowerCase(), reason: m[2].trim() });
   }
   for (const row of itemRows) {
     const m = String(row.status ?? '').trim().match(ITEM_BLOCKED_RE);
-    if (m && row.id) out.push({ id: normId(row.id), label: String(row.id), kind: 'blocked', reason: m[1].trim() });
+    if (m && row.id) out.push({ id: normalizeResplitId(row.id), label: String(row.id), kind: 'blocked', reason: m[1].trim() });
   }
   return out;
 }
@@ -112,14 +115,14 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
 
   if (requireAudit) {
     const knownRows = new Set([
-      ...(cells ?? []).map((cell) => normId(`r${cell.key}`)),
-      ...(itemRows ?? []).map((row) => row.id ? normId(row.id) : null).filter(Boolean),
+      ...(cells ?? []).map((cell) => normalizeResplitId(`r${cell.key}`, { allowGenericIds: true })),
+      ...(itemRows ?? []).map((row) => row.id ? normalizeResplitId(row.id, { allowGenericIds: true }) : null).filter(Boolean),
     ]);
     const activeRows = new Set([
-      ...(cells ?? []).filter((cell) => /^(?:in-flight|dispatched)\b/i.test(String(cell.state ?? '').trim())).map((cell) => normId(`r${cell.key}`)),
-      ...(itemRows ?? []).filter((row) => /^dispatched\b/i.test(String(row.status ?? '').trim())).map((row) => normId(row.id)),
+      ...(cells ?? []).filter((cell) => /^(?:in-flight|dispatched)\b/i.test(String(cell.state ?? '').trim())).map((cell) => normalizeResplitId(`r${cell.key}`, { allowGenericIds: true })),
+      ...(itemRows ?? []).filter((row) => /^dispatched\b/i.test(String(row.status ?? '').trim())).map((row) => normalizeResplitId(row.id, { allowGenericIds: true })),
     ]);
-    const trackingRows = new Set((itemRows ?? []).filter((row) => /^tracking\b/i.test(String(row.status ?? '').trim())).map((row) => normId(row.id)));
+    const trackingRows = new Set((itemRows ?? []).filter((row) => /^tracking\b/i.test(String(row.status ?? '').trim())).map((row) => normalizeResplitId(row.id, { allowGenericIds: true })));
     const seenIds = new Set();
     for (const verdict of verdicts) {
       if (!verdict.id) continue;

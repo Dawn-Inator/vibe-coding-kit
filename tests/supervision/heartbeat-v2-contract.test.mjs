@@ -604,6 +604,43 @@ test('dispatched owner, repository and worktree placeholders fail even when the 
   }
 });
 
+test('completed legacy Items may omit dispatch metadata while unfinished legacy rows remain strict', () => {
+  const terminal = item({
+    id: 'I1', source: 'report:legacy', item: 'historical migration task',
+    status: 'done -- terminal oracle verified by `git show abc1234`',
+    evidence: 'terminal oracle verified by `git show abc1234`',
+    owner: '', repository: '', worktree: '', mode: '', writeSet: '', dispatchRef: '',
+  });
+  const leaf = item({
+    id: 'I2', source: 'report:leaf', item: 'implement current unit', status: 'dispatched agent:leaf',
+    evidence: '-', owner: 'agent:leaf', repository: 'repo-a', worktree: 'worktrees/leaf',
+    mode: 'write', writeSet: '["src/leaf.mjs"]', dispatchRef: 'receipts/leaf.json',
+  });
+  const doneLegacy = fixture(v2({
+    items: [terminal, leaf],
+    decompositionRows: [
+      '| I1 | retain terminal verification | done | - | terminal oracle verified |',
+      '| I2 | implement current unit | dispatched | agent:leaf | receipts/leaf.json |',
+    ],
+  }), { 'receipts/leaf.json': accepted('agent:leaf') });
+  assert.deepEqual(latestRules(doneLegacy.text, { ledgerPath: doneLegacy.ledgerPath }), [], 'verified completion does not require reconstructing the historical spawn metadata');
+
+  const activeLegacy = item({
+    id: 'I1', source: 'report:legacy', item: 'historical migration task',
+    status: 'dispatched agent:legacy',
+    evidence: '-',
+    owner: '', repository: '', worktree: '', mode: '', writeSet: '', dispatchRef: '',
+  });
+  const unfinished = fixture(v2({
+    items: [activeLegacy],
+    decompositionRows: ['| I1 | continue legacy task | dispatched | - | missing receipt |'],
+  }));
+  const findings = latestRules(unfinished.text, { ledgerPath: unfinished.ledgerPath });
+  for (const rule of ['v2-dispatch-owner', 'v2-repository', 'v2-worktree', 'v2-mode', 'v2-write-set-json', 'v2-dispatch-receipt']) {
+    assert.ok(findings.includes(rule), `unfinished legacy row must remain strict for ${rule}`);
+  }
+});
+
 test('a second Items registry cannot hide an otherwise omitted dispatched owner', () => {
   const hidden = item({ writeSet: '["src/hidden.mjs"]', dispatchRef: 'receipts/worker-1.json' });
   const candidate = fixture(`${v2()}\n${ITEMS_HEADER}\n${hidden}\n`, {

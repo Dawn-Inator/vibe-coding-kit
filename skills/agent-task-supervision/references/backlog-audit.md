@@ -97,8 +97,11 @@ resource, decision, or dependency and its owner. Never use subjective completion
 
 On adoption or resume, reconcile each active Item separately using the original request/accepted receipt,
 private final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata
-does not prove completion. Do not bulk-mark old dispatched rows done, broaden a row beyond the accepted scope,
-or turn routine delegable work into an owner decision. Keep operational status distinct from acceptance criteria.
+does not prove completion. Verified goal/oracle results plus terminal or landing evidence may prove a legacy
+Item done without reconstructing historical agent identity; retain unknown provenance in its evidence.
+Unfinished dispatched work still needs current native accepted metadata, and unknown work stays unfinished.
+Do not bulk-mark old dispatched rows done, broaden a row beyond the accepted scope, or turn routine delegable
+work into an owner decision. Keep operational status distinct from acceptance criteria.
 
 ## Check and preserve
 

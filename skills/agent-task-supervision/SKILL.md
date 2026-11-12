@@ -121,9 +121,12 @@ and Items inventory are useful read modes, but neither can certify a current v2 
 
 For adoption or resume, reconcile each active Item against its original request/dispatch, private final, and
 landing evidence. Use `known` or `unknown` explicitly for missing transitions; blank historical owner metadata
-is unknown, not proof of completion. Do not bulk-mark dispatched rows done, relabel routine delegable work as
-an owner decision, or broaden a dispatched unit beyond its accepted scope. Actual status (accepted, active,
-final, landed, blocked) is separate from acceptance criteria. Preserve every old wake byte. If a new audit is
+is unknown, not proof of completion. Verified goal/oracle results plus terminal or landing evidence may prove
+a legacy Item done without reconstructing historical agent identity; retain unknown provenance in its evidence.
+Unfinished dispatched work still needs current native accepted metadata, and unknown work stays unfinished.
+Do not bulk-mark dispatched rows done, relabel routine delegable work as an owner decision, or broaden a
+dispatched unit beyond its accepted scope. Actual status (accepted, active, final, landed, blocked) is separate
+from acceptance criteria. Preserve every old wake byte. If a new audit is
 red, append a corrective audit and claim current certification only when the checker returns
 `certifiesCurrent: true`; a red audit never blocks separately authorized business work or session finish.
 

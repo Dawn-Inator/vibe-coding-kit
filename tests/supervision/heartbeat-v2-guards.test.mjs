@@ -76,12 +76,12 @@ const accepted = (owner) => ({
 const findingsFor = (candidate) => checkHeartbeatV2(candidate.text, { ledgerPath: candidate.ledgerPath, now: new Date('2026-01-01T11:00:00Z') });
 const rulesFor = (candidate, rule) => findingsFor(candidate).filter((finding) => finding.rule === rule);
 
-function directGuardFindings(items, oneB) {
+function directGuardFindings(items, oneB, verdicts = '') {
   const latestWake = {
     heading: '## 2026-01-01T10:40Z wake (10-row ledger)',
     line: 1,
     rows: [{ num: 1, state: `(1a) done -- \`goal checked\`; (1b) ${oneB}` }],
-    sectionLines: [],
+    sectionLines: verdicts ? ['contract: heartbeat/v2', `re-split: rows(${verdicts})`] : [],
   };
   return checkV2Guards({ items, wakes: [latestWake], latestWake });
 }
@@ -106,6 +106,21 @@ test('three repeated owner-gated verdicts exempt only a matching owner Item, cas
     split: '0/1',
   }))));
   assert.equal(rulesFor(notExempt, 'cannot-split-stale').length, 1, 'the owner-gated tag alone does not exempt a non-owner Item');
+});
+
+test('v2 generic Item IDs participate in stale cannot-split checks while unmarked history keeps legacy parsing', () => {
+  const rows = [item({ id: 'W1', status: 'blocked <- same-file conflict: src/worker.mjs' })];
+  const v2Wakes = ['00', '20', '40'].map((minute) => wake(minute, {
+    decompositionRows: ['| W1 | resolve worker boundary | blocked | owner | same-file conflict remains |'],
+    verdicts: 'W1: cannot-split: same-file conflict: `src/worker.mjs`',
+    split: '0/1',
+  }));
+  const v2 = fixture(ledger(rows, v2Wakes));
+  assert.equal(rulesFor(v2, 'cannot-split-stale').length, 1, 'the v2 generic ID must be parsed consistently across all three wakes');
+
+  const legacyWakes = v2Wakes.map((text) => text.replace('contract: heartbeat/v2\n', ''));
+  const legacy = fixture(ledger(rows, legacyWakes));
+  assert.deepEqual(rulesFor(legacy, 'cannot-split-stale'), [], 'an unmarked historical wake retains the legacy restricted ID grammar');
 });
 
 test('re-split after the Decomposition table still reaches blocker and stale checks', () => {
@@ -168,6 +183,32 @@ test('standing authorization covers an owner-gated Item referenced by the traili
     split: '0/1',
   })]));
   assert.deepEqual(rulesFor(afterRevocation, 'standing-auth-covers-wait'), [], 'revoked/done authority does not cover a later owner-gated Item');
+});
+
+test('v2 standing-authorization guard matches generic IDs and keeps A-B distinct from AB', () => {
+  const authorization = {
+    id: 'AB',
+    item: 'standing authorization switch',
+    status: 'owner <- checked prior authorization recorded',
+    evidence: 'standing-auth: switch',
+  };
+  const genericWait = {
+    id: 'W1',
+    item: 'request needs switch decision',
+    status: 'owner <- owner decision remains open',
+    evidence: '-',
+  };
+  const matchesGeneric = directGuardFindings([authorization, genericWait], 'done -- `backlog checked`', 'W1: cannot-split: owner-gated');
+  assert.deepEqual(matchesGeneric.map((finding) => finding.rule), ['standing-auth-covers-wait']);
+
+  const hyphenWait = {
+    id: 'A-B',
+    item: 'wait for retention decision',
+    status: 'owner <- owner decision remains open',
+    evidence: '-',
+  };
+  const keepsHyphenDistinct = directGuardFindings([authorization, hyphenWait], 'done -- `backlog checked`', 'A-B: cannot-split: owner-gated');
+  assert.deepEqual(keepsHyphenDistinct, [], 'A-B must not resolve to the unrelated AB authorization row');
 });
 
 test('capacity does not count an accepted dispatch receipt as evidence of active work', () => {
