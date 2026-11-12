@@ -109,17 +109,20 @@ receipt path matching its owner and dispatch; an orchestrator uses the same rece
 Parent tracking has no receipt. Acceptance does not prove that work is active, complete, or landed. See the
 [backlog audit](references/backlog-audit.md) for validation details.
 
-Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) covering
-all non-done Items. Dispositions are `dispatched`, `continuing`, `blocked`, `owner`, `deferred`, or `done`
-(never `ready`). Every unfinished row needs a concrete next step, owner, and evidence-backed reason for its
-disposition. `deferred` is unfinished and inactive; it must not hide a current writer or missing new-dispatch
-proof. Each deferred Item still needs a proof-backed re-split verdict. With no new split assessment,
-`rows()` / `0/0` is valid only when Decomposition covers every unfinished Item and there are no deferred Items;
-do not redispatch to fill the count. Write the exact terminal markers `re-split: rows()` and `splittable: 0/0`.
-For v2 verdict syntax and source evidence, see the [backlog audit](references/backlog-audit.md).
-`D` is the number of distinct newly dispatched unit references, not source rows; `P` is the number of unique
-assessed verdicts, keyed by exact stable Item ID or dispatch reference, with no variable prose in the key.
-Multiple source rows referring to one batch unit count once. The wake contract
+Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) for all
+non-done Items. Dispositions are `dispatched`, `continuing`, `blocked`, `owner`, `deferred`, or `done` (never
+`ready`). Every unfinished row needs a concrete next step, owner, and evidence-backed reason. `deferred` is
+unfinished and inactive; its `## Items` status must also be `deferred`. It cannot hide a current writer or missing
+dispatch proof, and each deferred Item needs its own proof-backed re-split verdict. Details for irrecoverable
+legacy audit evidence are in the
+[backlog audit](references/backlog-audit.md). With no new split assessment, `rows()` / `0/0` is valid only when
+Decomposition covers all unfinished Items and none is deferred; do not redispatch to fill the count. Write the
+exact markers `re-split: rows()` and `splittable: 0/0`.
+For v2 verdict syntax see the [backlog audit](references/backlog-audit.md). `D` counts distinct newly dispatched
+units, not source rows. Resolve `split->dispatched` to exactly one real `status: dispatched` Item with a valid
+accepted receipt, using its exact `unitItemID`, dispatch reference, or unique owner as aliases for the same canonical
+unit; free text is not a dispatch. `P` counts unique assessed verdicts keyed by exact stable Item ID or dispatch
+reference, never variable prose. The wake contract
 determines the denominator, not CLI mode: unmarked legacy wakes keep the proof-only denominator; `heartbeat/v2`
 uses all valid assessed rows even under non-certifying `--history`. Preserve historical wake bytes.
 
@@ -127,16 +130,12 @@ Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run stri
 the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
 and Items inventory are useful read modes, but neither can certify a current v2 audit.
 
-For adoption or resume, reconcile each Item separately against its original goal/request/dispatch, private final,
-and landing evidence. Use `known` or `unknown` explicitly for missing transitions; blank historical owner metadata
-is unknown, not proof of completion. Legacy inactive or unverified records stay unfinished unless item-specific
-terminal/landing evidence proves completion. Preserve each original goal, history, and unknown provenance; do not
-mass-mark done or relabel uncertain legacy work as `tracking`. Verified goal/oracle results plus terminal or
-landing evidence may prove a legacy Item done without reconstructing historical agent identity; retain unknown
-provenance in its evidence. Unfinished dispatched work still needs current native accepted metadata, and unknown
-work stays unfinished. Do not bulk-mark dispatched rows done, relabel routine delegable work as an owner decision,
-or broaden a dispatched unit beyond its accepted scope. Actual status (accepted, active, final, landed, blocked)
-is separate from acceptance criteria. Preserve every old wake byte. If a new audit is
+For adoption or resume, reconcile Items individually against original goals, dispatches, finals, and landings.
+Missing transitions are `unknown`, not done. Legacy inactive/unverified work stays unfinished absent item-specific
+terminal evidence; preserve its goal, history, and provenance. Never mass-mark it done or disguise it as `tracking`.
+An irrecoverable-history proof does not replace a new dispatch receipt or block authorized next work. See
+[backlog audit](references/backlog-audit.md). Preserve old wake bytes; status is separate from acceptance criteria.
+If a new audit is
 red, append a corrective audit and claim current certification only when the checker returns
 `certifiesCurrent: true`; a red audit never blocks separately authorized business work or session finish.
 

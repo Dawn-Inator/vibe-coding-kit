@@ -1,6 +1,6 @@
 // Reusable heartbeat guidance guards promoted from LingoFly. These checks report ledger evidence;
 // none authorizes an action, terminates a worker, or blocks work by itself.
-import { normalizeResplitId, parseRowVerdicts } from './heartbeat-ledger-splittable.mjs';
+import { normalizeResplitId, parseRowVerdicts, resolveDispatchedUnit } from './heartbeat-ledger-splittable.mjs';
 
 const error = (rule, message) => ({ severity: 'error', rule, message });
 const advisory = (rule, message) => ({ severity: 'advisory', rule, message });
@@ -11,7 +11,7 @@ const oneB = (wake) => wake.rows.find((row) => row.num === 1)?.state.match(/\(1b
 const spans = (text) => [...String(text ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1].trim());
 const reasonKey = (detail) => String(detail).replace(/`[^`]+`/g, '').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
 
-function splitVerdicts(wake) {
+function rowVerdicts(wake) {
   const allowGenericIds = isV2Wake(wake);
   const line = wake.sectionLines.find((entry) => /^\s*re-split:/i.test(entry));
   if (!line) return [];
@@ -28,10 +28,26 @@ function splitVerdicts(wake) {
   }
   if (end < 0) return [];
   const groupStart = opening + 1;
-  return parseRowVerdicts(line.slice(groupStart, end), { allowGenericIds }).filter((v) => v.verdict === 'cannot-split' && v.id).map((v, index) => ({
+  return parseRowVerdicts(line.slice(groupStart, end), { allowGenericIds });
+}
+
+function splitVerdicts(wake) {
+  const line = wake.sectionLines.find((entry) => /^\s*re-split:/i.test(entry)) ?? '';
+  const group = line.match(/rows\s*\((.*)\)\s*$/i)?.[1] ?? '';
+  const allowGenericIds = isV2Wake(wake);
+  return rowVerdicts(wake).filter((v) => v.verdict === 'cannot-split' && v.id).map((v, index) => ({
     id: normId(v.id, allowGenericIds), allowGenericIds, detail: v.detail, key: reasonKey(v.detail), spans: spans(v.detail), proof: v.proof,
-    label: line.slice(groupStart, end).split(';')[index]?.trim().split(/[:=\s]/)[0] ?? v.id,
+    label: group.split(';')[index]?.trim().split(/[:=\s]/)[0] ?? v.id,
   }));
+}
+
+function dispatchedTargets(items, wake) {
+  if (!isV2Wake(wake) || !items?.length) return [];
+  return rowVerdicts(wake).filter((verdict) => verdict.verdict === 'dispatched').flatMap((verdict) => {
+    const target = resolveDispatchedUnit(verdict, items);
+    if (!target.error) return [];
+    return [error('resplit-dispatch-target', `${wake.heading}: ${verdict.id} split target "${verdict.unitIdentity}" is invalid: ${target.error}; use the exact Item ID, dispatch_ref, or unique owner of a dispatched Item with its accepted receipt`)];
+  });
 }
 
 function staleSplit(wakes, items) {
@@ -119,5 +135,5 @@ function capacity(items, wake) {
 }
 
 export function checkV2Guards({ wakes, items, latestWake }) {
-  return [...staleSplit(wakes, items), ...idleRote(wakes), ...standingAuth(items, latestWake), ...capacity(items, latestWake)];
+  return [...staleSplit(wakes, items), ...idleRote(wakes), ...standingAuth(items, latestWake), ...capacity(items, latestWake), ...dispatchedTargets(items, latestWake)];
 }

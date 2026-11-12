@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -227,6 +228,106 @@ test('deferred disposition matches an unfinished deferred Item with evidence and
     decompositionRows: ['| I1 | resume later | deferred | worker-1 | ready proof |'],
   }));
   assert.ok(latestRules(readyProof.text, { ledgerPath: readyProof.ledgerPath }).includes('v2-item-ready'), 'deferred does not make ready work valid');
+});
+
+test('deferred history proof validates its audit reference structure without claiming truth or physical inactivity', () => {
+  const deferred = item({
+    status: 'deferred <- original historical provenance is not restored; new dispatch and active writer are unconfirmed',
+    evidence: '`git log --all -- artifact` found no restored provenance',
+    owner: 'provenance-owner',
+    mode: 'read-only',
+    writeSet: '[]',
+    dispatchRef: '-',
+  });
+  const audit = {
+    itemId: 'I1',
+    originalGoal: 'implement feature',
+    originalRowSha256: 'a'.repeat(64),
+    checkedSources: [{ path: 'records/legacy.md', locator: 'section 4: source row absent', missing: true }],
+    transitions: {
+      accepted: { state: 'unknown', source: 'no acceptance receipt located' },
+      privateFinal: { state: 'unknown', source: 'private final record not found' },
+      landed: { state: 'unknown', source: 'repository history checked' },
+    },
+    missingFields: ['accepted dispatch receipt', 'private final output', 'landed revision'],
+    auditor: 'codex audit session 2026-11-11',
+    checkedAt: '2026-11-11T14:00:00Z',
+    historicalDispatchState: 'unknown',
+    currentWriter: { state: 'unknown', evidence: 'no verified current writer record was found' },
+  };
+  const make = (payload = audit, { current = deferred, ref = 'audit/evidence.json', receipts = {} } = {}) => fixture(v2({
+    items: [current],
+    decompositionRows: [`| I1 | verify historical provenance, then decide whether new dispatch is needed | deferred | provenance-owner | ${current.evidence} |`],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: `re-split: rows(I1: cannot-split: audit-evidence-unrecoverable ${ref})\nsplittable: 0/1`,
+  }), { ...receipts, ...(payload ? { [ref]: payload } : {}) });
+  const valid = make();
+  assert.deepEqual(latestRules(valid.text, { ledgerPath: valid.ledgerPath, now: new Date('2026-11-11T14:01:00Z') }), [], 'unknown history plus a structured audit does not assert a recovered dispatch or inactive physical writer');
+
+  const missingFile = make(null, { ref: 'audit/missing.json' });
+  assert.ok(latestRules(missingFile.text, { ledgerPath: missingFile.ledgerPath }).includes('audit-evidence-ref'));
+
+  for (const [label, override, rule] of [
+    ['item ID mismatch', { itemId: 'I9' }, 'audit-evidence-item'],
+    ['goal mismatch', { originalGoal: 'different goal' }, 'audit-evidence-goal'],
+    ['active writer', { currentWriter: { state: 'active', evidence: 'writer process confirmed' } }, 'audit-evidence-current-writer'],
+    ['empty missing fields', { missingFields: [] }, 'audit-evidence-missing-fields'],
+    ['empty source list', { checkedSources: [] }, 'audit-evidence-sources'],
+    ['source without sha or missing marker', { checkedSources: [{ path: 'records/legacy.md', locator: 'section 4' }] }, 'audit-evidence-sources'],
+    ['transition without source', { transitions: { ...audit.transitions, landed: { state: 'unknown', source: '-' } } }, 'audit-evidence-transitions'],
+    ['missing auditor', { auditor: '' }, 'audit-evidence-auditor'],
+    ['invalid check time', { checkedAt: 'not-a-time' }, 'audit-evidence-time'],
+  ]) {
+    const candidate = make({ ...audit, ...override });
+    assert.ok(latestRules(candidate.text, { ledgerPath: candidate.ledgerPath }).includes(rule), `${label} is rejected`);
+  }
+
+  const selfHashed = make({ ...audit, originalRowSha256: createHash('sha256').update(deferred).digest('hex') });
+  assert.ok(latestRules(selfHashed.text, { ledgerPath: selfHashed.ledgerPath }).includes('audit-evidence-row-hash'), 'current deferred row cannot be passed off as the historical row');
+
+  const dispatched = item({
+    status: 'dispatched agent:worker-1', owner: 'agent:worker-1', repository: 'repo-a', worktree: '/worktrees/worker-1',
+    mode: 'write', writeSet: '["src/current.mjs"]', dispatchRef: 'receipts/worker-1.json',
+  });
+  const dispatchedCandidate = fixture(v2({
+    items: [dispatched],
+    decompositionRows: ['| I1 | implement feature | dispatched | agent:worker-1 | receipts/worker-1.json |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: cannot-split: audit-evidence-unrecoverable audit/evidence.json)\nsplittable: 0/1',
+  }), {
+    'audit/evidence.json': audit,
+  });
+  assert.ok(latestRules(dispatchedCandidate.text, { ledgerPath: dispatchedCandidate.ledgerPath }).includes('audit-evidence-item-status'), 'the audit proof cannot excuse a dispatched Item or its receipt rules');
+  assert.ok(latestRules(dispatchedCandidate.text, { ledgerPath: dispatchedCandidate.ledgerPath }).includes('v2-dispatch-receipt'), 'the audit proof cannot replace a current dispatched receipt');
+
+  const ready = item({ status: 'ready', owner: 'provenance-owner', mode: 'read-only', writeSet: '[]', dispatchRef: '-' });
+  const readyCandidate = fixture(v2({
+    items: [ready],
+    decompositionRows: ['| I1 | verify provenance then decide whether to dispatch | deferred | provenance-owner | `git log --all -- artifact` found no restored provenance |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: cannot-split: audit-evidence-unrecoverable audit/evidence.json)\nsplittable: 0/1',
+  }), { 'audit/evidence.json': audit });
+  assert.ok(latestRules(readyCandidate.text, { ledgerPath: readyCandidate.ledgerPath }).includes('audit-evidence-item-status'), 'the proof tag cannot make a ready Item deferred');
+
+  const activeWriter = item({
+    id: 'I2', status: 'dispatched agent:worker-2', evidence: 'active tool result observed', owner: 'agent:worker-2',
+    repository: 'repo-a', worktree: '/worktrees/worker-2', mode: 'write',
+    writeSet: '["src/current-writer.mjs"]', dispatchRef: 'receipts/worker-2.json',
+  });
+  const visibleWriter = fixture(v2({
+    items: [deferred, activeWriter],
+    decompositionRows: [
+      '| I1 | verify historical provenance, then decide whether new dispatch is needed | deferred | provenance-owner | `git log --all -- artifact` found no restored provenance |',
+      '| I2 | continue the confirmed active writer | continuing | agent:worker-2 | active tool output.md |',
+    ],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: cannot-split: audit-evidence-unrecoverable audit/evidence.json; I2: continuing: active active tool output.md)\nsplittable: 0/2',
+  }), { 'audit/evidence.json': audit });
+  assert.ok(latestRules(visibleWriter.text, { ledgerPath: visibleWriter.ledgerPath }).includes('v2-dispatch-receipt'), 'unknown historical writer state cannot hide a separate dispatched Item missing its receipt');
 });
 
 test('current v2 permits a continuing activity assessment for an already-dispatched item', () => {

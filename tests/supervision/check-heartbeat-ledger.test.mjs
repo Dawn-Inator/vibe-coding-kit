@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
-import { checkSplittable, openRows } from '../../src/supervision/heartbeat-ledger-splittable.mjs';
+import { checkSplittable, openRows, parseRowVerdicts } from '../../src/supervision/heartbeat-ledger-splittable.mjs';
 
 // These unit tests exercise the historical parser API directly. Current --latest certification,
 // including the required v2 marker and registry, is covered by heartbeat-v2-contract.test.mjs.
@@ -734,4 +734,13 @@ test('v2 re-split keeps duplicate assessments red and includes deferred Items ro
     cells: [],
     itemRows: [{ id: 'I2', status: 'deferred <- worker report ETA <=20m' }],
   }), [], 'unmarked legacy deferred Items rows do not acquire a new split-proof requirement');
+});
+
+test('audit-evidence-unrecoverable is a v2-only cannot-split proof with a concrete reference', () => {
+  const v2 = parseRowVerdicts('I1: cannot-split: audit-evidence-unrecoverable audit/W1/tool-result.json', { allowGenericIds: true });
+  assert.equal(v2[0].verdict, 'cannot-split');
+  assert.equal(v2[0].proof, 'audit-evidence-unrecoverable');
+  assert.equal(v2[0].proofRef, 'audit/W1/tool-result.json');
+  const legacy = parseRowVerdicts('I1: cannot-split: audit-evidence-unrecoverable audit/W1/tool-result.json');
+  assert.equal(legacy[0].verdict, 'invalid', 'unmarked historical proof grammar stays closed to the new tag');
 });

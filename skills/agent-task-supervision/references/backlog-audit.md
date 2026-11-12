@@ -61,10 +61,10 @@ blocker and its evidence. Do not use a placeholder timestamp or permission reaso
 For every current non-done Item, record a row in `### Decomposition` with its id, concrete next action,
 disposition (`dispatched`, `continuing`, `blocked`, `owner`, or `deferred`), owner, and evidence. There is no
 `ready` disposition at the end of a wake. Every unfinished disposition needs a concrete next step, owner, and
-evidence-backed reason. `deferred` is a first-class unfinished disposition, but is inactive: it cannot hide a
-current writer or missing new-dispatch proof. Each deferred Item still receives its own proof-backed re-split
-verdict. Split each free independent unit and dispatch it during this wake
-when capacity exists. Use one clear owner per unit, name repository and worktree, and provide an exact JSON
+evidence-backed reason. `deferred` is first-class and unfinished: both its `## Items` status and Decomposition
+disposition are `deferred`. It is inactive; it cannot hide a current writer or missing new-dispatch proof. Each
+deferred Item still receives its own proof-backed re-split verdict. Split each free independent unit and dispatch
+it during this wake when capacity exists. Use one clear owner per unit, name repository and worktree, and provide an exact JSON
 array of relative file paths for the write set. Re-split after a worker goes stale, reports a blocker, or its
 remaining work no longer matches the accepted task.
 
@@ -86,7 +86,10 @@ At the end of the decomposition section write `re-split: rows(...)` and `splitta
 group accepts three verdict classes: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or a typed
 `continuing` verdict: `active <source-ref>` or `private-final <source-ref>` for leaf work, and
 `tracking <source-ref>` for a parent coordinator. Each assessed verdict is unique by exact stable Item ID or
-dispatch reference; do not use variable prose as its key. The parent source cites current child-state evidence; the
+dispatch reference; do not use variable prose as its key. A `split->dispatched` target must resolve uniquely to a
+real `## Items` row with `status: dispatched` and a valid accepted receipt. Its stable `unitItemID`, dispatch
+reference, or uniquely resolving owner may alias that same canonical unit; ambiguous/unmatched aliases or free text
+are invalid and do not count toward `D`. The parent source cites current child-state evidence; the
 parent remains a non-active tracker and does not need a dispatch receipt. A leaf reference must cite actual current probe/tool
 output or private final, for example:
 `continuing: active heartbeat-branches output line 4`; a tracking reference points to current child-state
@@ -103,6 +106,45 @@ denominator semantics, not CLI mode: unmarked legacy 8/10
 wakes keep the proof-only denominator; `heartbeat/v2` uses all valid assessed rows even under non-certifying
 `--history`. Every blocker must name the concrete unavailable
 resource, decision, or dependency and its owner. Never use subjective completion percentages.
+
+For a `deferred` legacy Item whose audit evidence is irrecoverable, v2 may use
+`cannot-split: audit-evidence-unrecoverable <audit-ref>` only; do not disguise lost history as `owner-gated` or
+`same-file conflict`. `<audit-ref>` is a path relative to the ledger's
+directory to that Item's full JSON audit record; use the existing reference mechanism, not a new registry. Record
+all fields below, retaining the original row and goal (`originalGoal` equals current `item.item`):
+
+```json
+{
+  "itemId": "<stable Item ID>",
+  "originalGoal": "<current item.item>",
+  "originalRowSha256": "<hash>",
+  "checkedSources": [
+    {"path": "<source>", "locator": "<locator/result>", "sha256": "<hash>"},
+    {"path": "<source>", "result": "<locator/result>", "missing": true}
+  ],
+  "transitions": {
+    "accepted": {"state": "unknown", "source": "<evidence>"},
+    "privateFinal": {"state": "unknown", "source": "<evidence>"},
+    "landed": {"state": "unknown", "source": "<evidence>"}
+  },
+  "missingFields": ["<nonempty list>"],
+  "auditor": "<identity>",
+  "checkedAt": "<ISO timestamp>",
+  "historicalDispatchState": "unknown",
+  "currentWriter": {"state": "unknown", "evidence": "<probe result>"}
+}
+```
+
+Each `checkedSources` entry has `path`, `locator` or `result`, and exactly one of a `sha256` digest or explicit
+`missing: true`. `missingFields` must be nonempty. Every transition is explicitly `known` or `unknown` with its
+source. `currentWriter.state` may be
+`inactive`, `unknown`, or `active`; never write `inactive` when evidence leaves it unknown. This irrecoverable
+history verdict requires `currentWriter` to be inactive or unknown, never active. Unknown does not prove inactive;
+resolve it from a native probe, and do not infer absence of a writer from this record.
+Structural checks can verify fields and Item linkage, not truth, complete source discovery, or physical worker state;
+the orchestrator must inspect original tool evidence. This record only explains missing historical evidence: keep
+the Item and its concrete next step/owner unfinished. Count this verdict once in assessed `P`, never as done or `D`;
+it does not replace a current accepted dispatch receipt or block separately authorized executable work.
 
 On adoption or resume, reconcile each Item separately using its original goal/request/accepted receipt, private
 final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata does not

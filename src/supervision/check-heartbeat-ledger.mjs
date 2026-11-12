@@ -294,7 +294,7 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
     unchanged.endWake();
     previousInputs = deferredInputs(wake);
     if (latest && graded) {
-      const itemRows = parseItems(text).rows.map((row) => ({ id: row.id, status: row.status }));
+      const itemRows = parseItems(text).rows.map((row) => ({ id: row.id, status: row.status, owner: row.owner, dispatch_ref: row.dispatch_ref }));
       const cells = stateCells(wake, () => {});
       if (wake.layout.goalRow) {
         for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit })) findings.push(finding);

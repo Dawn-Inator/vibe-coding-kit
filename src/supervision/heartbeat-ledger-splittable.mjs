@@ -69,11 +69,9 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
       const split = body.match(SPLIT_RE);
       if (split) {
         const detail = split[1].trim();
-        const reference = detail.match(/\b(unitItemID|dispatchref)\s*[:=]\s*([^\s;,)]+)/i);
-        const unitIdentity = reference
-          ? `${reference[1].toLowerCase()}:${reference[2]}`
-          : detail;
-        return { id, verdict: 'dispatched', detail: body, unitIdentity, proof: null };
+        const unitReference = detail.match(/^(unitItemID|dispatchref)\s*[:=]\s*(\S+)$/i);
+        const unitIdentity = unitReference ? `${unitReference[1].toLowerCase()}:${unitReference[2]}` : detail;
+        return { id, verdict: 'dispatched', detail: body, unitIdentity, unitReference: unitReference ? { kind: unitReference[1].toLowerCase(), value: unitReference[2] } : null, proof: null };
       }
       const continuing = body.match(CONTINUING_RE);
       if (allowContinuing && continuing) {
@@ -85,11 +83,38 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
       }
       const cannot = body.match(CANNOT_RE);
       if (cannot) {
+        const audit = allowGenericIds ? cannot[1].match(/^audit-evidence-unrecoverable\s+(\S.*)$/i) : null;
+        if (audit && audit[1].trim()) {
+          return { id, verdict: 'cannot-split', detail: body, proof: 'audit-evidence-unrecoverable', proofRef: audit[1].trim() };
+        }
         const proof = findBlockedProofTag(cannot[1]);
         return { id, verdict: proof ? 'cannot-split' : 'invalid', detail: body, proof };
       }
       return { id, verdict: 'invalid', detail: body, proof: null };
     });
+}
+
+/** Resolve a v2 split target to one current dispatched Item; receipt content is audited by the v2 registry validator. */
+export function resolveDispatchedUnit(verdict, itemRows = []) {
+  if (verdict?.verdict !== 'dispatched') return { item: null, canonicalId: null, error: 'not a dispatched verdict' };
+  const detail = String(verdict.detail ?? '').match(SPLIT_RE)?.[1]?.trim() ?? '';
+  const allItems = itemRows ?? [];
+  let matches;
+  if (verdict.unitReference?.kind === 'unititemid') {
+    const wanted = normalizeResplitId(verdict.unitReference.value, { allowGenericIds: true });
+    matches = allItems.filter((row) => row.id && normalizeResplitId(row.id, { allowGenericIds: true }) === wanted);
+  } else if (verdict.unitReference?.kind === 'dispatchref') {
+    matches = allItems.filter((row) => String(row.dispatch_ref ?? '').trim() === verdict.unitReference.value);
+  } else {
+    // Backward-compatible owner form: the entire detail must equal one dispatched Item owner.
+    matches = allItems.filter((row) => String(row.owner ?? '').trim() === detail);
+  }
+  if (matches.length !== 1) return { item: null, canonicalId: null, error: matches.length ? 'target is ambiguous' : 'target does not resolve to a registry Item' };
+  const item = matches[0];
+  if (!/^dispatched\b/i.test(String(item.status ?? '').trim())) return { item, canonicalId: null, error: `target Item ${item.id} is not dispatched` };
+  if (!String(item.dispatch_ref ?? '').trim() || /^[-—]$/.test(String(item.dispatch_ref).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no dispatch_ref` };
+  if (!String(item.owner ?? '').trim() || /^[-—]$/.test(String(item.owner).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no owner` };
+  return { item, canonicalId: normalizeResplitId(item.id, { allowGenericIds: true }), error: null };
 }
 
 /** Open (`blocked <-` / `deferred <-`) rows of one wake: wake-table cells plus `## Items` rows. */
@@ -178,8 +203,13 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   const uniqueValidVerdicts = v2Format
     ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split', 'continuing'].includes(v.verdict))
     : null;
+  const hasV2RegistryMetadata = (itemRows ?? []).some((row) => Object.hasOwn(row, 'owner') || Object.hasOwn(row, 'dispatch_ref'));
   const dispatched = v2Format
-    ? new Set(uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').map((v) => v.unitIdentity)).size
+    ? new Set(uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').flatMap((v) => {
+      const resolved = resolveDispatchedUnit(v, itemRows).canonicalId;
+      if (resolved) return [resolved];
+      return hasV2RegistryMetadata ? [] : [v.unitIdentity];
+    })).size
     : verdicts.filter((v) => v.verdict === 'dispatched').length;
   const withProof = verdicts.filter((v) => v.verdict === 'cannot-split').length;
   const assessed = v2Format

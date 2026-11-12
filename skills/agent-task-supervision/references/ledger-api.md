@@ -32,8 +32,16 @@ reference, not authenticity. Do not create separate child or activity-receipt re
 or wake-cell IDs. Every unfinished Item, including `deferred`, needs a concrete next step, owner, and evidence-backed
 reason; `deferred` is inactive and cannot conceal a current writer or missing dispatch proof. Each deferred Item
 needs its own proof-backed re-split verdict. Key each assessed verdict by exact stable Item ID or dispatch reference,
-not variable prose. `D` counts distinct new dispatched unit references, not source rows; multiple source rows for
-one batch unit count once. `P` counts unique valid assessed verdicts, including deferred verdicts and parent tracking.
+not variable prose. A `split->dispatched` target must resolve uniquely to an existing `status: dispatched` Item with
+a valid accepted receipt; stable Item ID, dispatch reference, or unique owner are aliases of that canonical unit.
+Ambiguous/unmatched aliases or free text are invalid. `D` counts distinct new canonical units, not source rows;
+multiple source rows/aliases for one unit count once. `P` counts unique valid assessed verdicts, including deferred
+verdicts and parent tracking.
+Only a `deferred` legacy Item with irrecoverable audit evidence may use
+`cannot-split: audit-evidence-unrecoverable <audit-ref>`. Its full JSON record is relative to the ledger directory;
+the required per-Item fields and limits are in [backlog audit](backlog-audit.md). It preserves unknown history and
+current-writer state; count it once as assessed `P`, never as done/`D`; it is not a new dispatch receipt or barrier
+to separately authorized work.
 When no additional split assessment is needed, `rows()` and `0/0` remain valid only if Decomposition lists every
 unfinished Item and there are no deferred Items; every deferred Item requires its own counted proof-backed verdict.
 Do not force redispatch. A wake's contract marker,

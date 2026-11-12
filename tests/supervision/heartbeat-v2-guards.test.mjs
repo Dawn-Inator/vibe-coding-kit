@@ -272,3 +272,96 @@ test('tracking parents do not create idle-work advisories while leaf unknown wor
   assert.match(withLeafUnknown[0].message, /1 undispatched non-terminal row/);
 });
 
+test('v2 split targets must resolve to a real dispatched Item with an accepted receipt', () => {
+  const source = (id, detail) => item({
+    id, name: `deferred source ${id}`, status: 'deferred <- worker report ETA <=20m',
+    owner: 'coordinator', repository: 'repo-a', worktree: '/worktrees/coordinator',
+    mode: 'read-only', writeSet: '[]', dispatchRef: '-',
+  });
+  const target = ({ status = 'dispatched worker-2', owner = 'worker-2', dispatchRef = 'receipts/worker-2.json' } = {}) => item({
+    id: 'I2', source: 'report:worker-2', name: 'shared batch unit', status, owner,
+    repository: 'repo-a', worktree: '/worktrees/worker-2', mode: 'write',
+    writeSet: '["src/shared-batch.mjs"]', dispatchRef,
+  });
+  const candidate = ({ verdicts, split, targetRow = target(), receipt = accepted('worker-2'), sources = ['I1'] }) => {
+    const sourceRows = sources.map((id) => source(id));
+    const items = [...sourceRows, targetRow];
+    const decompositionRows = [
+      ...sourceRows.map((row) => `| ${row.split('|')[1].trim()} | ${row.split('|')[3].trim()} | deferred | coordinator | waiting on worker report |`),
+      '| I2 | shared batch unit | dispatched | worker-2 | receipts/worker-2.json |',
+    ];
+    return fixture(ledger(items, [wake('40', { decompositionRows, verdicts, split })]),
+      targetRow.split('|')[11]?.trim() && targetRow.split('|')[11].trim() !== '-' && receipt ? { [targetRow.split('|')[11].trim()]: receipt } : {});
+  };
+
+  const phantom = candidate({ verdicts: 'I1: split->dispatched unitItemID:I999', split: '1/1' });
+  assert.ok(rulesFor(phantom, 'resplit-dispatch-target').length > 0, 'a deferred row cannot claim a nonexistent dispatched target');
+
+  const nonDispatched = candidate({
+    verdicts: 'I1: split->dispatched unitItemID:I2', split: '1/1',
+    targetRow: target({ status: 'blocked <- waiting for worker', dispatchRef: '-' }), receipt: null,
+  });
+  assert.ok(rulesFor(nonDispatched, 'resplit-dispatch-target').length > 0, 'the target must currently be dispatched');
+
+  const noReceipt = candidate({ verdicts: 'I1: split->dispatched unitItemID:I2', split: '1/1', targetRow: target({ dispatchRef: '-' }), receipt: null });
+  assert.ok(findingsFor(noReceipt).some((finding) => finding.rule === 'v2-dispatch-receipt'), 'the target must have a receipt reference accepted by the registry validator');
+  assert.ok(rulesFor(noReceipt, 'resplit-dispatch-target').length > 0);
+
+  const ownerMismatchedReceipt = candidate({
+    verdicts: 'I1: split->dispatched dispatchref:receipts/worker-2.json', split: '1/1',
+    receipt: accepted('worker-other'),
+  });
+  assert.ok(findingsFor(ownerMismatchedReceipt).some((finding) => finding.rule === 'v2-dispatch-receipt'), 'the referenced receipt must be accepted for the target Item owner');
+
+  const ownerMismatch = candidate({ verdicts: 'I1: split->dispatched someone-else', split: '1/1' });
+  assert.ok(rulesFor(ownerMismatch, 'resplit-dispatch-target').length > 0, 'owner text must uniquely identify the registry target');
+});
+
+test('v2 D counts one canonical target across shared batches and mixed reference forms', () => {
+  const shared = fixture(ledger([
+    item({ id: 'I1', status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }),
+    item({ id: 'I3', status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }),
+    item({ id: 'I2', source: 'report:worker-2', name: 'shared batch unit', status: 'dispatched worker-2', owner: 'worker-2', worktree: '/worktrees/worker-2', mode: 'write', writeSet: '["src/shared-batch.mjs"]', dispatchRef: 'receipts/worker-2.json' }),
+  ], [wake('40', {
+    decompositionRows: [
+      '| I1 | split deferred work | deferred | coordinator | worker needed |',
+      '| I3 | split deferred work | deferred | coordinator | worker needed |',
+      '| I2 | shared batch unit | dispatched | worker-2 | receipts/worker-2.json |',
+    ],
+    verdicts: 'I1: split->dispatched unitItemID:I2; I3: split->dispatched unitItemID:I2',
+    split: '1/2',
+  })]), { 'receipts/worker-2.json': accepted('worker-2') });
+  assert.deepEqual(findingsFor(shared).filter((finding) => finding.severity === 'error'), [], 'two source rows can dispatch one exact accepted batch Item');
+
+  const mixedRefs = fixture(ledger([
+    item({ id: 'I1', status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }),
+    item({ id: 'I3', status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }),
+    item({ id: 'I2', source: 'report:worker-2', name: 'shared batch unit', status: 'dispatched worker-2', owner: 'worker-2', worktree: '/worktrees/worker-2', mode: 'write', writeSet: '["src/shared-batch.mjs"]', dispatchRef: 'receipts/worker-2.json' }),
+  ], [wake('40', {
+    decompositionRows: [
+      '| I1 | split deferred work | deferred | coordinator | worker needed |',
+      '| I3 | split deferred work | deferred | coordinator | worker needed |',
+      '| I2 | shared batch unit | dispatched | worker-2 | receipts/worker-2.json |',
+    ],
+    verdicts: 'I1: split->dispatched unitItemID:I2; I3: split->dispatched dispatchref:receipts/worker-2.json',
+    split: '1/2',
+  })]), { 'receipts/worker-2.json': accepted('worker-2') });
+  assert.deepEqual(findingsFor(mixedRefs).filter((finding) => finding.severity === 'error'), [], 'Item ID and dispatch_ref aliases resolve to one canonical Item ID');
+});
+
+test('v2 split target owner prose must resolve exactly and does not inflate D', () => {
+  const sourceRows = ['I1', 'I3'].map((id) => item({ id, status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }));
+  const worker = item({ id: 'I2', source: 'report:worker-2', name: 'unit', status: 'dispatched worker-2', owner: 'worker-2', worktree: '/worktrees/worker-2', writeSet: '["src/unit.mjs"]', dispatchRef: 'receipts/worker-2.json' });
+  const candidate = fixture(ledger([...sourceRows, worker], [wake('40', {
+    decompositionRows: [
+      '| I1 | split deferred work | deferred | coordinator | waiting |',
+      '| I3 | split deferred work | deferred | coordinator | waiting |',
+      '| I2 | unit | dispatched | worker-2 | receipts/worker-2.json |',
+    ],
+    verdicts: 'I1: split->dispatched worker-2; I3: split->dispatched worker-2 because it looks equivalent',
+    split: '1/2',
+  })]), { 'receipts/worker-2.json': accepted('worker-2') });
+  assert.equal(rulesFor(candidate, 'resplit-dispatch-target').length, 1, 'only the exact owner label resolves; free-form prose is rejected');
+  assert.deepEqual(rulesFor(candidate, 'splittable-mismatch'), [], 'unresolved prose does not count as another dispatch');
+});
+

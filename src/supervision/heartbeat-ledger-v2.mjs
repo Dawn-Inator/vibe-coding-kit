@@ -4,7 +4,9 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { checkItems, checkLedger, parseWakes } from './check-heartbeat-ledger.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
+import { normalizeResplitId, parseRowVerdicts } from './heartbeat-ledger-splittable.mjs';
 import { isConcreteCoordinationField } from './heartbeat-ledger-tracking.mjs';
+import { validateDeferredAuditEvidence } from './heartbeat-ledger-audit-evidence.mjs';
 
 const REQUIRED_ITEM_COLUMNS = ['id', 'source', 'item', 'status', 'evidence', 'owner', 'repository', 'worktree', 'mode', 'write_set', 'dispatch_ref'];
 const DECOMP_COLUMNS = ['item', 'next_step', 'disposition', 'owner', 'evidence'];
@@ -230,6 +232,48 @@ function validateDecomposition(text, wake, items, findings) {
   }
 }
 
+function rowsGroup(line) {
+  const start = line.search(/rows\s*\(/i);
+  if (start < 0) return null;
+  const open = line.indexOf('(', start);
+  let depth = 0;
+  let ticks = false;
+  for (let i = open; i < line.length; i += 1) {
+    if (line[i] === '`') ticks = !ticks;
+    else if (!ticks && line[i] === '(') depth += 1;
+    else if (!ticks && line[i] === ')' && --depth === 0) return line.slice(open + 1, i);
+  }
+  return null;
+}
+
+function validateDeferredAuditProofs(text, wake, items, baseDir) {
+  const isV2 = wake.sectionLines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line));
+  if (!isV2) return [];
+  const line = wake.sectionLines.find((entry) => /^\s*re-split:/i.test(entry));
+  const group = line ? rowsGroup(line) : null;
+  if (group === null) return [];
+  const lines = String(text).split(/\r?\n/);
+  const byId = new Map(items.map((item) => [normalizeResplitId(value(item, 'id'), { allowGenericIds: true }), item]));
+  const findings = [];
+  for (const verdict of parseRowVerdicts(group, { allowGenericIds: true })) {
+    const tagged = String(verdict.detail ?? '').match(/^cannot-split\s*:\s*audit-evidence-unrecoverable(?:\s+(.+))?$/i);
+    if (!tagged) continue;
+    const item = byId.get(verdict.id);
+    if (!item) {
+      add(findings, 'audit-evidence-item', `re-split audit evidence ${tagged[1] ?? '(missing ref)'} must reference a current deferred Item, not ${verdict.id ?? '(unknown ID)'}`);
+      continue;
+    }
+    if (!/^deferred\b/i.test(value(item, 'status'))) {
+      add(findings, 'audit-evidence-item-status', `item ${value(item, 'id')}: audit-evidence-unrecoverable is only valid for a deferred Item`);
+      continue;
+    }
+    const ref = String(tagged[1] ?? '').trim();
+    const currentRowText = lines[Number(item.line) - 1];
+    findings.push(...validateDeferredAuditEvidence({ auditRef: ref, item, currentRowText, baseDir }));
+  }
+  return findings;
+}
+
 function validateV2Wake(text, wake, items, findings) {
   const lines = sectionFor(text, wake);
   const loc = `${wake.heading} (line ${wake.line})`;
@@ -260,6 +304,8 @@ export function checkHeartbeatV2(text, { now = new Date(), ledgerPath, baseDir, 
   if (!wakes.length) return findings;
   const latestWake = wakes[wakes.length - 1];
   validateV2Wake(text, latestWake, registryRows, findings);
+  const evidenceBaseDir = baseDir || (ledgerPath ? dirname(resolve(ledgerPath)) : process.cwd());
+  findings.push(...validateDeferredAuditProofs(text, latestWake, registryRows, evidenceBaseDir));
   const parsed = { text, wakes, items: registryRows, latestWake, ledgerPath: ledgerPath ? resolve(ledgerPath) : null };
   findings.push(...checkV2Guards(parsed));
   for (const check of (Array.isArray(extraChecks) ? extraChecks : [extraChecks])) {
