@@ -18,8 +18,8 @@ import {
 } from "./plugin-release.js";
 import { type CodexInstallIdentity, validateCodexIdentity } from "./verified-release.js";
 
-const PLUGIN_NAME = "codex-goal-progress";
-const MARKETPLACE_NAME = "codex-goal-progress-local";
+const PLUGIN_NAME = "codex-task-progress";
+const MARKETPLACE_NAME = "codex-task-progress-local";
 const CODEX_PLUGIN_COMMAND_TIMEOUT_MS = 30_000;
 const REQUIRED_HOOK_EVENTS = ["SessionStart", "PreToolUse", "PostToolUse"] as const;
 

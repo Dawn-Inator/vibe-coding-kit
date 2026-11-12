@@ -48,7 +48,7 @@ const pluginManifest = readJson(
 );
 const version = String(pluginManifest.version ?? "").trim();
 if (
-  pluginManifest.name !== "codex-goal-progress" ||
+  pluginManifest.name !== "codex-task-progress" ||
   !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(version)
 ) {
   throw new Error("GOAL_PROGRESS_PLUGIN_MANIFEST_INVALID");
@@ -83,7 +83,7 @@ function derivePluginContext() {
     if (
       basename(cacheDirectory) === "cache" &&
       basename(pluginsDirectory) === "plugins" &&
-      basename(pluginDirectory) === "codex-goal-progress" &&
+      basename(pluginDirectory) === "codex-task-progress" &&
       basename(marketplaceDirectory) &&
       basename(versionDirectory)
     ) {
@@ -111,7 +111,7 @@ function derivePluginContext() {
     pluginDataRoot = resolve(
       inferred.codexHome,
       "plugins/data",
-      `codex-goal-progress-${inferred.marketplaceName}`,
+      `codex-task-progress-${inferred.marketplaceName}`,
     );
   }
   if (!pluginDataRoot) {
@@ -157,7 +157,7 @@ const helperLauncherPath = resolve(versionRoot, "bin/goal-progress");
 const helperBundlePath = resolve(versionRoot, "bin/goal-progress.cjs");
 const legacyBinary = resolve(
   homedir(),
-  "Library/Application Support/CodexGoalProgress/install/current/bin/goal-progress",
+  "Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress",
 );
 
 async function log(event, details = {}) {

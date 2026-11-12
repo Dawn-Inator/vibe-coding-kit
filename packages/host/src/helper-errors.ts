@@ -1,8 +1,11 @@
+import { ZodError } from "zod";
 import { GoalProgressIpcClientError, GoalProgressIpcHandlerError } from "../../ipc/src/index.js";
 import { GoalProgressStoreError } from "../../store/src/index.js";
+import { TaskStoreError } from "../../tasks/src/task-store.js";
 
 export function helperErrorCode(error: unknown): string {
   if (
+    error instanceof TaskStoreError ||
     error instanceof GoalProgressStoreError ||
     error instanceof GoalProgressIpcClientError ||
     error instanceof GoalProgressIpcHandlerError
@@ -34,6 +37,10 @@ export function toHelperHandlerError(error: unknown): GoalProgressIpcHandlerErro
   if (error instanceof GoalProgressIpcHandlerError) {
     return error;
   }
+  if (error instanceof ZodError)
+    return new GoalProgressIpcHandlerError("TASK_INPUT_INVALID", error.message);
+  if (error instanceof TaskStoreError)
+    return new GoalProgressIpcHandlerError(error.code, error.message);
   if (error instanceof GoalProgressStoreError) {
     return new GoalProgressIpcHandlerError(
       error.code,

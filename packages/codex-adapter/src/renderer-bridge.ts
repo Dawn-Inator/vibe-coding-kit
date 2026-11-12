@@ -37,6 +37,13 @@ import {
 } from "./cdp.js";
 import type { GoalProgressRendererBundle } from "./renderer-bundle.js";
 
+export interface TaskPageRequest {
+  method: "get" | "history" | "bind-heartbeat";
+  threadId: string;
+  cursor?: string | undefined;
+  path?: string | null | undefined;
+}
+
 export interface CdpEventSource {
   onEvent(method: string, listener: (params: unknown) => void): () => void;
 }
@@ -51,6 +58,7 @@ export interface GoalProgressRendererBridgeOptions {
   readonly platform: CodexHostPlatform;
   readonly appVersion: string;
   readonly closeSender?: () => Promise<void>;
+  readonly onTaskRequest?: (request: TaskPageRequest) => Promise<unknown>;
   readonly onUiIntent?: (
     threadId: string,
     intent: GoalProgressUiIntent,
@@ -183,6 +191,8 @@ export class GoalProgressRendererBridge {
   readonly #platform: CodexHostPlatform;
   readonly #appVersion: string;
   readonly #closeSender: (() => Promise<void>) | undefined;
+  readonly #onTaskRequest: GoalProgressRendererBridgeOptions["onTaskRequest"];
+  readonly #taskBindingName = `__CODEX_TASK_PROGRESS_${randomBytes(24).toString("hex")}`;
   readonly #onUiIntent: GoalProgressRendererBridgeOptions["onUiIntent"];
   readonly #onUpdateIntent: GoalProgressRendererBridgeOptions["onUpdateIntent"];
   readonly #onVisibleThreadChange: GoalProgressRendererBridgeOptions["onVisibleThreadChange"];
@@ -213,6 +223,7 @@ export class GoalProgressRendererBridge {
     this.#platform = options.platform;
     this.#appVersion = options.appVersion;
     this.#closeSender = options.closeSender;
+    this.#onTaskRequest = options.onTaskRequest;
     this.#onUiIntent = options.onUiIntent;
     this.#onUpdateIntent = options.onUpdateIntent;
     this.#onVisibleThreadChange = options.onVisibleThreadChange;
@@ -264,6 +275,7 @@ export class GoalProgressRendererBridge {
       }),
       options.sender.onEvent?.("Runtime.bindingCalled", (params) => {
         void this.#enqueue(async () => {
+          if (await this.#handleTaskRequest(params)) return;
           if (await this.#handleVisibleThreadSignal(params)) {
             return;
           }
@@ -538,7 +550,76 @@ export class GoalProgressRendererBridge {
       await installGoalProgressPageBundle(this.#sender, this.#bundle);
       this.#scriptRegistered = true;
     }
+    await this.#installTaskBinding();
     this.#installed = true;
+  }
+
+  async #installTaskBinding(): Promise<void> {
+    if (!this.#onTaskRequest) return;
+    await this.#sender.send("Runtime.addBinding", { name: this.#taskBindingName });
+    await this.#sender.send("Runtime.evaluate", {
+      expression: `(() => {
+      const binding = globalThis[${JSON.stringify(this.#taskBindingName)}];
+      const pending = new Map(); let sequence = 0;
+      globalThis.__codexTaskProgressResolve = (id, result, error) => {
+        const entry = pending.get(id); if (!entry) return;
+        pending.delete(id); clearTimeout(entry.timer);
+        error ? entry.reject(new Error(error)) : entry.resolve(result);
+      };
+      globalThis.__codexTaskProgressRequest = request => new Promise((resolve, reject) => {
+        const id = String(++sequence);
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error('Task panel connection timed out')); }, 12000);
+        pending.set(id, {resolve, reject, timer}); binding(JSON.stringify({id, request}));
+      });
+    })()`,
+    });
+  }
+
+  async #handleTaskRequest(params: unknown): Promise<boolean> {
+    const event = z
+      .object({
+        name: z.string(),
+        payload: z.string(),
+        executionContextId: z.number().int().optional(),
+      })
+      .safeParse(params);
+    if (!event.success || event.data.name !== this.#taskBindingName) return false;
+    if (Buffer.byteLength(event.data.payload) > 8192) return true;
+    let id: string | undefined;
+    try {
+      const payload = z
+        .object({
+          id: z.string().max(128),
+          request: z
+            .object({
+              method: z.enum(["get", "history", "bind-heartbeat"]),
+              threadId: z.string().min(1).max(512),
+              cursor: z.string().max(512).optional(),
+              path: z.string().max(4096).nullable().optional(),
+            })
+            .strict(),
+        })
+        .parse(JSON.parse(event.data.payload));
+      id = payload.id;
+      const visible = await readGoalProgressVisibleThreadId(this.#sender);
+      if (visible !== payload.request.threadId) throw new Error("TASK_VISIBLE_THREAD_MISMATCH");
+      const result = await this.#onTaskRequest?.(payload.request);
+      await this.#sender.send("Runtime.evaluate", {
+        expression: `globalThis.__codexTaskProgressResolve?.(${JSON.stringify(id)},${JSON.stringify(result ?? null)},null)`,
+        ...(event.data.executionContextId === undefined
+          ? {}
+          : { contextId: event.data.executionContextId }),
+      });
+    } catch (error) {
+      if (id)
+        await this.#sender.send("Runtime.evaluate", {
+          expression: `globalThis.__codexTaskProgressResolve?.(${JSON.stringify(id)},null,${JSON.stringify(error instanceof Error ? error.message : String(error))})`,
+          ...(event.data.executionContextId === undefined
+            ? {}
+            : { contextId: event.data.executionContextId }),
+        });
+    }
+    return true;
   }
 
   async #handleVisibleThreadSignal(params: unknown): Promise<boolean> {
@@ -855,6 +936,7 @@ export async function connectGoalProgressRendererBridgeTarget(
       platform: options.platform,
       appVersion: options.appVersion,
       closeSender: () => client.close(),
+      ...(options.onTaskRequest === undefined ? {} : { onTaskRequest: options.onTaskRequest }),
       ...(options.onUiIntent === undefined ? {} : { onUiIntent: options.onUiIntent }),
       ...(options.onUpdateIntent === undefined ? {} : { onUpdateIntent: options.onUpdateIntent }),
       ...(options.onVisibleThreadChange === undefined

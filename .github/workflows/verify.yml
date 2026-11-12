@@ -21,4 +21,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - run: pnpm test
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:ui
       - run: node runtime/build-runtime.mjs --source . --output .cache/source-runtime-check

@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultOutputRoot = resolve(defaultSourceRoot, "plugins/codex-goal-progress");
+const defaultOutputRoot = resolve(defaultSourceRoot, "plugins/codex-task-progress");
 
 async function assertNoSymbolicLinks(path, sourceRoot) {
   const metadata = await lstat(path);

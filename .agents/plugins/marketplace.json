@@ -1,11 +1,11 @@
 {
-  "name": "codex-goal-progress-local",
+  "name": "codex-task-progress-local",
   "interface": {
-    "displayName": "Codex Goal Progress Local"
+    "displayName": "Codex Task Progress Local"
   },
   "plugins": [
     {
-      "name": "codex-goal-progress",
+      "name": "codex-task-progress",
       "source": {
         "source": "local",
         "path": "./"

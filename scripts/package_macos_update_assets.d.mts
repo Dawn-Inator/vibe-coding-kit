@@ -1,5 +1,5 @@
-export const MACOS_UPDATE_ARCHIVE_NAME: "codex-goal-progress-macos-arm64.zip";
-export const MACOS_UPDATE_ARCHIVE_ROOT: "codex-goal-progress-macos-arm64";
+export const MACOS_UPDATE_ARCHIVE_NAME: "codex-task-progress-macos-arm64.zip";
+export const MACOS_UPDATE_ARCHIVE_ROOT: "codex-task-progress-macos-arm64";
 
 export interface PackageMacosUpdateAssetsOptions {
   readonly releaseRoot?: string;

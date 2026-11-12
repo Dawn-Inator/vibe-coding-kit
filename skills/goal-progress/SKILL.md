@@ -1,6 +1,6 @@
 ---
 name: goal-progress
-description: Explicitly attach verified checklist progress to one native Codex Goal. Use only when the user explicitly selects Goal Progress or invokes $codex-goal-progress:goal-progress. Do not use for an ordinary Goal, a status question, or update_plan.
+description: Explicitly attach verified checklist progress to one native Codex Goal. Use only when the user explicitly selects Goal Progress or invokes $codex-task-progress:goal-progress. Do not use for an ordinary Goal, a status question, or update_plan.
 ---
 
 # Goal Progress

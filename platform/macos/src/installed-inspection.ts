@@ -304,7 +304,7 @@ export async function inspectInstalledHook(
 ): Promise<InstalledHookInspection> {
   const hookPath = resolve(
     installed.programReleaseRoot,
-    "plugin-marketplace/plugins/codex-goal-progress/hooks/hooks.json",
+    "plugin-marketplace/plugins/codex-task-progress/hooks/hooks.json",
   );
   const hookText = await readFile(hookPath, "utf8");
   const hookDocument = JSON.parse(hookText) as {

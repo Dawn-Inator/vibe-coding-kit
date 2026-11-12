@@ -36,6 +36,12 @@ export const GoalProgressMcpToolNameSchema = z.enum([
   "goal_progress_update",
   "goal_progress_rescope",
   "goal_progress_set_phase",
+  "task_progress_get",
+  "task_progress_initialize",
+  "task_progress_update",
+  "task_progress_rescope",
+  "task_progress_history",
+  "task_progress_bind_heartbeat",
 ]);
 
 export const GoalProgressIpcAuthorizationSchema = z.discriminatedUnion("kind", [
@@ -153,6 +159,34 @@ const RequestEnvelopeFields = {
 };
 
 export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
+  z
+    .object({
+      ...RequestEnvelopeFields,
+      method: z.literal("task.request"),
+      params: z
+        .object({
+          action: z.enum(["get", "initialize", "update", "rescope", "history", "bind-heartbeat"]),
+          auth: GoalProgressIpcAuthorizationSchema,
+          input: z.unknown(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...RequestEnvelopeFields,
+      method: z.literal("task.view"),
+      params: z
+        .object({
+          threadId: z.string().trim().min(1).max(512),
+          action: z.enum(["get", "history", "bind-heartbeat"]),
+          cursor: z.string().max(512).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+          path: z.string().min(1).max(4096).nullable().optional(),
+        })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       ...RequestEnvelopeFields,

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Task Progress"
+  short_description: "Track ordinary tasks with evidence and history"
+  default_prompt: "$codex-task-progress:task-progress"
+policy:
+  allow_implicit_invocation: true

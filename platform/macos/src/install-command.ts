@@ -445,7 +445,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       const hookSha256 = await fileSha256(
         resolve(
           layout.programReleaseRoot,
-          "plugin-marketplace/plugins/codex-goal-progress/hooks/hooks.json",
+          "plugin-marketplace/plugins/codex-task-progress/hooks/hooks.json",
         ),
       );
       const installManifest: InstalledManifest = {

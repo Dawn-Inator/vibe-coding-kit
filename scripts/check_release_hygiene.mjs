@@ -99,7 +99,7 @@ export async function assertReleaseVersions(root = repoRoot) {
   const manifests = [
     "package.json",
     ".codex-plugin/plugin.json",
-    "plugins/codex-goal-progress/.codex-plugin/plugin.json",
+    "plugins/codex-task-progress/.codex-plugin/plugin.json",
     "platform/macos/package.json",
   ];
   const workspacePackages = await readdir(resolve(root, "packages"), { withFileTypes: true });
@@ -156,7 +156,7 @@ export async function assertMacosReleaseTree(root) {
 
 export async function assertReleaseHygiene(root = repoRoot) {
   await assertReleaseVersions(root);
-  await assertReleaseTree(resolve(root, "plugins/codex-goal-progress"), "Plugin package");
+  await assertReleaseTree(resolve(root, "plugins/codex-task-progress"), "Plugin package");
   for (const optional of ["dist/plugin", "dist/renderer"]) {
     try {
       await stat(resolve(root, optional));

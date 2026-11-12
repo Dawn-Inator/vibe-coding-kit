@@ -1,7 +1,7 @@
 {
-  "name": "codex-goal-progress",
-  "version": "0.3.12",
-  "description": "Explicitly attach deterministic progress tracking to one native Codex Goal.",
+  "name": "codex-task-progress",
+  "version": "0.4.0",
+  "description": "Always-on checklist progress, task history, and read-only Kit heartbeats for Codex chats.",
   "author": {
     "name": "Codex Goal Progress Contributors"
   },
@@ -9,10 +9,10 @@
   "mcpServers": "./.mcp.json",
   "hooks": "./hooks/hooks.json",
   "interface": {
-    "displayName": "Goal Progress",
-    "shortDescription": "Track one native Goal with verified progress.",
-    "longDescription": "Adds an explicit, checklist-based progress Contract to the current native Codex Goal while local Core code computes every percentage.",
-    "developerName": "Codex Goal Progress Contributors",
+    "displayName": "Task Progress",
+    "shortDescription": "Task progress and heartbeat history.",
+    "longDescription": "Always-on checklist progress, task history, and read-only Kit heartbeats for Codex chats.",
+    "developerName": "Dawn-Inator (based on Ezra-Y Goal Progress)",
     "category": "Productivity",
     "logo": "./assets/codex-goal-progress-plugin-logo.png",
     "capabilities": [
@@ -20,15 +20,15 @@
       "Write"
     ],
     "defaultPrompt": [
-      "$codex-goal-progress:goal-progress"
+      "$codex-task-progress:task-progress"
     ],
     "composerIcon": "./assets/icon.png",
-    "websiteURL": "https://github.com/Ezra-Y/codex-goal-progress"
+    "websiteURL": "https://github.com/Dawn-Inator/codex-task-progress"
   },
-  "repository": "https://github.com/ezra-y/codex-goal-progress",
+  "repository": "https://github.com/Dawn-Inator/codex-task-progress",
   "license": "MIT",
   "scripts": "./runtime/",
-  "homepage": "https://github.com/Ezra-Y/codex-goal-progress",
+  "homepage": "https://github.com/Dawn-Inator/codex-task-progress",
   "keywords": [
     "codex",
     "goal",

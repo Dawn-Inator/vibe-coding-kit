@@ -1,55 +1,11 @@
-# Permissions
+# Task Progress permissions
 
-Goal Progress uses local resources for the Plugin, Helper, progress state, and Codex Sidecar.
+This derivative uses the upstream local architecture: private Unix socket, a loopback CDP connection owned by the verified Codex process, a launchd Helper, local plugin hooks, and Codex App Server reads for trusted chat identity and native Goals. It does not modify Codex application files or signatures.
 
-## Product access
+Release data is under `~/Library/Application Support/CodexTaskProgress`, with launchd label `com.codextaskprogress.helper`. Source-plugin builds use private plugin data. Ordinary task events and snapshots are stored separately from upstream native Goal records. Model evidence is marked reported or verified; these records stay local.
 
-| Resource | Purpose | Scope |
-|---|---|---|
-| Codex Plugin | Skill, Hook, MCP, and Renderer bundle | `codex-goal-progress` only |
-| Application Support | Release files, state, logs, and preferences | `~/Library/Application Support/CodexGoalProgress` |
-| LaunchAgent | Starts the local Helper | `com.codexgoalprogress.helper` |
-| Unix socket | Connects Hook, MCP, CDP Bridge, and Doctor to Helper | Private runtime directory, mode `0600` |
-| Loopback CDP | Mounts the display-only Renderer in the verified Codex process | Random `127.0.0.1` port |
-| Codex App Server | Reads native Goal, Token, thread, and turn identity | Current Codex user session |
-| Process inspection | Confirms Codex and Helper ownership | Verified local PIDs and ports |
+The heartbeat adapter reads only discovered project ledgers and the canonical Kit inspection API. Selected paths, cached views and observed hashes are stored in private application data. It never edits ledger content or creates heartbeat schedules.
 
-Goal, Contract, and Token data flow between the current Codex session and the local Helper.
+Installation can require restarting Codex to establish CDP. The installer reports this requirement; the source bootstrap refuses to restart automatically. Ask before using `--restart-codex`.
 
-## macOS prompts
-
-macOS displays a Goal Progress background item because launchd starts the Helper.
-
-Codex restarts through LaunchServices when CDP configuration changes. This keeps macOS permission
-attribution attached to the Codex application.
-
-Set the installed command once in the current Terminal:
-
-```bash
-goal_progress="$HOME/Library/Application Support/CodexGoalProgress/install/current/bin/goal-progress"
-```
-
-If macOS displays an additional permission prompt:
-
-1. Save the prompt time and a screenshot.
-2. Run `"$goal_progress" doctor --json`.
-3. Run `"$goal_progress" emergency-disable --json` when the prompt repeats.
-4. Attach the Doctor result to a private security report.
-
-## Removing a prebuilt installation
-
-Run:
-
-```bash
-"$goal_progress" uninstall --json --keep-history
-```
-
-`--keep-history` preserves Goal Progress checklists and progress records. Use `--delete-history`
-only after the user explicitly requests deletion of that plugin data. Native Codex Goals and
-chat history are separate and remain intact.
-
-## Removing a source installation
-
-Ask Codex to uninstall Goal Progress. The source plugin's `goal_progress_uninstall` tool removes
-its runtime and plugin progress data, while keeping native Goals, chat history, other plugins,
-and the shared marketplace. This source-uninstall flow does not offer `--keep-history`.
+See [installation and removal](../INSTALL-FOR-AI.md) and [README](../README.md). To uninstall a release while preserving task/history data, use the installed `bin/goal-progress uninstall --json --keep-history`. Native Codex Goals and chats are separate from this plugin's data.

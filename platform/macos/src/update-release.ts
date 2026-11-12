@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { StrictSemverSchema } from "../../../packages/contracts/src/index.js";
 
 export const GOAL_PROGRESS_RELEASE_URL_PREFIX =
-  "https://github.com/Ezra-Y/codex-goal-progress/releases/tag/v";
+  "https://github.com/Dawn-Inator/codex-task-progress/releases/tag/v";
 
 export type MacosReleaseOpener = (url: string) => Promise<void>;
 

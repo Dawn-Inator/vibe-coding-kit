@@ -1,6 +1,6 @@
 {
-  "name": "codex-goal-progress",
-  "version": "0.3.12",
+  "name": "codex-task-progress",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -9,9 +9,9 @@
   },
   "packageManager": "pnpm@11.19.0",
   "scripts": {
-    "lint": "biome check package.json tsconfig.base.json tsconfig.json biome.json scripts packages platform hooks runtime",
+    "lint": "biome check package.json tsconfig.base.json tsconfig.json biome.json scripts packages platform hooks runtime tests",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "validate:plugin": "node scripts/validate_plugin_contract.mjs . && node scripts/validate_plugin_contract.mjs plugins/codex-goal-progress",
+    "validate:plugin": "node scripts/validate_plugin_contract.mjs . && node scripts/validate_plugin_contract.mjs plugins/codex-task-progress",
     "validate:hygiene": "node scripts/check_release_hygiene.mjs",
     "helper": "tsx packages/host/src/index.ts",
     "build:code": "node scripts/build_code.mjs",
@@ -21,7 +21,9 @@
     "package:release:macos": "node scripts/package_macos_update_assets.mjs",
     "build": "pnpm build:code && pnpm build:renderer && pnpm build:plugin",
     "verify": "pnpm verify:public",
-    "verify:public": "pnpm lint && pnpm typecheck && pnpm build && pnpm validate:plugin && pnpm validate:hygiene"
+    "verify:public": "pnpm lint && pnpm typecheck && pnpm build && pnpm validate:plugin && pnpm validate:hygiene",
+    "test": "tsx --test packages/tasks/test/*.test.ts packages/tasks/src/heartbeat.test.ts packages/host/test/*.test.ts packages/codex-adapter/test/*.test.ts packages/mcp/src/task-mcp.test.ts hooks/src/task-hooks.test.ts",
+    "test:ui": "node --test tests/task-panel.test.mjs"
   },
   "dependencies": {
     "@lucide/icons": "^1.37.0",
@@ -31,6 +33,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@playwright/test": "^1.65.0",
     "@types/node": "^22.20.1",
     "esbuild": "^0.28.2",
     "postject": "1.0.0-alpha.6",

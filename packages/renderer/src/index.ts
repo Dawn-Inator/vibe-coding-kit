@@ -21,7 +21,7 @@ export { GoalProgressElement } from "./goal-progress-element.js";
 
 declare global {
   interface HTMLElementTagNameMap {
-    "codex-goal-progress": GoalProgressElement;
+    "codex-task-progress": GoalProgressElement;
   }
 }
 

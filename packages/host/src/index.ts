@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
 import {
   checkGoalProgressUpdateManifest,
@@ -75,6 +76,13 @@ import {
   resolveGoalProgressSessionPaths,
   writeGoalProgressTrackingOverlay,
 } from "../../store/src/index.js";
+import { HeartbeatService } from "../../tasks/src/heartbeat.js";
+import {
+  TaskInitializeInputSchema,
+  TaskRescopeInputSchema,
+  TaskStore,
+  TaskUpdateInputSchema,
+} from "../../tasks/src/index.js";
 import {
   type GoalProgressDoctorResult,
   inspectGoalProgress,
@@ -90,6 +98,7 @@ import {
   type HelperRendererIpcRequest,
   type HelperStoreIpcRequest,
   type HelperSystemIpcRequest,
+  type HelperTaskIpcRequest,
   type HelperUiIpcRequest,
   type HelperUpdateIpcRequest,
 } from "./helper-ipc-router.js";
@@ -331,6 +340,8 @@ export class GoalProgressHelper {
   readonly #lockOptions: HelperLockOptions;
   readonly #logger: GoalProgressLogger;
   readonly #store: GoalEventStore;
+  readonly #taskStore: TaskStore;
+  readonly #heartbeat: HeartbeatService;
   readonly #runtime: CodexAppServerRuntime;
   readonly #sessionCoordinator: GoalProgressSessionCoordinator;
   readonly #rendererDoctor:
@@ -370,6 +381,8 @@ export class GoalProgressHelper {
 
   constructor(options: GoalProgressHelperOptions = {}) {
     this.paths = options.paths ?? resolveGoalProgressPaths();
+    this.#taskStore = new TaskStore(this.paths.root);
+    this.#heartbeat = new HeartbeatService(this.paths.root);
     this.#lockOptions = options.lock ?? {};
     this.#logger = new GoalProgressLogger(this.paths.helperLogPath, options.logger);
     this.#store = new GoalEventStore(this.paths, {
@@ -2316,9 +2329,83 @@ export class GoalProgressHelper {
     };
   }
 
+  async #handleTaskIpc(request: HelperTaskIpcRequest): Promise<GoalProgressIpcHandlerResult> {
+    const action = request.params.action;
+    let threadId: string;
+    let cwd: string;
+    let input: unknown;
+    if (request.method === "task.request") {
+      const expectedTool = `task_progress_${action.replaceAll("-", "_")}`;
+      if (
+        request.params.auth.kind === "codex-request" &&
+        request.params.auth.toolName !== expectedTool
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_TOOL_MISMATCH",
+          "Task action does not match tool identity",
+        );
+      const identity = await this.#sessionCoordinator.authorizeSessionRequest(request.params.auth);
+      threadId = identity.threadId;
+      cwd = identity.cwd;
+      input = request.params.input;
+    } else {
+      threadId = request.params.threadId;
+      const identity = await this.#runtime.readThreadIdentity(threadId);
+      if (
+        identity.id !== threadId ||
+        identity.threadSource !== "user" ||
+        identity.ephemeral ||
+        identity.agentRole !== null
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_THREAD_UNTRUSTED",
+          "Panel requires a verified user chat",
+        );
+      cwd = identity.cwd;
+      input = request.params;
+    }
+    let result: unknown;
+    if (action === "initialize")
+      result = await this.#taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
+    else if (action === "update")
+      result = await this.#taskStore.update(threadId, TaskUpdateInputSchema.parse(input));
+    else if (action === "rescope")
+      result = await this.#taskStore.rescope(threadId, TaskRescopeInputSchema.parse(input));
+    else {
+      const task = await this.#taskStore.get(threadId);
+      let heartbeat = await this.#heartbeat.view(threadId, cwd);
+      if (action === "bind-heartbeat") {
+        const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
+        heartbeat = await this.#heartbeat.bind(threadId, bind.path, cwd);
+      }
+      const history =
+        action === "history"
+          ? await this.#taskStore.history(
+              threadId,
+              (() => {
+                const options = z
+                  .object({
+                    cursor: z.string().optional(),
+                    limit: z.number().int().min(1).max(100).optional(),
+                  })
+                  .parse(input ?? {});
+                return {
+                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                  ...(options.limit === undefined ? {} : { limit: options.limit }),
+                };
+              })(),
+            )
+          : undefined;
+      result = { task, heartbeat, ...(history ? { history } : {}) };
+    }
+    const state = await this.#taskStore.get(threadId);
+    return { revision: state?.revision ?? null, result };
+  }
+
   #handler(): GoalProgressIpcHandler {
     return new HelperIpcRouter({
       routes: {
+        task: (request) => this.#handleTaskIpc(request),
         system: (request) => this.#handleSystemIpc(request),
         hook: (request) => this.#handleHookIpc(request),
         activation: (request) => this.#handleActivationIpc(request),
@@ -2427,6 +2514,7 @@ export class GoalProgressHelper {
   }
 
   async stop(): Promise<void> {
+    this.#heartbeat.close();
     const preservePage = this.#viewModelPublisher.currentUpdateState?.phase === "installing";
     this.#ready = false;
     this.#clearUpdateActivationRetries();

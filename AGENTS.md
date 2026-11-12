@@ -1,12 +1,7 @@
-# AGENTS.md
+# Task Progress development
 
-This file is for AI agents installing Goal Progress for a user.
+Preserve upstream MIT attribution and Git history. Task stores and private heartbeat records are runtime data, never repository content.
 
-## Installation
+Run `corepack pnpm verify:public`, `corepack pnpm test`, and `corepack pnpm test:ui` for changes to the task flow. Keep Helper as the sole durable task writer. Preserve verified thread binding on MCP and CDP paths.
 
-1. Read `INSTALL-FOR-AI.md` and follow it from start to finish.
-2. Ask the user before restarting Codex.
-3. Run Doctor and Verify after installation.
-4. Confirm the installed version matches the downloaded release manifest.
-5. Report installation, Doctor, Verify, and any outstanding chat-reconnect action.
-6. Distinguish command-line checks from an actually tested visible Goal card.
+For installation follow INSTALL-FOR-AI.md. Ask before restarting Codex; no Hook or source bootstrap may silently restart the app. Report CLI diagnostics separately from actual visible ordinary-chat verification.

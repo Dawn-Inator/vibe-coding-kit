@@ -51,8 +51,14 @@ async function licenseText(
 
 export async function generateThirdPartyNotices(workspaceRoot: string): Promise<string> {
   const result = spawnSync(
-    process.env.GOAL_PROGRESS_PNPM_BINARY ?? "pnpm",
-    ["licenses", "list", "--prod", "--json"],
+    process.env.GOAL_PROGRESS_PNPM_BINARY ?? "corepack",
+    [
+      ...(process.env.GOAL_PROGRESS_PNPM_BINARY ? [] : ["pnpm"]),
+      "licenses",
+      "list",
+      "--prod",
+      "--json",
+    ],
     {
       cwd: workspaceRoot,
       encoding: "utf8",

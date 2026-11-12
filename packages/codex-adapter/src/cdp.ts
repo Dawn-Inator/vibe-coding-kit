@@ -767,7 +767,7 @@ export async function invokeGoalProgressPageApi(
     "Runtime.evaluate",
     {
       expression: "globalThis.__CODEX_GOAL_PROGRESS__",
-      objectGroup: "codex-goal-progress",
+      objectGroup: "codex-task-progress",
       returnByValue: false,
       awaitPromise: true,
     },

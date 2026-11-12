@@ -26,6 +26,11 @@ import {
   goalProgressIpcRequestBytes,
 } from "../../ipc/src/index.js";
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
+import {
+  TaskInitializeInputSchema,
+  TaskRescopeInputSchema,
+  TaskUpdateInputSchema,
+} from "../../tasks/src/task-types.js";
 import { completeInitialization, GoalProgressInitializeBusinessSchema } from "./initialization.js";
 import {
   type GoalProgressMcpRequestExtra,
@@ -630,7 +635,7 @@ function activationNextStep(result: z.infer<typeof IpcActivationResultSchema>): 
 
 export function createGoalProgressMcpServer(options: GoalProgressMcpServerOptions = {}): McpServer {
   const server = new McpServer({
-    name: "codex-goal-progress",
+    name: "codex-task-progress",
     version: GOAL_PROGRESS_RELEASE_VERSION,
   });
   let ipcClient = options.ipcClient;
@@ -659,6 +664,122 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       },
       extra,
     );
+
+  const taskTools = [
+    {
+      name: "task_progress_get",
+      action: "get",
+      title: "Read Task Progress",
+      schema: EmptyBusinessSchema,
+      description:
+        "Read this ordinary chat's task, revision and heartbeat state. No native Goal is needed. Call before mutations; initialize only if no task exists.",
+    },
+    {
+      name: "task_progress_initialize",
+      action: "initialize",
+      title: "Initialize Task Progress",
+      schema: TaskInitializeInputSchema,
+      description:
+        "Create this chat's ordinary task checklist for an actionable implementation request. No native Goal is created. Use stable IDs, requestId and expectedRevision 0; completed items need evidence.",
+    },
+    {
+      name: "task_progress_update",
+      action: "update",
+      title: "Update Task Progress",
+      schema: TaskUpdateInputSchema,
+      description:
+        "Update existing checklist status after actual work or verification. Read first, use returned expectedRevision, attach evidence and explain regressions. Retry identical requests with the same requestId.",
+    },
+    {
+      name: "task_progress_rescope",
+      action: "rescope",
+      title: "Adjust Task Scope",
+      schema: TaskRescopeInputSchema,
+      description:
+        "Extend or correct the current chat's checklist. Preserve stable IDs and previous work; removed items remain cancelled in history. Explain changed scope; total progress may decrease.",
+    },
+    {
+      name: "task_progress_history",
+      action: "history",
+      title: "Read Task History",
+      schema: z
+        .object({
+          cursor: z.string().max(512).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+        })
+        .strict(),
+      description:
+        "Read a page of this chat's persisted task events, evidence and progress changes; pass nextCursor to continue.",
+    },
+    {
+      name: "task_progress_bind_heartbeat",
+      action: "bind-heartbeat",
+      title: "Associate Heartbeat Ledger",
+      schema: z.object({ path: z.string().min(1).max(4096).nullable() }).strict(),
+      description:
+        "Select a discovered project heartbeat ledger for read-only display, or pass null to unbind. Does not create a timer, change the ledger, or perform an audit.",
+    },
+  ] as const;
+  for (const tool of taskTools) {
+    const jsonSchema = z.toJSONSchema(tool.schema, { target: "draft-07", io: "input" });
+    const transportSchema = z
+      .object(
+        Object.fromEntries(
+          Object.entries(tool.schema.shape).map(([key, schema]) => [
+            key,
+            businessTransportField(schema),
+          ]),
+        ),
+      )
+      .passthrough()
+      .meta({ required: jsonSchema.required ?? [], additionalProperties: false });
+    server.registerTool(
+      tool.name,
+      {
+        title: tool.title,
+        description: tool.description,
+        inputSchema: transportSchema,
+        annotations: {
+          readOnlyHint: tool.action === "get" || tool.action === "history",
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (input, extra) => {
+        const identity = resolveToolIdentity(tool.name, input, extra);
+        if (!identity.ok) return runtimeContextError(identity.code);
+        const business = tool.schema.safeParse(businessInput(input));
+        if (!business.success) {
+          return consumeProofForRejectedInput(
+            getIpcClient(),
+            identity,
+            inputRejection(business.error),
+          );
+        }
+        try {
+          const client = getIpcClient();
+          const request = {
+            method: "task.request",
+            params: { action: tool.action, auth: identity.auth, input: business.data },
+          } satisfies GoalProgressIpcRequestInput;
+          const oversized = await rejectOversizedRequest(client, request, identity);
+          if (oversized) return oversized;
+          const response = await client.request(request);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ ok: true, result: response.result }),
+              },
+            ],
+          };
+        } catch (error) {
+          return requestError(error);
+        }
+      },
+    );
+  }
 
   server.registerTool(
     GOAL_PROGRESS_ACTIVATE_TOOL_NAME,

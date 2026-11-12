@@ -11,8 +11,8 @@ import {
 } from "../../ipc/src/index.js";
 
 // The launcher supplies the installation identity; request arguments never choose it.
-const EXPECTED_PLUGIN_ID = `codex-goal-progress@${
-  process.env.GOAL_PROGRESS_PLUGIN_MARKETPLACE?.trim() || "codex-goal-progress-local"
+const EXPECTED_PLUGIN_ID = `codex-task-progress@${
+  process.env.GOAL_PROGRESS_PLUGIN_MARKETPLACE?.trim() || "codex-task-progress-local"
 }`;
 const boundedId = z.string().trim().min(1).max(512);
 const boundedModel = z.string().trim().min(1).max(256);

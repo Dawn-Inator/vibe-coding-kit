@@ -6,7 +6,7 @@ Read this file only for first activation, cancellation, or recovery.
 
 The Skill is already explicit when this flow starts. Treat repeated identical marker lines in one
 message as one invocation. Remove every line whose trimmed value is exactly
-`$codex-goal-progress:goal-progress`. Preserve all other lines in order as one objective body.
+`$codex-task-progress:goal-progress`. Preserve all other lines in order as one objective body.
 
 Call `goal_progress_activate` with `{}`. It reads the trusted current native Goal; model-written
 Goal text is never an activation argument. The result does not mean the Contract is active.

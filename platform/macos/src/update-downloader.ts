@@ -19,7 +19,7 @@ export const GOAL_PROGRESS_UPDATE_SHA256SUMS_MAX_BYTES = 64 * 1024;
 export const GOAL_PROGRESS_UPDATE_ZIP_MAX_BYTES = 256 * 1024 * 1024;
 export const GOAL_PROGRESS_UPDATE_METADATA_TIMEOUT_MS = 15_000;
 export const GOAL_PROGRESS_UPDATE_ZIP_TIMEOUT_MS = 10 * 60 * 1_000;
-export const GOAL_PROGRESS_UPDATE_ARCHIVE_ROOT = "codex-goal-progress-macos-arm64";
+export const GOAL_PROGRESS_UPDATE_ARCHIVE_ROOT = "codex-task-progress-macos-arm64";
 
 export interface GoalProgressUpdateDownloadProgress {
   readonly downloadedBytes: number;

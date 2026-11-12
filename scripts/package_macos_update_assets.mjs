@@ -5,8 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const MACOS_UPDATE_ARCHIVE_NAME = "codex-goal-progress-macos-arm64.zip";
-export const MACOS_UPDATE_ARCHIVE_ROOT = "codex-goal-progress-macos-arm64";
+export const MACOS_UPDATE_ARCHIVE_NAME = "codex-task-progress-macos-arm64.zip";
+export const MACOS_UPDATE_ARCHIVE_ROOT = "codex-task-progress-macos-arm64";
 
 function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");

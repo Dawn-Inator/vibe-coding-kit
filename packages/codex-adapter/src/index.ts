@@ -229,7 +229,7 @@ export class CodexAppServerClient implements ThreadCatalog {
     try {
       await client.#request("initialize", {
         clientInfo: {
-          name: "codex-goal-progress",
+          name: "codex-task-progress",
           title: "Codex Goal Progress",
           version: GOAL_PROGRESS_RELEASE_VERSION,
         },

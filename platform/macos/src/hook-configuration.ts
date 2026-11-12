@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-export const GOAL_PROGRESS_PLUGIN_ID = "codex-goal-progress@codex-goal-progress-local";
+export const GOAL_PROGRESS_PLUGIN_ID = "codex-task-progress@codex-task-progress-local";
 const HOOK_CONFIGURATION_TIMEOUT_MS = 10_000;
 const CODEX_HOOK_HASH_PATTERN = /^sha256:[0-9a-f]{64}(?:\/sha256:[0-9a-f]{64})?$/u;
 const GOAL_PROGRESS_HOOK_KEYS = [
@@ -202,7 +202,7 @@ async function configureInstalledGoalProgressHooks(
       method: "initialize",
       params: {
         clientInfo: {
-          name: "codex-goal-progress-installer",
+          name: "codex-task-progress-installer",
           version: "1",
         },
         capabilities: {

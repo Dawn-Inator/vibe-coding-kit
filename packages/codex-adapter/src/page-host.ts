@@ -153,7 +153,7 @@ export interface GoalProgressPageMountInput {
 }
 
 export interface GoalProgressPageHostApi {
-  readonly namespace: "codex-goal-progress";
+  readonly namespace: "codex-task-progress";
   readonly version: typeof GOAL_PROGRESS_PAGE_HOST_VERSION;
   readonly releaseVersion: typeof GOAL_PROGRESS_RELEASE_VERSION;
   mount(input: unknown): SidecarMountResult | GoalProgressPageHostFailure;
@@ -452,7 +452,7 @@ function relevantMutation(record: MutationRecord, managedHost: HTMLElement | nul
 }
 
 class GoalProgressPageHost implements GoalProgressPageHostApi {
-  readonly namespace = "codex-goal-progress";
+  readonly namespace = "codex-task-progress";
   readonly version = GOAL_PROGRESS_PAGE_HOST_VERSION;
   readonly releaseVersion = GOAL_PROGRESS_RELEASE_VERSION;
   readonly #document: Document;
@@ -1047,7 +1047,7 @@ class GoalProgressPageHost implements GoalProgressPageHostApi {
 function isInstalledApi(value: unknown): value is GoalProgressPageHostApi {
   return (
     isRecord(value) &&
-    value.namespace === "codex-goal-progress" &&
+    value.namespace === "codex-task-progress" &&
     value.version === GOAL_PROGRESS_PAGE_HOST_VERSION &&
     value.releaseVersion === GOAL_PROGRESS_RELEASE_VERSION &&
     typeof value.mount === "function" &&
@@ -1064,7 +1064,7 @@ function isReplaceableApi(
 ): value is { readonly version: number; readonly releaseVersion?: string; unmount(): unknown } {
   return (
     isRecord(value) &&
-    value.namespace === "codex-goal-progress" &&
+    value.namespace === "codex-task-progress" &&
     Number.isSafeInteger(value.version) &&
     (value.version as number) > 0 &&
     ((value.version as number) < GOAL_PROGRESS_PAGE_HOST_VERSION ||

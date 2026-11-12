@@ -315,6 +315,7 @@ export async function connectHelperRendererBridge(
     bundle,
     platform: "macos",
     appVersion: app.shortVersion,
+    onTaskRequest: (request) => viewClient.taskRequest(request),
     onUiIntent: (threadId, intent) => viewClient.applyUiIntent(threadId, intent),
     onUpdateIntent: (threadId, intent) => viewClient.applyUpdateIntent(threadId, intent),
     onVisibleThreadChange: (threadId, sequence, lifecycleId) =>
@@ -384,6 +385,7 @@ export async function connectHelperRendererTargetSource(
             bundle,
             platform: "macos",
             appVersion: app.shortVersion,
+            onTaskRequest: (request) => viewClient.taskRequest(request),
             onUiIntent: (threadId, intent) => viewClient.applyUiIntent(threadId, intent),
             onUpdateIntent: (threadId, intent) => viewClient.applyUpdateIntent(threadId, intent),
             onVisibleThreadChange: (threadId, sequence, lifecycleId) =>

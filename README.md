@@ -1,144 +1,47 @@
-<div align="center">
-  <h1 align="center">
-    <img src="https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-logo.png" alt="Codex Goal Progress logo" width="130"><br>
-    Codex Goal Progress
-  </h1>
-  <p>A native progress bar for Codex Goals, powered by verified checklists and local progress tracking.</p>
-  <p>
-    <strong>English</strong> ·
-    <a href="https://github.com/Ezra-Y/codex-goal-progress/blob/main/README.zh-CN.md">简体中文</a>
-  </p>
-</div>
+# Codex Task Progress
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/0911a93fa55162333c6c772bde478fab29af2660/docs/assets/codex-goal-progress-demo.gif" alt="Codex Goal Progress in action">
-</p>
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.4.0 adds ordinary-chat tracking; it is not an official Codex extension API.
 
-## 🆕 Latest update
+The compact panel appears above the composer for ordinary chats. Click the total to expand objectives, checklist items and evidence; use History to inspect progress and scope changes. New work can lower the percentage. Floating placement is draggable. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
-### v0.3.12 — Automatic connection recovery and lighter footprint
+Progress counts non-cancelled required checklist leaves equally. A completed item needs evidence labelled `reported` or `verified`. Time, token use and activity do not count as completion. An idle chat has no invented percentage. SessionStart supplies a short instruction for the current model to maintain task records; semantic updates still depend on that model calling the tools at meaningful milestones.
 
-- Automatically reconnect and restore the progress bar after long sessions or system sleep.
-- Clear outdated update prompts immediately after upgrading.
-- Reclaim disk space from older versions during upgrades and reduce page and conversation overhead.
+## Development
 
-Existing goals, checklists, progress and display preferences are preserved.
+Requires Apple Silicon macOS, Codex Desktop, Node >=22.12 and pnpm 11. Use `corepack pnpm install --frozen-lockfile`, then `corepack pnpm verify:public` and `corepack pnpm test`. Browser tests: `corepack pnpm test:ui`.
 
-## ✨ Features
+`corepack pnpm build` builds source code, renderer and the source plugin. Generated plugin output is `plugins/codex-task-progress`. The repository has one authoritative source tree; the plugin build copies it into the generated package's `runtime/source`.
 
-Displays a progress view beside the native Codex Goal, bringing together current objective
-progress, overall progress, and Token usage attributable to that Goal.
+To build a self-contained macOS release, obtain Node v24.19.0 darwin-arm64 from nodejs.org, verify its archive against SHASUMS256.txt, and run:
 
-| Capability | Behavior |
-|---|---|
-| Rule-driven progress | Calculates objective and overall progress from a validated checklist; Token usage and elapsed time remain separate supporting data. |
-| Verifiable calculation | The model handles only the necessary Goal understanding and checklist updates; the local Helper manages state and progress calculation. |
-| Native theme adaptation | Follows Codex Light/Dark mode and the user's current accent color. |
-| Type scale adaptation | Reads the current Codex UI font size and derives spacing continuously from it. |
-| Layout adaptation | Measures the real native Goal and composer geometry to coordinate fixed and draggable floating layouts. |
-| Language adaptation | Reads the live Codex document locale and direction, selects a matching built-in catalog, and falls back to English. |
-
-## 🚀 Quick start
-
-### Install from a plugin marketplace
-
-The source plugin requires an Apple Silicon Mac, Codex Desktop, Node.js 22.12 or newer,
-and pnpm 11. Install Goal Progress from the marketplace. On first use it installs the locked
-dependencies and builds the Helper in Codex plugin data; later starts reuse that build.
-
-### Install with AI
-
-Send this instruction to an AI:
-
-```text
-Install and verify https://github.com/Ezra-Y/codex-goal-progress by following its INSTALL-FOR-AI.md.
+```sh
+GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-### Install from Terminal
+The release is `dist/release/macos-arm64`; see [installation instructions](INSTALL-FOR-AI.md). First version uses manual rebuild/install updates from this private repository. No credentials are embedded in the plugin.
 
-```bash
-curl -fsSL https://github.com/Ezra-Y/codex-goal-progress/releases/latest/download/install.sh -o /tmp/codex-goal-progress-install.sh
-sh /tmp/codex-goal-progress-install.sh
+## Heartbeats
+
+The heartbeat module stays hidden until an associated ledger is discovered. Discovery searches the current project with bounded depth, skipping dependency/build folders. Exact thread association may bind automatically; other candidates require selection. Unbinding persists an opt-out.
+
+It reads the Kit's canonical `inspectHeartbeatLedger` API from the project submodule or configured Kit path, rather than implementing another parser. Current certification, audit success and historical readability are distinct. A missing Kit shows a read error; deleting a bound ledger retains the previous view marked stale. File watching invalidates a 30-second read cache. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
+
+Optional project `.codex-task-progress.json`:
+
+```json
+{"heartbeat":{"ledgerPath":".workspace/session/heartbeat.md","kitPath":".vibe-coding/kit","cadenceMinutes":20}}
 ```
 
-The script downloads the macOS package and `SHA256SUMS`, verifies the ZIP, and runs the bundled
-installer. If Codex must restart, the script asks first.
+An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred when absent. Local task data, heartbeat bindings and observations live under `~/Library/Application Support/CodexTaskProgress/` for release installs. Source installs use private plugin data. No project ledger or personal task history belongs in Git.
 
-After installation, follow the reconnect prompt: reopen the affected chat or start a new one so
-it loads the updated plugin. Finish running work before a full Codex restart.
+## Interfaces
 
-## 🛠️ Requirements
+`task_progress_get`, `task_progress_initialize`, `task_progress_update`, `task_progress_rescope`, `task_progress_history`, `task_progress_bind_heartbeat`. Identity is derived from trusted Codex metadata/signed Hook context; callers do not supply a thread ID. Writes require `expectedRevision`, stable `requestId`, and a reason. Conflicting revisions fail, exact retries are idempotent, and reusing a request ID with a different payload fails.
 
-- Apple Silicon Mac
-- Codex Desktop
-- Source Plugin: Node.js 22.12 or newer and pnpm 11
+History is newest-first, paginated with an opaque revision cursor. JSONL events are authoritative; snapshots can be rebuilt. Cancelling or removing scope retains the old entries and evidence in history. The panel verifies the visible thread again before delivering asynchronous results.
 
-The prebuilt macOS Release includes its own runtime and does not require Node.js or pnpm.
+## Compatibility and removal
 
-## 🎯 How to use
+The renderer uses a loopback CDP connection and verified local app/process identity, like upstream. Codex upgrades may change its DOM; run Doctor and Verify after updates and distinguish connection checks from visible UI testing. Plugin hooks never silently restart Codex. If CDP is unavailable, installation reports that a confirmed restart is required.
 
-Open a native Codex Goal, then select the **Goal Progress** Skill.
-
-The current Codex model prepares or reuses that Goal's checklist and creates a local progress
-record.
-
-Enable Goal Progress separately for each new Goal. Ordinary Goals continue through the native
-Codex flow.
-
-## 🌓 Progress states and themes
-
-### Preparing the checklist
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/0911a93fa55162333c6c772bde478fab29af2660/docs/assets/codex-goal-progress-preparing-light-en.gif" alt="Goal Progress preparing the acceptance checklist" width="760">
-</p>
-
-### Light
-
-| Fixed view | Floating view |
-|---|---|
-| ![Goal Progress fixed view in the real Codex light theme](https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-light-fixed-en.png) | ![Goal Progress floating view in the real Codex light theme](https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-light-floating-en.png) |
-
-### Dark
-
-| Fixed view | Floating view |
-|---|---|
-| ![Goal Progress fixed view in the real Codex dark theme](https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-dark-fixed-en.png) | ![Goal Progress floating view in the real Codex dark theme](https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-dark-floating-en.png) |
-
-## 🧭 How it works
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Ezra-Y/codex-goal-progress/main/docs/assets/codex-goal-progress-architecture.png" alt="How Codex Goal Progress works">
-</p>
-
-- The current model updates checklist evidence through local MCP tools.
-- Helper validates revisions and is the only state writer.
-- Core derives objective and overall progress from the checklist.
-- Renderer receives a display-only ViewModel.
-- The source Plugin builds the Helper in Codex Plugin data; the prebuilt Release uses a self-contained Node SEA Helper.
-
-Read the [architecture](https://github.com/Ezra-Y/codex-goal-progress/blob/main/docs/ARCHITECTURE.md),
-[permissions](https://github.com/Ezra-Y/codex-goal-progress/blob/main/docs/PERMISSIONS.md), and
-[support reference](https://github.com/Ezra-Y/codex-goal-progress/blob/main/docs/SUPPORT.md)
-for details.
-
-## 🔐 Privacy and permissions
-
-Goal Progress uses:
-
-- local files under Codex Plugin data or its application-support directory;
-- a private local Unix socket;
-- a loopback CDP connection to the verified Codex process;
-- a background Helper registered through launchd;
-- three Plugin Hooks.
-
-See [PERMISSIONS.md](https://github.com/Ezra-Y/codex-goal-progress/blob/main/docs/PERMISSIONS.md)
-for the exact scope and removal steps.
-
-## License
-
-[MIT](https://github.com/Ezra-Y/codex-goal-progress/blob/main/LICENSE)
-
-For source installations, **Check for updates** queries the published GitHub release. **View update notes** opens its release notes; install the update through the Codex plugin marketplace. It does not silently switch to a prebuilt Helper.
-
-To remove a source installation, ask Codex to uninstall Goal Progress. The `goal_progress_uninstall` tool removes this source plugin, its Helper and its progress data. It keeps native Goals, other plugins and the shared marketplace. The first response reports that removal has started; the final result is recorded in `CODEX_HOME/logs/goal-progress-uninstall.log`.
+To remove a release installation while preserving history, run the installed `bin/goal-progress uninstall --json --keep-history`. Native Goals and chat history remain separate. Original Goal record schemas stay readable; the derivative does not automatically import another plugin's private data directory.

@@ -1,3 +1,15 @@
+# Task Progress 0.4.0
+
+- Add ordinary-chat task tracking, equal checklist counting, evidence and progress regression history.
+- Add always-on docked/floating panel with clickable objectives and task history.
+- Add read-only canonical Kit heartbeat discovery, selection, inspection and history.
+- Isolate application/plugin identity and local state from upstream Goal Progress.
+- Preserve native Goal tracking and v1/v2 data reading; add revision-safe v3 ordinary task events.
+- Refuse automatic source-runtime restarts; ship local build/manual install workflow.
+- Keep the root source tree authoritative; generated plugin packaging includes its own runtime source.
+
+Original upstream history follows.
+
 # Changelog
 
 ## 0.3.12 - 2026-11-10

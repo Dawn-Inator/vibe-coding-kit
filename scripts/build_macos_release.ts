@@ -174,7 +174,7 @@ async function main(): Promise<void> {
     writeFile(uninstallCommandPath, renderUninstallGoalProgressCommand(), { mode: 0o700 }),
   ]);
   const marketplaceRoot = resolve(workRoot, "plugin-marketplace");
-  const releasePluginRoot = resolve(marketplaceRoot, "plugins/codex-goal-progress");
+  const releasePluginRoot = resolve(marketplaceRoot, "plugins/codex-task-progress");
   await mkdir(resolve(marketplaceRoot, ".agents/plugins"), { recursive: true });
   await writeFile(
     resolve(marketplaceRoot, ".agents/plugins/marketplace.json"),
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
       JSON.parse(await readFile(resolve(root, ".agents/plugins/marketplace.json"), "utf8")),
     ),
   );
-  await cp(resolve(root, "plugins/codex-goal-progress"), releasePluginRoot, {
+  await cp(resolve(root, "plugins/codex-task-progress"), releasePluginRoot, {
     recursive: true,
   });
   await Promise.all([

@@ -43,17 +43,17 @@ function defaultRoot(options: GoalProgressPathOptions): string {
   const platform = options.platform ?? process.platform;
   const homeDirectory = resolve(options.homeDirectory ?? homedir());
   if (platform === "darwin") {
-    return resolve(homeDirectory, "Library", "Application Support", "CodexGoalProgress");
+    return resolve(homeDirectory, "Library", "Application Support", "CodexTaskProgress");
   }
   if (platform === "win32") {
     return resolve(
       options.appDataDirectory ?? resolve(homeDirectory, "AppData", "Roaming"),
-      "CodexGoalProgress",
+      "CodexTaskProgress",
     );
   }
   return resolve(
     options.xdgDataDirectory ?? resolve(homeDirectory, ".local", "share"),
-    "CodexGoalProgress",
+    "CodexTaskProgress",
   );
 }
 

@@ -74,6 +74,19 @@ export class GoalProgressCdpViewClient {
     });
   }
 
+  async taskRequest(request: import("./renderer-bridge.js").TaskPageRequest): Promise<unknown> {
+    const response = await this.#client.request({
+      method: "task.view",
+      params: {
+        threadId: request.threadId,
+        action: request.method,
+        ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+        ...(request.path === undefined ? {} : { path: request.path }),
+      },
+    });
+    return response.result;
+  }
+
   async getView(sessionId: string): Promise<GoalProgressViewModel> {
     return (await this.getViewState(sessionId)).viewModel;
   }

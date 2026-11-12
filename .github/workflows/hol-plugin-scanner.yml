@@ -1,9 +1,6 @@
 name: HOL Plugin Scanner
+# Manual only for this private derivative.
 on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
 permissions:
   contents: read

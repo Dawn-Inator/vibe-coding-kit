@@ -4,11 +4,11 @@ import {
 } from "../../../packages/contracts/src/update-state-runtime.js";
 
 export const GOAL_PROGRESS_UPDATE_MANIFEST_MAX_BYTES = 16 * 1024;
-export const GOAL_PROGRESS_MACOS_UPDATE_ASSET = "codex-goal-progress-macos-arm64.zip";
+export const GOAL_PROGRESS_MACOS_UPDATE_ASSET = "codex-task-progress-macos-arm64.zip";
 export const GOAL_PROGRESS_UPDATE_MANIFEST_URL =
-  "https://github.com/Ezra-Y/codex-goal-progress/releases/latest/download/update-manifest.json";
+  "https://github.com/Dawn-Inator/codex-task-progress/releases/latest/download/update-manifest.json";
 const GOAL_PROGRESS_RELEASE_DOWNLOAD_PREFIX =
-  "https://github.com/Ezra-Y/codex-goal-progress/releases/download";
+  "https://github.com/Dawn-Inator/codex-task-progress/releases/download";
 
 export interface GoalProgressUpdateManifest {
   readonly schemaVersion: 1;

@@ -15,7 +15,7 @@ import {
 import { resolveGoalProgressPaths } from "../../packages/store/src/index.js";
 
 export const GOAL_PROGRESS_TOOL_PATTERN =
-  "^(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)$";
+  "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|bind_heartbeat))$";
 export const GOAL_PROGRESS_TOOL_MATCHER = new RegExp(GOAL_PROGRESS_TOOL_PATTERN);
 export const GOAL_PROGRESS_POST_TOOL_PATTERN = "^update_goal$";
 export const GOAL_PROGRESS_HOOK_STDIN_PROTOCOL_VERSION = 1 as const;
@@ -38,6 +38,14 @@ export const GOAL_PROGRESS_HOOK_EVENT_POLICY = Object.freeze({
 });
 export const GOAL_PROGRESS_RESUME_CONTEXT =
   "Goal Progress is active for this session. Continue automatically: load Goal Progress tools with tool_search if deferred, call goal_progress_get before writes, and do not ask the user to invoke the Skill again.";
+export const TASK_PROGRESS_SESSION_CONTEXT =
+  "Task Progress is enabled for ordinary tasks; do not create a native Goal. For actionable implementation requests, discover task_progress tools, call task_progress_get, then initialize or extend the chat checklist. Update it after real changes and verification; append new requests as subtasks, preserve stable IDs, attach reported or verified evidence to completed items, and explain scope changes or regressions. Reuse returned revision and a stable requestId per mutation; retry the same requestId unchanged. Questions, status checks and acknowledgements are not subtasks. Heartbeat display is read-only and never schedules or certifies a heartbeat by itself.";
+const taskSessionOutput: SessionStartOutput = {
+  hookSpecificOutput: {
+    hookEventName: "SessionStart",
+    additionalContext: TASK_PROGRESS_SESSION_CONTEXT,
+  },
+};
 const GOAL_PROGRESS_AUDIT_CLIENT_TIMEOUT_MS = 100;
 const GOAL_PROGRESS_AUDIT_MAX_WAIT_MS = 150;
 export const GOAL_PROGRESS_RESUME_CLIENT_TIMEOUT_MS = 25;
@@ -152,7 +160,7 @@ type HookOutput = PreToolUseOutput | SessionStartOutput;
 const resumeOutput: SessionStartOutput = {
   hookSpecificOutput: {
     hookEventName: "SessionStart",
-    additionalContext: GOAL_PROGRESS_RESUME_CONTEXT,
+    additionalContext: `${TASK_PROGRESS_SESSION_CONTEXT} ${GOAL_PROGRESS_RESUME_CONTEXT}`,
   },
 };
 
@@ -379,7 +387,7 @@ export async function handleHookInput(
         );
       }
     }
-    return resumed.status === "active" ? resumeOutput : undefined;
+    return resumed.status === "active" ? resumeOutput : taskSessionOutput;
   }
 
   if (envelope.data.hook_event_name === "PostToolUse") {

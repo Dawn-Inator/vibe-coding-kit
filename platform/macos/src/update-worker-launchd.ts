@@ -95,7 +95,7 @@ export function createUpdateWorkerInvocation(
     [internalFlag]: "1",
     GOAL_PROGRESS_UPDATE_OPERATION_ID: input.operationId,
   };
-  const label = `com.codexgoalprogress.update-${kind}.${input.operationId}`;
+  const label = `com.codextaskprogress.update-${kind}.${input.operationId}`;
   const plistPath = resolve(root, "runtime", "update-workers", `${label}.plist`);
   const invocation = createOneShotUpdateWorkerInvocation({
     label,

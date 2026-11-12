@@ -401,7 +401,7 @@ function locateCurrentMacosGoalAnchor(
   const composerRoot = page.composer;
   const composerRect = composerRoot.getBoundingClientRect();
   const textboxRect = page.textbox.getBoundingClientRect();
-  const managedHosts = elements<HTMLElement>(composerRoot, '[data-codex-goal-progress-host="v1"]');
+  const managedHosts = elements<HTMLElement>(composerRoot, '[data-codex-task-progress-host="v1"]');
   const managedAnchor = managedHosts.length === 1 ? managedHosts[0]?.previousElementSibling : null;
   const candidates = elements<HTMLElement>(composerRoot, 'button[type="button"]').flatMap(
     (button) => {

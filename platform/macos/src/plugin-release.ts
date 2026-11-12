@@ -2,9 +2,9 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const INSTALLED_BINARY =
-  "$HOME/Library/Application Support/CodexGoalProgress/install/current/bin/goal-progress";
+  "$HOME/Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress";
 export const GOAL_PROGRESS_STABLE_HOOK_COMMAND =
-  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexGoalProgress/install/current/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
+  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
 export const GOAL_PROGRESS_STABLE_MCP_LAUNCHER = [
   "#!/bin/sh",
   "set -eu",
@@ -43,12 +43,12 @@ export function createReleaseMarketplaceManifest(sourceMarketplace: unknown): st
   const marketplace = structuredClone(record(sourceMarketplace, code));
   if (!Array.isArray(marketplace.plugins)) throw new Error(code);
   const plugin = marketplace.plugins.find(
-    (entry: unknown) => record(entry, code).name === "codex-goal-progress",
+    (entry: unknown) => record(entry, code).name === "codex-task-progress",
   );
   if (!plugin) throw new Error(code);
   const source = record(record(plugin, code).source, code);
   if (source.source !== "local") throw new Error(code);
-  source.path = "./plugins/codex-goal-progress";
+  source.path = "./plugins/codex-task-progress";
   return `${JSON.stringify(marketplace, null, 2)}\n`;
 }
 

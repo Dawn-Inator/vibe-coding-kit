@@ -63,12 +63,12 @@ export type {
   SidecarVisibilityDiagnostics,
 } from "./sidecar-diagnostics.js";
 
-export const GOAL_PROGRESS_HOST_ATTRIBUTE = "data-codex-goal-progress-host";
+export const GOAL_PROGRESS_HOST_ATTRIBUTE = "data-codex-task-progress-host";
 export const GOAL_PROGRESS_HOST_ATTRIBUTE_VALUE = "v1";
 export const GOAL_PROGRESS_FLOATING_FALLBACK_ATTRIBUTE =
-  "data-codex-goal-progress-floating-fallback";
+  "data-codex-task-progress-floating-fallback";
 const GOAL_PROGRESS_ANCHOR_ORIGINAL_TRANSLATE_ATTRIBUTE =
-  "data-codex-goal-progress-original-translate";
+  "data-codex-task-progress-original-translate";
 const GOAL_PROGRESS_FLOATING_FALLBACK_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
 
 export type GoalProgressLocalUiIntent = GoalProgressUiIntent;

@@ -37,7 +37,7 @@ import { stableErrorCode } from "./macos-errors.js";
 import { createPluginController, resolveVerifiedCodexCli } from "./plugin-controller.js";
 
 const SOURCE_RUNTIME_ENSURE_COMMAND = "__source-runtime-ensure";
-const LEGACY_PLUGIN_MARKETPLACE = "codex-goal-progress-local";
+const LEGACY_PLUGIN_MARKETPLACE = "codex-task-progress-local";
 
 interface SourceRuntimeConfiguration {
   readonly pluginDataRoot: string;
@@ -389,7 +389,7 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
     ensurePrivateDirectory(paths.preferencesRoot),
   ]);
 
-  const legacyRoot = resolve(homedir(), "Library/Application Support/CodexGoalProgress");
+  const legacyRoot = resolve(homedir(), "Library/Application Support/CodexTaskProgress");
   const legacyPaths = resolveGoalProgressPaths({ root: legacyRoot });
   const legacyBinary = resolve(legacyRoot, "install/current/bin/goal-progress");
   const launchAgentPath = resolve(
@@ -485,7 +485,11 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
     await chmod(launchAgentPath, 0o600);
     // The renderer target source needs CDP before the Helper can become ready.
     const cdp = createCdpController(homedir(), goalProgressRoot);
-    cdpChanged = await cdp.ensure(true);
+    if (!(await cdp.verify()))
+      throw new Error(
+        "TASK_PROGRESS_RESTART_REQUIRED: install the built release with --restart-codex only after user approval",
+      );
+    cdpChanged = await cdp.ensure(false);
     const cdpDeadline = Date.now() + 60_000;
     while (!(await cdp.verify())) {
       if (Date.now() >= cdpDeadline) {
@@ -727,12 +731,12 @@ export async function uninstallSourceRuntime(): Promise<MacosCommandResult> {
   if (
     !marketplace ||
     /[/\\\s]/u.test(marketplace) ||
-    pluginDataRoot !== resolve(codexHome, "plugins/data", `codex-goal-progress-${marketplace}`)
+    pluginDataRoot !== resolve(codexHome, "plugins/data", `codex-task-progress-${marketplace}`)
   ) {
     throw new Error("GOAL_PROGRESS_SOURCE_UNINSTALL_PATH_INVALID");
   }
-  const pluginCache = resolve(codexHome, "plugins/cache", marketplace, "codex-goal-progress");
-  const pluginId = `codex-goal-progress@${marketplace}`;
+  const pluginCache = resolve(codexHome, "plugins/cache", marketplace, "codex-task-progress");
+  const pluginId = `codex-task-progress@${marketplace}`;
   const app = await requireSingleCodexMacosApp();
   const codexCommand = await resolveVerifiedCodexCli(app);
   const run = (args: string[]) => {

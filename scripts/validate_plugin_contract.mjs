@@ -6,7 +6,7 @@ const pluginRoot = resolve(process.argv[2] ?? ".");
 const errors = [];
 const pluginDataPlaceholder = "$" + "{PLUGIN_DATA}";
 const stableHookCommand =
-  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexGoalProgress/install/current/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
+  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
 const sourceHookCommand = '/bin/sh "$PLUGIN_ROOT/runtime/run-bootstrap.sh" hook';
 const semver =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -221,8 +221,9 @@ async function validateSkill(skillRoot, directoryName) {
     new Set(["allow_implicit_invocation"]),
     `${label} agent policy`,
   );
-  if (agent.policy?.allow_implicit_invocation !== false) {
-    errors.push(`${label} must set policy.allow_implicit_invocation to false`);
+  const implicit = skillMetadata.name === "task-progress";
+  if (agent.policy?.allow_implicit_invocation !== implicit) {
+    errors.push(`${label} must set policy.allow_implicit_invocation to ${implicit}`);
   }
 }
 
@@ -477,7 +478,7 @@ if (manifest) {
       hookEvents,
       "SessionStart",
       "^(?:startup|resume|compact)$",
-      128,
+      512,
       3,
       undefined,
       expectedHookCommand,
@@ -485,7 +486,7 @@ if (manifest) {
     validateHookEvent(
       hookEvents,
       "PreToolUse",
-      "^(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)$",
+      "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|bind_heartbeat))$",
       undefined,
       1,
       undefined,

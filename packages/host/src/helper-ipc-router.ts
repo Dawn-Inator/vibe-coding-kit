@@ -36,9 +36,17 @@ export type HelperUpdateIpcRequest = Extract<
   HelperIpcRequest,
   { method: "update.intent" | "update.worker-result" | "update.restart-result" }
 >;
+export type HelperTaskIpcRequest = Extract<
+  HelperIpcRequest,
+  { method: "task.request" | "task.view" }
+>;
 export type HelperDoctorIpcRequest = Extract<HelperIpcRequest, { method: "doctor" }>;
 
 export interface HelperIpcRoutes {
+  readonly task: (
+    request: HelperTaskIpcRequest,
+    context: GoalProgressIpcConnectionContext,
+  ) => Promise<GoalProgressIpcHandlerResult>;
   readonly system: (
     request: HelperSystemIpcRequest,
     context: GoalProgressIpcConnectionContext,
@@ -81,6 +89,8 @@ export interface HelperIpcRouterOptions {
 type HelperIpcRoute = keyof HelperIpcRoutes;
 
 const ROUTE_BY_METHOD: Record<HelperIpcMethod, HelperIpcRoute> = {
+  "task.request": "task",
+  "task.view": "task",
   ping: "system",
   "runtime-proof.issue": "system",
   "runtime-proof.consume": "system",
@@ -106,6 +116,7 @@ const ALLOWED_METHODS: Record<
 > = {
   hook: ["runtime-proof.issue", "hook.audit", "activation.resume"],
   mcp: [
+    "task.request",
     "runtime-proof.consume",
     "activation.plan",
     "store.load",
@@ -113,6 +124,7 @@ const ALLOWED_METHODS: Record<
     "store.apply",
   ],
   cdp: [
+    "task.view",
     "view.get",
     "renderer.disconnected",
     "renderer.visible-thread",
@@ -136,6 +148,8 @@ async function dispatch(
   context: GoalProgressIpcConnectionContext,
 ): Promise<GoalProgressIpcHandlerResult> {
   switch (ROUTE_BY_METHOD[request.method]) {
+    case "task":
+      return routes.task(request as HelperTaskIpcRequest, context);
     case "system":
       return routes.system(request as HelperSystemIpcRequest, context);
     case "hook":

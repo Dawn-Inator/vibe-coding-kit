@@ -14,8 +14,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / 'dist/release/smoke-evidence'
 ASSETS = ROOT / 'dist/release/assets'
-PRODUCT = Path.home() / 'Library/Application Support/CodexGoalProgress'
-SERVICE = f'gui/{os.getuid()}/com.codexgoalprogress.helper'
+PRODUCT = Path.home() / 'Library/Application Support/CodexTaskProgress'
+SERVICE = f'gui/{os.getuid()}/com.codextaskprogress.helper'
 
 
 def run(name, args, timeout=180, check=True, env=None):
@@ -84,7 +84,7 @@ def wait_for_normal_reopen(app, info):
         commands = [line.strip().split(maxsplit=1) for line in ps.splitlines()]
         normal = [parts[0] for parts in commands if len(parts) == 2 and parts[1] == executable]
         jobs = subprocess.check_output(['launchctl', 'list'], text=True, timeout=10)
-        if not (PRODUCT / 'runtime/cdp.json').exists() and len(normal) == 1 and 'com.codexgoalprogress.restore-handoff-v2' not in jobs:
+        if not (PRODUCT / 'runtime/cdp.json').exists() and len(normal) == 1 and 'com.codextaskprogress.restore-handoff-v2' not in jobs:
             (EVIDENCE / 'normal-reopen.json').write_text(json.dumps({'pids': normal, 'runtimeRemoved': True, 'restoreWorkerFinished': True}))
             return
         time.sleep(0.5)
@@ -147,7 +147,7 @@ def main():
     assert result['ok'] and result['code'] == 'UNINSTALL_OK'
     assert all(not (PRODUCT / name).exists() for name in ['install', 'runtime'])
     assert run('service-removed', ['launchctl', 'print', SERVICE], check=False).returncode != 0
-    cache = Path.home() / '.codex/plugins/cache/codex-goal-progress-local/codex-goal-progress'
+    cache = Path.home() / '.codex/plugins/cache/codex-task-progress-local/codex-task-progress'
     assert not cache.exists()
     assert all(path.read_bytes() == data for path, data in sentinels.items())
     install_script('clean-reinstall', ASSETS)
@@ -160,7 +160,7 @@ def main():
         'cleanReinstallPassed': True,
         'historyAndPreferencesPreserved': True,
         'helperSha256': clean['helperSha256'],
-        'archiveSha256': hashlib.sha256((ASSETS / 'codex-goal-progress-macos-arm64.zip').read_bytes()).hexdigest(),
+        'archiveSha256': hashlib.sha256((ASSETS / 'codex-task-progress-macos-arm64.zip').read_bytes()).hexdigest(),
         'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         'environment': 'fresh GitHub-hosted Apple Silicon macOS VM; synthetic preservation files; no user data',
         'liveGoalCreationTested': False,

@@ -52,10 +52,10 @@ function delay(milliseconds: number): Promise<void> {
 export const GOAL_PROGRESS_CDP_HANDOFF_COMMAND = "__cdp-handoff";
 export const GOAL_PROGRESS_CDP_SCHEDULE_COMMAND = "__cdp-schedule";
 export const GOAL_PROGRESS_RESTORE_HANDOFF_COMMAND = "__restore-handoff";
-const GOAL_PROGRESS_LEGACY_CDP_HANDOFF_LABEL = "com.codexgoalprogress.cdp-handoff";
-const GOAL_PROGRESS_LEGACY_RESTORE_HANDOFF_LABEL = "com.codexgoalprogress.restore-handoff";
-export const GOAL_PROGRESS_CDP_HANDOFF_LABEL = "com.codexgoalprogress.cdp-handoff-v2";
-export const GOAL_PROGRESS_RESTORE_HANDOFF_LABEL = "com.codexgoalprogress.restore-handoff-v2";
+const GOAL_PROGRESS_LEGACY_CDP_HANDOFF_LABEL = "com.codextaskprogress.cdp-handoff";
+const GOAL_PROGRESS_LEGACY_RESTORE_HANDOFF_LABEL = "com.codextaskprogress.restore-handoff";
+export const GOAL_PROGRESS_CDP_HANDOFF_LABEL = "com.codextaskprogress.cdp-handoff-v2";
+export const GOAL_PROGRESS_RESTORE_HANDOFF_LABEL = "com.codextaskprogress.restore-handoff-v2";
 
 export function cdpPaths(homeDirectory: string, configuredRoot = process.env.GOAL_PROGRESS_ROOT) {
   const root = configuredRoot?.trim();

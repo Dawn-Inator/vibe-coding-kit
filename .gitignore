@@ -9,3 +9,5 @@ docs/run/
 .env
 .env.*
 !.env.example
+work/
+plugins/

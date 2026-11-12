@@ -14,7 +14,7 @@ const RUNTIME_PROOF_CONSUMED_DIRECTORY = "runtime-proof-consumed";
 const RUNTIME_PROOF_MARKER_RETENTION_MS = 60_000;
 const RUNTIME_PROOF_KEY_TEMP_RETENTION_MS = 60_000;
 const RUNTIME_PROOF_KEY_TEMP_PATTERN = /^\.runtime-context\.key\.\d+\.[0-9a-f]{16}$/;
-const EXPECTED_PLUGIN_NAME = "codex-goal-progress";
+const EXPECTED_PLUGIN_NAME = "codex-task-progress";
 export const PLUGIN_DATA_PLACEHOLDER = "$" + "{PLUGIN_DATA}";
 
 function isAlreadyExists(error: unknown): boolean {

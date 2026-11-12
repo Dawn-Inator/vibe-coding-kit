@@ -4,7 +4,7 @@ import {
   resolveGoalProgressPaths,
 } from "../../../packages/store/src/index.js";
 
-export const GOAL_PROGRESS_LAUNCH_AGENT_LABEL = "com.codexgoalprogress.helper" as const;
+export const GOAL_PROGRESS_LAUNCH_AGENT_LABEL = "com.codextaskprogress.helper" as const;
 export const MACOS_PRIVATE_DIRECTORY_MODE = 0o700 as const;
 export const MACOS_PRIVATE_FILE_MODE = 0o600 as const;
 
