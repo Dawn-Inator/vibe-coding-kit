@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 
 import {
 	heartbeatAuditDue,
@@ -8,24 +8,9 @@ import {
 } from "../supervision/heartbeat-ledger-api.mjs";
 import { parseStrictIsoTimestamp } from "../supervision/heartbeat-audit-due.mjs";
 import { discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
+import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
 
 const MAX_BYTES = 8 * 1024 * 1024;
-const isWithin = (root, candidate) => {
-	const rel = relative(root, candidate);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-};
-
-async function nestedGitBoundary(root, path) {
-	let directory = dirname(path);
-	while (directory !== root && isWithin(root, directory)) {
-		if (await lstat(resolve(directory, ".git")).catch(() => null))
-			return directory;
-		const parent = dirname(directory);
-		if (parent === directory) break;
-		directory = parent;
-	}
-	return null;
-}
 
 function resultWithoutSource(discovery, status, basis, error) {
 	return {
@@ -54,14 +39,10 @@ function lastRecordedWakeAt(report, now) {
 }
 
 async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
-	const canonicalPath = await realpath(path);
-	if (!isWithin(projectRoot, canonicalPath))
-		throw new Error(
-			"Configured heartbeat ledger resolves outside the project root",
-		);
-	const info = await stat(canonicalPath);
-	if (!info.isFile())
-		throw new Error("Configured heartbeat ledger path is not a file");
+	const { path: canonicalPath, info } = await resolveProjectLedgerPath(
+		projectRoot,
+		path,
+	);
 	if (info.size > MAX_BYTES)
 		throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
 	const text = await readFile(canonicalPath, "utf8");
@@ -136,18 +117,9 @@ export async function readProjectHeartbeat({
 		const requestedPath = resolve(projectRoot, ledgerPath);
 		let source;
 		try {
-			const canonicalRequested = await realpath(requestedPath);
-			if (!isWithin(projectRoot, canonicalRequested))
-				throw new Error(
-					"Configured heartbeat ledger resolves outside the project root",
-				);
-			if (await nestedGitBoundary(projectRoot, canonicalRequested))
-				throw new Error(
-					"Configured heartbeat ledger is inside a nested Git project",
-				);
 			source = await readCanonicalSource(
 				projectRoot,
-				canonicalRequested,
+				requestedPath,
 				now,
 				intervalMinutes,
 			);

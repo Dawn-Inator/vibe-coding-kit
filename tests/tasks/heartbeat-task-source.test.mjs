@@ -501,3 +501,59 @@ test("discovery never follows a symlink that resolves outside the project root",
 	});
 	assert.deepEqual(candidates, []);
 });
+
+test("discovery keeps the trusted root Git project but rejects explicit nested Git ledgers", async () => {
+	const root = projectRoot();
+	mkdirSync(join(root, ".git"));
+	const rootLedger = join(root, "heartbeat.md");
+	writeFileSync(
+		rootLedger,
+		ledger([["R1", "report:r1", "root source", "done", "`receipt`", "[]"]]),
+	);
+
+	const fileProject = join(root, "nested-file-project");
+	const directoryProject = join(root, "nested-directory-project");
+	mkdirSync(fileProject, { recursive: true });
+	mkdirSync(join(directoryProject, ".git"), { recursive: true });
+	writeFileSync(join(fileProject, ".git"), "gitdir: ../linked-worktree\n");
+	const fileMarkerLedger = join(fileProject, "heartbeat.md");
+	const directoryMarkerLedger = join(directoryProject, "heartbeat.md");
+	writeFileSync(
+		fileMarkerLedger,
+		ledger([
+			["F1", "report:r1", "nested file marker", "done", "`receipt`", "[]"],
+		]),
+	);
+	writeFileSync(
+		directoryMarkerLedger,
+		ledger([
+			["D1", "report:r1", "nested directory marker", "done", "`receipt`", "[]"],
+		]),
+	);
+
+	const automatic = await discoverHeartbeatLedgerSources({
+		root,
+		threadId: THREAD,
+	});
+	assert.deepEqual(
+		automatic.candidates.map((candidate) => candidate.path),
+		[realpathSync(rootLedger)],
+	);
+	assert.equal(automatic.complete, true);
+	await assert.rejects(
+		discoverHeartbeatLedgerSources({
+			root,
+			threadId: THREAD,
+			ledgerPath: fileMarkerLedger,
+		}),
+		/nested Git project/i,
+	);
+	await assert.rejects(
+		discoverHeartbeatLedgerSources({
+			root,
+			threadId: THREAD,
+			ledgerPath: directoryMarkerLedger,
+		}),
+		/nested Git project/i,
+	);
+});

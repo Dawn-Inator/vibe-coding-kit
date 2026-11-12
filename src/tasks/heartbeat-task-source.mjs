@@ -1,8 +1,13 @@
-import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { basename, isAbsolute, resolve } from "node:path";
 
 import { calculateTaskProgress } from "./task-contract.mjs";
 import { inspectHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
+import {
+	isNestedGitProject,
+	isProjectPathWithinRoot,
+	resolveProjectLedgerPath,
+} from "./project-ledger-path.mjs";
 
 const SKIP = new Set([
 	".git",
@@ -14,16 +19,6 @@ const SKIP = new Set([
 	".cache",
 ]);
 const MAX_BYTES = 8 * 1024 * 1024;
-const isWithin = (root, path) => {
-	const rel = relative(root, path);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-};
-
-async function isNestedGitProject(projectRoot, directory) {
-	if (directory === projectRoot) return false;
-	return Boolean(await lstat(resolve(directory, ".git")).catch(() => null));
-}
-
 function withoutFencedExamples(text) {
 	let fence = null;
 	return text
@@ -107,14 +102,20 @@ export async function discoverHeartbeatLedgerSources({
 	const reasons = new Set();
 	let visitedFiles = 0;
 	let explicitRealPath = null;
-	const inspect = async (candidatePath) => {
-		const lexicalPath = resolve(candidatePath);
-		let path = lexicalPath;
+	const inspect = async (candidatePath, failClosed = false) => {
+		let path;
+		let info;
 		try {
-			path = await realpath(lexicalPath);
-		} catch {
-			reasons.add("unreadable-file");
+			({ path, info } = await resolveProjectLedgerPath(
+				projectRoot,
+				candidatePath,
+			));
+		} catch (error) {
+			if (failClosed) throw error;
+			if (error?.code !== "nested-git") reasons.add("unreadable-file");
+			return null;
 		}
+		if (failClosed) explicitRealPath = path;
 		if (seenFiles.has(path)) return;
 		if (visitedFiles >= maxFiles) {
 			reasons.add("file-limit");
@@ -123,8 +124,6 @@ export async function discoverHeartbeatLedgerSources({
 		seenFiles.add(path);
 		visitedFiles += 1;
 		try {
-			const info = await stat(path);
-			if (!info.isFile() || !isWithin(projectRoot, path)) return;
 			if (info.size > MAX_BYTES) {
 				reasons.add("oversized-file");
 				return;
@@ -145,8 +144,10 @@ export async function discoverHeartbeatLedgerSources({
 				path,
 				associated: threadId ? isAssociatedThread(text, threadId) : false,
 			});
+			return path;
 		} catch {
 			reasons.add("unreadable-file");
+			return null;
 		}
 	};
 
@@ -154,16 +155,7 @@ export async function discoverHeartbeatLedgerSources({
 		if (typeof ledgerPath !== "string" || !ledgerPath.trim())
 			throw new TypeError("ledgerPath must be nonblank");
 		const explicit = resolve(projectRoot, ledgerPath);
-		if (!isWithin(projectRoot, explicit))
-			throw new Error(
-				"Explicit heartbeat ledger path must stay within the project root",
-			);
-		explicitRealPath = await realpath(explicit).catch(() => null);
-		if (explicitRealPath && !isWithin(projectRoot, explicitRealPath))
-			throw new Error(
-				"Explicit heartbeat ledger path resolves outside the project root",
-			);
-		await inspect(explicitRealPath ?? explicit);
+		await inspect(explicit, true);
 	}
 
 	const scan = async (directory, depth) => {
@@ -307,7 +299,7 @@ export function projectHeartbeatTask({
 		resolve(path) !== path
 	)
 		throw new TypeError("A project-local absolute ledger path is required");
-	if (!isWithin(root, path))
+	if (!isProjectPathWithinRoot(root, path))
 		throw new Error("Heartbeat ledger path must stay within the project root");
 	if (typeof contentHash !== "string" || !contentHash.trim())
 		throw new TypeError("contentHash is required");
