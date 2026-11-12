@@ -29,9 +29,15 @@ cites current child-state evidence and is not active leaf work. Use non-placehol
 probe/tool results or private finals. Leaf acceptance alone is not activity evidence. The orchestrator resolves
 and cross-checks references against original tool evidence; the checker validates only verdict kind and nonempty
 reference, not authenticity. Do not create separate child or activity-receipt registries. IDs must be real Item
-or wake-cell IDs. `D` counts new dispatches; `P` counts all valid assessed rows, including parent tracking. When no
-additional split assessment is needed, `rows()` and `0/0` remain valid if Decomposition lists every unfinished
-Item; do not force redispatch. A wake's contract marker, not the CLI read mode, selects denominator semantics:
+or wake-cell IDs. Every unfinished Item, including `deferred`, needs a concrete next step, owner, and evidence-backed
+reason; `deferred` is inactive and cannot conceal a current writer or missing dispatch proof. Each deferred Item
+needs its own proof-backed re-split verdict. Key each assessed verdict by exact stable Item ID or dispatch reference,
+not variable prose. `D` counts distinct new dispatched unit references, not source rows; multiple source rows for
+one batch unit count once. `P` counts unique valid assessed verdicts, including deferred verdicts and parent tracking.
+When no additional split assessment is needed, `rows()` and `0/0` remain valid only if Decomposition lists every
+unfinished Item and there are no deferred Items; every deferred Item requires its own counted proof-backed verdict.
+Do not force redispatch. A wake's contract marker,
+not the CLI read mode, selects denominator semantics:
 unmarked legacy 8/10 wakes keep the proof-only denominator, while `heartbeat/v2` uses all valid assessed rows
 even under non-certifying `--history`. Do not rewrite historical wakes. If the latest current audit is red,
 append a corrective audit and claim
@@ -116,7 +122,12 @@ mode.
 ## Evidence and authority
 
 Dispatch acceptance proves only that a dispatch request was accepted. It is not evidence that work is active,
-has a private final report, or has landed. Record and audit those states separately. A current-format
+has a private final report, or has landed. For large histories, native in-flight probes query exact canonical
+agent path prefixes, not partial name strings. Available-agent/world-state catalog presence is not running-state
+proof; accepted receipts, final reports, and send-message events are not live activity. Reconcile legacy inactive
+or unverified Items individually and keep them unfinished absent item-specific terminal/landing proof. Preserve
+their original goal, history, and unknown provenance; do not mass-mark done or disguise unknown records as
+`tracking`. Record and audit actual states separately. A current-format
 certification only describes the checked ledger content; it grants no permission, deployment authority,
 merge/finish permission, cleanup authority, or veto over ending work. Project authorization rules still
 govern every action.

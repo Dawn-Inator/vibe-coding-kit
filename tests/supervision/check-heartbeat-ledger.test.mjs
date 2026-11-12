@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
+import { checkSplittable, openRows } from '../../src/supervision/heartbeat-ledger-splittable.mjs';
 
 // These unit tests exercise the historical parser API directly. Current --latest certification,
 // including the required v2 marker and registry, is covered by heartbeat-v2-contract.test.mjs.
@@ -670,4 +671,67 @@ test('re-split: Items registry blocked rows are enumerated too', () => {
   assert.deepEqual(latestRules(wake(WAKE_A, { extra: '' }) + registry), ['resplit-rows-missing', 'splittable-missing']);
   assert.deepEqual(latestRules(wake(WAKE_A, { extra: 're-split: rows()\nsplittable: 0/0' }) + registry), ['resplit-row-unverdicted']);
   assert.deepEqual(latestRules(wake(WAKE_A, { extra: 're-split: rows(I-12: cannot-split: same-file conflict: src/a.ts)\nsplittable: 0/1' }) + registry), []);
+});
+
+test('v2 re-split dispatch count counts unique canonical unit references, while P counts assessed rows', () => {
+  const section = (rows, count) => [
+    'contract: heartbeat/v2',
+    `re-split: rows(${rows})`,
+    `splittable: ${count}`,
+  ];
+  const check = (rows, count) => checkSplittable({
+    loc: 'v2 fixture',
+    sectionLines: section(rows, count),
+    cells: [],
+    itemRows: [],
+  });
+
+  assert.deepEqual(check(
+    'I1: split->dispatched dispatchref:agent:worker-1; I2: split->dispatched dispatchref:agent:worker-1',
+    '1/2',
+  ), [], 'two assessed source rows dispatching one exact unit count as one dispatch and two assessments');
+  assert.deepEqual(check(
+    'I1: split->dispatched unitItemID:I-7; I2: split->dispatched unitItemID:I.7',
+    '2/2',
+  ), [], 'distinct canonical unit labels, including punctuation differences, remain distinct');
+
+  const legacy = checkSplittable({
+    loc: 'legacy fixture',
+    sectionLines: ['re-split: rows(r6: split->dispatched dispatchref:agent:worker-1; r7: split->dispatched dispatchref:agent:worker-1)', 'splittable: 2/0'],
+    cells: [],
+    itemRows: [],
+  });
+  assert.deepEqual(legacy, [], 'unmarked legacy D remains a count of dispatched source rows and P remains proof rows');
+});
+
+test('v2 re-split keeps duplicate assessments red and includes deferred Items rows in split proof', () => {
+  const duplicate = checkSplittable({
+    loc: 'v2 duplicate fixture',
+    sectionLines: ['contract: heartbeat/v2', 're-split: rows(I1: split->dispatched unitItemID:I2; I1: split->dispatched unitItemID:I2)', 'splittable: 1/1'],
+    cells: [],
+    itemRows: [{ id: 'I1', status: 'blocked <- waiting on input' }],
+    requireAudit: true,
+  });
+  assert.ok(rules(duplicate).includes('resplit-row-duplicate'));
+
+  const deferred = checkSplittable({
+    loc: 'v2 deferred fixture',
+    sectionLines: ['contract: heartbeat/v2', 're-split: rows()', 'splittable: 0/0'],
+    cells: [],
+    itemRows: [{ id: 'I2', status: 'deferred <- worker report ETA <=20m' }],
+  });
+  assert.ok(rules(deferred).includes('resplit-row-unverdicted'), 'v2 deferred Items entries need an explicit split or tagged cannot-split verdict');
+  assert.deepEqual(checkSplittable({
+    loc: 'v2 deferred proof fixture',
+    sectionLines: ['contract: heartbeat/v2', 're-split: rows(I2: cannot-split: owner-gated)', 'splittable: 0/1'],
+    cells: [],
+    itemRows: [{ id: 'I2', status: 'deferred <- worker report ETA <=20m' }],
+  }), [], 'a v2 deferred Items entry passes only with a concrete accepted verdict');
+  assert.deepEqual(openRows({ itemRows: [{ id: 'I2', status: 'deferred <- worker report ETA <=20m' }] }), [], 'legacy openRows keeps its blocked-only Items behavior');
+  assert.deepEqual(checkSplittable({
+    loc: 'legacy deferred fixture',
+    sectionLines: ['re-split: rows()', 'splittable: 0/0'],
+    cells: [],
+    itemRows: [{ id: 'I2', status: 'deferred <- worker report ETA <=20m' }],
+  }), [], 'unmarked legacy deferred Items rows do not acquire a new split-proof requirement');
 });

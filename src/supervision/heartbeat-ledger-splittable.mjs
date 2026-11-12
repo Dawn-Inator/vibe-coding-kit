@@ -24,7 +24,7 @@
 import { findBlockedProofTag, PROOF_TAG_HELP } from './heartbeat-blocked-reason.mjs';
 
 const OPEN_RE = /^(blocked|deferred)\s*(?:←|<-)\s*(\S.*)$/i;
-const ITEM_BLOCKED_RE = /^blocked\s*(?:←|<-)\s*(\S.*)$/i;
+const ITEM_BLOCKED_RE = /^(blocked)\s*(?:←|<-)\s*(\S.*)$/i;
 const SPLIT_RE = /^split\s*(?:→|->)\s*dispatched\s+(\S.*)$/i;
 const CANNOT_RE = /^cannot-split\s*:\s*(\S.*)$/i;
 const CONTINUING_RE = /^continuing\s*:\s*(active|private-final|tracking)\s+(\S.*)$/i;
@@ -66,7 +66,15 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
       if (!entry) return { id: null, verdict: 'invalid', detail: part, proof: null };
       const body = entry[2].trim();
       const id = normalizeResplitId(entry[1], { allowGenericIds });
-      if (SPLIT_RE.test(body)) return { id, verdict: 'dispatched', detail: body, proof: null };
+      const split = body.match(SPLIT_RE);
+      if (split) {
+        const detail = split[1].trim();
+        const reference = detail.match(/\b(unitItemID|dispatchref)\s*[:=]\s*([^\s;,)]+)/i);
+        const unitIdentity = reference
+          ? `${reference[1].toLowerCase()}:${reference[2]}`
+          : detail;
+        return { id, verdict: 'dispatched', detail: body, unitIdentity, proof: null };
+      }
       const continuing = body.match(CONTINUING_RE);
       if (allowContinuing && continuing) {
         const evidenceKind = continuing[1].toLowerCase();
@@ -85,15 +93,16 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
 }
 
 /** Open (`blocked <-` / `deferred <-`) rows of one wake: wake-table cells plus `## Items` rows. */
-export function openRows({ cells = [], itemRows = [] }) {
+export function openRows({ cells = [], itemRows = [], includeDeferred = false }) {
   const out = [];
   for (const cell of cells) {
     const m = String(cell.state ?? '').trim().match(OPEN_RE);
     if (m) out.push({ id: normalizeResplitId(`r${cell.key}`), label: `r${cell.key}`, kind: m[1].toLowerCase(), reason: m[2].trim() });
   }
   for (const row of itemRows) {
-    const m = String(row.status ?? '').trim().match(ITEM_BLOCKED_RE);
-    if (m && row.id) out.push({ id: normalizeResplitId(row.id), label: String(row.id), kind: 'blocked', reason: m[1].trim() });
+    const itemOpenRe = includeDeferred ? /^(blocked|deferred)\s*(?:←|<-)\s*(\S.*)$/i : ITEM_BLOCKED_RE;
+    const m = String(row.status ?? '').trim().match(itemOpenRe);
+    if (m && row.id) out.push({ id: normalizeResplitId(row.id), label: String(row.id), kind: m[1].toLowerCase(), reason: m[2].trim() });
   }
   return out;
 }
@@ -103,8 +112,8 @@ export function openRows({ cells = [], itemRows = [] }) {
  * [{key, state}] its table cells (keys `1a`, `1b`, `2`..`10`), `itemRows` the registry [{id, status}].
  */
 export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAudit = false }) {
-  const open = openRows({ cells, itemRows });
   const v2Format = requireAudit || sectionLines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line));
+  const open = openRows({ cells, itemRows, includeDeferred: v2Format });
   if (open.length === 0 && !v2Format) return [];
   const findings = [];
   const line = sectionLines.find((l) => /^\s*re-split:/i.test(l));
@@ -170,7 +179,7 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
     ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split', 'continuing'].includes(v.verdict))
     : null;
   const dispatched = v2Format
-    ? uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').length
+    ? new Set(uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').map((v) => v.unitIdentity)).size
     : verdicts.filter((v) => v.verdict === 'dispatched').length;
   const withProof = verdicts.filter((v) => v.verdict === 'cannot-split').length;
   const assessed = v2Format

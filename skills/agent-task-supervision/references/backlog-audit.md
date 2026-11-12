@@ -30,7 +30,9 @@ line:
 6. **External backlog**: read the configured source and timestamp the read. If unavailable, record a specific
    blocker and an `owner` item for the missing access/decision.
 7. **Worker health**: current evidence from host tools and expected duration; do not infer live activity from
-   a row marked dispatched.
+   a row marked dispatched. For large histories, native probes must query exact canonical agent path prefixes,
+   never partial name substrings. An available-agent/world-state catalog entry is not proof of a running worker;
+   acceptance, final reports, and send-message events are not live counts.
 8. **Registry integrity**: every task discovered by sweep belongs in `## Items`; resolve missing, duplicate,
    stale, or malformed rows.
 9. **Independent work**: inspect each non-done Item for concrete, separable next actions and exact file
@@ -57,8 +59,11 @@ blocker and its evidence. Do not use a placeholder timestamp or permission reaso
 ## Re-split and dispatch
 
 For every current non-done Item, record a row in `### Decomposition` with its id, concrete next action,
-disposition (`dispatched`, `continuing`, `blocked`, `owner`, or `done`), owner, and evidence. There is no
-`ready` disposition at the end of a wake. Split each free independent unit and dispatch it during this wake
+disposition (`dispatched`, `continuing`, `blocked`, `owner`, or `deferred`), owner, and evidence. There is no
+`ready` disposition at the end of a wake. Every unfinished disposition needs a concrete next step, owner, and
+evidence-backed reason. `deferred` is a first-class unfinished disposition, but is inactive: it cannot hide a
+current writer or missing new-dispatch proof. Each deferred Item still receives its own proof-backed re-split
+verdict. Split each free independent unit and dispatch it during this wake
 when capacity exists. Use one clear owner per unit, name repository and worktree, and provide an exact JSON
 array of relative file paths for the write set. Re-split after a worker goes stale, reports a blocker, or its
 remaining work no longer matches the accepted task.
@@ -80,25 +85,31 @@ delivery/receipts, or hide unknown legacy child state.
 At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. The v2 `rows(...)`
 group accepts three verdict classes: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or a typed
 `continuing` verdict: `active <source-ref>` or `private-final <source-ref>` for leaf work, and
-`tracking <source-ref>` for a parent coordinator. The parent source cites current child-state evidence; the
+`tracking <source-ref>` for a parent coordinator. Each assessed verdict is unique by exact stable Item ID or
+dispatch reference; do not use variable prose as its key. The parent source cites current child-state evidence; the
 parent remains a non-active tracker and does not need a dispatch receipt. A leaf reference must cite actual current probe/tool
 output or private final, for example:
 `continuing: active heartbeat-branches output line 4`; a tracking reference points to current child-state
 evidence for that parent. Parent tracking is not active leaf work. Acceptance alone is not activity evidence. The
 orchestrator resolves and cross-checks the reference against the original tool evidence; the checker validates
 only the declared kind and nonempty reference and does not authenticate it. Do not create an activity-receipt
-JSON registry. Use only IDs from real Items or wake cells. `D` counts new dispatches; `P` counts all valid
-assessed verdicts, including continuing. If no additional split assessment is needed, `rows()` and `0/0` remain
-valid even with ongoing Items, provided Decomposition lists every unfinished Item; do not force a redispatch to
-fill the count. The wake contract marker controls denominator semantics, not CLI mode: unmarked legacy 8/10
+JSON registry. Use only IDs from real Items or wake cells. `D` counts distinct newly dispatched unit references,
+not source rows: multiple source rows may point to one batch unit, which counts once in `D` (one dispatch among
+two assessed verdicts is `1/2`, not `2/2`). `P` counts all unique valid assessed verdicts, including continuing
+and deferred verdicts. If no additional split assessment is needed, `rows()` and `0/0` remain valid only when
+Decomposition lists every unfinished Item and there are no deferred Items; each deferred Item requires its own
+counted proof-backed verdict. Do not force a redispatch to fill the count. The wake contract marker controls
+denominator semantics, not CLI mode: unmarked legacy 8/10
 wakes keep the proof-only denominator; `heartbeat/v2` uses all valid assessed rows even under non-certifying
 `--history`. Every blocker must name the concrete unavailable
 resource, decision, or dependency and its owner. Never use subjective completion percentages.
 
-On adoption or resume, reconcile each active Item separately using the original request/accepted receipt,
-private final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata
-does not prove completion. Verified goal/oracle results plus terminal or landing evidence may prove a legacy
-Item done without reconstructing historical agent identity; retain unknown provenance in its evidence.
+On adoption or resume, reconcile each Item separately using its original goal/request/accepted receipt, private
+final report, and landing evidence. State each missing transition as `unknown`; blank legacy metadata does not
+prove completion. Legacy inactive or unverified records stay unfinished unless item-specific terminal/landing
+evidence proves completion. Retain the original goal, history, and unknown provenance; do not mass-mark done or
+recast uncertain legacy rows as `tracking`. Verified goal/oracle results plus terminal or landing evidence may
+prove a legacy Item done without reconstructing historical agent identity; retain unknown provenance in its evidence.
 Unfinished dispatched work still needs current native accepted metadata, and unknown work stays unfinished.
 Do not bulk-mark old dispatched rows done, broaden a row beyond the accepted scope, or turn routine delegable
 work into an owner decision. Keep operational status distinct from acceptance criteria.

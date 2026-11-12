@@ -177,6 +177,58 @@ test('every open Items row needs one matching decomposition and no ready disposi
   assert.ok(latestRules(mismatch.text, { ledgerPath: mismatch.ledgerPath }).length > 0, 'decomposition owner and disposition must match current item status/owner');
 });
 
+test('deferred disposition matches an unfinished deferred Item with evidence and owner', () => {
+  const deferred = item({
+    status: 'deferred <- original historical provenance has not been restored; new dispatch and active writer are unconfirmed',
+    evidence: '`git log --all -- artifact` found no restored provenance',
+    owner: 'provenance-owner',
+    mode: 'read-only',
+    writeSet: '[]',
+    dispatchRef: '-',
+  });
+  const candidate = fixture(v2({
+    items: [deferred],
+    decompositionRows: ['| I1 | verify the original provenance source, then decide whether to dispatch | deferred | provenance-owner | `git log --all -- artifact` found no restored provenance |'],
+    includeResplit: false,
+    includeSplitCount: false,
+    extra: 're-split: rows(I1: cannot-split: owner-gated)\nsplittable: 0/1',
+  }));
+  assert.deepEqual(latestRules(candidate.text, { ledgerPath: candidate.ledgerPath, now: new Date('2026-01-01T10:21:00Z') }), []);
+
+  const mismatched = fixture(v2({
+    items: [item({ status: 'blocked <- external runner unavailable', evidence: 'runner status checked', mode: 'read-only', writeSet: '[]', dispatchRef: '-' })],
+    decompositionRows: ['| I1 | resume later | deferred | worker-1 | concrete follow-up evidence |'],
+  }));
+  assert.ok(latestRules(mismatched.text, { ledgerPath: mismatched.ledgerPath }).includes('v2-decomposition-status'), 'deferred cannot reclassify a blocked item');
+
+  const missingOwner = fixture(v2({
+    items: [item({ status: 'deferred <- historical provenance has not been restored', evidence: '`git log --all -- artifact` found no restored provenance', owner: '', mode: 'read-only', writeSet: '[]', dispatchRef: '-' })],
+    decompositionRows: ['| I1 | verify provenance then decide whether to dispatch | deferred | - | `git log --all -- artifact` found no restored provenance |'],
+  }));
+  assert.ok(latestRules(missingOwner.text, { ledgerPath: missingOwner.ledgerPath }).includes('v2-decomposition-owner'), 'deferred work still needs a matching owner');
+  assert.ok(latestRules(missingOwner.text, { ledgerPath: missingOwner.ledgerPath }).includes('item-deferred-owner'), 'the registry checker also requires a concrete deferred owner');
+
+  const missingEvidence = fixture(v2({
+    items: [item({ status: 'deferred <- historical provenance has not been restored', evidence: '-', mode: 'read-only', writeSet: '[]', dispatchRef: '-' })],
+    decompositionRows: ['| I1 | verify provenance then decide whether to dispatch | deferred | provenance-owner | concrete follow-up reference |'],
+  }));
+  assert.ok(latestRules(missingEvidence.text, { ledgerPath: missingEvidence.ledgerPath }).includes('item-deferred-evidence'), 'a decomposition citation cannot replace registry evidence');
+
+  for (const status of ['deferred <-', 'deferred <- TBD']) {
+    const invalidReason = fixture(v2({
+      items: [item({ status, evidence: '`git log --all -- artifact` found no restored provenance', owner: 'provenance-owner', mode: 'read-only', writeSet: '[]', dispatchRef: '-' })],
+      decompositionRows: ['| I1 | verify provenance then decide whether to dispatch | deferred | provenance-owner | `git log --all -- artifact` found no restored provenance |'],
+    }));
+    assert.ok(latestRules(invalidReason.text, { ledgerPath: invalidReason.ledgerPath }).includes('item-deferred'), `deferred reason ${status} must be rejected`);
+  }
+
+  const readyProof = fixture(v2({
+    items: [item({ status: 'ready' })],
+    decompositionRows: ['| I1 | resume later | deferred | worker-1 | ready proof |'],
+  }));
+  assert.ok(latestRules(readyProof.text, { ledgerPath: readyProof.ledgerPath }).includes('v2-item-ready'), 'deferred does not make ready work valid');
+});
+
 test('current v2 permits a continuing activity assessment for an already-dispatched item', () => {
   const active = item({
     owner: 'agent:worker-1', worktree: 'worktrees/worker-1',

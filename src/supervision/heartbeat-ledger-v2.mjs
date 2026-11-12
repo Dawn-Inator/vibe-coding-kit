@@ -8,7 +8,7 @@ import { isConcreteCoordinationField } from './heartbeat-ledger-tracking.mjs';
 
 const REQUIRED_ITEM_COLUMNS = ['id', 'source', 'item', 'status', 'evidence', 'owner', 'repository', 'worktree', 'mode', 'write_set', 'dispatch_ref'];
 const DECOMP_COLUMNS = ['item', 'next_step', 'disposition', 'owner', 'evidence'];
-const DISPOSITIONS = new Set(['dispatched', 'continuing', 'blocked', 'owner', 'done']);
+const DISPOSITIONS = new Set(['dispatched', 'continuing', 'blocked', 'deferred', 'owner', 'done']);
 const TOOL_RE = /^(?:collaboration\.spawn_agent|Task|Agent|create_session|[A-Za-z][A-Za-z0-9_.:-]*)$/;
 
 const norm = (value) => String(value ?? '').trim().toLowerCase().replace(/[ -]+/g, '_');
@@ -176,7 +176,7 @@ function validateRegistry(table, options, findings) {
     if (seen.has(value(row, 'id'))) add(findings, 'v2-item-id-duplicate', `item ${value(row, 'id') || '(no id)'}: duplicate registry ID`);
     seen.add(value(row, 'id'));
     if (/^ready$/i.test(value(row, 'status'))) add(findings, 'v2-item-ready', `item ${value(row, 'id')}: ready is not a valid end-of-wake status`);
-    if (!/^(?:dispatched\b|tracking\b|done\b|blocked\b|owner\b)/i.test(value(row, 'status'))) add(findings, 'v2-item-status', `item ${value(row, 'id')}: status must be dispatched / tracking / done / blocked / owner`);
+    if (!/^(?:dispatched\b|tracking\b|done\b|blocked\b|deferred\b|owner\b)/i.test(value(row, 'status'))) add(findings, 'v2-item-status', `item ${value(row, 'id')}: status must be dispatched / tracking / done / blocked / deferred / owner`);
     if (/^dispatched\b/i.test(value(row, 'status'))) {
       if (!value(row, 'evidence')) add(findings, 'v2-dispatch-evidence', `item ${value(row, 'id')}: active dispatched work needs evidence`);
       const paths = validateReceipt(row, options, findings);
@@ -204,7 +204,7 @@ function validateDecomposition(text, wake, items, findings) {
     const key = value(row, 'item');
     const disposition = value(row, 'disposition').toLowerCase();
     if (!key) add(findings, 'v2-decomposition-item', `${loc}: decomposition row has no item ID`);
-    if (!DISPOSITIONS.has(disposition)) add(findings, 'v2-decomposition-disposition', `${loc}: ${key || '(item)'} disposition must be dispatched/continuing/blocked/owner/done, not ready`);
+    if (!DISPOSITIONS.has(disposition)) add(findings, 'v2-decomposition-disposition', `${loc}: ${key || '(item)'} disposition must be dispatched/continuing/blocked/deferred/owner/done, not ready`);
     if (!value(row, 'next_step')) add(findings, 'v2-decomposition-next-step', `${loc}: ${key || '(item)'} needs a next_step`);
     if (!itemById.has(key)) add(findings, 'v2-decomposition-unknown-item', `${loc}: Decomposition references unknown Item ID ${key || '(empty)'}`);
     else {
@@ -213,8 +213,10 @@ function validateDecomposition(text, wake, items, findings) {
         (disposition === 'dispatched' && status.startsWith('dispatched')) ||
         (disposition === 'continuing' && (status.startsWith('dispatched') || status.startsWith('tracking'))) ||
         (disposition === 'blocked' && status.startsWith('blocked')) ||
+        (disposition === 'deferred' && status.startsWith('deferred')) ||
         (disposition === 'owner' && status.startsWith('owner'));
       if (!matches) add(findings, 'v2-decomposition-status', `${loc}: ${key} disposition ${disposition} does not match current Item status ${status}`);
+      if (disposition === 'deferred' && !isConcreteCoordinationField(row.evidence)) add(findings, 'v2-decomposition-evidence', `${loc}: ${key} deferred disposition needs concrete evidence for the deferral`);
     }
     if (key && decomposed.has(key)) add(findings, 'v2-decomposition-duplicate', `${loc}: item ${key} appears more than once in Decomposition`);
     if (key) decomposed.set(key, row);

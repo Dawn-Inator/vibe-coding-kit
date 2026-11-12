@@ -30,7 +30,7 @@
 //
 // Items registry (`## Items`, columns `id | source | item | status | evidence`): status is
 // `ready` / `dispatched <unit>` / `done` (+ evidence) / `blocked <- <resource>` /
-// `owner <- <hard category> + <authorization checked and why it does not cover this>`.
+// `deferred <- <concrete reason>` (+ evidence and owner) / `owner <- <hard category> + <authorization checked and why it does not cover this>`.
 // `replays:<unit>=<N>` in status/evidence counts full-chain re-dispatches of one unit: N >= 3 needs an
 // `audit:<unit>` item (done/dispatched), and a count must never decrease.
 
@@ -52,7 +52,7 @@ import {
 } from './heartbeat-blocked-reason.mjs';
 import { gradeSources, parseIsoMs } from './heartbeat-ledger-sources.mjs';
 import { checkSplittable } from './heartbeat-ledger-splittable.mjs';
-import { checkTrackingRows, isTrackingItemState } from './heartbeat-ledger-tracking.mjs';
+import { checkTrackingRows, isConcreteCoordinationField, isTrackingItemState } from './heartbeat-ledger-tracking.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
 
 // Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
@@ -90,7 +90,9 @@ const ROW_RE = /^\|\s*(\d+)\s*\|([^|]*)\|(.*)\|\s*$/;
 const ARROW = '(?:←|<-)';
 const BLOCKED_RE = new RegExp(`^blocked\\s*${ARROW}\\s*(\\S.*)$`, 'i');
 const VAGUE_RESOURCE_RE = /^(in[- ]?flight|busy|running|working|pending|waiting)\.?$/i;
+// Wake cells promise a short ETA; deferred Items record an open reason without an ETA promise.
 const DEFERRED_RE = new RegExp(`^deferred\\s*${ARROW}\\s*(.+?)\\s+ETA\\s*(?:<=|≤)\\s*20\\s*m\\b`, 'i');
+const ITEM_DEFERRED_RE = new RegExp(`^deferred\\s*${ARROW}\\s*(\\S.*)$`, 'i');
 // Evidence is a backticked command/output or a commit SHA (7-40 hex characters, at least one a digit).
 const EVIDENCE_RE = /`[^`]+`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/i;
 const LEGACY_EVIDENCE_RE = /`[^`]+`|\b[0-9a-f]{7,40}\b/i;
@@ -320,6 +322,7 @@ function itemKind(status) {
   if (/^ready$/i.test(text)) return 'ready';
   if (isTrackingItemState(text)) return 'tracking';
   if (new RegExp(`^owner\\s*${ARROW}`, 'i').test(text)) return 'owner';
+  if (/^deferred\b/i.test(text)) return 'deferred';
   if (/^blocked\b/i.test(text)) return 'blocked';
   if (/^dispatched\s*:?\s+\S/i.test(text)) return 'dispatched';
   if (/^done\b/i.test(text)) return 'done';
@@ -434,11 +437,16 @@ export function checkItems(text, { now = new Date() } = {}) {
     if (!SOURCE_RE.test(row.source)) red('item-source', row, `source must be memory:/handoff:/report:/landing:/owner:/sweep:/audit:/goal:<ref>; got "${row.source}"`);
     const kind = itemKind(row.status);
     if (kind === 'ready') red('item-ready', row, 'status is "ready" -- dispatch it this wake or reclassify it with proof');
-    else if (kind === 'unknown') red('item-status', row, `status must start with ready / dispatched <unit> / done / blocked <- / owner <-; got "${row.status}"`);
+    else if (kind === 'unknown') red('item-status', row, `status must start with ready / dispatched <unit> / done / blocked <- / deferred <- / owner <-; got "${row.status}"`);
     else if (kind === 'done' && (!row.evidence || row.evidence === '-')) red('item-done-evidence', row, 'done needs evidence in the evidence column');
     else if (kind === 'blocked') {
       const resource = row.status.match(BLOCKED_RE)?.[1];
       if (!resource || VAGUE_RESOURCE_RE.test(resource.trim())) red('item-blocked', row, 'blocked must name an exclusive resource as "blocked <- <resource>"');
+    } else if (kind === 'deferred') {
+      const reason = row.status.match(ITEM_DEFERRED_RE)?.[1].trim() ?? '';
+      if (!isConcreteCoordinationField(reason)) red('item-deferred', row, 'deferred must name a concrete reason as "deferred <- <reason>"');
+      if (!isConcreteCoordinationField(ownerOf(row))) red('item-deferred-owner', row, 'deferred work needs a concrete owner');
+      if (!EVIDENCE_RE.test(row.evidence)) red('item-deferred-evidence', row, 'deferred work needs evidence (a backticked command/output or a commit SHA)');
     } else if (kind === 'owner') {
       if (!OWNER_CATEGORY_RE.test(row.status)) red('item-owner-category', row, `owner <- must cite a hard category (irreversible / security boundary / significant cost / owner decision domain; 不可逆 / 安全边界 / 显著成本 / Owner决策域); got "${row.status}"`);
       if (!AUTH_CHECK_RE.test(row.status) || !AUTH_COVERAGE_GAP_RE.test(row.status)) red('item-owner-authorization-note', row, 'owner <- must record which standing authorization or prior decision was checked and why it does not cover this item');
