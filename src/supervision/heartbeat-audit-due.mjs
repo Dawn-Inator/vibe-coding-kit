@@ -56,15 +56,15 @@ export function heartbeatAuditDue(text, { now = new Date(), intervalMinutes = 20
   }
   const rawTimestamp = wake.heading.replace(/^#{1,6}\s+/, '').trim().split(/\s+/, 1)[0];
   const strictTimestamp = parseStrictIsoTimestamp(rawTimestamp);
-  if (strictTimestamp === null || !Number.isFinite(wake.timeMs) || strictTimestamp !== wake.timeMs) {
+  if (strictTimestamp === null) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'invalid-audit-timestamp', line: wake.line };
   }
 
   const lastAuditAt = new Date(strictTimestamp).toISOString();
-  if (wake.timeMs > now.getTime()) {
+  if (strictTimestamp > now.getTime()) {
     return { ...common, due: true, lastAuditAt, nextDueAt: null, reason: 'future-audit-timestamp', line: wake.line };
   }
-  const nextDueMs = wake.timeMs + intervalMs;
+  const nextDueMs = strictTimestamp + intervalMs;
   if (!Number.isFinite(nextDueMs) || !Number.isFinite(new Date(nextDueMs).getTime())) {
     throw new TypeError('intervalMinutes produces an out-of-range due date');
   }

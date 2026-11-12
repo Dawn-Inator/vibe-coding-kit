@@ -135,6 +135,27 @@ test('strict calendar validation rejects rollover dates and accepts leap days an
   assert.equal(legacyZoneLess.lastAuditAt, '2026-01-01T10:20:00.000Z');
 });
 
+test('millisecond and fractional-offset wake timestamps use the strict ISO value as cadence time', () => {
+  const producedTimestamp = new Date('2026-11-12T00:00:00.123Z').toISOString();
+  const fromProducer = heartbeatAuditDue(fullWake(producedTimestamp), {
+    now: new Date('2026-11-12T00:20:00.123Z'),
+  });
+  assert.equal(fromProducer.due, true);
+  assert.equal(fromProducer.lastAuditAt, '2026-11-12T00:00:00.123Z');
+
+  const fractionalOffset = heartbeatAuditDue(fullWake('2026-11-12T08:00:00.456+08:00'), {
+    now: new Date('2026-11-12T00:20:00.456Z'),
+  });
+  assert.equal(fractionalOffset.due, true);
+  assert.equal(fractionalOffset.lastAuditAt, '2026-11-12T00:00:00.456Z');
+
+  const microseconds = heartbeatAuditDue(fullWake('2026-11-12T00:00:00.123456Z'), {
+    now: new Date('2026-11-12T00:20:00.123Z'),
+  });
+  assert.equal(microseconds.due, true);
+  assert.equal(microseconds.lastAuditAt, '2026-11-12T00:00:00.123Z');
+});
+
 test('invalid now and interval values throw', () => {
   assert.throws(() => heartbeatAuditDue('', { now: '2026-01-01T10:30Z' }), /now must be a valid Date/);
   assert.throws(() => heartbeatAuditDue('', { now: new Date(Number.NaN) }), /now must be a valid Date/);
