@@ -2369,42 +2369,98 @@ export class GoalProgressHelper {
       input = request.params;
     }
     const workspace = await this.#workspaceStorage.forThread(threadId, cwd);
-    if (["initialize", "update", "rescope", "bind-heartbeat"].includes(action))
-      await workspace.ensureWritable();
     const { taskStore, heartbeat: heartbeatService } = workspace;
     const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
+    let heartbeat = await heartbeatService.view(threadId, cwd);
+    let sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+    if (action === "bind-heartbeat") {
+      await workspace.ensureWritable();
+      const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
+      heartbeat = await heartbeatService.bind(threadId, bind.path, cwd);
+      sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+    }
+    if (
+      ["initialize", "update", "rescope"].includes(action) &&
+      sourceTask.status === "error" &&
+      !sourceTask.sourcePath
+    )
+      throw new GoalProgressIpcHandlerError(
+        "TASK_SOURCE_UNAVAILABLE",
+        `The Kit heartbeat task source could not be checked${sourceTask.error ? `: ${sourceTask.error}` : ""}. Restore the Kit source helpers or resolve the heartbeat read error before writing a local checklist.`,
+      );
+    if (
+      ["initialize", "update", "rescope"].includes(action) &&
+      sourceTask.status === "pending-selection"
+    )
+      throw new GoalProgressIpcHandlerError(
+        "TASK_SOURCE_SELECTION_REQUIRED",
+        `${sourceTask.error ?? "Multiple heartbeat ledgers may belong to this chat."} Use task_progress_bind_heartbeat to select one or pass null to intentionally unbind before editing a local checklist.`,
+      );
+    if (["initialize", "update", "rescope"].includes(action) && sourceTask.sourcePath)
+      throw new GoalProgressIpcHandlerError(
+        "TASK_SOURCE_READ_ONLY",
+        `This task is projected from read-only heartbeat source ${sourceTask.sourcePath}. Update the source ledger, or unbind it with task_progress_bind_heartbeat before using local task records.`,
+      );
+    if (["initialize", "update", "rescope"].includes(action)) await workspace.ensureWritable();
     if (action === "initialize")
       result = await taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
     else if (action === "update")
       result = await taskStore.update(threadId, TaskUpdateInputSchema.parse(input));
-    else if (action === "rescope")
-      result = await taskStore.rescope(threadId, TaskRescopeInputSchema.parse(input));
-    else {
-      const task = await taskStore.get(threadId);
-      let heartbeat = await heartbeatService.view(threadId, cwd);
-      if (heartbeat?.sourcePath) await workspace.ensureWritable();
-      if (action === "bind-heartbeat") {
-        const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
-        heartbeat = await heartbeatService.bind(threadId, bind.path, cwd);
-      }
+    else if (action === "rescope") {
+      const parsed = TaskRescopeInputSchema.parse(input);
+      const rescopeInput = {
+        requestId: parsed.requestId,
+        expectedRevision: parsed.expectedRevision,
+        reason: parsed.reason,
+        objectives: parsed.objectives,
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+      };
+      result = await taskStore.rescope(threadId, rescopeInput);
+    } else {
+      const localTask =
+        sourceTask.sourcePath ||
+        sourceTask.status === "error" ||
+        sourceTask.status === "pending-selection"
+          ? null
+          : await taskStore.get(threadId);
+      const task = sourceTask.sourcePath
+        ? sourceTask.task
+        : sourceTask.status === "error" || sourceTask.status === "pending-selection"
+          ? null
+          : localTask;
       const history =
         action === "history"
-          ? await taskStore.history(
-              threadId,
-              (() => {
-                const options = z
-                  .object({
-                    cursor: z.string().optional(),
-                    limit: z.number().int().min(1).max(100).optional(),
-                  })
-                  .parse(input ?? {});
-                return {
-                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-                  ...(options.limit === undefined ? {} : { limit: options.limit }),
-                };
-              })(),
-            )
+          ? sourceTask.sourcePath ||
+            sourceTask.status === "error" ||
+            sourceTask.status === "pending-selection"
+            ? {
+                events: [],
+                nextCursor: null,
+                source: {
+                  kind: "kit-heartbeat",
+                  path: sourceTask.sourcePath,
+                  readOnly: true,
+                  ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
+                  ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
+                  ...(sourceTask.error ? { error: sourceTask.error } : {}),
+                },
+              }
+            : await taskStore.history(
+                threadId,
+                (() => {
+                  const options = z
+                    .object({
+                      cursor: z.string().optional(),
+                      limit: z.number().int().min(1).max(100).optional(),
+                    })
+                    .parse(input ?? {});
+                  return {
+                    ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                    ...(options.limit === undefined ? {} : { limit: options.limit }),
+                  };
+                })(),
+              )
           : undefined;
       const heartbeatHistory =
         action === "heartbeat-history"
@@ -2428,14 +2484,38 @@ export class GoalProgressHelper {
       result = {
         task,
         heartbeat,
+        taskSource:
+          sourceTask.sourcePath ||
+          sourceTask.status === "error" ||
+          sourceTask.status === "pending-selection"
+            ? {
+                status: sourceTask.status,
+                ...(sourceTask.sourcePath ? { path: sourceTask.sourcePath } : {}),
+                readOnly: true,
+                ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
+                ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
+                ...(sourceTask.error ? { error: sourceTask.error } : {}),
+              }
+            : sourceTask.status === "candidates"
+              ? { status: "candidates", readOnly: true }
+              : null,
         execution,
         ...(history ? { history } : {}),
         ...(heartbeatHistory ? { heartbeatHistory } : {}),
       };
     }
-    const state = await taskStore.get(threadId);
+    const state =
+      sourceTask.sourcePath ||
+      sourceTask.status === "error" ||
+      sourceTask.status === "pending-selection"
+        ? null
+        : await taskStore.get(threadId);
     return {
-      revision: state?.revision ?? null,
+      revision: sourceTask.sourcePath
+        ? (sourceTask.task?.revision ?? null)
+        : sourceTask.status === "error" || sourceTask.status === "pending-selection"
+          ? null
+          : (state?.revision ?? null),
       result: {
         ...(result as Record<string, unknown>),
         execution,

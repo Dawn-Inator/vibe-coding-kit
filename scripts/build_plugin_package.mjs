@@ -2,6 +2,7 @@ import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { bundleKitTaskGuidance } from "./kit_task_guidance.mjs";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOutputRoot = resolve(defaultSourceRoot, "plugins/codex-task-progress");
@@ -88,6 +89,9 @@ export async function buildPluginPackage(options = {}) {
       }
     }
     await copyFromRoot("bin");
+    await bundleKitTaskGuidance(outputRoot, {
+      revision: rootPackage.dependencies["vibe-coding-kit"].split("#").at(-1),
+    });
     const sourceRuntimeRoot = resolve(outputRoot, "runtime/source");
     await rm(sourceRuntimeRoot, { recursive: true, force: true });
     await mkdir(sourceRuntimeRoot, { recursive: true });

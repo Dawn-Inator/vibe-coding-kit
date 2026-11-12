@@ -7,7 +7,7 @@ import {
   TASK_PROGRESS_SESSION_CONTEXT,
 } from "./index.js";
 
-test("ordinary SessionStart always emits actionable progress convention without a native Goal", async () => {
+test("ordinary SessionStart routes through shared guidance and honors read-only source tasks", async () => {
   const output = await handleHookInput(
     {
       hook_event_name: "SessionStart",
@@ -25,6 +25,15 @@ test("ordinary SessionStart always emits actionable progress convention without 
       : "",
     TASK_PROGRESS_SESSION_CONTEXT,
   );
+  assert.match(
+    TASK_PROGRESS_SESSION_CONTEXT,
+    /\$codex-task-progress:task-progress Skill and bundled Kit guidance/,
+  );
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /task_progress_get first/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /taskSource/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /pending-selection/);
+  assert.doesNotMatch(TASK_PROGRESS_SESSION_CONTEXT, /A 100% checklist|verified evidence/);
+  assert.ok(TASK_PROGRESS_SESSION_CONTEXT.length <= 512);
 });
 
 test("only the supported task and Goal MCP tools receive identity proofs", () => {

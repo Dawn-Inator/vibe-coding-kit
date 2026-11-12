@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { type FSWatcher, watch } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { HeartbeatTaskState } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import {
   appendDurableLine,
   atomicWriteFile,
@@ -50,11 +51,142 @@ export interface HeartbeatHistoryPage {
   total: number;
   sourcePath: string | null;
 }
+export interface HeartbeatTaskProjection {
+  status: "none" | "candidates" | "pending-selection" | "ready" | "stale" | "error";
+  task: ProjectedHeartbeatTask | null;
+  sourcePath: string | null;
+  contentHash?: string;
+  itemStatuses?: Record<string, string>;
+  error?: string;
+}
+interface ProjectedHeartbeatTask extends Omit<HeartbeatTaskState, "source"> {
+  source: HeartbeatTaskState["source"] & {
+    presentation: {
+      truncated: boolean;
+      sourceItemCount: number;
+      displayedItemCount: number;
+      itemStatusesTruncated: boolean;
+      linkRisksTruncated: boolean;
+    };
+    itemStatusCount: number;
+    linkRiskCount: number;
+  };
+}
+const TASK_SOURCE_PANEL_BYTES = 128 * 1024;
+function compactProjectedTask(sourceTask: HeartbeatTaskState): ProjectedHeartbeatTask {
+  const itemStatusEntries = Object.entries(sourceTask.source.itemStatuses);
+  const linkRisks = sourceTask.source.linkRisks ?? [];
+  const sourceItemCount = itemStatusEntries.length;
+  const sourceStatusesTruncated = itemStatusEntries.some(
+    ([id, status]) => id.length > 512 || status.length > 100,
+  );
+  const sourceLinkRisksTruncated = linkRisks.some((risk) => risk.length > 250);
+  const displayLimit = 200;
+  const statusLimit = 100;
+  const riskLimit = 20;
+  let remaining = displayLimit;
+  const compactEvidence = (evidence: HeartbeatTaskState["objectives"][number]["evidence"]) =>
+    evidence.slice(0, 1).map((item) => ({
+      ...item,
+      summary: shortened(item.summary, 250),
+      ...(item.reference ? { reference: shortened(item.reference, 350) } : {}),
+    }));
+  const objectives: HeartbeatTaskState["objectives"] = [];
+  for (const objective of sourceTask.objectives) {
+    if (remaining <= 0) break;
+    if (objective.id.length > 512) continue;
+    remaining -= 1;
+    const items: HeartbeatTaskState["objectives"][number]["items"] = [];
+    for (const item of objective.items) {
+      if (remaining <= 0) break;
+      if (item.id.length > 512) continue;
+      items.push({
+        ...item,
+        title: shortened(item.title, 400),
+        evidence: compactEvidence(item.evidence),
+      });
+      remaining -= 1;
+    }
+    objectives.push({
+      ...objective,
+      title: shortened(objective.title, 400),
+      evidence: compactEvidence(objective.evidence),
+      items,
+    });
+  }
+  const displayedItemCount = objectives.reduce(
+    (total, objective) => total + 1 + objective.items.length,
+    0,
+  );
+  const task = {
+    ...sourceTask,
+    title: shortened(sourceTask.title, 500),
+    objectives,
+    source: {
+      ...sourceTask.source,
+      itemStatuses: Object.fromEntries(
+        itemStatusEntries
+          .filter(([id]) => id.length <= 512)
+          .slice(0, statusLimit)
+          .map(([id, status]) => [id, shortened(status, 100)]),
+      ),
+      linkRisks: linkRisks.slice(0, riskLimit).map((risk) => shortened(risk, 250)),
+      itemStatusCount: sourceItemCount,
+      linkRiskCount: linkRisks.length,
+      presentation: {
+        truncated:
+          displayedItemCount < sourceItemCount ||
+          sourceItemCount > statusLimit ||
+          linkRisks.length > riskLimit ||
+          sourceStatusesTruncated ||
+          sourceLinkRisksTruncated,
+        sourceItemCount,
+        displayedItemCount,
+        itemStatusesTruncated:
+          itemStatusEntries.filter(([id]) => id.length <= 512).slice(0, statusLimit).length <
+            sourceItemCount || sourceStatusesTruncated,
+        linkRisksTruncated: linkRisks.length > riskLimit || sourceLinkRisksTruncated,
+      },
+    },
+  } as ProjectedHeartbeatTask;
+  while (Buffer.byteLength(JSON.stringify(task)) > TASK_SOURCE_PANEL_BYTES) {
+    const last = task.objectives.at(-1);
+    if (last?.items.length) last.items.pop();
+    else if (last) task.objectives.pop();
+    else {
+      const statusIds = Object.keys(task.source.itemStatuses);
+      const lastStatusId = statusIds.at(-1);
+      if (lastStatusId) {
+        delete task.source.itemStatuses[lastStatusId];
+        task.source.presentation.itemStatusesTruncated = true;
+      } else if (task.source.linkRisks?.length) {
+        task.source.linkRisks.pop();
+        task.source.presentation.linkRisksTruncated = true;
+      } else break;
+    }
+    const boundedCount = task.objectives.reduce(
+      (total, objective) => total + 1 + objective.items.length,
+      0,
+    );
+    task.source.presentation.displayedItemCount = boundedCount;
+    task.source.presentation.truncated = true;
+  }
+  return task;
+}
 interface KitReport {
+  mode: "items" | "current" | "history";
   certifiesCurrent: boolean;
   passed: boolean;
   wakes: Record<string, unknown>[];
-  items: Record<string, unknown>[];
+  items: {
+    id: string;
+    item?: string;
+    status?: string;
+    evidence?: string;
+    line?: number;
+    children?: unknown;
+    [field: string]: unknown;
+  }[];
   findings: HeartbeatFinding[];
 }
 type Inspector = (text: string, options: Record<string, unknown>) => KitReport;
@@ -79,14 +211,24 @@ interface CacheEntry {
   time: number;
   value: HeartbeatView | null;
 }
-const SKIP = new Set([".git", "node_modules", "dist", "build", "runtime", "vendor", ".cache"]);
 const MAX_BYTES = 8 * 1024 * 1024;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
-
+type HeartbeatTaskSourceApi = typeof import("vibe-coding-kit/src/tasks/heartbeat-task-source.mjs");
+type HeartbeatAuditApi = typeof import("vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs");
+let heartbeatTaskSourceApi: Promise<HeartbeatTaskSourceApi> | undefined;
+let heartbeatAuditApi: Promise<HeartbeatAuditApi> | undefined;
+function loadHeartbeatTaskSourceApi(): Promise<HeartbeatTaskSourceApi> {
+  heartbeatTaskSourceApi ??= import("vibe-coding-kit/src/tasks/heartbeat-task-source.mjs");
+  return heartbeatTaskSourceApi;
+}
+function loadHeartbeatAuditApi(): Promise<HeartbeatAuditApi> {
+  heartbeatAuditApi ??= import("vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs");
+  return heartbeatAuditApi;
+}
 const PANEL_BYTES = 192 * 1024;
 const shortened = (value: unknown, max = 500): string => {
   const text = typeof value === "string" ? value : "";
@@ -218,12 +360,12 @@ export class HeartbeatService {
     while (true) {
       try {
         await stat(resolve(current, ".git"));
-        return current;
+        return await realpath(current);
       } catch {
         /* Ascend. */
       }
       const parent = dirname(current);
-      if (parent === current || current === homedir()) return initial;
+      if (parent === current || current === homedir()) return await realpath(initial);
       current = parent;
     }
   }
@@ -237,78 +379,6 @@ export class HeartbeatService {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
       throw new Error(`Cannot read .codex-task-progress.json: ${String(error)}`);
     }
-  }
-
-  async #discover(
-    root: string,
-    threadId: string,
-    config: ProjectConfig,
-  ): Promise<HeartbeatCandidate[]> {
-    const candidates: HeartbeatCandidate[] = [];
-    let visited = 0;
-    const inspect = async (path: string) => {
-      const info = await stat(path).catch(() => null);
-      if (!info?.isFile() || info.size > MAX_BYTES) return;
-      const text = await readFile(path, "utf8").catch(() => "");
-      // Discovery excludes fenced examples; the Kit remains the only ledger parser.
-      let fence: string | null = null;
-      const content = text
-        .split("\n")
-        .filter((line) => {
-          const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-          if (marker) {
-            if (fence === null) fence = marker;
-            else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
-            return false;
-          }
-          return fence === null;
-        })
-        .join("\n");
-      const wakeLedger =
-        /^##\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\s+wake\s*\((?:8|10)-row ledger\)\s*$/m.test(
-          content,
-        );
-      const namedHeartbeat =
-        /heartbeat/i.test(basename(path)) ||
-        path === resolve(root, config.heartbeat?.ledgerPath ?? "");
-      const itemsOnlyLedger =
-        namedHeartbeat &&
-        /^##\s+Items\s*$/m.test(content) &&
-        /^\|\s*id\s*\|\s*source\s*\|\s*item\s*\|\s*status\s*\|\s*evidence\s*\|/im.test(content);
-      if (!wakeLedger && !itemsOnlyLedger) return;
-      const escaped = threadId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const associated = new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?:$|[^A-Za-z0-9_-])`, "m").test(
-        text,
-      );
-      candidates.push({ path, associated });
-    };
-    if (config.heartbeat?.ledgerPath) {
-      const path = resolve(root, config.heartbeat.ledgerPath);
-      if (within(root, path)) await inspect(path);
-    }
-    const scan = async (directory: string, depth: number): Promise<void> => {
-      if (depth > (this.#options.maxDepth ?? 5)) return;
-      const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-      const priority = (name: string) => {
-        if (/heartbeat/i.test(name)) return 0;
-        if ([".workspace", ".todolist", ".codex", "doc", "docs"].includes(name)) return 1;
-        return 2;
-      };
-      entries.sort((a, b) => priority(a.name) - priority(b.name) || a.name.localeCompare(b.name));
-      for (const entry of entries) {
-        if (++visited > (this.#options.maxFiles ?? 2500)) return;
-        const path = resolve(directory, entry.name);
-        if (entry.isDirectory() && !SKIP.has(entry.name)) await scan(path, depth + 1);
-        else if (
-          entry.isFile() &&
-          entry.name.endsWith(".md") &&
-          !candidates.some((c) => c.path === path)
-        )
-          await inspect(path);
-      }
-    };
-    await scan(root, 0);
-    return candidates.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   async #inspector(root: string, config: ProjectConfig): Promise<Inspector> {
@@ -399,7 +469,19 @@ export class HeartbeatService {
     try {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
-      const candidates = await this.#discover(root, threadId, config);
+      if (source) {
+        source = await realpath(source);
+        if (!within(root, source))
+          throw new Error("Bound heartbeat source is outside the project root.");
+      }
+      const { discoverHeartbeatLedgers } = await loadHeartbeatTaskSourceApi();
+      const candidates = await discoverHeartbeatLedgers({
+        root,
+        threadId,
+        ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
+        ...(this.#options.maxFiles === undefined ? {} : { maxFiles: this.#options.maxFiles }),
+        ...(this.#options.maxDepth === undefined ? {} : { maxDepth: this.#options.maxDepth }),
+      });
       if (source === undefined) {
         const associated = candidates.filter((candidate) => candidate.associated);
         if (associated.length !== 1) {
@@ -435,12 +517,17 @@ export class HeartbeatService {
       const cadenceMinutes =
         typeof cadence === "number" && cadence > 0 && Number.isFinite(cadence) ? cadence : null;
       const explicitNext = config.heartbeat?.nextWakeAt;
+      const cadenceNextWake =
+        lastTime !== null && cadenceMinutes !== null
+          ? (await loadHeartbeatAuditApi()).heartbeatAuditDue(text, {
+              now: this.#now(),
+              intervalMinutes: cadenceMinutes,
+            }).nextDueAt
+          : null;
       const nextWakeAt =
         explicitNext && Number.isFinite(Date.parse(explicitNext))
           ? new Date(explicitNext).toISOString()
-          : lastTime !== null && cadenceMinutes !== null
-            ? new Date(lastTime + cadenceMinutes * 60_000).toISOString()
-            : null;
+          : cadenceNextWake;
       const itemStatusCounts: Record<string, number> = {};
       for (const item of inventory.items) {
         const token = shortened(item.status, 64).split(/\s+/)[0]?.toLowerCase() || "unknown";
@@ -558,13 +645,114 @@ export class HeartbeatService {
     };
   }
 
+  /** Returns the canonical Kit projection only for a fresh, successfully read source ledger. */
+  async taskProjection(threadId: string, cwd: string): Promise<HeartbeatTaskProjection> {
+    const view = await this.view(threadId, cwd);
+    if (!view?.sourcePath && view?.status === "candidates") {
+      const associatedCount = view.candidates.filter((candidate) => candidate.associated).length;
+      const discoveryLimit = this.#options.maxFiles ?? 2_500;
+      const discoveryTruncated =
+        view.candidatesTruncated === true ||
+        (view.candidateCount ?? view.candidates.length) > view.candidates.length ||
+        (view.candidateCount ?? 0) >= discoveryLimit;
+      if (associatedCount > 1 || discoveryTruncated)
+        return {
+          status: "pending-selection",
+          task: null,
+          sourcePath: null,
+          error: discoveryTruncated
+            ? "Heartbeat candidates were truncated; explicitly select or unbind a source before changing task scope."
+            : "Multiple heartbeat ledgers match this chat; explicitly select one or unbind before changing task scope.",
+        };
+    }
+    if (!view?.sourcePath)
+      return view?.status === "error"
+        ? {
+            status: "error",
+            task: null,
+            sourcePath: null,
+            ...(view.error ? { error: view.error } : {}),
+          }
+        : {
+            status: view?.status === "candidates" ? "candidates" : "none",
+            task: null,
+            sourcePath: null,
+          };
+    if (view.status !== "ready")
+      return {
+        status: view.status === "stale" ? "stale" : "error",
+        task: null,
+        sourcePath: view.sourcePath,
+        ...(view.contentHash ? { contentHash: view.contentHash } : {}),
+        ...(view.error ? { error: view.error } : {}),
+      };
+    try {
+      const root = await this.#project(cwd);
+      const config = await this.#config(root);
+      const info = await stat(view.sourcePath);
+      if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const text = await readFile(view.sourcePath, "utf8");
+      const contentHash = hash(text);
+      if (contentHash !== view.contentHash)
+        return {
+          status: "stale",
+          task: null,
+          sourcePath: view.sourcePath,
+          contentHash,
+          error: "Heartbeat ledger changed during projection; refresh before using its task view.",
+        };
+      const inspect = await this.#inspector(root, config);
+      const inspected = inspect(text, {
+        mode: "items",
+        ledgerPath: view.sourcePath,
+        now: this.#now(),
+      });
+      if (inspected.mode !== "items")
+        throw new Error("Kit heartbeat inspector did not return an Items report.");
+      const report = { ...inspected, mode: "items" as const };
+      const { projectHeartbeatTask } = await loadHeartbeatTaskSourceApi();
+      const canonicalTask = projectHeartbeatTask({
+        report,
+        root,
+        threadId,
+        path: view.sourcePath,
+        contentHash,
+        modifiedAt: info.mtime.toISOString(),
+      });
+      const task = compactProjectedTask(canonicalTask);
+      return {
+        status: "ready",
+        task,
+        sourcePath: view.sourcePath,
+        contentHash,
+        itemStatuses: task.source.itemStatuses,
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        task: null,
+        sourcePath: view.sourcePath,
+        ...(view.contentHash ? { contentHash: view.contentHash } : {}),
+        error: String(error),
+      };
+    }
+  }
+
   async bind(threadId: string, path: string | null, cwd: string): Promise<HeartbeatView | null> {
     await this.#loaded;
     if (path !== null) {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
-      const candidates = await this.#discover(root, threadId, config);
-      const absolutePath = resolve(root, path);
+      const { discoverHeartbeatLedgers } = await loadHeartbeatTaskSourceApi();
+      const candidates = await discoverHeartbeatLedgers({
+        root,
+        threadId,
+        ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
+        ...(this.#options.maxFiles === undefined ? {} : { maxFiles: this.#options.maxFiles }),
+        ...(this.#options.maxDepth === undefined ? {} : { maxDepth: this.#options.maxDepth }),
+      });
+      const requestedPath = resolve(root, path);
+      const absolutePath = await realpath(requestedPath).catch(() => requestedPath);
       if (!candidates.some((candidate) => candidate.path === absolutePath))
         throw new Error("Heartbeat source must be a discovered project ledger.");
       this.#bindings.set(threadId, absolutePath);

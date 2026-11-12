@@ -25,6 +25,22 @@ export interface TaskPanelState {
   objectives: readonly TaskPanelObjective[];
   progress: { completed: number; total: number; percent: number | null };
   phase: string;
+  source?: {
+    kind: "kit-heartbeat";
+    path: string;
+    readOnly: true;
+    itemStatuses?: Readonly<Record<string, string>>;
+    itemStatusCount?: number;
+    linkRiskCount?: number;
+    linkRisks?: readonly string[];
+    presentation?: {
+      truncated: boolean;
+      sourceItemCount: number;
+      displayedItemCount: number;
+      itemStatusesTruncated: boolean;
+      linkRisksTruncated: boolean;
+    };
+  };
 }
 export interface TaskPanelHeartbeat {
   status: "candidates" | "ready" | "stale" | "error";
@@ -66,6 +82,14 @@ export interface TaskPanelExecution {
 export interface TaskPanelResponse {
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
+  taskSource?: {
+    status: "candidates" | "pending-selection" | "ready" | "stale" | "error";
+    path?: string;
+    readOnly: true;
+    error?: string;
+    itemStatuses?: Readonly<Record<string, string>>;
+    itemStatusCount?: number;
+  } | null;
   history?: TaskPanelHistory;
   heartbeatHistory?: TaskPanelHeartbeatHistory;
   execution?: TaskPanelExecution;
@@ -446,12 +470,57 @@ export class TaskProgressElement extends LitElement {
         ? this.t("Checklist unavailable", "清单暂不可用")
         : this.t("Reading checklist…", "正在读取清单…");
     const progress = this.data.task?.progress;
+    const sourceStatus = this.data.taskSource?.status;
+    if (
+      sourceStatus === "stale" ||
+      sourceStatus === "error" ||
+      sourceStatus === "pending-selection"
+    ) {
+      const label =
+        sourceStatus === "stale"
+          ? this.t("Heartbeat task source is stale", "心跳任务来源已过期")
+          : sourceStatus === "pending-selection"
+            ? this.t("Heartbeat source selection is required", "需要选择心跳来源")
+            : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
+      return `${label}${this.data.taskSource?.path ? ` · ${this.data.taskSource.path}` : ""}${this.data.taskSource?.error ? ` · ${this.data.taskSource.error}` : ""}`;
+    }
     const counts = `${this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
+    const source =
+      this.data.task?.source?.kind === "kit-heartbeat"
+        ? this.t("Read-only Kit heartbeat source", "只读 Kit 心跳来源")
+        : "";
     if (!progress || progress.percent === null)
-      return `${counts} · ${this.t("No task checklist", "尚未建立任务")}`;
+      return `${counts} · ${this.t("No task checklist", "尚未建立任务")}${source ? ` · ${source}` : ""}`;
     return progress.percent < 100
-      ? `${counts} · ${this.t("Checklist progress", "清单进度")} ${progress.percent}%`
-      : counts;
+      ? `${counts} · ${this.t("Checklist progress", "清单进度")} ${progress.percent}%${source ? ` · ${source}` : ""}`
+      : `${counts}${source ? ` · ${source}` : ""}`;
+  }
+
+  private renderTaskSource() {
+    const source = this.data.task?.source;
+    const sourceInfo = this.data.taskSource;
+    if (!source && !sourceInfo) return nothing;
+    const path = source?.path ?? sourceInfo?.path;
+    const statuses = source?.itemStatuses ?? sourceInfo?.itemStatuses;
+    const risks = source?.linkRisks ?? [];
+    const presentation = source?.presentation;
+    return html`<details class="heartbeat"><summary>${this.t("Read-only Kit task source", "只读 Kit 任务来源")}</summary>
+      ${path ? html`<p class="muted">${path}</p>` : nothing}
+      ${sourceInfo?.status === "stale" || sourceInfo?.status === "error" || sourceInfo?.status === "pending-selection" ? html`<p class="error">${sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。")}</p>` : nothing}
+      ${presentation?.truncated ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("source items. Progress counts the full source.", "个来源项；进度按全部来源项计算。")}</p>` : nothing}
+      ${
+        statuses
+          ? html`<dl><dt>${this.t("Source item statuses", "来源项状态")}</dt><dd>${Object.entries(
+              statuses,
+            )
+              .map(([id, status]) => `${id}: ${status}`)
+              .join(
+                " · ",
+              )}${presentation?.itemStatusesTruncated ? ` · ${this.t("status list truncated", "状态列表已截断")}` : nothing}</dd></dl>`
+          : nothing
+      }
+      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}: ${risks.join(" · ")}${presentation?.linkRisksTruncated ? ` · ${this.t("more link risks omitted", "其余关联风险已省略")}` : nothing}</div>` : nothing}
+    </details>`;
   }
 
   protected override render() {
@@ -473,7 +542,7 @@ export class TaskProgressElement extends LitElement {
           }}>${this.t("Subtasks", "子任务")}</button><button role="tab" aria-selected=${this.tab === "history"} @click=${() => {
             this.tab = "history";
             void this.loadHistory();
-          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${!this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderHeartbeat()}`}</div></div>`
+          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${this.data.taskSource?.status === "stale" || this.data.taskSource?.status === "error" || this.data.taskSource?.status === "pending-selection" ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}${this.renderHeartbeat()}`}</div></div>`
         : nothing
     }</section>`;
   }

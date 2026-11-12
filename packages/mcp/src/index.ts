@@ -672,7 +672,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Read Task Progress",
       schema: EmptyBusinessSchema,
       description:
-        "Read this ordinary chat's task, revision and heartbeat state. No native Goal is needed. Call before mutations; initialize only if no task exists.",
+        "Read this ordinary chat's task, revision and heartbeat state. A taskSource path means a read-only Kit projection; pending-selection means choose or unbind a matching ledger before local writes. Stale/error sources also block local writes. Otherwise initialize only if no local task exists.",
     },
     {
       name: "task_progress_initialize",
@@ -680,7 +680,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Initialize Task Progress",
       schema: TaskInitializeInputSchema,
       description:
-        "Create this chat's ordinary task checklist for an actionable implementation request. No native Goal is created. Use stable IDs, requestId and expectedRevision 0; completed items need evidence.",
+        "Create this chat's local task checklist when no Kit source is bound or awaiting selection. Bound sources reject writes with TASK_SOURCE_READ_ONLY; ambiguous sources require selection. No native Goal is created. Use stable IDs, requestId and expectedRevision 0.",
     },
     {
       name: "task_progress_update",
@@ -688,7 +688,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Update Task Progress",
       schema: TaskUpdateInputSchema,
       description:
-        "Update existing checklist status after actual work or verification. Read first, use returned expectedRevision, attach evidence and explain regressions. Retry identical requests with the same requestId.",
+        "Update a local checklist. A task projected from a Kit heartbeat ledger is read-only; update that source through its normal workflow or unbind it. Read first, use returned expectedRevision, and retry identical requests with the same requestId.",
     },
     {
       name: "task_progress_rescope",
@@ -696,7 +696,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Adjust Task Scope",
       schema: TaskRescopeInputSchema,
       description:
-        "Extend or correct the current chat's checklist. Preserve stable IDs and previous work; removed items remain cancelled in history. Explain changed scope; total progress may decrease.",
+        "Extend or correct a local checklist. A task projected from a Kit heartbeat ledger is read-only; update that source through its normal workflow or unbind it. Preserve stable IDs and previous work.",
     },
     {
       name: "task_progress_history",
@@ -709,7 +709,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         })
         .strict(),
       description:
-        "Read a page of this chat's persisted task events, evidence and progress changes; pass nextCursor to continue.",
+        "Read local task event history, or read-only source metadata for a bound Kit heartbeat task. Source projections do not create local task events; pass nextCursor to continue local history.",
     },
     {
       name: "task_progress_heartbeat_history",

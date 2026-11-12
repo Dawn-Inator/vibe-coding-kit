@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -11,18 +11,19 @@ async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "task-heartbeat-test-"));
   const project = resolve(root, "project");
   await mkdir(resolve(project, ".git"), { recursive: true });
+  const canonicalProject = await realpath(project);
   const kitPath = resolve(root, "kit-api.mjs");
-  // Adapter tests isolate the canonical API contract; the Kit owns parser validation.
+  // Project Kit inspector remains selectable; discovery and projection use the pinned Kit helpers.
   await writeFile(
     kitPath,
     `export function inspectHeartbeatLedger(text, {mode}) {
     const modern = text.includes('heartbeat/v2');
-    return {certifiesCurrent:mode==='current'&&modern, passed:mode!=='current'||modern,
+    return {mode, certifiesCurrent:mode==='current'&&modern, passed:mode!=='current'||modern,
       wakes:text.includes('wake (')?[{heading:'wake',timeMs:1794391200000,rows:[]}]:[],
-      items:[{id:'A',status:'blocked'}],findings:modern?[]:[{severity:'error',message:'legacy'}]};
+      items:[{id:'A',item:'test item',status:'blocked',evidence:'waiting'}],findings:mode==='items'?[]:modern?[]:[{severity:'error',message:'legacy'}]};
   }`,
   );
-  const source = resolve(project, "heartbeat.md");
+  const source = resolve(canonicalProject, "heartbeat.md");
   const service = new HeartbeatService(resolve(root, "data"), {
     kitPath,
     fallbackKitPath: null,
@@ -50,6 +51,7 @@ test("absent source stays hidden; unrelated unique source requires selection", a
     assert.equal(candidates?.status, "candidates");
     assert.equal(candidates?.candidates.length, 1);
     assert.equal(candidates?.sourcePath, null);
+    assert.equal((await f.service.taskProjection("chat-A", f.project)).status, "candidates");
     const selected = await f.service.bind("chat-A", f.source, f.project);
     assert.equal(selected?.status, "ready");
     assert.equal(selected?.items[0]?.status, "blocked");
@@ -81,6 +83,9 @@ test("exact thread association auto-selects, multiple matches do not", async () 
     const ambiguous = await f.service.view("chat-A", f.project);
     assert.equal(ambiguous?.status, "candidates");
     assert.equal(ambiguous?.candidates.length, 2);
+    const task = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(task.status, "pending-selection");
+    assert.equal(task.task, null);
   } finally {
     await f.close();
   }
@@ -96,6 +101,10 @@ test("explicit binding persists and deletion preserves stale data until recovery
     assert.equal(stale?.status, "stale");
     assert.equal(stale?.certifiesCurrent, false);
     assert.equal(stale?.items.length, 1);
+    const unavailableTask = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(unavailableTask.status, "stale");
+    assert.equal(unavailableTask.task, null);
+    assert.equal(unavailableTask.sourcePath, f.source);
     await writeFile(f.source, ledger());
     assert.equal((await f.service.view("chat-A", f.project))?.status, "ready");
     const reopened = new HeartbeatService(resolve(f.root, "data"), {
@@ -123,13 +132,29 @@ test("legacy records remain readable without current certification; cadence only
     assert.equal(view?.passed, false);
     assert.equal(view?.wakes.length, 1);
     assert.equal(view?.cadenceMinutes, 20);
-    assert.equal(
-      Date.parse(view?.nextWakeAt ?? "") - Date.parse(view?.lastWakeAt ?? ""),
-      1_200_000,
-    );
+    assert.equal(view?.nextWakeAt, null, "Kit cadence requires a canonical full ten-row audit");
     const before = await readFile(f.source, "utf8");
     await f.service.view("chat-A", f.project);
     assert.equal(await readFile(f.source, "utf8"), before);
+  } finally {
+    await f.close();
+  }
+});
+
+test("associated ledger projects a read-only Kit task without changing source text", async () => {
+  const f = await fixture();
+  try {
+    const original = ledger("chat-A");
+    await writeFile(f.source, original);
+    await f.service.view("chat-A", f.project);
+    const projected = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(projected.status, "ready");
+    assert.equal(projected.task?.source?.kind, "kit-heartbeat");
+    assert.equal(projected.task?.source?.readOnly, true);
+    assert.equal(projected.task?.source?.path, f.source);
+    assert.equal(projected.itemStatuses?.A, "blocked");
+    assert.equal(projected.task?.objectives[0]?.status, "blocked");
+    assert.equal(await readFile(f.source, "utf8"), original);
   } finally {
     await f.close();
   }
@@ -265,7 +290,7 @@ test("bounded discovery prioritizes workspace ledgers over large unrelated direc
     });
     const view = await bounded.view("chat-A", f.project);
     assert.equal(view?.status, "ready");
-    assert.equal(view?.sourcePath, workspaceSource);
+    assert.equal(view?.sourcePath, await realpath(workspaceSource));
   } finally {
     bounded?.close();
     await f.close();

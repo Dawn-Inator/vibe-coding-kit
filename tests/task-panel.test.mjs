@@ -15,13 +15,13 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),task:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.task,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
 };
@@ -143,6 +143,89 @@ test("ordinary chat task panel browser flows", async (t) => {
         ]);
         assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
         assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await context.close();
+      },
+    );
+    await t.test(
+      "read-only source errors stay visible and canonical link risks are explained",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = {
+            status: "stale",
+            path: "/workspace/heartbeat.md",
+            readOnly: true,
+            error: "台账文件已删除",
+          };
+          window.fixture.heartbeat = null;
+        });
+        await panel.getByText(/心跳任务来源已过期/).waitFor();
+        assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
+        assert.equal(await panel.getByRole("progressbar").count(), 0);
+        assert.match(await panel.locator("section.panel").innerText(), /台账文件已删除/);
+
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "error",
+            readOnly: true,
+            error: "Kit source helper unavailable",
+          };
+        });
+        await panel.getByText(/心跳任务来源暂不可用/).waitFor();
+        assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
+        assert.equal(await panel.getByRole("progressbar").count(), 0);
+
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "pending-selection",
+            readOnly: true,
+            error: "Multiple heartbeat ledgers match this chat",
+          };
+        });
+        await panel.getByText(/需要选择心跳来源/).waitFor();
+        assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
+
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "ready",
+            path: "/workspace/heartbeat.md",
+            readOnly: true,
+          };
+          window.fixture.task = {
+            threadId: "thread-a",
+            title: "Heartbeat ledger task",
+            revision: 1,
+            updatedAt: "2026-11-11T12:00:00Z",
+            objectives: [
+              {
+                id: "P1",
+                title: "Parent",
+                status: "blocked",
+                required: true,
+                evidence: [],
+                items: [],
+              },
+            ],
+            progress: { completed: 1, total: 1, percent: 100 },
+            phase: "completed",
+            source: {
+              kind: "kit-heartbeat",
+              path: "/workspace/heartbeat.md",
+              readOnly: true,
+              itemStatuses: { P1: "done", C1: "blocked" },
+              linkRisks: ["P1: missing child C1"],
+            },
+          };
+        });
+        await panel.getByText(/只读 Kit 心跳来源/).waitFor();
+        await panel.getByRole("button", { name: /Heartbeat ledger task/ }).click();
+        await panel
+          .locator("details.heartbeat summary")
+          .filter({ hasText: "只读 Kit 任务来源" })
+          .click();
+        await panel.getByText(/P1: missing child C1/).waitFor();
+        await panel.getByText(/P1: done · C1: blocked/).waitFor();
         await context.close();
       },
     );
@@ -432,11 +515,11 @@ test("ordinary chat task panel browser flows", async (t) => {
         page.locator("#goal-fixture").boundingBox(),
       ]);
       assert.ok(panelBox.y + panelBox.height <= goalBox.y);
-      await mkdir("work", { recursive: true });
-      await page.screenshot({ path: "work/task-panel-preview.png" });
+      await mkdir(".playwright-img", { recursive: true });
+      await panel.screenshot({ path: ".playwright-img/task-panel-preview.png" });
       await panel.locator("summary").filter({ hasText: "心跳历史" }).click();
       await panel.getByText("2026-11-11 wake", { exact: true }).scrollIntoViewIfNeeded();
-      await page.screenshot({ path: "work/task-panel-heartbeat-history-preview.png" });
+      await panel.screenshot({ path: ".playwright-img/task-panel-heartbeat-history-preview.png" });
       await page.setViewportSize({ width: 420, height: 640 });
       await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
       const narrow = await panel.boundingBox();

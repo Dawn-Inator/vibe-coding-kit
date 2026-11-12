@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
@@ -274,6 +274,165 @@ test("Helper rejects mismatched tool identity, mismatched exact chat record and 
       client.request({ method: "task.view", params: { action: "get", threadId: "ordinary-chat" } }),
       hasCode("IPC_METHOD_FORBIDDEN"),
     );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("associated Kit heartbeat is authoritative, read-only and restores dormant local task on unbind", async () => {
+  const root = await mkdtemp("/tmp/ctph-heartbeat-source-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  async function request(
+    action: "initialize" | "update" | "get" | "history" | "bind-heartbeat",
+    input: unknown,
+    threadId = "source-chat",
+  ) {
+    const toolNames = {
+      initialize: "task_progress_initialize",
+      update: "task_progress_update",
+      get: "task_progress_get",
+      history: "task_progress_history",
+      "bind-heartbeat": "task_progress_bind_heartbeat",
+    } as const;
+    const auth: GoalProgressIpcAuthorization = {
+      kind: "codex-request",
+      toolName: toolNames[action],
+      identity: {
+        threadId,
+        sessionId: threadId,
+        turnId: "turn-1",
+        callId: `source-${++call}`,
+        model: "test",
+        threadSource: "user",
+        cwd: root,
+      },
+    };
+    return client.request({ method: "task.request", params: { action, auth, input } });
+  }
+  const ledgerPath = join(root, "heartbeat.md");
+  const ledger =
+    "# Supervision\nthread: source-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n<!-- large-source -->\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n";
+  try {
+    await helper.start();
+    await request("initialize", {
+      requestId: "dormant-init",
+      expectedRevision: 0,
+      title: "Dormant local task",
+      reason: "Record local history before source association",
+      objectives: [{ id: "L1", title: "Local item" }],
+    });
+    await mkdir(join(root, "kit"), { recursive: true });
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs" } }),
+    );
+    await writeFile(
+      join(root, "kit/heartbeat-ledger-api.mjs"),
+      `export function inspectHeartbeatLedger(text, {mode}) { const items=text.includes('large-source')?Array.from({length:2500},(_,i)=>({id:i===0?'H'+('x'.repeat(200)):'H'+i,item:'Source item '+i,status:i%2?'blocked':'done',evidence:'Evidence '+i,line:i+1})): [{id:'H1',item:'Source task',status:'blocked',evidence:'Waiting',line:7}]; return {mode, certifiesCurrent: mode==='current', passed:true, wakeCount:1, itemCount:items.length, wakes:[{heading:'wake',timeMs:1794391200000,rows:[]}], items, findings:[]}; }`,
+    );
+    await writeFile(ledgerPath, ledger);
+    const canonicalLedgerPath = await realpath(ledgerPath);
+    await request("bind-heartbeat", { path: ledgerPath });
+    const localEventsPath = eventPath(
+      join(await realpath(root), ".workspace", "codex-task-progress"),
+      "source-chat",
+    );
+    const before = await readFile(localEventsPath, "utf8");
+    const projected = (await request("get", {})).result as {
+      task: TaskState & {
+        source: {
+          itemStatusCount: number;
+          itemStatuses: Record<string, string>;
+          presentation: { truncated: boolean; sourceItemCount: number; displayedItemCount: number };
+        };
+      };
+      taskSource: { status: string; path: string; readOnly: boolean };
+    };
+    assert.equal(projected.task.title, "Heartbeat ledger task");
+    assert.equal(projected.task.objectives[0]?.status, "completed");
+    assert.equal(projected.task.progress.total, 2500);
+    assert.equal(projected.task.source.itemStatusCount, 2500);
+    const longSourceId = `H${"x".repeat(200)}`;
+    assert.equal(projected.task.objectives[0]?.id, longSourceId);
+    assert.equal(projected.task.source.itemStatuses[longSourceId], "done");
+    assert.equal(projected.task.source.presentation.truncated, true);
+    assert.equal(projected.task.source.presentation.sourceItemCount, 2500);
+    assert.ok(projected.task.source.presentation.displayedItemCount < 2500);
+    assert.ok(Buffer.byteLength(JSON.stringify(projected)) < 192 * 1024);
+    assert.equal(projected.taskSource.status, "ready");
+    assert.equal(projected.taskSource.path, canonicalLedgerPath);
+    assert.equal(projected.taskSource.readOnly, true);
+    await assert.rejects(
+      request("update", {
+        requestId: "parallel-update",
+        expectedRevision: 1,
+        reason: "Attempt to duplicate source task",
+        changes: [{ targetId: "H1", status: "completed" }],
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    assert.equal(await readFile(localEventsPath, "utf8"), before);
+    const history = (await request("history", {})).result as {
+      history: { events: unknown[]; source: { path: string; readOnly: boolean } };
+    };
+    assert.deepEqual(history.history.events, []);
+    assert.equal(history.history.source.path, canonicalLedgerPath);
+    assert.equal(history.history.source.readOnly, true);
+    await request("bind-heartbeat", { path: null });
+    const restored = (await request("get", {})).result as { task: TaskState };
+    assert.equal(restored.task.title, "Dormant local task");
+    assert.equal(await readFile(localEventsPath, "utf8"), before);
+    assert.equal(await readFile(ledgerPath, "utf8"), ledger);
+
+    await rm(ledgerPath);
+    const ambiguousLedger = ledger
+      .replaceAll("source-chat", "ambiguous-chat")
+      .replace("<!-- large-source -->\n", "");
+    await writeFile(join(root, "heartbeat-one.md"), ambiguousLedger);
+    await writeFile(join(root, "heartbeat-two.md"), ambiguousLedger);
+    await assert.rejects(
+      request(
+        "initialize",
+        {
+          requestId: "ambiguous-init",
+          expectedRevision: 0,
+          title: "Must wait for source selection",
+          reason: "Two heartbeat ledgers match",
+          objectives: [{ id: "A1", title: "Do not create parallel scope" }],
+        },
+        "ambiguous-chat",
+      ),
+      hasCode("TASK_SOURCE_SELECTION_REQUIRED"),
+    );
+    const ambiguous = (await request("get", {}, "ambiguous-chat")).result as {
+      task: TaskState | null;
+      taskSource: { status: string; error?: string };
+      heartbeat: { status: string; candidates: readonly unknown[] };
+    };
+    assert.equal(ambiguous.task, null);
+    assert.equal(ambiguous.taskSource.status, "pending-selection");
+    assert.equal(ambiguous.heartbeat.status, "candidates");
+    assert.equal(ambiguous.heartbeat.candidates.length, 2);
+    assert.match(ambiguous.taskSource.error ?? "", /Multiple heartbeat ledgers/);
+    const ambiguousEventsPath = eventPath(
+      join(await realpath(root), ".workspace", "codex-task-progress"),
+      "ambiguous-chat",
+    );
+    await assert.rejects(access(ambiguousEventsPath), { code: "ENOENT" });
+    const ambiguousHistory = (await request("history", {}, "ambiguous-chat")).result as {
+      history: { events: unknown[] };
+    };
+    assert.deepEqual(ambiguousHistory.history.events, []);
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });

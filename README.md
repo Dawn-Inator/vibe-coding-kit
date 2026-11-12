@@ -4,7 +4,7 @@ Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/cod
 
 The compact panel appears at the top of the chat and reserves layout space instead of covering messages. Click the total to expand objectives, checklist items and evidence; use History to inspect progress and scope changes. New work can lower the percentage. Floating placement is draggable. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
-Progress counts non-cancelled required checklist leaves equally. A completed item needs evidence labelled `reported` or `verified`. Time, token use and activity do not count as completion. An idle chat has no invented percentage. SessionStart supplies a short instruction for the current model to maintain task records; semantic updates still depend on that model calling the tools at meaningful milestones.
+Progress counts non-cancelled required checklist leaves equally. A completed item needs evidence labelled `reported` or `verified`. Time, token use and activity do not count as completion. An idle chat has no invented percentage. SessionStart supplies a short instruction for the current model to maintain task records; semantic updates still depend on that model calling the tools at meaningful milestones. When a heartbeat ledger is associated with the chat, the panel projects its Kit-owned Items into the task view and exposes the source as read-only. The source ledger becomes authoritative until unbound; the Helper does not create a second checklist or write task events for that projection.
 
 ## Development
 
@@ -22,9 +22,9 @@ The release is `dist/release/macos-arm64`; see [installation instructions](INSTA
 
 ## Heartbeats
 
-The heartbeat module stays hidden until an associated ledger is discovered. Discovery searches the current project with bounded depth, skipping dependency/build folders. Exact thread association may bind automatically; other candidates require selection. Unbinding persists an opt-out.
+The heartbeat module stays hidden until an associated ledger is discovered. Discovery searches the current project with bounded depth, skipping dependency/build folders. A unique exact thread association may bind automatically; multiple matches require explicit selection and block local task writes until resolved. Unrelated candidates do not replace local task records. Unbinding persists an opt-out.
 
-It reads the Kit's canonical `inspectHeartbeatLedger` API from the project submodule or configured Kit path, rather than implementing another parser. Current certification, audit success and historical readability are distinct. A missing Kit shows a read error; deleting a bound ledger retains the previous view marked stale. File watching invalidates a 30-second read cache. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
+It reads the Kit's canonical `inspectHeartbeatLedger`, discovery, audit cadence and task projection APIs from the pinned Kit. A project Kit can still supply the selected inspector; missing required Kit helpers fail visibly instead of falling back to plugin-owned parsing or policy. Current certification, audit success and historical readability are distinct. A missing Kit shows a read error; deleting a bound ledger retains the previous view marked stale, and that stale source blocks writes to local task history. File watching invalidates a 30-second read cache. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
 
 Optional project `.codex-task-progress.json`:
 
@@ -36,7 +36,7 @@ An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred
 
 ## Interfaces
 
-`task_progress_get`, `task_progress_initialize`, `task_progress_update`, `task_progress_rescope`, `task_progress_history`, `task_progress_heartbeat_history`, `task_progress_bind_heartbeat`. Identity is derived from trusted Codex metadata/signed Hook context; callers do not supply a thread ID. Writes require `expectedRevision`, stable `requestId`, and a reason. Conflicting revisions fail, exact retries are idempotent, and reusing a request ID with a different payload fails.
+`task_progress_get`, `task_progress_initialize`, `task_progress_update`, `task_progress_rescope`, `task_progress_history`, `task_progress_heartbeat_history`, `task_progress_bind_heartbeat`. Identity is derived from trusted Codex metadata/signed Hook context; callers do not supply a thread ID. Local writes require `expectedRevision`, stable `requestId`, and a reason. A bound heartbeat task rejects initialize/update/rescope with `TASK_SOURCE_READ_ONLY`; history reports source metadata and no fabricated local events. Unbinding restores any dormant local task and its history. Conflicting revisions fail, exact retries are idempotent, and reusing a request ID with a different payload fails.
 
 History is newest-first, paginated with an opaque revision cursor. JSONL events are authoritative; snapshots can be rebuilt. Cancelling or removing scope retains the old entries and evidence in history. The panel verifies the visible thread again before delivering asynchronous results.
 
@@ -58,7 +58,7 @@ The header counts **registered checklist items**, not total task scope. Current 
 
 ## Project workspace storage (0.4.3)
 
-Ordinary task history is routed using the trusted Codex chat working directory, not the Helper's process directory or the shell's last `cd`. The shared Kit `resolveTaskProgressStorage({cwd})` contract defines `<cwd>/.workspace/codex-task-progress`. The plugin pins Kit commit `31c647ec63e462bc367a48932c01736a35e2e795` as a Git package dependency and bundles the canonical module; it does not maintain a copied Kit runtime.
+Ordinary task history is routed using the trusted Codex chat working directory, not the Helper's process directory or the shell's last `cd`. The shared Kit `resolveTaskProgressStorage({cwd})` contract defines `<cwd>/.workspace/codex-task-progress`. The plugin pins Kit as a Git package dependency and bundles its canonical task schemas, progress rules and store; it does not maintain a copied Kit runtime.
 
 Task records remain `tasks/v3/<thread-sha256>/{events.jsonl,snapshot.json}` under that root. Heartbeat bindings and derived observations are isolated per chat under `sessions/<thread-sha256>/heartbeat`. Original project heartbeat ledgers are read-only and remain at their source paths. Runtime records self-ignore Git.
 

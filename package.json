@@ -23,13 +23,13 @@
     "verify": "pnpm verify:public",
     "verify:public": "pnpm lint && pnpm typecheck && pnpm build && pnpm validate:plugin && pnpm validate:hygiene",
     "test": "tsx --test packages/tasks/test/*.test.ts packages/tasks/src/heartbeat.test.ts packages/host/test/*.test.ts packages/codex-adapter/test/*.test.ts packages/mcp/src/task-mcp.test.ts hooks/src/task-hooks.test.ts",
-    "test:ui": "node --test tests/task-panel.test.mjs"
+    "test:ui": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@lucide/icons": "^1.37.0",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "lit": "^3.3.3",
-    "vibe-coding-kit": "github:Dawn-Inator/vibe-coding-kit#31c647ec63e462bc367a48932c01736a35e2e795",
+    "vibe-coding-kit": "github:Dawn-Inator/vibe-coding-kit#33e391b96aad99e6c7323fa27072c641e92491d9",
     "zod": "^4.4.3"
   },
   "devDependencies": {
