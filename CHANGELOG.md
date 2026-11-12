@@ -1,3 +1,10 @@
+# Task Progress 0.4.2
+
+- Label completion as registered checklist scope, not the whole task.
+- Observe current execution independently through App Server status and positive visible composer controls.
+- Suppress numeric completion/full bars when a checked checklist is still executing, waiting or unknown.
+- Keep historical counts intact and require remaining delivery work to stay in scope.
+
 # Task Progress 0.4.1
 
 - Dock at the top of chat and reserve layout space; floating placement remains optional.

@@ -15,13 +15,13 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {task:null, heartbeat:null, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),task:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.task,heartbeat:window.fixture.heartbeat,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {task:window.fixture.task,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
 };
@@ -101,14 +101,26 @@ test("ordinary chat task panel browser flows", async (t) => {
     ...(existsSync(chrome) ? { executablePath: chrome } : {}),
   });
   const url = `http://127.0.0.1:${server.address().port}`;
-  const open = async () => {
+  const open = async (query = "") => {
     const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
     const page = await context.newPage();
-    await page.goto(url);
+    await page.goto(`${url}${query}`);
     await page.locator("codex-task-panel").waitFor({ state: "visible" });
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
+    await t.test(
+      "first task read stays unknown until a response confirms an empty checklist",
+      async () => {
+        const { context, panel } = await open("?initialDelay=800");
+        const header = panel.locator(".summary");
+        assert.match(await header.innerText(), /正在读取清单/);
+        assert.doesNotMatch(await header.innerText(), /0\/0|尚未建立任务/);
+        await header.getByText(/尚未建立任务/).waitFor();
+        assert.match(await header.innerText(), /已登记清单 0\/0/);
+        await context.close();
+      },
+    );
     await t.test(
       "empty chat reserves top space and hides heartbeat; identity confirmed",
       async () => {
@@ -192,6 +204,129 @@ test("ordinary chat task panel browser flows", async (t) => {
         const contentBox = await page.locator("#content").boundingBox();
         const panelBox = await panel.boundingBox();
         assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await context.close();
+      },
+    );
+    await t.test("registered checklist completion never claims runtime completion", async () => {
+      const { context, page, panel } = await open();
+      const header = panel.locator(".summary");
+      assert.match(await header.innerText(), /已登记清单 0\/0/);
+      assert.match(await header.innerText(), /执行状态未知/);
+      await page.evaluate((value) => {
+        window.fixture.task = {
+          ...value,
+          revision: 11,
+          progress: { completed: 2, total: 2, percent: 100 },
+        };
+        window.fixture.execution.state = "working";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      }, task);
+      assert.match(await header.innerText(), /已登记清单 2\/2/);
+      assert.match(await header.innerText(), /当前仍在执行/);
+      assert.doesNotMatch(await header.innerText(), /100%|已完成/);
+      assert.equal(await panel.getByRole("progressbar").count(), 0);
+      await page.evaluate(() => {
+        window.fixture.execution.state = "waiting";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      assert.match(await header.innerText(), /等待输入/);
+      await page.evaluate(() => {
+        window.fixture.execution.state = "idle";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      assert.match(await header.innerText(), /已登记清单 2\/2 · 当前空闲/);
+      assert.match(await panel.getByRole("progressbar").getAttribute("aria-label"), /已登记清单/);
+      assert.doesNotMatch(
+        await panel.getByRole("progressbar").getAttribute("aria-valuetext"),
+        /100%/,
+      );
+      assert.doesNotMatch(await header.innerText(), /100%|已完成/);
+      assert.equal(await page.evaluate(() => window.fixture.task.revision), 11);
+      await page.evaluate(() => {
+        window.fixture.task.revision = 12;
+        window.fixture.task.progress = { completed: 2, total: 3, percent: 66.67 };
+        window.fixture.execution.state = "working";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      assert.match(await header.innerText(), /已登记清单 2\/3 · 清单进度 66.67% · 正在执行/);
+      await page.evaluate(() => {
+        window.fixture.execution.state = "unknown";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      assert.match(await header.innerText(), /执行状态未知/);
+      assert.doesNotMatch(await header.innerText(), /已完成/);
+      await context.close();
+    });
+    await t.test(
+      "visible composer Stop and Send controls independently report execution",
+      async () => {
+        const { context, page, panel } = await open();
+        const runtime = panel.locator(".execution");
+        await page.evaluate((value) => {
+          window.fixture.task = {
+            ...value,
+            revision: 9,
+            progress: { completed: 2, total: 2, percent: 100 },
+          };
+          const button = document.createElement("button");
+          button.id = "runtime-control";
+          button.textContent = "Control";
+          button.setAttribute("aria-label", "Stop");
+          document.querySelector("#composer").append(button);
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        assert.match(await runtime.innerText(), /当前仍在执行/);
+        assert.equal(await panel.evaluate((element) => element.data.execution.source), "codex-ui");
+        assert.equal(await panel.getByRole("progressbar").count(), 0);
+        for (const label of ["Stop generating", "停止", "停止生成"]) {
+          await page
+            .locator("#runtime-control")
+            .evaluate((button, label) => button.setAttribute("aria-label", label), label);
+          await runtime.filter({ hasText: "当前仍在执行" }).waitFor();
+        }
+        for (const label of ["Send", "Send prompt", "发送", "发送消息"]) {
+          await page
+            .locator("#runtime-control")
+            .evaluate((button, label) => button.setAttribute("aria-label", label), label);
+          await runtime.filter({ hasText: "当前空闲" }).waitFor();
+        }
+        await page
+          .locator("#runtime-control")
+          .evaluate((button) => button.setAttribute("aria-label", "Envoyer"));
+        await runtime.filter({ hasText: "执行状态未知" }).waitFor();
+        await page.locator("#runtime-control").evaluate((button) => {
+          button.style.display = "none";
+          button.setAttribute("aria-label", "Stop");
+        });
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.match(await runtime.innerText(), /执行状态未知/);
+        await page.evaluate(() => {
+          window.fixture.execution.state = "idle";
+          const button = document.querySelector("#runtime-control");
+          button.style.display = "";
+          button.setAttribute("aria-label", "Stop");
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await runtime.innerText(), /当前仍在执行/);
+        await page.evaluate(() => {
+          window.fixture.execution.state = "waiting";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await runtime.innerText(), /等待输入/);
+        await page.evaluate(() => {
+          window.fixture.execution.state = "unknown";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await page.evaluate(() => {
+          window.fixture.delay = 700;
+          void window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await page
+          .locator("#runtime-control")
+          .evaluate((button) => button.setAttribute("aria-label", "Send prompt"));
+        await runtime.filter({ hasText: "当前空闲" }).waitFor({ timeout: 600 });
+        assert.equal(await page.evaluate(() => window.fixture.task.revision), 9);
+        assert.doesNotMatch(await panel.locator(".summary").innerText(), /100%|已完成/);
         await context.close();
       },
     );

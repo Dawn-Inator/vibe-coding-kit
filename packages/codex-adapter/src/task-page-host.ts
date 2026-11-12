@@ -1,10 +1,12 @@
 import {
   registerTaskProgressElement,
+  type TaskPanelExecution,
   type TaskPanelRequest,
   type TaskPanelResponse,
   type TaskProgressElement,
 } from "../../renderer/src/task-progress-element.js";
 import { readCurrentCodexPage } from "./anchor-adapter.js";
+import { mergeTaskExecution, readTaskComposerExecution } from "./task-execution.js";
 
 export interface TaskPageHostDiagnostics {
   version: 1;
@@ -41,6 +43,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   let busy = false;
   let generation = 0;
   let debounce: ReturnType<typeof setTimeout> | undefined;
+  let backendExecution: TaskPanelExecution | undefined;
   let floatPosition: { x: number; y: number } | null = null;
   let diagnostic: TaskPageHostDiagnostics = {
     version: 1,
@@ -92,6 +95,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       generation++;
       releaseReservation();
       element.resetThread(page.threadId);
+      backendExecution = undefined;
       diagnostic = {
         ...diagnostic,
         threadId: page.threadId,
@@ -106,6 +110,16 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   const layout = (): void => {
     if (destroyed) return;
     const page = synchronizeThread();
+    const execution = mergeTaskExecution(
+      backendExecution,
+      readTaskComposerExecution(page.composer),
+    );
+    if (
+      execution.state !== element.data.execution?.state ||
+      execution.source !== element.data.execution?.source
+    ) {
+      element.data = { ...element.data, execution };
+    }
     const rect = page.composer?.getBoundingClientRect();
     const layouts = Array.from(
       document.querySelectorAll<HTMLElement>(
@@ -204,7 +218,15 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     const threadId = diagnostic.threadId;
     try {
       const result = await request({ method: "get", threadId });
-      element.data = result;
+      backendExecution = result.execution;
+      element.data = {
+        ...result,
+        execution: mergeTaskExecution(
+          backendExecution,
+          readTaskComposerExecution(readCurrentCodexPage(document).composer),
+        ),
+      };
+      element.observed = true;
       element.connectionError = null;
       diagnostic.status = "connected";
       diagnostic.lastError = null;
@@ -232,14 +254,18 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   };
   const observer = new MutationObserver((records) => {
     // Ignore our own DOM/style changes to avoid an observer feedback loop.
-    if (records.some((record) => record.target !== element && !element.contains(record.target)))
+    if (records.some((record) => record.target !== element && !element.contains(record.target))) {
+      // Observe active controls before the debounce/network round trip can leave an idle bar onscreen.
+      layout();
       schedule();
+    }
   });
   observer.observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,
     attributeFilter: [
+      "aria-label",
       "aria-current",
       "aria-hidden",
       "data-app-action-sidebar-thread-active",

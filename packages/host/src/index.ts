@@ -83,6 +83,7 @@ import {
   TaskStore,
   TaskUpdateInputSchema,
 } from "../../tasks/src/index.js";
+import { projectTaskExecution } from "../../tasks/src/task-execution.js";
 import {
   type GoalProgressDoctorResult,
   inspectGoalProgress,
@@ -2334,6 +2335,7 @@ export class GoalProgressHelper {
     let threadId: string;
     let cwd: string;
     let input: unknown;
+    let nativeStatus: unknown;
     if (request.method === "task.request") {
       const expectedTool = `task_progress_${action.replaceAll("-", "_")}`;
       if (
@@ -2348,6 +2350,10 @@ export class GoalProgressHelper {
       threadId = identity.threadId;
       cwd = identity.cwd;
       input = request.params.input;
+      nativeStatus = await this.#runtime
+        .readThreadIdentity(threadId)
+        .then((thread) => thread.status)
+        .catch(() => undefined);
     } else {
       threadId = request.params.threadId;
       const identity = await this.#runtime.readThreadIdentity(threadId);
@@ -2362,8 +2368,10 @@ export class GoalProgressHelper {
           "Panel requires a verified user chat",
         );
       cwd = identity.cwd;
+      nativeStatus = identity.status;
       input = request.params;
     }
+    const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
     if (action === "initialize")
       result = await this.#taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
@@ -2418,12 +2426,20 @@ export class GoalProgressHelper {
       result = {
         task,
         heartbeat,
+        execution,
         ...(history ? { history } : {}),
         ...(heartbeatHistory ? { heartbeatHistory } : {}),
       };
     }
     const state = await this.#taskStore.get(threadId);
-    return { revision: state?.revision ?? null, result };
+    return {
+      revision: state?.revision ?? null,
+      result: {
+        ...(result as Record<string, unknown>),
+        execution,
+        completionBasis: "registered-checklist",
+      },
+    };
   }
 
   #handler(): GoalProgressIpcHandler {

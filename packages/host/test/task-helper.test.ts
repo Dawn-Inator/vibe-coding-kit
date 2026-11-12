@@ -89,7 +89,18 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
   try {
     await helper.start();
     const empty = await request("get", {});
-    assert.deepEqual(empty.result, { task: null, heartbeat: null });
+    const emptyState = empty.result as {
+      task: TaskState | null;
+      heartbeat: unknown;
+      execution: { state: string; source: string; observedAt: string };
+      completionBasis: string;
+    };
+    assert.equal(emptyState.task, null);
+    assert.equal(emptyState.heartbeat, null);
+    assert.equal(emptyState.execution.state, "idle");
+    assert.equal(emptyState.execution.source, "codex-app-server");
+    assert.ok(Number.isFinite(Date.parse(emptyState.execution.observedAt)));
+    assert.equal(emptyState.completionBasis, "registered-checklist");
     const initialized = await request("initialize", {
       requestId: "init",
       expectedRevision: 0,
@@ -222,6 +233,104 @@ test("Helper rejects mismatched tool identity, mismatched exact chat record and 
       client.request({ method: "task.view", params: { action: "get", threadId: "ordinary-chat" } }),
       hasCode("IPC_METHOD_FORBIDDEN"),
     );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("completed checklist does not imply runtime completion when a later turn is active or unavailable", async () => {
+  const root = await mkdtemp("/tmp/ctph-execution-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  let status: CodexThreadIdentity["status"] = { type: "idle" };
+  const mocked = runtime(root);
+  mocked.readThreadIdentity = async (threadId) => ({ ...identity(threadId, root), status });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const cdp = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "cdp" });
+  let callNumber = 0;
+  async function request(action: "get" | "initialize", input: unknown) {
+    const auth: GoalProgressIpcAuthorization = {
+      kind: "codex-request",
+      toolName: `task_progress_${action}`,
+      identity: {
+        threadId: "ordinary-chat",
+        sessionId: "ordinary-chat",
+        turnId: "turn-1",
+        callId: `execution-${++callNumber}`,
+        model: "test",
+        threadSource: "user",
+        cwd: root,
+      },
+    };
+    return client.request({ method: "task.request", params: { action, auth, input } });
+  }
+  type ObservedTask = {
+    task: TaskState;
+    execution: { state: string; source: string; activeFlags?: string[] };
+    completionBasis: string;
+  };
+  try {
+    await helper.start();
+    await request("initialize", {
+      requestId: "registered-checklist-done",
+      expectedRevision: 0,
+      title: "Previous delivery",
+      reason: "Record completed and verified work",
+      objectives: [
+        {
+          id: "C1",
+          title: "Verified item",
+          status: "completed",
+          evidence: [{ summary: "Meaningful test passed", verification: "verified", kind: "test" }],
+        },
+      ],
+    });
+    const initial = (await request("get", {})).result as ObservedTask;
+    assert.equal(initial.task.progress.percent, 100);
+    assert.equal(initial.task.phase, "completed");
+    assert.equal(initial.execution.state, "idle");
+    const originalRevision = initial.task.revision;
+
+    // A later turn is working, but has not written or rescoped the checklist yet.
+    status = { type: "active", activeFlags: [] };
+    const active = (await request("get", {})).result as ObservedTask;
+    assert.equal(active.task.revision, originalRevision);
+    assert.equal(active.task.progress.percent, 100);
+    assert.equal(active.execution.state, "working");
+    assert.equal(active.execution.source, "codex-app-server");
+    assert.equal(active.completionBasis, "registered-checklist");
+    const panelActive = (
+      await cdp.request({
+        method: "task.view",
+        params: { action: "get", threadId: "ordinary-chat" },
+      })
+    ).result as ObservedTask;
+    assert.equal(panelActive.task.revision, originalRevision);
+    assert.equal(panelActive.execution.state, "working");
+    assert.equal(panelActive.completionBasis, "registered-checklist");
+
+    // App-server notLoaded is not positive evidence that the UI's running turn finished.
+    status = { type: "notLoaded" };
+    const unavailable = (await request("get", {})).result as ObservedTask;
+    assert.equal(unavailable.task.revision, originalRevision);
+    assert.equal(unavailable.task.progress.percent, 100);
+    assert.equal(unavailable.execution.state, "unknown");
+    assert.equal(unavailable.completionBasis, "registered-checklist");
+    const panelUnknown = (
+      await cdp.request({
+        method: "task.view",
+        params: { action: "get", threadId: "ordinary-chat" },
+      })
+    ).result as ObservedTask;
+    assert.equal(panelUnknown.execution.state, "unknown");
+    assert.equal(panelUnknown.task.revision, originalRevision);
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });

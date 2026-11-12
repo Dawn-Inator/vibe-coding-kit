@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.4.1 adds ordinary-chat tracking; it is not an official Codex extension API.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.4.2 adds ordinary-chat tracking; it is not an official Codex extension API.
 
 The compact panel appears at the top of the chat and reserves layout space instead of covering messages. Click the total to expand objectives, checklist items and evidence; use History to inspect progress and scope changes. New work can lower the percentage. Floating placement is draggable. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
@@ -51,3 +51,7 @@ To remove a release installation while preserving history, run the installed `bi
 Once the verified CDP connection is established, build a new release and run `./install.sh` without `--restart-codex`. The installer switches the local release and restarts only the Helper; the browser reconnects and replaces the versioned Task panel in place. Main Codex PID/start time should remain unchanged. If CDP needs rebuilding, this command reports that requirement instead of silently restarting Codex.
 
 Backend and panel changes are live after reconnect. A changed MCP tool catalog or Skill/Hook session context needs reopening the affected chat; this is separate from restarting the application. Heartbeat panel data is bounded; use its paginated history or `task_progress_heartbeat_history` to browse earlier audits. Counts describe the complete source, while displayed text is summarized with source line references.
+
+## Completion semantics
+
+The header counts **registered checklist items**, not total task scope. Current execution is observed separately from trusted App Server status or positive visible composer Stop/Send controls. A complete checklist with ongoing, waiting or unknown execution never shows a numeric 100% header or full progress bar. Idle means the chat is not running, not that all requested work was delivered. The legacy stored phase describes only the checklist; MCP responses declare `completionBasis: registered-checklist`. Missing scope remains a limitation of model-maintained lists and must be registered before new work starts.

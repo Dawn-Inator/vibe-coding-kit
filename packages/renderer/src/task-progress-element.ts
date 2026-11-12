@@ -57,11 +57,19 @@ export interface TaskPanelHeartbeatHistory {
   total: number;
   sourcePath?: string | null;
 }
+export interface TaskPanelExecution {
+  state: "working" | "waiting" | "idle" | "unknown";
+  observedAt: string;
+  source: "codex-app-server" | "codex-ui";
+  activeFlags?: readonly string[];
+}
 export interface TaskPanelResponse {
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
   history?: TaskPanelHistory;
   heartbeatHistory?: TaskPanelHeartbeatHistory;
+  execution?: TaskPanelExecution;
+  completionBasis?: "registered-checklist";
 }
 export interface TaskPanelRequest {
   method: "get" | "history" | "bind-heartbeat" | "heartbeat-history";
@@ -90,6 +98,7 @@ const persist = (key: string, value: string): void => {
 export class TaskProgressElement extends LitElement {
   static override properties = {
     data: { attribute: false },
+    observed: { attribute: false },
     threadId: { attribute: false },
     requester: { attribute: false },
     connectionError: { attribute: false },
@@ -146,6 +155,7 @@ export class TaskProgressElement extends LitElement {
   `;
 
   declare data: TaskPanelResponse;
+  declare observed: boolean;
   declare threadId: string | null;
   declare requester: TaskPanelRequester | null;
   declare connectionError: string | null;
@@ -164,6 +174,7 @@ export class TaskProgressElement extends LitElement {
   constructor() {
     super();
     this.data = { task: null, heartbeat: null };
+    this.observed = false;
     this.threadId = null;
     this.requester = null;
     this.connectionError = null;
@@ -204,6 +215,7 @@ export class TaskProgressElement extends LitElement {
   resetThread(threadId: string | null): void {
     this.threadId = threadId;
     this.data = { task: null, heartbeat: null };
+    this.observed = false;
     this.history = null;
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
@@ -411,18 +423,57 @@ export class TaskProgressElement extends LitElement {
     return `${String(progress.completed ?? 0)}/${String(progress.total ?? 0)}${typeof progress.percent === "number" ? ` (${progress.percent}%)` : ""}`;
   }
 
+  private executionLabel(checklistComplete: boolean): string {
+    switch (this.data.execution?.state) {
+      case "working":
+        return checklistComplete
+          ? this.t("Currently still working", "当前仍在执行")
+          : this.t("Working", "正在执行");
+      case "waiting":
+        return checklistComplete
+          ? this.t("Waiting for input", "等待输入")
+          : this.t("Waiting for input", "等待输入");
+      case "idle":
+        return this.t("Currently idle", "当前空闲");
+      default:
+        return this.t("Execution state unknown", "执行状态未知");
+    }
+  }
+
+  private checklistLabel(): string {
+    if (!this.observed)
+      return this.connectionError
+        ? this.t("Checklist unavailable", "清单暂不可用")
+        : this.t("Reading checklist…", "正在读取清单…");
+    const progress = this.data.task?.progress;
+    const counts = `${this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
+    if (!progress || progress.percent === null)
+      return `${counts} · ${this.t("No task checklist", "尚未建立任务")}`;
+    return progress.percent < 100
+      ? `${counts} · ${this.t("Checklist progress", "清单进度")} ${progress.percent}%`
+      : counts;
+  }
+
   protected override render() {
     const task = this.data.task;
     const progress = task?.progress;
     const title = task?.title ?? this.t("Task progress", "任务进度");
-    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${progress && progress.percent !== null ? `${progress.completed}/${progress.total} · ${progress.percent}%` : this.t("No task checklist", "尚未建立任务")}</span>${progress && progress.percent !== null ? html`<div class="track" role="progressbar" aria-valuenow=${progress.percent} aria-valuemin="0" aria-valuemax="100" aria-label=${title}><div class="fill" style=${`width:${Math.max(0, Math.min(100, progress.percent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${this.connectionError ? html`<div role="status" class="error">${this.connectionError}</div>` : nothing}${
+    const checklistComplete =
+      !!progress && progress.total > 0 && progress.completed === progress.total;
+    const showProgressBar =
+      progress &&
+      progress.percent !== null &&
+      (!checklistComplete || this.data.execution?.state === "idle");
+    const countedPercent = progress?.percent ?? 0;
+    const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
+    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${this.connectionError ? html`<div role="status" class="error">${this.connectionError}</div>` : nothing}${
       this.expanded
         ? html`<div class="body"><nav role="tablist"><button role="tab" aria-selected=${this.tab === "tasks"} @click=${() => {
             this.tab = "tasks";
           }}>${this.t("Subtasks", "子任务")}</button><button role="tab" aria-selected=${this.tab === "history"} @click=${() => {
             this.tab = "history";
             void this.loadHistory();
-          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderHeartbeat()}`}</div></div>`
+          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${!this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderHeartbeat()}`}</div></div>`
         : nothing
     }</section>`;
   }

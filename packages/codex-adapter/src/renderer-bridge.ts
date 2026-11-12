@@ -544,13 +544,15 @@ export class GoalProgressRendererBridge {
     if (this.#installed) {
       return;
     }
+    // Replace an old page's request wrapper before the new host makes its first read.
+    // Otherwise a hot update sends that read to the retired Helper binding and times out.
+    await this.#installTaskBinding();
     if (this.#scriptRegistered) {
       await evaluateGoalProgressPageBundle(this.#sender, this.#bundle);
     } else {
       await installGoalProgressPageBundle(this.#sender, this.#bundle);
       this.#scriptRegistered = true;
     }
-    await this.#installTaskBinding();
     this.#installed = true;
   }
 

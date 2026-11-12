@@ -59,6 +59,14 @@ test("task binding forwards only the live visible chat and resolves replies in t
   try {
     // Clear still installs the always-visible ordinary-task host, independent of Goal state.
     await bridge.clear();
+    const taskWrapper = evaluations.findIndex((entry) =>
+      entry.expression.includes("globalThis.__codexTaskProgressRequest ="),
+    );
+    const hostInstall = evaluations.findIndex((entry) => entry.expression.includes(source));
+    assert.ok(
+      taskWrapper >= 0 && hostInstall > taskWrapper,
+      "the live request wrapper must precede the host's initial read during hot updates",
+    );
     const binding = bindingNames.find((name) => name.startsWith("__CODEX_TASK_PROGRESS_"));
     assert.ok(binding);
     const emit = listeners.get("Runtime.bindingCalled");

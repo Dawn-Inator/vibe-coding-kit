@@ -23,3 +23,17 @@ Validated locally on Apple Silicon macOS on 2026-11-11 (America/New_York).
 A modified MCP catalog/Skill/Hook session context needs reopening affected chat sessions; the installer reports `codexSessionReconnectRequired:true`. The current agent's built-in deferred tool catalog was not forcibly replaced mid-turn; the protocol acceptance used the installed MCP executable with the actual live chat/turn identity. This limitation does not prevent live Helper/renderer updates.
 
 Native multi-window behavior has browser identity/isolation regression coverage, but a second actual desktop window was not opened during this validation. Doctor's inherited Goal display diagnostics may say unverified when no native Goal is configured; ordinary task visibility was independently observed through its live panel diagnostics and screenshots.
+
+## 0.4.2 correction: checklist completion is not total task completion
+
+The user observed a 100% header while work continued. The prior acceptance list covered only two registered items and was marked complete before delivery closeout. That display was misleading; the earlier 100% must not be interpreted as objective completion of all requested work. The current record retains its history and adds the missing correction/delivery steps.
+
+0.4.2 labels registered checklist counts explicitly and observes execution separately. Complete checklists with working, waiting or unknown execution have no numeric completion header or filled progressbar. Idle is an execution observation, not a delivery claim. MCP results declare `completionBasis: registered-checklist`; the legacy persisted phase remains checklist-only for compatibility.
+
+The independent App Server can return notLoaded for a chat executing in the desktop application. That maps to unknown. Positive visible Stop/Send composer controls provide a conservative local observation without inferring idleness from missing controls. Unknown labels/states stay unknown. The actual current chat was observed as working from its Stop control. First task reads remain unconfirmed until a response arrives; no invented0/0 is shown while reading or unavailable.
+
+Validation: 32 core/interface tests and13 browser checks cover complete lists with active runtime at unchanged revision, working/waiting/unknown/idle, positive and hidden controls, runtime changes before a slow network response, and first-read uncertainty. A bridge regression verifies a hot update installs its request binding before the new panel's initial read, avoiding a retired-binding timeout.
+
+Counts remain dependent on model-maintained scope registration. This correction does not claim to estimate unknown remaining work. Hook and Skill guidance now explicitly retain testing, packaging, install, commit/push and final verification until performed.
+
+Final0.4.2 delivery checks passed: INSTALL_OK, DOCTOR_OK and VERIFY_OK. The current visible chat reports working from codex-ui while retaining its persisted checklist revision, with explicit registered scope. The main app PID1265/start time remained unchanged across the hot update. Delivery steps were retained as pending until packaging, installation, commit/push and final verification occurred.
