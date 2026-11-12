@@ -70,6 +70,7 @@ export interface TaskPanelHeartbeat {
 export interface TaskPanelHistory {
   events: readonly Record<string, unknown>[];
   nextCursor: string | null;
+  error?: string;
 }
 export interface TaskPanelSourceHistory {
   events: readonly Record<string, unknown>[];
@@ -387,7 +388,10 @@ export class TaskProgressElement extends LitElement {
             source: { ...expectedSource, error: String(error) },
           };
           this.historyThread = threadId;
-        } else this.connectionError = String(error);
+        } else {
+          this.history = { events: [], nextCursor: null, error: String(error) };
+          this.historyThread = threadId;
+        }
       }
     } finally {
       if (requestId === this.historyRequest) this.busy = false;
@@ -633,7 +637,8 @@ export class TaskProgressElement extends LitElement {
       }${sourceHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh ledger history", "刷新台账历史")}</button>`;
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
-    return html`${(this.history?.events ?? []).map((event) => html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`)}${!this.history?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${this.history?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
+    const localHistory = this.history && !("source" in this.history) ? this.history : null;
+    return html`${(localHistory?.events ?? []).map((event) => html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`)}${localHistory?.error ? html`<p class="error">${this.t("History unavailable", "历史记录不可用")}: ${localHistory.error}</p>` : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
   }
 
   private progressText(value: unknown): string {

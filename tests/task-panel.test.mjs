@@ -15,13 +15,14 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,historyFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
   const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; throw new Error(message); }
   if(request.method==='history' && window.fixture.delayNextHistory) { const delay=window.fixture.delayNextHistory; window.fixture.delayNextHistory=0; await new Promise(resolve => setTimeout(resolve,delay)); }
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
@@ -124,8 +125,10 @@ test("ordinary chat task panel browser flows", async (t) => {
     ...(existsSync(chrome) ? { executablePath: chrome } : {}),
   });
   const url = `http://127.0.0.1:${server.address().port}`;
+  const contexts = new Set();
   const open = async (query = "") => {
     const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
+    contexts.add(context);
     const page = await context.newPage();
     await page.goto(`${url}${query}`);
     await page.locator("codex-task-panel").waitFor({ state: "visible" });
@@ -458,6 +461,37 @@ test("ordinary chat task panel browser flows", async (t) => {
       },
     );
     await t.test(
+      "local History request failure settles and retries only after explicit refresh",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.historyFailureNext = "temporary history failure";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel
+          .locator(".scroll")
+          .getByText(/历史记录不可用.*temporary history failure/)
+          .waitFor();
+        assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
+        await page.waitForTimeout(150);
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          ),
+          1,
+        );
+        await page.evaluate(() => {
+          window.fixture.history = { events: [{ reason: "retry succeeded" }], nextCursor: null };
+        });
+        await panel.getByRole("button", { name: "刷新", exact: true }).click();
+        await panel.getByText("retry succeeded", { exact: true }).waitFor();
+        await context.close();
+      },
+    );
+    await t.test(
       "bound task History renders only its canonical Kit ledger, pages and refreshes",
       async () => {
         const { context, page, panel } = await open();
@@ -555,9 +589,20 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
         await page.evaluate(() => {
           window.fixture.task.source.error = "ledger is stale";
+          window.fixture.taskSource = {
+            status: "stale",
+            path: window.fixture.task.source.path,
+            contentHash: window.fixture.task.source.contentHash,
+            readOnly: true,
+            error: "ledger is stale",
+          };
+          window.fixture.history.source.error = "ledger is stale";
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel.getByText(/台账历史不可用.*ledger is stale/).waitFor();
+        await panel
+          .locator(".scroll")
+          .getByText(/台账历史不可用.*ledger is stale/)
+          .waitFor();
         await context.close();
       },
     );
@@ -590,9 +635,12 @@ test("ordinary chat task panel browser flows", async (t) => {
         });
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
         await panel.getByRole("tab", { name: "历史", exact: true }).click();
-        await panel.getByText(/ledger could not be read/).waitFor();
+        await panel
+          .locator(".scroll")
+          .getByText(/did not match the bound source/)
+          .waitFor();
         assert.doesNotMatch(
-          await panel.locator("section.panel").innerText(),
+          await panel.locator(".scroll").innerText(),
           /must not appear locally|暂无变更记录/,
         );
         await page.waitForTimeout(200);
@@ -612,8 +660,11 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel.getByText(/ledger binding is unresolved/).waitFor();
-        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
+        await panel
+          .locator(".scroll")
+          .getByText(/ledger binding is unresolved/)
+          .waitFor();
+        assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
         await context.close();
       },
     );
@@ -653,9 +704,13 @@ test("ordinary chat task panel browser flows", async (t) => {
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
         await panel.getByRole("tab", { name: "历史", exact: true }).click();
         await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
-        const historyText = await panel.locator("section.panel").innerText();
+        const historyText = await panel.locator(".scroll").innerText();
         assert.match(historyText, /Audit · verified/);
         assert.doesNotMatch(historyText, /current Items projection invalid|台账历史不可用/);
+        assert.match(
+          await panel.locator(".summary").innerText(),
+          /current Items projection invalid/,
+        );
         await context.close();
       },
     );
@@ -811,12 +866,14 @@ test("ordinary chat task panel browser flows", async (t) => {
           document
             .querySelector("[data-app-action-sidebar-thread-row]")
             .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.task = null;
           window.fixture.history = {
             events: [{ reason: "current thread-b history" }],
             nextCursor: null,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
         await panel.getByText("current thread-b history", { exact: true }).waitFor();
         await page.waitForTimeout(300);
         assert.equal(await panel.getByText("late thread-a history", { exact: true }).count(), 0);
@@ -1213,6 +1270,7 @@ test("ordinary chat task panel browser flows", async (t) => {
       await context.close();
     });
   } finally {
+    await Promise.allSettled([...contexts].map((context) => context.close()));
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
