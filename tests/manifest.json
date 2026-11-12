@@ -69,5 +69,6 @@
   "supervision/heartbeat-ledger-types.test.mjs",
   "tasks/task-contract.test.mjs",
   "tasks/task-store.test.mjs",
-  "tasks/heartbeat-task-source.test.mjs"
+  "tasks/heartbeat-task-source.test.mjs",
+  "tasks/project-heartbeat.test.mjs"
 ]

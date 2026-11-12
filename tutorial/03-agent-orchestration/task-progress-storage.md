@@ -25,11 +25,13 @@ import { z } from 'zod';
 import { createTaskProgressSchemas } from './src/tasks/task-contract.mjs';
 import { TaskStore } from './src/tasks/task-store.mjs';
 import { discoverHeartbeatLedgerSources, projectHeartbeatTask } from './src/tasks/heartbeat-task-source.mjs';
+import { readProjectHeartbeat } from './src/tasks/project-heartbeat.mjs';
 import { inspectHeartbeatLedger } from './src/supervision/heartbeat-ledger-api.mjs';
 
 const schemas = createTaskProgressSchemas(z);
 const taskStore = new TaskStore(storage.storageRoot, { schemas }); // ordinary mutable task state
 const root = await realpath(trustedChatCwd);
+const projectHeartbeat = await readProjectHeartbeat({ root }); // project display, independent of chat task selection
 const discovery = await discoverHeartbeatLedgerSources({ root, threadId });
 const associated = discovery.candidates.filter((candidate) => candidate.associated);
 // Only a complete scan can establish that a candidate is unique or absent.
@@ -58,6 +60,11 @@ file/depth limits or unreadable/oversized entries. Do not claim unique or no-sou
 surface the uncertainty or use an explicit source binding. The array-only `discoverHeartbeatLedgers` export remains
 for compatibility and does not report scan completeness. Deliberately skipped directories such as `.git`,
 `node_modules`, `vendor`, and build caches are outside the discovery scope and do not make a scan incomplete.
+
+`readProjectHeartbeat` independently displays a configured source, or the project source with the latest valid
+recorded wake; if no wake has a usable past timestamp, it chooses a stable lexical Items inventory. This is project
+display only: its timestamp does not claim the work is live, and the project source does not replace an unrelated
+chat task record. An incomplete discovery report remains visibly incomplete even when it can display a found source.
 
 采用此契约的 Codex Task Progress 插件在 `storageRoot` 中按聊天隔离记录：
 

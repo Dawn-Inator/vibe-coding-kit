@@ -80,7 +80,10 @@ export async function discoverHeartbeatLedgerSources({
 		throw new TypeError(
 			"Heartbeat discovery requires an absolute project root",
 		);
-	if (typeof threadId !== "string" || !threadId.trim())
+	if (
+		threadId !== undefined &&
+		(typeof threadId !== "string" || !threadId.trim())
+	)
 		throw new TypeError("Heartbeat discovery requires an exact thread ID");
 	if (
 		!Number.isInteger(maxFiles) ||
@@ -135,7 +138,7 @@ export async function discoverHeartbeatLedgerSources({
 			if (!hasDatedWake && !(named && report.itemCount)) return;
 			candidates.set(path, {
 				path,
-				associated: isAssociatedThread(text, threadId),
+				associated: threadId ? isAssociatedThread(text, threadId) : false,
 			});
 		} catch {
 			reasons.add("unreadable-file");

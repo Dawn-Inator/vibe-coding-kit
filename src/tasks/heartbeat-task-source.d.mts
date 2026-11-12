@@ -7,7 +7,7 @@ export interface HeartbeatLedgerCandidate {
 
 export interface DiscoverHeartbeatLedgersOptions {
 	root: string;
-	threadId: string;
+	threadId?: string;
 	ledgerPath?: string;
 	maxFiles?: number;
 	maxDepth?: number;
