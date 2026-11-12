@@ -86,7 +86,12 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       };
     }
     target.style.boxSizing = "border-box";
-    target.style.paddingTop = `${reservation.basePadding + height + 16}px`;
+    // The panel lives outside Codex's zoomed page surface. Convert its measured
+    // viewport height to the content root's CSS units before reserving space.
+    const physicalHeight = target.getBoundingClientRect().height;
+    const scale = target.offsetHeight > 0 ? physicalHeight / target.offsetHeight : 1;
+    const scaleY = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    target.style.paddingTop = `${reservation.basePadding + (height + 16) / scaleY}px`;
   };
 
   const synchronizeThread = (): ReturnType<typeof readCurrentCodexPage> => {
@@ -120,22 +125,19 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     ) {
       element.data = { ...element.data, execution };
     }
+    // Empty drafts use the "default" content mode; conversations use
+    // "thread-edge-scroll". Both belong below the measured native titlebar.
+    // The outer page surface also includes that titlebar and cannot be an anchor.
+    const contentRoot = page.composer?.closest<HTMLElement>("[data-app-shell-main-content-layout]");
+    const mainRoot = page.composer?.closest<HTMLElement>("[data-app-shell-main-surface]");
+    const layoutRoot = [contentRoot, mainRoot].find((root) => {
+      if (!root || root === page.composer) return false;
+      const box = root.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    });
+    if (reservation && (element.floating || reservation.target !== layoutRoot))
+      releaseReservation();
     const rect = page.composer?.getBoundingClientRect();
-    const layouts = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        "[data-app-shell-main-content-layout='thread-edge-scroll']",
-      ),
-    ).filter(
-      (layout) =>
-        !!page.composer &&
-        layout.contains(page.composer) &&
-        layout.getBoundingClientRect().width > 0,
-    );
-    const fallback =
-      page.surface instanceof HTMLElement
-        ? page.surface
-        : page.composer?.closest<HTMLElement>("main");
-    const layoutRoot = layouts.length === 1 ? layouts[0] : fallback;
     const visible = !!rect && rect.width > 0 && !!layoutRoot && !page.rejectionReason;
     diagnostic.visible = visible;
     element.style.display = visible ? "block" : "none";
@@ -143,7 +145,6 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       releaseReservation();
       return;
     }
-    if (element.floating) releaseReservation();
     const computed = window.getComputedStyle(page.composer ?? document.body);
     const dark =
       document.documentElement.classList.contains("dark") ||
@@ -272,6 +273,8 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       "data-app-action-sidebar-thread-selected",
       "data-app-action-sidebar-thread-id",
       "data-response-annotation-conversation",
+      "data-app-shell-main-content-layout",
+      "data-app-shell-main-surface",
       "hidden",
       "inert",
     ],

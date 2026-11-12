@@ -1,3 +1,8 @@
+# Task Progress 0.4.4
+
+- Align empty and existing chats to their measured main content viewport below the titlebar.
+- Preserve composer-aligned horizontal bounds and restore layout padding across page transitions.
+
 # Task Progress 0.4.3
 
 - Use the pinned Kit storage contract to route ordinary task records into the trusted chat cwd .workspace.
