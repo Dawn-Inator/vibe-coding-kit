@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.4.2 adds ordinary-chat tracking; it is not an official Codex extension API.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.4.3 adds ordinary-chat tracking; it is not an official Codex extension API.
 
 The compact panel appears at the top of the chat and reserves layout space instead of covering messages. Click the total to expand objectives, checklist items and evidence; use History to inspect progress and scope changes. New work can lower the percentage. Floating placement is draggable. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
@@ -32,7 +32,7 @@ Optional project `.codex-task-progress.json`:
 {"heartbeat":{"ledgerPath":".workspace/session/heartbeat.md","kitPath":".vibe-coding/kit","cadenceMinutes":20}}
 ```
 
-An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred when absent. Local task data, heartbeat bindings and observations live under `~/Library/Application Support/CodexTaskProgress/` for release installs. Source installs use private plugin data. No project ledger or personal task history belongs in Git.
+An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred when absent. Ordinary task data and heartbeat observations live under the trusted chat cwd `.workspace/codex-task-progress/`. The executable, socket, logs, native Goal legacy state and preferences remain in application support/private plugin data. No project ledger or personal task history belongs in Git.
 
 ## Interfaces
 
@@ -55,3 +55,13 @@ Backend and panel changes are live after reconnect. A changed MCP tool catalog o
 ## Completion semantics
 
 The header counts **registered checklist items**, not total task scope. Current execution is observed separately from trusted App Server status or positive visible composer Stop/Send controls. A complete checklist with ongoing, waiting or unknown execution never shows a numeric 100% header or full progress bar. Idle means the chat is not running, not that all requested work was delivered. The legacy stored phase describes only the checklist; MCP responses declare `completionBasis: registered-checklist`. Missing scope remains a limitation of model-maintained lists and must be registered before new work starts.
+
+## Project workspace storage (0.4.3)
+
+Ordinary task history is routed using the trusted Codex chat working directory, not the Helper's process directory or the shell's last `cd`. The shared Kit `resolveTaskProgressStorage({cwd})` contract defines `<cwd>/.workspace/codex-task-progress`. The plugin pins Kit commit `31c647ec63e462bc367a48932c01736a35e2e795` as a Git package dependency and bundles the canonical module; it does not maintain a copied Kit runtime.
+
+Task records remain `tasks/v3/<thread-sha256>/{events.jsonl,snapshot.json}` under that root. Heartbeat bindings and derived observations are isolated per chat under `sessions/<thread-sha256>/heartbeat`. Original project heartbeat ledgers are read-only and remain at their source paths. Runtime records self-ignore Git.
+
+On first access, the Helper copies only this chat's previous app-support records, preserves revisions/history and leaves original files intact. Existing workspace history is never overwritten or silently merged with divergent data. A global path-only index remembers the workspace binding so changing a trusted chat cwd can preserve its latest history. If the workspace is unavailable or unwritable, the plugin reports an error instead of silently reverting to global task storage. `task_progress_get` exposes the resolved storage paths for inspection.
+
+The installed executable, local socket, Helper logs, native Goal legacy state and UI preferences remain in application support. They are separate from ordinary task records and project heartbeat observations.

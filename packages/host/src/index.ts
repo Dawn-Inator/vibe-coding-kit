@@ -76,14 +76,13 @@ import {
   resolveGoalProgressSessionPaths,
   writeGoalProgressTrackingOverlay,
 } from "../../store/src/index.js";
-import { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
   TaskInitializeInputSchema,
   TaskRescopeInputSchema,
-  TaskStore,
   TaskUpdateInputSchema,
 } from "../../tasks/src/index.js";
 import { projectTaskExecution } from "../../tasks/src/task-execution.js";
+import { WorkspaceTaskStorage } from "../../tasks/src/workspace-storage.js";
 import {
   type GoalProgressDoctorResult,
   inspectGoalProgress,
@@ -341,8 +340,7 @@ export class GoalProgressHelper {
   readonly #lockOptions: HelperLockOptions;
   readonly #logger: GoalProgressLogger;
   readonly #store: GoalEventStore;
-  readonly #taskStore: TaskStore;
-  readonly #heartbeat: HeartbeatService;
+  readonly #workspaceStorage: WorkspaceTaskStorage;
   readonly #runtime: CodexAppServerRuntime;
   readonly #sessionCoordinator: GoalProgressSessionCoordinator;
   readonly #rendererDoctor:
@@ -382,8 +380,7 @@ export class GoalProgressHelper {
 
   constructor(options: GoalProgressHelperOptions = {}) {
     this.paths = options.paths ?? resolveGoalProgressPaths();
-    this.#taskStore = new TaskStore(this.paths.root);
-    this.#heartbeat = new HeartbeatService(this.paths.root);
+    this.#workspaceStorage = new WorkspaceTaskStorage(this.paths.root);
     this.#lockOptions = options.lock ?? {};
     this.#logger = new GoalProgressLogger(this.paths.helperLogPath, options.logger);
     this.#store = new GoalEventStore(this.paths, {
@@ -2371,24 +2368,29 @@ export class GoalProgressHelper {
       nativeStatus = identity.status;
       input = request.params;
     }
+    const workspace = await this.#workspaceStorage.forThread(threadId, cwd);
+    if (["initialize", "update", "rescope", "bind-heartbeat"].includes(action))
+      await workspace.ensureWritable();
+    const { taskStore, heartbeat: heartbeatService } = workspace;
     const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
     if (action === "initialize")
-      result = await this.#taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
+      result = await taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
     else if (action === "update")
-      result = await this.#taskStore.update(threadId, TaskUpdateInputSchema.parse(input));
+      result = await taskStore.update(threadId, TaskUpdateInputSchema.parse(input));
     else if (action === "rescope")
-      result = await this.#taskStore.rescope(threadId, TaskRescopeInputSchema.parse(input));
+      result = await taskStore.rescope(threadId, TaskRescopeInputSchema.parse(input));
     else {
-      const task = await this.#taskStore.get(threadId);
-      let heartbeat = await this.#heartbeat.view(threadId, cwd);
+      const task = await taskStore.get(threadId);
+      let heartbeat = await heartbeatService.view(threadId, cwd);
+      if (heartbeat?.sourcePath) await workspace.ensureWritable();
       if (action === "bind-heartbeat") {
         const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
-        heartbeat = await this.#heartbeat.bind(threadId, bind.path, cwd);
+        heartbeat = await heartbeatService.bind(threadId, bind.path, cwd);
       }
       const history =
         action === "history"
-          ? await this.#taskStore.history(
+          ? await taskStore.history(
               threadId,
               (() => {
                 const options = z
@@ -2406,7 +2408,7 @@ export class GoalProgressHelper {
           : undefined;
       const heartbeatHistory =
         action === "heartbeat-history"
-          ? await this.#heartbeat.history(
+          ? await heartbeatService.history(
               threadId,
               cwd,
               (() => {
@@ -2431,13 +2433,14 @@ export class GoalProgressHelper {
         ...(heartbeatHistory ? { heartbeatHistory } : {}),
       };
     }
-    const state = await this.#taskStore.get(threadId);
+    const state = await taskStore.get(threadId);
     return {
       revision: state?.revision ?? null,
       result: {
         ...(result as Record<string, unknown>),
         execution,
         completionBasis: "registered-checklist",
+        storage: workspace.storage,
       },
     };
   }
@@ -2554,7 +2557,7 @@ export class GoalProgressHelper {
   }
 
   async stop(): Promise<void> {
-    this.#heartbeat.close();
+    this.#workspaceStorage.close();
     const preservePage = this.#viewModelPublisher.currentUpdateState?.phase === "installing";
     this.#ready = false;
     this.#clearUpdateActivationRetries();

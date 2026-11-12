@@ -9,3 +9,5 @@ The heartbeat adapter reads only discovered project ledgers and the canonical Ki
 Installation can require restarting Codex to establish CDP. The installer reports this requirement; the source bootstrap refuses to restart automatically. Ask before using `--restart-codex`.
 
 See [installation and removal](../INSTALL-FOR-AI.md) and [README](../README.md). To uninstall a release while preserving task/history data, use the installed `bin/goal-progress uninstall --json --keep-history`. Native Codex Goals and chats are separate from this plugin's data.
+
+From0.4.3, ordinary task events/snapshots and per-chat heartbeat bindings/observations are written under the verified chat cwd `.workspace/codex-task-progress/`. Paths come from the canonical pinned Kit contract. Migration copies only the current chat, preserves old app-support files and refuses to overwrite divergent workspace history. Private runtime output ignores Git; original heartbeat ledgers remain read-only. A path-only global index supports trusted cwd changes.

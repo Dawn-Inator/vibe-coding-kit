@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
@@ -9,7 +10,12 @@ import type {
   GoalProgressIpcRequestInput,
 } from "../../ipc/src/protocol.js";
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
-import type { TaskHistoryPage, TaskMutationResult, TaskState } from "../../tasks/src/index.js";
+import {
+  type TaskHistoryPage,
+  type TaskMutationResult,
+  type TaskState,
+  TaskStore,
+} from "../../tasks/src/index.js";
 import { GoalProgressHelper } from "../src/index.js";
 
 function identity(threadId: string, cwd: string): CodexThreadIdentity {
@@ -48,6 +54,20 @@ function runtime(cwd: string): CodexAppServerRuntime {
     setPollingMode() {},
     async close() {},
   };
+}
+interface StorageDescriptor {
+  mode: "workspace" | "legacy-read-only";
+  root: string;
+  taskDirectory: string;
+}
+function eventPath(root: string, threadId: string) {
+  return join(
+    root,
+    "tasks",
+    "v3",
+    createHash("sha256").update(threadId).digest("hex"),
+    "events.jsonl",
+  );
 }
 function hasCode(code: string) {
   return (error: unknown) => error instanceof GoalProgressIpcClientError && error.code === code;
@@ -94,6 +114,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       heartbeat: unknown;
       execution: { state: string; source: string; observedAt: string };
       completionBasis: string;
+      storage: StorageDescriptor;
     };
     assert.equal(emptyState.task, null);
     assert.equal(emptyState.heartbeat, null);
@@ -101,6 +122,10 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     assert.equal(emptyState.execution.source, "codex-app-server");
     assert.ok(Number.isFinite(Date.parse(emptyState.execution.observedAt)));
     assert.equal(emptyState.completionBasis, "registered-checklist");
+    const workspaceRoot = join(await realpath(root), ".workspace", "codex-task-progress");
+    assert.equal(emptyState.storage.mode, "workspace");
+    assert.equal(emptyState.storage.root, workspaceRoot);
+    assert.ok(emptyState.storage.taskDirectory.startsWith(`${workspaceRoot}/`));
     const initialized = await request("initialize", {
       requestId: "init",
       expectedRevision: 0,
@@ -109,6 +134,17 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       objectives: [{ id: "C1", title: "Deliver", items: [{ id: "C1.1", title: "Build" }] }],
     });
     assert.equal((initialized.result as TaskMutationResult).state.progress.percent, 0);
+    const initializedStorage = (
+      initialized.result as TaskMutationResult & { storage: StorageDescriptor }
+    ).storage;
+    assert.equal(initializedStorage.mode, "workspace");
+    assert.equal(initializedStorage.root, workspaceRoot);
+    const recordedEvents = await readFile(eventPath(workspaceRoot, "ordinary-chat"), "utf8");
+    assert.equal(JSON.parse(recordedEvents.trim()).requestId, "init");
+    await assert.rejects(access(eventPath(paths.root, "ordinary-chat")), { code: "ENOENT" });
+    await assert.rejects(access(eventPath(join(paths.root, "tasks"), "ordinary-chat")), {
+      code: "ENOENT",
+    });
     const completed = await request("update", {
       requestId: "complete",
       expectedRevision: 1,
@@ -150,7 +186,12 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     await helper.stop();
     helper = new GoalProgressHelper({ ...options, runtime: runtime(root) });
     await helper.start();
-    const restored = (await request("get", {})).result as { task: TaskState };
+    const restored = (await request("get", {})).result as {
+      task: TaskState;
+      storage: StorageDescriptor;
+    };
+    assert.equal(restored.storage.mode, "workspace");
+    assert.equal(restored.storage.root, workspaceRoot);
     assert.equal(restored.task.revision, 3);
     assert.equal(restored.task.progress.percent, 50);
     const duplicate = await request("rescope", {
@@ -331,6 +372,94 @@ test("completed checklist does not imply runtime completion when a later turn is
     ).result as ObservedTask;
     assert.equal(panelUnknown.execution.state, "unknown");
     assert.equal(panelUnknown.task.revision, originalRevision);
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Helper migrates only the trusted chat's legacy record into its workspace and retains source history", async () => {
+  const root = await mkdtemp("/tmp/ctph-migrate-");
+  const workspaceCwd = join(root, "project");
+  await mkdir(join(workspaceCwd, ".git"), { recursive: true });
+  const paths = resolveGoalProgressPaths({ root: join(root, "app-data") });
+  const legacy = new TaskStore(paths.root);
+  const initialized = await legacy.initialize("legacy-chat", {
+    requestId: "legacy-init",
+    expectedRevision: 0,
+    reason: "Prior plugin version",
+    title: "Legacy work",
+    objectives: [{ id: "L1", title: "Verify migration" }],
+  });
+  await legacy.update("legacy-chat", {
+    requestId: "legacy-complete",
+    expectedRevision: initialized.state.revision,
+    reason: "Existing meaningful evidence",
+    changes: [
+      {
+        targetId: "L1",
+        status: "completed",
+        evidence: [{ summary: "Existing test passed", verification: "verified", kind: "test" }],
+      },
+    ],
+  });
+  await legacy.initialize("unrelated-chat", {
+    requestId: "unrelated-init",
+    expectedRevision: 0,
+    reason: "Other chat must stay separate",
+    title: "Other work",
+    objectives: [{ id: "O1", title: "Unrelated delivery" }],
+  });
+  const legacyBytes = await readFile(eventPath(paths.root, "legacy-chat"), "utf8");
+  const expectedHistory = await legacy.history("legacy-chat", { limit: 100 });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(workspaceCwd),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  async function request(action: "get" | "history", input: unknown) {
+    const auth: GoalProgressIpcAuthorization = {
+      kind: "codex-request",
+      toolName: `task_progress_${action}`,
+      identity: {
+        threadId: "legacy-chat",
+        sessionId: "legacy-chat",
+        turnId: "turn-1",
+        callId: `migrate-${++call}`,
+        model: "test",
+        threadSource: "user",
+        cwd: workspaceCwd,
+      },
+    };
+    return client.request({ method: "task.request", params: { action, auth, input } });
+  }
+  try {
+    await helper.start();
+    // Business payload paths cannot override the verified app-server working directory.
+    const forgedCwd = join(root, "forged-project");
+    const migrated = (await request("get", { cwd: forgedCwd })).result as {
+      task: TaskState;
+      storage: StorageDescriptor;
+    };
+    const workspaceRoot = join(await realpath(workspaceCwd), ".workspace", "codex-task-progress");
+    assert.equal(migrated.storage.mode, "workspace");
+    assert.equal(migrated.storage.root, workspaceRoot);
+    assert.equal(migrated.task.revision, 2);
+    assert.equal(migrated.task.progress.percent, 100);
+    assert.deepEqual(migrated.task, await legacy.get("legacy-chat"));
+    const history = (await request("history", { limit: 100 })).result as {
+      history: TaskHistoryPage;
+    };
+    assert.deepEqual(history.history, expectedHistory);
+    assert.equal(await readFile(eventPath(workspaceRoot, "legacy-chat"), "utf8"), legacyBytes);
+    assert.equal(await readFile(eventPath(paths.root, "legacy-chat"), "utf8"), legacyBytes);
+    await assert.rejects(access(eventPath(workspaceRoot, "unrelated-chat")), { code: "ENOENT" });
+    await assert.rejects(access(join(forgedCwd, ".workspace", "codex-task-progress")), {
+      code: "ENOENT",
+    });
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });

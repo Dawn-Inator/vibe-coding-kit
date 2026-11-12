@@ -37,3 +37,13 @@ Validation: 32 core/interface tests and13 browser checks cover complete lists wi
 Counts remain dependent on model-maintained scope registration. This correction does not claim to estimate unknown remaining work. Hook and Skill guidance now explicitly retain testing, packaging, install, commit/push and final verification until performed.
 
 Final0.4.2 delivery checks passed: INSTALL_OK, DOCTOR_OK and VERIFY_OK. The current visible chat reports working from codex-ui while retaining its persisted checklist revision, with explicit registered scope. The main app PID1265/start time remained unchanged across the hot update. Delivery steps were retained as pending until packaging, installation, commit/push and final verification occurred.
+
+## 0.4.3 workspace storage
+
+Kit's pure path contract is pinned at31c647ec63e462bc367a48932c01736a35e2e795 and imported as a Git package, with no copied runtime source. Kit syntax checks passed; its4 manifest-registered tests/CI were not run under that repository's explicit-test policy. Plugin validation exercised the canonical contract in migration/integration tests.
+
+The plugin's43 core/interface checks and13 browser checks passed, as did lint, typecheck, builds, source runtime bundle, plugin/release checks, install, Doctor and Verify. Ordinary task records now resolve from verified chat cwd to `.workspace/codex-task-progress`; system runtime files remain separate.
+
+Live migration of this chat preserved all10 events at revision10 byte-for-byte (SHA256 match), left the original app-support log unchanged and created private mode600 target files. A later task update advanced only the workspace copy to revision11 while the old log's SHA256 remained unchanged. The actual panel reconnected at0.4.3 without restarting Codex's main process. Initial project filesystem opening was delayed, then migration and requests recovered; no data was dropped or silently redirected globally.
+
+Tests cover existing target conflicts, exact history preservation, per-project/chat isolation, trusted cwd spoof rejection, heartbeat binding filtering, idempotence, unavailable paths and cwd moves. Moving a chat cwd carries task history but not the previous project's heartbeat binding/cache. Empty reads do not create a workspace; confirmed records/mutations create a self-ignored private directory. The global index contains paths only.

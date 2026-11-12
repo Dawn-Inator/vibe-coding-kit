@@ -1,3 +1,9 @@
+# Task Progress 0.4.3
+
+- Use the pinned Kit storage contract to route ordinary task records into the trusted chat cwd .workspace.
+- Migrate existing per-chat history and heartbeat observations without deleting originals.
+- Isolate project/chat data, expose storage paths and report conflicting histories instead of overwriting.
+
 # Task Progress 0.4.2
 
 - Label completion as registered checklist scope, not the whole task.

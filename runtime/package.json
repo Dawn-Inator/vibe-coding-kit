@@ -1,6 +1,6 @@
 {
   "name": "codex-task-progress-source-runtime",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,6 +15,7 @@
     "@modelcontextprotocol/sdk": "1.31.0",
     "esbuild": "0.28.2",
     "lit": "3.3.3",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "vibe-coding-kit": "git+https://github.com/Dawn-Inator/vibe-coding-kit.git#31c647ec63e462bc367a48932c01736a35e2e795"
   }
 }

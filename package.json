@@ -1,6 +1,6 @@
 {
   "name": "codex-task-progress",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -29,6 +29,7 @@
     "@lucide/icons": "^1.37.0",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "lit": "^3.3.3",
+    "vibe-coding-kit": "github:Dawn-Inator/vibe-coding-kit#31c647ec63e462bc367a48932c01736a35e2e795",
     "zod": "^4.4.3"
   },
   "devDependencies": {
