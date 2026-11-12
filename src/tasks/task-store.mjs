@@ -1,8 +1,13 @@
 // Adapted from https://github.com/Dawn-Inator/codex-task-progress; see src/tasks/LICENSE.
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { appendDurableLine, atomicWriteFile } from "./task-io.mjs";
+import { atomicWriteFile } from "./task-io.mjs";
+import {
+	readMarkdownRecords,
+	writeMarkdownRecords,
+	withMarkdownLock,
+} from "./markdown-records.mjs";
 import { calculateTaskProgress } from "./task-contract.mjs";
 
 export class TaskStoreError extends Error {
@@ -12,7 +17,7 @@ export class TaskStoreError extends Error {
 		this.code = code;
 	}
 }
-const queues = new Map();
+
 function canonical(value) {
 	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
 	if (value !== null && typeof value === "object") {
@@ -30,111 +35,459 @@ function isMissing(error) {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-/** The Helper is the sole writer; queues also serialize TaskStore instances within its process. */
+export function taskMarkdownPaths(root, threadId) {
+	if (typeof threadId !== "string" || !threadId.trim() || threadId.length > 512)
+		throw new TaskStoreError(
+			"TASK_THREAD_INVALID",
+			"A verified thread ID is required",
+		);
+	const directory = resolve(root, "tasks", "v3", digest(threadId));
+	return {
+		directory,
+		heartbeat: resolve(directory, "heartbeat.md"),
+		history: resolve(directory, "taskhistory.md"),
+		legacyEvents: resolve(directory, "events.jsonl"),
+		legacySnapshot: resolve(directory, "snapshot.json"),
+	};
+}
+// A dependency-free structural guard shared by readers before any history rewrite.
+// TaskStore additionally applies the caller's full TaskEventSchema.
+export function validateTaskEventStructure(e) {
+	const object = (v, keys) =>
+		v &&
+		typeof v === "object" &&
+		!Array.isArray(v) &&
+		Object.keys(v).every((k) => keys.includes(k));
+	const str = (v, max = Infinity) =>
+		typeof v === "string" && v.trim().length > 0 && v.length <= max;
+	const progress = (p) =>
+		object(p, ["completed", "total", "percent"]) &&
+		Number.isInteger(p.completed) &&
+		p.completed >= 0 &&
+		Number.isInteger(p.total) &&
+		p.total >= 0 &&
+		(p.percent === null ||
+			(typeof p.percent === "number" &&
+				Number.isFinite(p.percent) &&
+				p.percent >= 0 &&
+				p.percent <= 100));
+	const statuses = ["pending", "active", "completed", "blocked", "cancelled"];
+	const ids = new Set();
+	const entry = (v, objective) => {
+		if (
+			!object(v, [
+				"id",
+				"title",
+				"status",
+				"evidence",
+				...(objective ? ["required", "items"] : []),
+			]) ||
+			!str(v.id, 128) ||
+			!str(v.title, 1000) ||
+			ids.has(v.id) ||
+			(v.status !== undefined && !statuses.includes(v.status)) ||
+			(v.evidence !== undefined &&
+				(!Array.isArray(v.evidence) || v.evidence.length > 100))
+		)
+			return false;
+		ids.add(v.id);
+		if (
+			!(v.evidence ?? []).every(
+				(x) =>
+					object(x, ["summary", "verification", "kind", "reference"]) &&
+					str(x.summary, 2000) &&
+					["reported", "verified"].includes(x.verification) &&
+					(x.kind === undefined || str(x.kind, 100)) &&
+					(x.reference === undefined || str(x.reference, 4096)),
+			)
+		)
+			return false;
+		if (
+			objective &&
+			((v.required !== undefined && typeof v.required !== "boolean") ||
+				(v.items !== undefined &&
+					(!Array.isArray(v.items) ||
+						v.items.length > 500 ||
+						!v.items.every((i) => entry(i, false)))))
+		)
+			return false;
+		return (
+			v.status !== "completed" ||
+			(v.evidence ?? []).length > 0 ||
+			(objective && (v.items ?? []).length > 0)
+		);
+	};
+	const date = (v) =>
+		typeof v === "string" &&
+		/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(v) &&
+		Number.isFinite(Date.parse(v));
+	if (
+		!object(e, [
+			"schemaVersion",
+			"kind",
+			"eventId",
+			"threadId",
+			"requestId",
+			"fingerprint",
+			"revision",
+			"occurredAt",
+			"reason",
+			"before",
+			"after",
+			"state",
+		]) ||
+		e.schemaVersion !== 3 ||
+		!["task.initialized", "task.updated", "task.rescoped"].includes(e.kind) ||
+		![e.eventId, e.threadId, e.requestId, e.fingerprint, e.reason].every(
+			(v) => typeof v === "string",
+		) ||
+		!Number.isInteger(e.revision) ||
+		e.revision < 1 ||
+		!date(e.occurredAt) ||
+		!(e.before === null || progress(e.before)) ||
+		!progress(e.after)
+	)
+		return false;
+	const state = e.state;
+	return !!(
+		object(state, [
+			"schemaVersion",
+			"kind",
+			"threadId",
+			"title",
+			"revision",
+			"createdAt",
+			"updatedAt",
+			"objectives",
+			"progress",
+			"phase",
+		]) &&
+		state.schemaVersion === 3 &&
+		state.kind === "task" &&
+		str(state.threadId, 512) &&
+		str(state.title, 1000) &&
+		Number.isInteger(state.revision) &&
+		state.revision > 0 &&
+		date(state.createdAt) &&
+		date(state.updatedAt) &&
+		Array.isArray(state.objectives) &&
+		state.objectives.length <= 100 &&
+		state.objectives.every((v) => entry(v, true)) &&
+		progress(state.progress) &&
+		["active", "completed"].includes(state.phase)
+	);
+}
+/** The Helper is the sole writer across processes. */
 export class TaskStore {
 	constructor(root, { schemas }) {
 		this.schemas = schemas;
 		this.root = resolve(root);
 	}
 	paths(threadId) {
-		if (!threadId.trim() || threadId.length > 512)
-			throw new TaskStoreError(
-				"TASK_THREAD_INVALID",
-				"A verified thread ID is required",
-			);
-		const directory = resolve(this.root, "tasks", "v3", digest(threadId));
-		return {
-			directory,
-			events: resolve(directory, "events.jsonl"),
-			snapshot: resolve(directory, "snapshot.json"),
-		};
+		return taskMarkdownPaths(this.root, threadId);
 	}
 	async serialize(threadId, work) {
-		const key = this.paths(threadId).directory;
-		const result = (queues.get(key) ?? Promise.resolve())
-			.catch(() => undefined)
-			.then(work);
-		queues.set(key, result);
-		try {
-			return await result;
-		} finally {
-			if (queues.get(key) === result) queues.delete(key);
-		}
+		return withMarkdownLock(this.paths(threadId).directory, work);
 	}
-	async replay(threadId) {
-		const paths = this.paths(threadId);
-		let contents;
+	validateEvents(threadId, events) {
+		let revision = 0;
+		const ids = new Set();
+		const requests = new Set();
+		return events.map((raw) => {
+			let event;
+			try {
+				event = this.schemas.TaskEventSchema.parse(raw);
+			} catch {
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Task history contains an invalid committed record",
+				);
+			}
+			if (
+				event.threadId !== threadId ||
+				event.state.threadId !== threadId ||
+				event.revision !== ++revision ||
+				event.state.revision !== event.revision ||
+				ids.has(event.eventId) ||
+				requests.has(event.requestId)
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Task history identity, revision or IDs are inconsistent",
+				);
+			ids.add(event.eventId);
+			requests.add(event.requestId);
+			// Parsing validates; the original event remains authoritative, including unknown fields.
+			return raw;
+		});
+	}
+	async legacy(path, threadId) {
+		let text;
 		try {
-			contents = await readFile(paths.events, "utf8");
+			text = await readFile(path, "utf8");
 		} catch (error) {
-			if (isMissing(error)) return [];
+			if (isMissing(error))
+				return { exists: false, events: [], partialTail: false };
 			throw error;
 		}
-		// Only an incomplete final record is repairable. Corruption in committed lines is an error.
-		const lastNewline = contents.lastIndexOf("\n");
-		const tail = contents.slice(lastNewline + 1);
-		let complete = contents.slice(0, lastNewline + 1);
-		if (tail.length) {
-			const recovered = this.schemas.TaskEventSchema.safeParse(
-				(() => {
-					try {
-						return JSON.parse(tail);
-					} catch {
-						return null;
-					}
-				})(),
-			);
-			const file = await open(paths.events, "r+");
+		const lines = text.split("\n");
+		const tail = lines.pop();
+		let partialTail = false;
+		if (tail) {
 			try {
-				if (recovered.success) {
-					await file.write("\n", Buffer.byteLength(contents));
-					complete = `${contents}\n`;
-				} else await file.truncate(Buffer.byteLength(complete));
-				await file.sync();
-			} finally {
-				await file.close();
+				const value = JSON.parse(tail);
+				this.schemas.TaskEventSchema.parse(value);
+				lines.push(tail);
+			} catch {
+				partialTail = true;
 			}
 		}
 		let events;
 		try {
-			events = complete
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => this.schemas.TaskEventSchema.parse(JSON.parse(line)));
+			events = lines.filter(Boolean).map((line) => JSON.parse(line));
 		} catch {
 			throw new TaskStoreError(
 				"TASK_HISTORY_CORRUPT",
 				"Task history contains an invalid committed record",
 			);
 		}
-		let revision = 0;
-		for (const event of events) {
+		return {
+			exists: true,
+			events: this.validateEvents(threadId, events),
+			partialTail,
+		};
+	}
+	validateRecords(records) {
+		for (const record of records) {
 			if (
-				event.threadId !== threadId ||
-				event.state.threadId !== threadId ||
-				event.revision !== revision + 1 ||
-				event.state.revision !== event.revision
-			) {
+				!record ||
+				typeof record !== "object" ||
+				!["task-event", "source-binding", "source-migration"].includes(
+					record.type,
+				)
+			)
 				throw new TaskStoreError(
 					"TASK_HISTORY_CORRUPT",
-					"Task history identity or revision is inconsistent",
+					"Unknown task history record",
 				);
-			}
-			revision = event.revision;
+			if (
+				record.type === "task-event" &&
+				(Object.keys(record).some((k) => !["type", "event"].includes(k)) ||
+					!validateTaskEventStructure(record.event))
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Invalid task event envelope",
+				);
+			if (
+				record.type === "source-migration" &&
+				(record.version !== 1 ||
+					Object.keys(record).some((k) => !["type", "version"].includes(k)))
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Invalid source migration record",
+				);
+			if (
+				record.type === "source-binding" &&
+				(Object.keys(record).some((k) => !["type", "binding"].includes(k)) ||
+					!(
+						record.binding === null ||
+						(record.binding &&
+							typeof record.binding.path === "string" &&
+							record.binding.path.startsWith("/") &&
+							["automatic", "explicit"].includes(record.binding.origin) &&
+							Object.keys(record.binding).every((k) =>
+								["path", "origin"].includes(k),
+							))
+					))
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Invalid source binding record",
+				);
 		}
-		// Snapshot is a derived cache. The log remains authoritative after a crash.
-		const state = events.at(-1)?.state;
-		if (state) {
-			let snapshot;
+	}
+	async load(threadId, { persist = true } = {}) {
+		const paths = this.paths(threadId);
+		let data;
+		try {
+			data = await readMarkdownRecords(paths.history, {
+				kind: "task-progress",
+				identity: threadId,
+			});
+		} catch (error) {
+			throw new TaskStoreError("TASK_HISTORY_CORRUPT", error.message);
+		}
+		if (!data.exists) {
 			try {
-				snapshot = JSON.parse(await readFile(paths.snapshot, "utf8"));
-			} catch {
-				snapshot = null;
+				await readFile(paths.heartbeat);
+				throw new TaskStoreError(
+					"TASK_HISTORY_CORRUPT",
+					"Managed heartbeat exists without task history",
+				);
+			} catch (error) {
+				if (!isMissing(error)) throw error;
 			}
-			if (canonical(snapshot) !== canonical(state))
-				await atomicWriteFile(paths.snapshot, `${JSON.stringify(state)}\n`);
 		}
-		return events;
+		this.validateRecords(data.records);
+		const events = this.validateEvents(
+			threadId,
+			data.records.filter((r) => r.type === "task-event").map((r) => r.event),
+		);
+		const legacy = await this.legacy(paths.legacyEvents, threadId);
+		const common = Math.min(events.length, legacy.events.length);
+		if (
+			legacy.events
+				.slice(0, common)
+				.some((e, i) => canonical(e) !== canonical(events[i]))
+		)
+			throw new TaskStoreError(
+				"TASK_HISTORY_CONFLICT",
+				"Legacy and Markdown task histories diverged",
+			);
+		let dirty = false;
+		if (
+			legacy.events.length > events.length ||
+			(!data.exists && legacy.exists)
+		) {
+			data.records.push(
+				...legacy.events
+					.slice(events.length)
+					.map((event) => ({ type: "task-event", event })),
+			);
+			dirty = true;
+			if (persist)
+				await writeMarkdownRecords(paths.history, {
+					kind: "task-progress",
+					identity: threadId,
+					records: data.records,
+				});
+			data.exists = true;
+			events.push(...legacy.events.slice(events.length));
+		}
+		if (persist && events.length)
+			await this.writeHead(threadId, events.at(-1).state);
+		return { ...data, events, dirty, partialTail: legacy.partialTail };
+	}
+	async writeHead(threadId, state) {
+		const lines = state.objectives
+			.flatMap((o) => [
+				`- [${o.status}] ${o.title}`,
+				...o.items.map((i) => `  - [${i.status}] ${i.title}`),
+			])
+			.join("\n");
+		const payload = JSON.stringify(
+			{ schemaVersion: 1, kind: "task-heartbeat", identity: threadId, state },
+			null,
+			2,
+		);
+		await atomicWriteFile(
+			this.paths(threadId).heartbeat,
+			`# ${state.title.replace(/[\r\n]/g, " ")}\n\nRevision: ${state.revision}\n\n${lines}\n\n\`\`\`json task-heartbeat-v1\n${payload}\n\`\`\`\n`,
+		);
+	}
+	async replay(threadId) {
+		return (await this.load(threadId)).events;
+	}
+	async importFrom(
+		threadId,
+		sourceDirectory,
+		{ includeBindings = false } = {},
+	) {
+		return this.serialize(threadId, async () => {
+			const sourceHistory = resolve(sourceDirectory, "taskhistory.md");
+			let source;
+			try {
+				source = await readMarkdownRecords(sourceHistory, {
+					kind: "task-progress",
+					identity: threadId,
+				});
+			} catch (error) {
+				throw new TaskStoreError("TASK_HISTORY_CORRUPT", error.message);
+			}
+			this.validateRecords(source.records);
+			const legacy = await this.legacy(
+				resolve(sourceDirectory, "events.jsonl"),
+				threadId,
+			);
+			const imported = source.exists
+				? this.validateEvents(
+						threadId,
+						source.records
+							.filter((r) => r?.type === "task-event")
+							.map((r) => r.event),
+					)
+				: legacy.events;
+			if (
+				source.exists &&
+				legacy.exists &&
+				legacy.events.some(
+					(e, i) =>
+						i < imported.length && canonical(e) !== canonical(imported[i]),
+				)
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CONFLICT",
+					"Source histories diverged",
+				);
+			if (legacy.events.length > imported.length)
+				imported.push(...legacy.events.slice(imported.length));
+			const target = await this.load(threadId, { persist: false });
+			const common = Math.min(target.events.length, imported.length);
+			if (
+				imported
+					.slice(0, common)
+					.some((e, i) => canonical(e) !== canonical(target.events[i]))
+			)
+				throw new TaskStoreError(
+					"TASK_HISTORY_CONFLICT",
+					"Imported and existing histories diverged",
+				);
+			const additions = imported
+				.slice(target.events.length)
+				.map((event) => ({ type: "task-event", event }));
+			if (includeBindings && source.exists) {
+				const sourceBindings = source.records.filter(
+					(r) => r?.type === "source-binding" || r?.type === "source-migration",
+				);
+				const targetBindings = target.records.filter(
+					(r) => r?.type === "source-binding" || r?.type === "source-migration",
+				);
+				const bindingCommon = Math.min(
+					sourceBindings.length,
+					targetBindings.length,
+				);
+				if (
+					sourceBindings
+						.slice(0, bindingCommon)
+						.some((r, i) => canonical(r) !== canonical(targetBindings[i]))
+				)
+					throw new TaskStoreError(
+						"TASK_HISTORY_CONFLICT",
+						"Imported and existing source associations diverged",
+					);
+				additions.push(...sourceBindings.slice(targetBindings.length));
+			}
+			if (additions.length || target.dirty) {
+				target.records.push(...additions);
+				await writeMarkdownRecords(this.paths(threadId).history, {
+					kind: "task-progress",
+					identity: threadId,
+					records: target.records,
+				});
+				const last =
+					imported.length > target.events.length
+						? imported.at(-1)
+						: target.events.at(-1);
+				if (last) await this.writeHead(threadId, last.state);
+			}
+			return {
+				migrated: additions.length > 0,
+				importedEvents: Math.max(0, imported.length - target.events.length),
+				partialTail: legacy.partialTail,
+			};
+		});
 	}
 	async get(threadId) {
 		return this.serialize(
@@ -144,7 +497,8 @@ export class TaskStore {
 	}
 	async mutate(threadId, kind, input, build) {
 		return this.serialize(threadId, async () => {
-			const events = await this.replay(threadId);
+			const loaded = await this.load(threadId);
+			const events = loaded.events;
 			const fingerprint = digest(canonical({ kind, input }));
 			const duplicate = events.find(
 				(event) => event.requestId === input.requestId,
@@ -195,8 +549,12 @@ export class TaskStore {
 				state,
 			});
 			const paths = this.paths(threadId);
-			await appendDurableLine(paths.events, JSON.stringify(event));
-			await atomicWriteFile(paths.snapshot, `${JSON.stringify(state)}\n`);
+			await writeMarkdownRecords(paths.history, {
+				kind: "task-progress",
+				identity: threadId,
+				records: [...loaded.records, { type: "task-event", event }],
+			});
+			await this.writeHead(threadId, state);
 			return { state, duplicate: false };
 		});
 	}

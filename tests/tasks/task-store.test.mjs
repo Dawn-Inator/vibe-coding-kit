@@ -243,35 +243,17 @@ test("rescope preserves removed entries as cancelled and reopening changes the c
 	assert.equal(reopened.state.progress.total, 2);
 });
 
-test("restart reconstructs missing/corrupt snapshot and repairs incomplete log tail", async () => {
-	const { store, root } = await setup();
-	const initial = await store.initialize("thread", {
-		requestId: "init",
-		expectedRevision: 0,
-		reason: "Task",
-		title: "Work",
-		objectives,
-	});
-	const directory = join(
-		root,
-		"tasks",
-		"v3",
-		createHash("sha256").update("thread").digest("hex"),
-	);
-	await writeFile(join(directory, "snapshot.json"), "broken");
-	await appendFile(join(directory, "events.jsonl"), '{"truncated":');
-	const restored = await new TaskStore(root, { schemas }).get("thread");
-	assert.deepEqual(restored, initial.state);
-	assert.deepEqual(
-		JSON.parse(await readFile(join(directory, "snapshot.json"), "utf8")),
-		initial.state,
-	);
-	assert.equal(
-		(await readFile(join(directory, "events.jsonl"), "utf8"))
-			.split("\n")
-			.filter(Boolean).length,
-		1,
-	);
+test("legacy import preserves bytes and rebuilds heartbeat on restart", async () => {
+ const { store, root } = await setup();
+ const initial = await store.initialize("thread", { requestId: "init", expectedRevision: 0, reason: "Task", title: "Work", objectives });
+ const directory = join(root, "tasks", "v3", createHash("sha256").update("thread").digest("hex"));
+ const event = (await store.history("thread")).events[0];
+ const legacy = `${JSON.stringify(event)}\n{"truncated":`;
+ await writeFile(join(directory, "events.jsonl"), legacy);
+ await writeFile(join(directory, "heartbeat.md"), "broken");
+ assert.deepEqual(await new TaskStore(root, { schemas }).get("thread"), initial.state);
+ assert.equal(await readFile(join(directory, "events.jsonl"), "utf8"), legacy);
+ assert.match(await readFile(join(directory, "heartbeat.md"), "utf8"), /task-heartbeat-v1/);
 });
 
 test("thread histories stay isolated and invalid pagination is rejected", async () => {
@@ -319,4 +301,73 @@ test("committed corruption is rejected instead of silently truncated", async () 
 	);
 	await appendFile(join(directory, "events.jsonl"), '{"bad":true}\n');
 	await assert.rejects(store.get("thread"), hasCode("TASK_HISTORY_CORRUPT"));
+});
+
+test("migration preserves full unterminated legacy event and request retry", async () => {
+ const { store, root } = await setup();
+ const input = {requestId:'init', expectedRevision:0, reason:'Task', title:'Work', objectives};
+ const original = await store.initialize('thread', input); const event = (await store.history('thread')).events[0];
+ const directory = join(root,'tasks','v3',createHash('sha256').update('thread').digest('hex'));
+ const old = JSON.stringify(event); await writeFile(join(directory,'events.jsonl'),old); await rm(join(directory,'taskhistory.md')); await rm(join(directory,'heartbeat.md'));
+ const reopened = new TaskStore(root,{schemas}); assert.deepEqual(await reopened.get('thread'),original.state);
+ assert.deepEqual((await reopened.history('thread')).events,[event]); assert.equal((await reopened.initialize('thread',input)).duplicate,true);
+ assert.equal(await readFile(join(directory,'events.jsonl'),'utf8'),old);
+ assert.deepEqual(await new TaskStore(root,{schemas}).get('thread'),original.state);
+});
+
+test("prefix migration is repeatable, divergence fails and lost history fails closed", async () => {
+ const { store, root } = await setup();
+ await store.initialize('thread',{requestId:'init',expectedRevision:0,reason:'Task',title:'Work',objectives});
+ const first = (await store.history('thread')).events[0];
+ await store.update('thread',{requestId:'update',expectedRevision:1,reason:'Start',changes:[{targetId:'C1.1',status:'active'}]});
+ const events = (await store.history('thread')).events.reverse();
+ const directory = join(root,'tasks','v3',createHash('sha256').update('thread').digest('hex'));
+ await writeFile(join(directory,'events.jsonl'),`${JSON.stringify(first)}\n`);
+ assert.equal((await store.get('thread')).revision,2);
+ await writeFile(join(directory,'events.jsonl'),events.map(JSON.stringify).join('\n')+'\n');
+ assert.equal((await store.get('thread')).revision,2);
+ await writeFile(join(directory,'events.jsonl'),`${JSON.stringify({...first,eventId:'different'})}\n`);
+ await assert.rejects(store.get('thread'),hasCode('TASK_HISTORY_CONFLICT'));
+ await rm(join(directory,'taskhistory.md')); await assert.rejects(store.get('thread'),hasCode('TASK_HISTORY_CORRUPT'));
+});
+
+test('import validates all source records and thread before touching target', async () => {
+ const {store,root} = await setup(); const source = join(root,'source');
+ await import('node:fs/promises').then(({mkdir})=>mkdir(source));
+ const {writeMarkdownRecords} = await import('../../src/tasks/markdown-records.mjs');
+ const sourcePath = join(source,'taskhistory.md');
+ await writeMarkdownRecords(sourcePath,{kind:'task-progress',identity:'thread',records:[{type:'unknown'}]});
+ const original = await readFile(sourcePath,'utf8');
+ await assert.rejects(store.importFrom('thread',source),hasCode('TASK_HISTORY_CORRUPT'));
+ assert.equal(await readFile(sourcePath,'utf8'),original); assert.equal(await store.get('thread'),null);
+ await writeMarkdownRecords(sourcePath,{kind:'task-progress',identity:'different-thread',records:[]});
+ await assert.rejects(store.importFrom('thread',source),hasCode('TASK_HISTORY_CORRUPT'));
+ assert.equal(await store.get('thread'),null);
+ await writeMarkdownRecords(sourcePath,{kind:'task-progress',identity:'thread',records:[{type:'source-binding',binding:{path:'relative',origin:'explicit'}}]});
+ await assert.rejects(store.importFrom('thread',source,{includeBindings:false}),hasCode('TASK_HISTORY_CORRUPT'));
+});
+
+test('legacy extension imports once and preserves partial tail and both source files', async () => {
+ const {store,root} = await setup(); const input = {requestId:'init',expectedRevision:0,reason:'Task',title:'Work',objectives};
+ await store.initialize('thread',input); const first = (await store.history('thread')).events[0];
+ await store.update('thread',{requestId:'update',expectedRevision:1,reason:'Start',changes:[{targetId:'C1.1',status:'active'}]});
+ const full = (await store.history('thread')).events.reverse();
+ const directory = join(root,'tasks','v3',createHash('sha256').update('thread').digest('hex'));
+ const {writeMarkdownRecords} = await import('../../src/tasks/markdown-records.mjs');
+ await writeMarkdownRecords(join(directory,'taskhistory.md'),{kind:'task-progress',identity:'thread',records:[{type:'task-event',event:first}]});
+ const bytes = full.map(JSON.stringify).join('\n')+'\n{"partial":'; await writeFile(join(directory,'events.jsonl'),bytes);
+ assert.equal((await store.get('thread')).revision,2); assert.equal(await readFile(join(directory,'events.jsonl'),'utf8'),bytes);
+ assert.equal((await new TaskStore(root,{schemas}).history('thread')).events.length,2);
+ assert.equal((await store.initialize('thread',input)).duplicate,true);
+});
+
+test('source event identity corruption does not alter existing target', async () => {
+ const {store,root} = await setup(); const input = {requestId:'init',expectedRevision:0,reason:'Task',title:'Work',objectives};
+ await store.initialize('thread',input); const event = (await store.history('thread')).events[0];
+ const {mkdir} = await import('node:fs/promises'); const source = join(root,'source'); await mkdir(source);
+ const {writeMarkdownRecords} = await import('../../src/tasks/markdown-records.mjs');
+ await writeMarkdownRecords(join(source,'taskhistory.md'),{kind:'task-progress',identity:'thread',records:[{type:'task-event',event:{...event,threadId:'wrong'}}]});
+ const historyPath = join(root,'tasks','v3',createHash('sha256').update('thread').digest('hex'),'taskhistory.md');
+ const before = await readFile(historyPath,'utf8'); await assert.rejects(store.importFrom('thread',source),hasCode('TASK_HISTORY_CORRUPT'));
+ assert.equal(await readFile(historyPath,'utf8'),before);
 });

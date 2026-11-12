@@ -68,8 +68,12 @@
   "supervision/heartbeat-ledger-api.test.mjs",
   "supervision/heartbeat-audit-due.test.mjs",
   "supervision/heartbeat-ledger-types.test.mjs",
+  "supervision/heartbeat-ledger-files.test.mjs",
   "tasks/task-contract.test.mjs",
+  "tasks/markdown-records.test.mjs",
   "tasks/task-store.test.mjs",
+  "tasks/task-source-relations.test.mjs",
+  "tasks/workspace-storage.test.mjs",
   "tasks/heartbeat-task-source.test.mjs",
   "tasks/project-heartbeat.test.mjs"
 ]

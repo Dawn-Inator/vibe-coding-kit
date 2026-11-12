@@ -85,6 +85,36 @@ checker wrapper, or duplicate policy guard. A consuming project should provide a
 the canonical API and any native helpers it needs. This keeps one report schema and one source of current
 format validation.
 
+## Durable heartbeat head and history pair
+
+The Kit stores a project heartbeat as a readable current head plus its complete historical wake stream:
+
+```text
+<project>/heartbeat.md                    # current head
+<project>/taskhistory.md                  # complete history when the head is heartbeat.md
+<project>/<custom-head>.taskhistory.md    # complete history for a custom head, e.g. release.taskhistory.md
+<project>/heartbeat.md.legacy             # immutable original bytes after migration
+```
+
+`heartbeatLedgerPairPaths(path)` returns `headPath`, `historyPath`, and `legacyBackupPath`. A companion or
+`.legacy` file cannot be selected as a ledger head. `readHeartbeatLedgerPair({root, path})` reads a legacy
+single-file ledger without changing it, or returns the logical full text for an existing pair. Its wake records
+retain physical `sourcePath` and `sourceLine`; call `inspectHeartbeatLedgerPair(pair, options)` when reports
+must point to real file locations. `mode: 'items'` inspects the current head's Items table; history/current
+modes inspect the complete logical text.
+
+Migration is an explicit write: `migrateHeartbeatLedgerPair({root, path})` preserves the original complete
+file in `.legacy`, copies its earlier content into the version-marked companion, and leaves the latest wake
+and Items in the readable head. A retry can recover an interrupted history-first migration when the immutable
+backup proves the pair matches the original. A conflicting companion, changed head, or unrelated backup fails
+closed; do not select or overwrite either copy manually.
+
+New writes use `appendHeartbeatWake({root, path, wakeText})` or
+`writeHeartbeatLedgerPair({root, path, text})`; these update companion and head together. Do not append a wake
+directly to the head after migration, since the companion owns earlier wake history. `inspectHeartbeatLedger`
+remains the parser and validator for a logical text stream; pair APIs compose the physical files and map report
+lines back to their source.
+
 ## Audit due probe
 
 For event-anchored cadence checks, use the read-only helper from the canonical API:

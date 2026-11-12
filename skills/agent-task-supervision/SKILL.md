@@ -126,8 +126,9 @@ reference, never variable prose. The wake contract
 determines the denominator, not CLI mode: unmarked legacy wakes keep the proof-only denominator; `heartbeat/v2`
 uses all valid assessed rows even under non-certifying `--history`. Preserve historical wake bytes.
 
-Use the canonical [ledger API and CLI modes](references/ledger-api.md). Run strict current mode after appending
-the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
+Use the canonical [ledger API and CLI modes](references/ledger-api.md). For new ledger reads and writes use
+the Kit heartbeat pair API; do not append to a split ledger's head file directly. Run strict current mode
+after appending the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
 and Items inventory are useful read modes, but neither can certify a current v2 audit.
 
 For adoption or resume, reconcile Items individually against original goals, dispatches, finals, and landings.

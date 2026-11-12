@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   resolveTaskProgressStorage,
   TASK_PROGRESS_STORAGE_DIRECTORY,
+  TASK_PROGRESS_CACHE_DIRECTORY,
   TASK_PROGRESS_STORAGE_SCHEMA_VERSION,
 } from '../../src/contracts/task-progress-storage.mjs';
 
@@ -13,14 +14,16 @@ test('task progress storage uses the trusted cwd workspace with a frozen version
   const cwd = resolve(tmpdir(), 'task-progress-contract', 'nested', '..', 'project');
   const result = resolveTaskProgressStorage({ cwd });
   assert.deepEqual(result, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: 'workspace',
     cwd,
     workspaceRoot: resolve(cwd, '.workspace'),
     storageRoot: resolve(cwd, '.workspace', 'codex-task-progress'),
+    cacheRoot: resolve(cwd, '.tmp', 'codex-task-progress'),
   });
-  assert.equal(TASK_PROGRESS_STORAGE_SCHEMA_VERSION, 1);
+  assert.equal(TASK_PROGRESS_STORAGE_SCHEMA_VERSION, 2);
   assert.equal(TASK_PROGRESS_STORAGE_DIRECTORY, 'codex-task-progress');
+  assert.equal(TASK_PROGRESS_CACHE_DIRECTORY, 'codex-task-progress');
   assert.ok(Object.isFrozen(result));
   assert.throws(() => { result.storageRoot = 'another-path'; }, TypeError);
 });

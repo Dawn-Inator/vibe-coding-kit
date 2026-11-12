@@ -1,12 +1,12 @@
 import { isAbsolute, resolve } from 'node:path';
 
-export const TASK_PROGRESS_STORAGE_SCHEMA_VERSION = 1;
+export const TASK_PROGRESS_STORAGE_SCHEMA_VERSION = 2;
 export const TASK_PROGRESS_STORAGE_DIRECTORY = 'codex-task-progress';
+export const TASK_PROGRESS_CACHE_DIRECTORY = 'codex-task-progress';
 
 /**
- * Resolve project-local progress storage from the caller's trusted chat cwd.
- * This contract performs no I/O and deliberately does not find a parent Git root:
- * worktrees, nested projects and projectless chats keep their own workspace.
+ * Resolve project-local durable and disposable task paths from the caller's trusted chat cwd.
+ * This contract performs no I/O and deliberately does not find a parent Git root.
  */
 export function resolveTaskProgressStorage({ cwd } = {}) {
   if (typeof cwd !== 'string' || !cwd.trim() || !isAbsolute(cwd)) {
@@ -20,5 +20,6 @@ export function resolveTaskProgressStorage({ cwd } = {}) {
     cwd: currentDirectory,
     workspaceRoot,
     storageRoot: resolve(workspaceRoot, TASK_PROGRESS_STORAGE_DIRECTORY),
+    cacheRoot: resolve(currentDirectory, '.tmp', TASK_PROGRESS_CACHE_DIRECTORY),
   });
 }
