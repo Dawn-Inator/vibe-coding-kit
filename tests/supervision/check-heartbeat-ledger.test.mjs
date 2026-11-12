@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { readSkillText } from '../support/skill-text.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
-import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
+import { CATEGORIES, checkItems, checkLedger, countWakeSections, findDuplicateItemIds, findStrayItemRows, ownerFindings, parseItemTables, parseItems } from '../../src/supervision/check-heartbeat-ledger.mjs';
 import { checkSplittable, openRows, parseRowVerdicts } from '../../src/supervision/heartbeat-ledger-splittable.mjs';
 
 // These unit tests exercise the historical parser API directly. Current --latest certification,
@@ -411,6 +411,28 @@ test('registry: statuses are ready / dispatched <unit> / done / blocked <- / own
   assert.deepEqual(rules(checkItems(items('| I1 | report:w1 | x | dispatched | - |'))), ['item-status']);
   assert.deepEqual(rules(checkItems(items('| I1 | report:w1 | x | | - |'))), ['item-status']);
   assert.deepEqual(checkItems(items('| I1 | report:w1 | x | dispatched: w2 | - |')), []);
+});
+
+test('registry: v2 bare dispatched uses its concrete owner column while legacy unit suffixes remain valid', () => {
+  const structured = (owner) => [
+    '## Items',
+    '',
+    '| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    `| I1 | report:w1 | work | dispatched | accepted | ${owner} | repo | /worktrees/w1 | write | ["src/a.ts"] | receipts/w1.json |`,
+    '',
+  ].join('\n');
+
+  for (const owner of ['codex/worker-1', '/root/worker', '6d31c46a-2045-4211-9c48-47cb8d709f81']) {
+    assert.deepEqual(checkItems(structured(owner)), [], owner);
+    assert.deepEqual(ownerFindings(parseItemTables(structured(owner))), [], owner);
+  }
+  assert.deepEqual(rules(checkItems(structured(''))), ['item-status']);
+  assert.deepEqual(rules(checkItems(structured('unknown'))), ['item-status']);
+  assert.deepEqual(rules(checkItems(structured('-'))), ['item-status']);
+  assert.deepEqual(checkItems(items('| I1 | report:w1 | work | dispatched worker-1 | - |')), []);
+  assert.deepEqual(ownerFindings(parseItemTables(items('| I1 | report:w1 | work | dispatched worker-1 | owner: session=worker-1 |'))), []);
+  assert.deepEqual(ownerFindings(parseItemTables(items('| I1 | report:w1 | work | dispatched worker-1 | - |'))).map((finding) => finding.rule), ['item-dispatched-no-owner']);
 });
 
 test('registry: a blocked item names an exclusive resource, an owner item cites one of the four hard categories', () => {

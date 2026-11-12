@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
 import { CATEGORIES, checkLedger } from '../../src/supervision/check-heartbeat-ledger.mjs';
+import { inspectHeartbeatLedger } from '../../src/supervision/heartbeat-ledger-api.mjs';
 import { checkHeartbeatV2, parseItemsV2 } from '../../src/supervision/heartbeat-ledger-v2.mjs';
 
 after(cleanupTempDirs);
@@ -176,6 +177,60 @@ test('every open Items row needs one matching decomposition and no ready disposi
     'receipts/worker-1.json': accepted('worker-1'),
   });
   assert.ok(latestRules(mismatch.text, { ledgerPath: mismatch.ledgerPath }).length > 0, 'decomposition owner and disposition must match current item status/owner');
+});
+
+test('public API accepts bare dispatched with native and UUID owners while retaining receipt and metadata checks', () => {
+  for (const [name, owner] of [
+    ['native', '/root/worker'],
+    ['session', '6d31c46a-2045-4211-9c48-47cb8d709f81'],
+  ]) {
+    const active = item({
+      status: 'dispatched',
+      evidence: 'accepted task',
+      owner,
+      worktree: `/worktrees/${name}`,
+      dispatchRef: `receipts/${name}.json`,
+      writeSet: '["src/future-file.mjs"]',
+    });
+    const text = v2({
+      items: [active],
+      decompositionRows: [`| I1 | implement feature | dispatched | ${owner} | receipts/${name}.json |`],
+    });
+    const good = fixture(text, { [`receipts/${name}.json`]: accepted(owner) });
+    const current = inspectHeartbeatLedger(good.text, { mode: 'current', ledgerPath: good.ledgerPath });
+    assert.equal(current.passed, true, `${name} current API: ${JSON.stringify(current.findings)}`);
+    assert.equal(current.items[0].status, 'dispatched');
+    const inventory = inspectHeartbeatLedger(good.text, { mode: 'items' });
+    assert.equal(inventory.passed, true, `${name} Items inventory: ${JSON.stringify(inventory.findings)}`);
+
+    const mismatchedReceipt = fixture(text, { [`receipts/${name}.json`]: accepted(`${owner}-other`) });
+    const mismatchReport = inspectHeartbeatLedger(mismatchedReceipt.text, { mode: 'current', ledgerPath: mismatchedReceipt.ledgerPath });
+    assert.ok(mismatchReport.findings.some((finding) => finding.rule === 'v2-dispatch-receipt'), `${name} receipt mismatch remains red`);
+  }
+
+  const incomplete = fixture(v2({
+    items: [item({
+      status: 'dispatched',
+      evidence: 'accepted task',
+      owner: '/root/worker',
+      repository: '',
+      worktree: '',
+      mode: '',
+      writeSet: '[]',
+      dispatchRef: '-',
+    })],
+    decompositionRows: ['| I1 | implement feature | dispatched | /root/worker | missing receipt |'],
+  }));
+  const incompleteReport = inspectHeartbeatLedger(incomplete.text, { mode: 'current', ledgerPath: incomplete.ledgerPath });
+  for (const rule of ['v2-repository', 'v2-worktree', 'v2-mode', 'v2-dispatch-receipt']) {
+    assert.ok(incompleteReport.findings.some((finding) => finding.rule === rule), `${rule} remains red`);
+  }
+  const emptyWriteSet = fixture(v2({
+    items: [item({ status: 'dispatched', evidence: 'accepted task', owner: '/root/worker', mode: 'write', writeSet: '[]' })],
+    decompositionRows: ['| I1 | implement feature | dispatched | /root/worker | receipts/worker-1.json |'],
+  }), { 'receipts/worker-1.json': accepted('/root/worker') });
+  const emptyWriteSetReport = inspectHeartbeatLedger(emptyWriteSet.text, { mode: 'current', ledgerPath: emptyWriteSet.ledgerPath });
+  assert.ok(emptyWriteSetReport.findings.some((finding) => finding.rule === 'v2-write-set-empty'), 'write mode still requires a nonempty write_set');
 });
 
 test('deferred disposition matches an unfinished deferred Item with evidence and owner', () => {

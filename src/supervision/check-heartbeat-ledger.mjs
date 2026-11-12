@@ -317,7 +317,7 @@ const AUTH_CHECK_RE = /(checked|核对|已检查|已核对|检查|复核|已复�
 const AUTH_COVERAGE_GAP_RE = /(?:does\s+not\s+cover|doesn't\s+cover|doesnt\s+cover|not\s+cover(?:ed)?|outside\s+(?:its|the)\s+scope|not\s+in\s+(?:its|that|the)\s+(?:scope|list)|no\s+(?:standing\s+)?authorization\s+covers|不在[^，,;]{0,24}(?:范围|清单)|不覆盖|不涵盖|未覆盖|未涵盖|不属于[^，,;]{0,16}(?:范围|清单))/i;
 const REPLAY_RE = /replays:([\w./-]+)=(\d+)/gi;
 
-function itemKind(status) {
+function itemKind(status, owner = '') {
   const text = status.trim();
   if (/^ready$/i.test(text)) return 'ready';
   if (isTrackingItemState(text)) return 'tracking';
@@ -325,6 +325,9 @@ function itemKind(status) {
   if (/^deferred\b/i.test(text)) return 'deferred';
   if (/^blocked\b/i.test(text)) return 'blocked';
   if (/^dispatched\s*:?\s+\S/i.test(text)) return 'dispatched';
+  // The current v2 Items contract puts the accepted worker identity in its own column and
+  // therefore uses a bare `dispatched` status. Keep the legacy inline-unit spelling above.
+  if (/^dispatched$/i.test(text) && isConcreteCoordinationField(owner)) return 'dispatched';
   if (/^done\b/i.test(text)) return 'done';
   return 'unknown';
 }
@@ -370,7 +373,7 @@ export function parseItemTables(text) {
   return [table];
 }
 
-export function classifyItemState(stateText) { return itemKind(stateText); }
+export function classifyItemState(stateText, owner = '') { return itemKind(stateText, owner); }
 
 export function ownerColumnIndex(headerCells) { return headerCells.findIndex((cell, index) => index >= 4 && /^owner$/i.test(String(cell).trim())); }
 export function ownerOf(row) {
@@ -384,8 +387,10 @@ export function hasWorktreeOrSessionRef(text) {
 export function ownerFindings(tables, classify = classifyItemState) {
   const findings = [];
   for (const table of tables) for (const row of table.rows ?? []) {
-    if (classify(String(row.status ?? '').trim()) !== 'dispatched') continue;
-    if (hasWorktreeOrSessionRef(`${ownerOf(row)} ${row.status ?? ''} ${row.evidence ?? ''}`)) continue;
+    if (classify(String(row.status ?? '').trim(), row.owner) !== 'dispatched') continue;
+    const hasOwnerColumn = table.headers?.some((header) => /^owner$/i.test(String(header).trim())) ?? false;
+    if (hasOwnerColumn && isConcreteCoordinationField(row.owner)) continue;
+    if (!hasOwnerColumn && hasWorktreeOrSessionRef(`${ownerOf(row)} ${row.status ?? ''} ${row.evidence ?? ''}`)) continue;
     findings.push({ severity: 'error', rule: 'item-dispatched-no-owner', message: `${table.heading ?? '## Items'} row id=${row.id || '(missing)'} (line ${row.lineNumber ?? row.line}): dispatched row names no worktree or session` });
   }
   return findings;
@@ -435,7 +440,7 @@ export function checkItems(text, { now = new Date() } = {}) {
     if (!row.id) red('item-id', row, 'row has no id');
     else if (duplicateLines.has(row.line)) red('item-id', row, 'duplicate id');
     if (!SOURCE_RE.test(row.source)) red('item-source', row, `source must be memory:/handoff:/report:/landing:/owner:/sweep:/audit:/goal:<ref>; got "${row.source}"`);
-    const kind = itemKind(row.status);
+    const kind = itemKind(row.status, row.owner);
     if (kind === 'ready') red('item-ready', row, 'status is "ready" -- dispatch it this wake or reclassify it with proof');
     else if (kind === 'unknown') red('item-status', row, `status must start with ready / dispatched <unit> / done / blocked <- / deferred <- / owner <-; got "${row.status}"`);
     else if (kind === 'done' && (!row.evidence || row.evidence === '-')) red('item-done-evidence', row, 'done needs evidence in the evidence column');
@@ -493,7 +498,7 @@ export function checkItems(text, { now = new Date() } = {}) {
 
 function hasAudit(rows, unit, itemId) {
   return rows.some((row) => {
-    const kind = itemKind(row.status);
+    const kind = itemKind(row.status, row.owner);
     if (kind !== 'done' && kind !== 'dispatched') return false;
     if (row.source.toLowerCase() === `audit:${unit}`.toLowerCase()) return true;
     return row.source === `report:${itemId}` && /audit|root[- ]cause/i.test(`${row.item} ${row.status}`);
