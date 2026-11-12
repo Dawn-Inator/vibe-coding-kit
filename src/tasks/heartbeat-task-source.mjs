@@ -69,7 +69,7 @@ function priority(name) {
  * Find candidate heartbeat ledgers without mutating or scheduling anything. The canonical
  * heartbeat API remains responsible for parsing and validating ledger structure.
  */
-export async function discoverHeartbeatLedgers({
+export async function discoverHeartbeatLedgerSources({
 	root,
 	threadId,
 	ledgerPath,
@@ -95,24 +95,38 @@ export async function discoverHeartbeatLedgers({
 	const projectRoot = await realpath(resolve(root));
 	const candidates = new Map();
 	const seenFiles = new Set();
+	const seenDirectories = new Set();
+	const reasons = new Set();
 	let visitedFiles = 0;
 	let explicitRealPath = null;
 	const inspect = async (candidatePath) => {
-		let path;
+		const lexicalPath = resolve(candidatePath);
+		let path = lexicalPath;
 		try {
-			path = await realpath(candidatePath);
+			path = await realpath(lexicalPath);
+		} catch {
+			reasons.add("unreadable-file");
+		}
+		if (seenFiles.has(path)) return;
+		if (visitedFiles >= maxFiles) {
+			reasons.add("file-limit");
+			return;
+		}
+		seenFiles.add(path);
+		visitedFiles += 1;
+		try {
 			const info = await stat(path);
-			if (
-				!info.isFile() ||
-				info.size > MAX_BYTES ||
-				!isWithin(projectRoot, path)
-			)
+			if (!info.isFile() || !isWithin(projectRoot, path)) return;
+			if (info.size > MAX_BYTES) {
+				reasons.add("oversized-file");
 				return;
+			}
 			const original = await readFile(path, "utf8");
 			const text = withoutFencedExamples(original);
 			const report = inspectHeartbeatLedger(text, { mode: "items" });
 			const hasDatedWake = report.wakes.some(
-				(wake) => typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
+				(wake) =>
+					typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
 			);
 			const named =
 				/heartbeat/i.test(basename(path)) ||
@@ -124,7 +138,7 @@ export async function discoverHeartbeatLedgers({
 				associated: isAssociatedThread(text, threadId),
 			});
 		} catch {
-			// Unreadable and malformed candidates are not discoverable sources.
+			reasons.add("unreadable-file");
 		}
 	};
 
@@ -141,19 +155,24 @@ export async function discoverHeartbeatLedgers({
 			throw new Error(
 				"Explicit heartbeat ledger path resolves outside the project root",
 			);
-		if (!seenFiles.has(explicit) && visitedFiles < maxFiles) {
-			seenFiles.add(explicit);
-			visitedFiles += 1;
-			await inspect(explicitRealPath ?? explicit);
-		}
+		await inspect(explicitRealPath ?? explicit);
 	}
 
 	const scan = async (directory, depth) => {
-		if (depth > maxDepth || visitedFiles >= maxFiles) return;
+		let canonicalDirectory;
+		try {
+			canonicalDirectory = await realpath(directory);
+		} catch {
+			reasons.add("unreadable-directory");
+			return;
+		}
+		if (seenDirectories.has(canonicalDirectory)) return;
+		seenDirectories.add(canonicalDirectory);
 		let entries;
 		try {
-			entries = await readdir(directory, { withFileTypes: true });
+			entries = await readdir(canonicalDirectory, { withFileTypes: true });
 		} catch {
+			reasons.add("unreadable-directory");
 			return;
 		}
 		entries.sort(
@@ -161,18 +180,20 @@ export async function discoverHeartbeatLedgers({
 				priority(a.name) - priority(b.name) || a.name.localeCompare(b.name),
 		);
 		for (const entry of entries) {
-			if (visitedFiles >= maxFiles) return;
-			const path = resolve(directory, entry.name);
-			if (entry.isDirectory() && !SKIP.has(entry.name))
-				await scan(path, depth + 1);
-			else if (
+			const path = resolve(canonicalDirectory, entry.name);
+			if (entry.isDirectory() && !SKIP.has(entry.name)) {
+				if (depth + 1 > maxDepth) reasons.add("depth-limit");
+				else await scan(path, depth + 1);
+			} else if (
 				entry.isFile() &&
 				entry.name.toLowerCase().endsWith(".md") &&
 				!seenFiles.has(path)
 			) {
-				seenFiles.add(path);
-				visitedFiles += 1;
-				if (!candidates.has(path)) await inspect(path);
+				if (visitedFiles >= maxFiles) {
+					reasons.add("file-limit");
+					return;
+				}
+				await inspect(path);
 			}
 		}
 	};
@@ -180,11 +201,28 @@ export async function discoverHeartbeatLedgers({
 	// Visit the highest value project-local locations first, within the same file/depth bounds.
 	for (const directory of [".workspace", ".todolist"]) {
 		const path = resolve(projectRoot, directory);
-		if ((await lstat(path).catch(() => null))?.isDirectory())
-			await scan(path, 1);
+		if ((await lstat(path).catch(() => null))?.isDirectory()) {
+			if (1 > maxDepth) reasons.add("depth-limit");
+			else await scan(path, 1);
+		}
 	}
 	await scan(projectRoot, 0);
-	return [...candidates.values()].sort((a, b) => a.path.localeCompare(b.path));
+	return {
+		schemaVersion: 1,
+		root: projectRoot,
+		candidates: [...candidates.values()].sort((a, b) =>
+			a.path.localeCompare(b.path),
+		),
+		complete: reasons.size === 0,
+		visitedFiles,
+		limits: { maxFiles, maxDepth },
+		reasons: [...reasons].sort(),
+	};
+}
+
+/** Backward-compatible candidates-only view of the shared bounded scan. */
+export async function discoverHeartbeatLedgers(options = {}) {
+	return (await discoverHeartbeatLedgerSources(options)).candidates;
 }
 
 function parsedChildren(value) {

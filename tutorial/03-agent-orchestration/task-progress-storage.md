@@ -24,16 +24,16 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { createTaskProgressSchemas } from './src/tasks/task-contract.mjs';
 import { TaskStore } from './src/tasks/task-store.mjs';
-import { discoverHeartbeatLedgers, projectHeartbeatTask } from './src/tasks/heartbeat-task-source.mjs';
+import { discoverHeartbeatLedgerSources, projectHeartbeatTask } from './src/tasks/heartbeat-task-source.mjs';
 import { inspectHeartbeatLedger } from './src/supervision/heartbeat-ledger-api.mjs';
 
 const schemas = createTaskProgressSchemas(z);
 const taskStore = new TaskStore(storage.storageRoot, { schemas }); // ordinary mutable task state
 const root = await realpath(trustedChatCwd);
-const candidates = await discoverHeartbeatLedgers({ root, threadId });
-const associated = candidates.filter((candidate) => candidate.associated);
-// Use an explicitly chosen/bound path if discovery is ambiguous; do not guess among candidates.
-if (associated.length === 1) {
+const discovery = await discoverHeartbeatLedgerSources({ root, threadId });
+const associated = discovery.candidates.filter((candidate) => candidate.associated);
+// Only a complete scan can establish that a candidate is unique or absent.
+if (discovery.complete && associated.length === 1) {
   const path = associated[0].path;
   const text = await readFile(path, 'utf8');
   const info = await stat(path);
@@ -53,6 +53,11 @@ Discovery associates a ledger only when its unfenced text contains one standalon
 `thread: <id>`, `thread_id: <id>`, or `threadId: <id>` with an exact value. Mentions in titles, evidence, or prose do
 not bind a source; conflicting or multiple IDs remain unassociated and require an explicit selection. Pass the same
 canonical real project root used for discovery to the pure projector; it checks normalized root/path containment.
+`discoverHeartbeatLedgerSources` reports `complete`, visited-file counts, configured bounds, and reasons such as
+file/depth limits or unreadable/oversized entries. Do not claim unique or no-source results when `complete` is false;
+surface the uncertainty or use an explicit source binding. The array-only `discoverHeartbeatLedgers` export remains
+for compatibility and does not report scan completeness. Deliberately skipped directories such as `.git`,
+`node_modules`, `vendor`, and build caches are outside the discovery scope and do not make a scan incomplete.
 
 采用此契约的 Codex Task Progress 插件在 `storageRoot` 中按聊天隔离记录：
 

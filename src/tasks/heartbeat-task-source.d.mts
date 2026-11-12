@@ -13,6 +13,23 @@ export interface DiscoverHeartbeatLedgersOptions {
 	maxDepth?: number;
 }
 
+export type HeartbeatDiscoveryReason =
+	| "file-limit"
+	| "depth-limit"
+	| "unreadable-directory"
+	| "unreadable-file"
+	| "oversized-file";
+
+export interface HeartbeatLedgerDiscoveryReport {
+	schemaVersion: 1;
+	root: string;
+	candidates: HeartbeatLedgerCandidate[];
+	complete: boolean;
+	visitedFiles: number;
+	limits: { maxFiles: number; maxDepth: number };
+	reasons: HeartbeatDiscoveryReason[];
+}
+
 export interface HeartbeatItemRow {
 	id: string;
 	item?: string;
@@ -49,7 +66,12 @@ export type HeartbeatTaskState = Omit<TaskState, "source"> & {
 	source: HeartbeatTaskSource;
 };
 
-/** Discover bounded project-local ledgers using Kit's canonical heartbeat parser. */
+/** Discover bounded project-local ledgers and report whether the scan was exhaustive within its scope. */
+export function discoverHeartbeatLedgerSources(
+	options: DiscoverHeartbeatLedgersOptions,
+): Promise<HeartbeatLedgerDiscoveryReport>;
+
+/** Compatibility-only candidates projection; use discoverHeartbeatLedgerSources when completeness matters. */
 export function discoverHeartbeatLedgers(
 	options: DiscoverHeartbeatLedgersOptions,
 ): Promise<HeartbeatLedgerCandidate[]>;

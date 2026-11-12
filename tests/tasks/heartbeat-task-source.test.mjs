@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	discoverHeartbeatLedgers,
+	discoverHeartbeatLedgerSources,
 	projectHeartbeatTask,
 } from "../../src/tasks/heartbeat-task-source.mjs";
 import { inspectHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
@@ -81,9 +82,15 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 		fencedNamed,
 		`\`\`\`md\n${ledger([["I4", "report:r4", "fenced", "done", "`receipt`", "[]"]])}\n## 2026-01-01T10:00Z wake (10-row ledger)\n\`\`\`\n`,
 	);
-	writeFileSync(invalidWake, "# API\ncontract: heartbeat/v2\n## not-a-time wake (10-row ledger)\n");
+	writeFileSync(
+		invalidWake,
+		"# API\ncontract: heartbeat/v2\n## not-a-time wake (10-row ledger)\n",
+	);
 	writeFileSync(markerOnly, "# Example\ncontract: heartbeat/v2\n");
-	writeFileSync(fencedWake, "```md\n## 2026-01-01T10:00Z wake (10-row ledger)\n```\n");
+	writeFileSync(
+		fencedWake,
+		"```md\n## 2026-01-01T10:00Z wake (10-row ledger)\n```\n",
+	);
 	writeFileSync(legacy8, "## 2026-01-01T10:00Z wake (8-row ledger)\n");
 	writeFileSync(legacy10, "## 2026-01-01T10:00Z wake (10-row ledger)\n");
 
@@ -98,7 +105,12 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	const canonicalLegacy10 = realpathSync(legacy10);
 	assert.deepEqual(
 		candidates.map((candidate) => candidate.path),
-		[canonicalTodo, canonicalWorkspace, canonicalLegacy8, canonicalLegacy10].sort(),
+		[
+			canonicalTodo,
+			canonicalWorkspace,
+			canonicalLegacy8,
+			canonicalLegacy10,
+		].sort(),
 	);
 	assert.equal(
 		candidates.find((candidate) => candidate.path === canonicalWorkspace)
@@ -132,8 +144,14 @@ test("discovery rejects out-of-root explicit bindings and requires exact thread 
 		explicit,
 		`${ledger([["I2", "report:r2", "configured source", "done", "`receipt`", "[]"]])}\n## not-a-time wake (10-row ledger)\n`,
 	);
-	const bound = await discoverHeartbeatLedgers({ root, threadId: THREAD, ledgerPath: explicit });
-	assert.deepEqual(bound, [{ path: realpathSync(explicit), associated: false }]);
+	const bound = await discoverHeartbeatLedgers({
+		root,
+		threadId: THREAD,
+		ledgerPath: explicit,
+	});
+	assert.deepEqual(bound, [
+		{ path: realpathSync(explicit), associated: false },
+	]);
 });
 
 test("discovery associates only one exact standalone thread metadata field", async () => {
@@ -167,6 +185,67 @@ test("discovery associates only one exact standalone thread metadata field", asy
 		candidates.find((candidate) => candidate.path === realpathSync(conflict))
 			.associated,
 		false,
+	);
+});
+
+test("discovery reports incomplete scans at file/depth limits and preserves wrapper behavior", async () => {
+	const limitedRoot = projectRoot();
+	mkdirSync(join(limitedRoot, ".workspace"), { recursive: true });
+	for (const name of ["a-heartbeat.md", "b-heartbeat.md"])
+		writeFileSync(
+			join(limitedRoot, ".workspace", name),
+			`${ledger([[name, "report:r1", "source row", "pending", "", "[]"]])}\nthread: ${THREAD}\n`,
+		);
+	const limited = await discoverHeartbeatLedgerSources({
+		root: limitedRoot,
+		threadId: THREAD,
+		maxFiles: 1,
+	});
+	assert.equal(limited.complete, false);
+	assert.equal(limited.visitedFiles, 1);
+	assert.deepEqual(limited.reasons, ["file-limit"]);
+	assert.equal(limited.candidates.length, 1);
+	assert.equal(limited.candidates[0].associated, true);
+
+	const noSourceRoot = projectRoot();
+	writeFileSync(join(noSourceRoot, "a.md"), "ordinary notes\n");
+	writeFileSync(join(noSourceRoot, "b.md"), "more ordinary notes\n");
+	const noneBeforeLimit = await discoverHeartbeatLedgerSources({
+		root: noSourceRoot,
+		threadId: THREAD,
+		maxFiles: 1,
+	});
+	assert.equal(noneBeforeLimit.candidates.length, 0);
+	assert.equal(noneBeforeLimit.complete, false);
+	assert.deepEqual(noneBeforeLimit.reasons, ["file-limit"]);
+
+	const deepRoot = projectRoot();
+	mkdirSync(join(deepRoot, "nested", "deeper"), { recursive: true });
+	const depthLimited = await discoverHeartbeatLedgerSources({
+		root: deepRoot,
+		threadId: THREAD,
+		maxDepth: 0,
+	});
+	assert.equal(depthLimited.complete, false);
+	assert.deepEqual(depthLimited.reasons, ["depth-limit"]);
+
+	const completeRoot = projectRoot();
+	const onlyLedger = join(completeRoot, "heartbeat.md");
+	writeFileSync(
+		onlyLedger,
+		`${ledger([["I1", "report:r1", "one row", "pending", "", "[]"]])}\nthread: ${THREAD}\n`,
+	);
+	const complete = await discoverHeartbeatLedgerSources({
+		root: completeRoot,
+		threadId: THREAD,
+	});
+	assert.equal(complete.complete, true);
+	assert.deepEqual(complete.reasons, []);
+	assert.equal(complete.schemaVersion, 1);
+	assert.equal(complete.root, completeRoot);
+	assert.deepEqual(
+		await discoverHeartbeatLedgers({ root: completeRoot, threadId: THREAD }),
+		complete.candidates,
 	);
 });
 
