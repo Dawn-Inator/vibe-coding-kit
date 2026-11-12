@@ -22,6 +22,7 @@
 // and in the consuming project.
 
 import { findBlockedProofTag, PROOF_TAG_HELP } from './heartbeat-blocked-reason.mjs';
+import { resolveReceiptPathIdentity } from './heartbeat-receipt-path.mjs';
 
 const OPEN_RE = /^(blocked|deferred)\s*(?:←|<-)\s*(\S.*)$/i;
 const ITEM_BLOCKED_RE = /^(blocked)\s*(?:←|<-)\s*(\S.*)$/i;
@@ -110,7 +111,7 @@ export function parseRowVerdicts(group, { allowContinuing = false, allowGenericI
 }
 
 /** Resolve a v2 split target to one current dispatched Item; receipt content is audited by the v2 registry validator. */
-export function resolveDispatchedUnit(verdict, itemRows = []) {
+export function resolveDispatchedUnit(verdict, itemRows = [], pathOptions = {}) {
   if (verdict?.verdict !== 'dispatched') return { item: null, canonicalId: null, error: 'not a dispatched verdict' };
   const detail = String(verdict.detail ?? '').match(SPLIT_RE)?.[1]?.trim() ?? '';
   const allItems = itemRows ?? [];
@@ -136,7 +137,10 @@ export function resolveDispatchedUnit(verdict, itemRows = []) {
   if (!String(item.dispatch_ref ?? '').trim() || /^[-—]$/.test(String(item.dispatch_ref).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no dispatch_ref` };
   if (!String(item.owner ?? '').trim() || /^[-—]$/.test(String(item.owner).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no owner` };
   const owner = String(item.owner).trim();
-  const dispatchKey = `${normalizeDispatchRef(item.dispatch_ref)}\u0000${owner}`;
+  const receipt = resolveReceiptPathIdentity(String(item.dispatch_ref).trim(), pathOptions);
+  // Owner remains part of the key: two owners cannot be collapsed merely because a row
+  // points at a receipt whose self-reported fields claim the same identity.
+  const dispatchKey = `${receipt.identity}\u0000${owner}`;
   return { item, canonicalId: normalizeResplitId(item.id, { allowGenericIds: true }), dispatchKey, error: null };
 }
 
@@ -159,7 +163,7 @@ export function openRows({ cells = [], itemRows = [], includeDeferred = false })
  * Findings for the newest wake. `sectionLines` are the wake section's lines (heading excluded), `cells`
  * [{key, state}] its table cells (keys `1a`, `1b`, `2`..`10`), `itemRows` the registry [{id, status}].
  */
-export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAudit = false }) {
+export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAudit = false, receiptPathOptions = {} }) {
   const v2Format = requireAudit || sectionLines.some((line) => /^\s*contract:\s*heartbeat\/v2\s*$/i.test(line));
   const open = openRows({ cells, itemRows, includeDeferred: v2Format });
   if (open.length === 0 && !v2Format) return [];
@@ -228,7 +232,7 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
     : null;
   const dispatched = v2Format
     ? new Set(uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').flatMap((v) => {
-      const resolved = resolveDispatchedUnit(v, itemRows).dispatchKey;
+      const resolved = resolveDispatchedUnit(v, itemRows, receiptPathOptions).dispatchKey;
       return resolved ? [resolved] : [];
     })).size
     : verdicts.filter((v) => v.verdict === 'dispatched').length;

@@ -208,7 +208,7 @@ function deferredInputs(wake) {
   return inputs;
 }
 
-export function checkLedger(text, { latest = false, now = new Date(), requireAudit = false } = {}) {
+export function checkLedger(text, { latest = false, now = new Date(), requireAudit = false, ledgerPath, baseDir } = {}) {
   const blockedStreaks = createBlockedStreakTracker();
   const wakes = parseWakes(text);
   const findings = [];
@@ -297,7 +297,7 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
       const itemRows = parseItems(text).rows.map((row) => ({ id: row.id, status: row.status, owner: row.owner, dispatch_ref: row.dispatch_ref }));
       const cells = stateCells(wake, () => {});
       if (wake.layout.goalRow) {
-        for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit })) findings.push(finding);
+        for (const finding of checkSplittable({ loc: `${wake.heading} (line ${wake.line})`, sectionLines: wake.sectionLines, cells, itemRows, requireAudit, receiptPathOptions: { ledgerPath, baseDir } })) findings.push(finding);
       }
     }
   }

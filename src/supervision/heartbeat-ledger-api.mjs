@@ -14,13 +14,14 @@ function normalizeFindings(findings) {
 /**
  * Inspect a heartbeat ledger with one shared report shape.
  * @param {string} text Markdown ledger contents.
- * @param {{mode?: 'current'|'history'|'items', latest?: boolean, now?: Date, ledgerPath?: string, extraChecks?: Function|Function[]}} options
+ * @param {{mode?: 'current'|'history'|'items', latest?: boolean, now?: Date, ledgerPath?: string, baseDir?: string, extraChecks?: Function|Function[]}} options
  */
 export function inspectHeartbeatLedger(text, {
   mode = 'current',
   latest = true,
   now = new Date(),
   ledgerPath,
+  baseDir,
   extraChecks = [],
 } = {}) {
   if (!MODES.has(mode)) throw new TypeError(`mode must be one of ${[...MODES].join(', ')}; got ${mode}`);
@@ -31,9 +32,9 @@ export function inspectHeartbeatLedger(text, {
   let rawFindings;
 
   if (mode === 'current') {
-    rawFindings = checkHeartbeatV2(text, { now, ledgerPath, extraChecks });
+    rawFindings = checkHeartbeatV2(text, { now, ledgerPath, baseDir, extraChecks });
   } else if (mode === 'history') {
-    rawFindings = checkLedger(text, { latest, now });
+    rawFindings = checkLedger(text, { latest, now, ledgerPath, baseDir });
     rawFindings.push(...ownerFindings(tables));
     if (latest) {
       for (const stray of findStrayItemRows(text, items)) {

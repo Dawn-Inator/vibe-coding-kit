@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import { checkItems, checkLedger, parseWakes } from './check-heartbeat-ledger.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
 import { normalizeResplitId, parseRowVerdicts } from './heartbeat-ledger-splittable.mjs';
+import { resolveReceiptPathIdentity } from './heartbeat-receipt-path.mjs';
 import { isConcreteCoordinationField } from './heartbeat-ledger-tracking.mjs';
 import { validateDeferredAuditEvidence } from './heartbeat-ledger-audit-evidence.mjs';
 
@@ -146,7 +147,7 @@ function validateReceipt(row, options, findings) {
     add(findings, 'v2-dispatch-receipt', `item ${row.id}: dispatched work needs dispatch_ref to an accepted JSON receipt`);
     return canonicalPaths;
   }
-  const receiptPath = isAbsolute(ref) ? ref : resolve(baseDir, ref);
+  const receiptPath = resolveReceiptPathIdentity(ref, options).path;
   let receipt;
   try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
   catch (error) {
@@ -290,7 +291,7 @@ function validateV2Wake(text, wake, items, findings) {
 
 // Shared API: extraChecks receives normalized {text, wakes, items, latestWake, ledgerPath} and returns findings.
 export function checkHeartbeatV2(text, { now = new Date(), ledgerPath, baseDir, extraChecks = [] } = {}) {
-  const findings = [...checkLedger(text, { latest: true, now, requireAudit: true }), ...checkItems(text, { now })];
+  const findings = [...checkLedger(text, { latest: true, now, requireAudit: true, ledgerPath, baseDir }), ...checkItems(text, { now })];
   const table = itemTable(text);
   const provisionalWakes = parseWakes(text);
   const provisionalWake = provisionalWakes.at(-1);

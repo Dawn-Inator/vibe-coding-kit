@@ -192,6 +192,30 @@ test('CLI --template is read-only and its filled output passes strict checking',
   assert.equal(filled.status, 0, filled.stdout);
 });
 
+test('CLI --template supports a canonical registered dispatch with an accepted receipt', () => {
+  const { cwd, ledger, arms } = fixture();
+  const result = spawnSync(process.execPath, [CLI, '--template'], { cwd, encoding: 'utf8', timeout: 2000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(ledger), false, 'template mode must not create a ledger');
+  assert.equal(existsSync(arms), false, 'template mode must not append an arm log');
+
+  const itemId = 'I-reviewer-2';
+  const itemRow = `| ${itemId} | report:reviewer-2 | reviewer-2 split task | dispatched reviewer-2 | accepted spawn request | reviewer-2 | fixture-repo | . | write | ["src/reviewer-2.mjs"] | dispatches/reviewer-2.json |`;
+  const receipt = {
+    tool: 'collaboration.spawn_agent',
+    event: 'accepted',
+    agent_id: 'reviewer-2',
+    result: { task_name: 'reviewer-2' },
+  };
+  const block = result.stdout.slice(result.stdout.indexOf('----'));
+  const filled = runChecker(cwd, `# heartbeat\n\n${fillBlock(block, {}, { dispatchItemId: itemId })}\n`, {
+    itemRows: [itemRow],
+    receipts: { 'dispatches/reviewer-2.json': receipt },
+  });
+  assert.equal(filled.status, 0, filled.stdout);
+  assert.match(filled.stdout, /OK/);
+});
+
 test('formatWakeMessage: the re-arm line keeps the armed interval and warns about the Bash background limit', () => {
   const now = new Date('2026-01-01T10:20:05Z');
   const rearm = (seconds) =>
@@ -263,11 +287,16 @@ function extractBlock(message) {
   return lines.slice(start, end + 1).map((line) => line.slice(2)).join('\n');
 }
 
-function runChecker(cwd, text) {
+function runChecker(cwd, text, { itemRows = [], receipts = {} } = {}) {
   const file = join(cwd, 'wake-ledger.md');
   const withItems = /^(#{1,6})\s+Items\s*$/m.test(text)
     ? text
-    : `${text}\n\n## Items\n\n| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n`;
+    : `${text}\n\n## Items\n\n| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${itemRows.join('\n')}\n`;
+  for (const [relativePath, receipt] of Object.entries(receipts)) {
+    const receiptPath = join(cwd, relativePath);
+    mkdirSync(dirname(receiptPath), { recursive: true });
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+  }
   writeFileSync(file, withItems);
   return spawnSync(process.execPath, [CHECKER, file, '--latest'], { cwd, encoding: 'utf8' });
 }
@@ -289,7 +318,7 @@ test('ledgerTemplate: one row per checker category and the explicit empty v2 aud
 
 // Fills the printed block the way a model would: one allowed state per row (row 10 cites the matrix),
 // the backlog timestamp with the wake time. `rowStates` overrides individual rows by number.
-function fillBlock(block, rowStates = {}) {
+function fillBlock(block, rowStates = {}, { dispatchItemId } = {}) {
   const wakeTimestamp = block.match(/^## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) wake/m)?.[1] ?? '2026-01-01T10:20Z';
   const defaults = {
     2: 'in-flight reviewer-1',
@@ -303,12 +332,18 @@ function fillBlock(block, rowStates = {}) {
     10: 'done -- `check-units --matrix` = every unit current',
   };
   const states = { ...defaults, ...rowStates };
+  const decomposition = dispatchItemId
+    ? `| ${dispatchItemId} | reviewer-2 split task | dispatched | reviewer-2 | dispatches/reviewer-2.json |`
+    : '';
+  const resplit = dispatchItemId
+    ? `re-split: prep-ahead(dispatched P1) lessons(done) audit(dispatched A1) rows(r4: cannot-split: owner-gated; r5: split->dispatched unitItemID:${dispatchItemId})\nsplittable: 1/2`
+    : 're-split: prep-ahead(none — checked all independent units) lessons(done) audit(done) rows(r4: cannot-split: owner-gated; r5: cannot-split: owner-gated)\nsplittable: 0/2';
   return block
     .replace('<timestamp>', wakeTimestamp)
     .replace('(1a) <state>; (1b) <state>', '(1a) in-flight unit-a; (1b) empty -- `ls .todolist` = nothing free')
     .replace(/^\| (\d+) \| ([^|]+) \| <state> \|$/gm, (_, num, name) => `| ${num} | ${name} | ${states[num]} |`)
     .replace(/^\| <item id>[^\n]*\n?/m, '')
-    .replace('re-split: rows()\nsplittable: 0/0', 're-split: prep-ahead(dispatched P1) lessons(done) audit(dispatched A1) rows(r4: cannot-split: owner-gated; r5: split->dispatched reviewer-2)\nsplittable: 1/2');
+    .replace('re-split: rows()\nsplittable: 0/0', `${dispatchItemId ? `${decomposition}\n` : ''}${resplit}`);
 }
 
 test('wake message: the printed block passes the real checker once every placeholder is filled', () => {

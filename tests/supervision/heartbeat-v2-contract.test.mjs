@@ -447,6 +447,95 @@ test('current v2 split counts include explicitly assessed accepted independent d
   assert.ok(latestRules(wrongDenominator.text, { ledgerPath: wrongDenominator.ledgerPath }).includes('splittable-mismatch'), 'a zero denominator cannot hide three explicit assessments');
 });
 
+test('current v2 split counts use the actual receipt path across API and CLI entry points', (t) => {
+  const owner = 'agent:shared-worker';
+  const makeCandidate = (refs, expectedCount, { files = {}, prepare = () => {} } = {}) => {
+    const candidate = fixture((cwd) => {
+      const actualRefs = typeof refs === 'function' ? refs(cwd) : refs;
+      const rows = actualRefs.map((dispatchRef, index) => item({
+        id: `I${index + 1}`, owner, status: 'dispatched active', evidence: 'accepted dispatch receipt',
+        worktree: `worktrees/worker-${index + 1}`, mode: 'read-only', writeSet: '[]', dispatchRef,
+      }));
+      const decomp = actualRefs.map((_, index) => `| I${index + 1} | inspect dispatched unit | dispatched | ${owner} | accepted receipt |`);
+      const split = actualRefs.map((_, index) => `I${index + 1}: split->dispatched unitItemID:I${index + 1}`).join('; ');
+      return v2({
+        items: rows,
+        decompositionRows: decomp,
+        includeResplit: false,
+        includeSplitCount: false,
+        extra: `re-split: rows(${split})\nsplittable: ${expectedCount}/${actualRefs.length}`,
+      });
+    }, { 'receipts/shared.json': accepted(owner), ...files }, prepare);
+    return candidate;
+  };
+  const hasMismatch = (candidate) => latestRules(candidate.text, { ledgerPath: candidate.ledgerPath }).includes('splittable-mismatch');
+
+  const relative = makeCandidate(['receipts/shared.json', 'receipts/shared.json'], 1);
+  assert.deepEqual(latestRules(relative.text, { ledgerPath: relative.ledgerPath }), [], 'same relative receipt and owner count once');
+  const duplicateCount = makeCandidate(['receipts/shared.json', 'receipts/shared.json'], 2);
+  assert.ok(hasMismatch(duplicateCount), 'counting one actual receipt twice is red');
+
+  const absolute = makeCandidate((cwd) => ['receipts/shared.json', join(cwd, '.workspace/task/demo/receipts/shared.json')], 1);
+  assert.deepEqual(latestRules(absolute.text, { ledgerPath: absolute.ledgerPath }), [], 'relative and absolute spellings resolve to one file');
+
+  const dotSegments = makeCandidate(['receipts/shared.json', './receipts/../receipts/shared.json'], 1);
+  assert.deepEqual(latestRules(dotSegments.text, { ledgerPath: dotSegments.ledgerPath }), [], './ and .. aliases resolve to one file');
+
+  let symlinkUnavailable = false;
+  const symlink = makeCandidate(['receipts/shared.json', 'receipts/alias.json'], 1, {
+    prepare: (cwd, ledgerPath) => {
+      mkdirSync(join(dirname(ledgerPath), 'receipts'), { recursive: true });
+      try {
+        symlinkSync(join(dirname(ledgerPath), 'receipts/shared.json'), join(dirname(ledgerPath), 'receipts/alias.json'));
+      } catch (error) {
+        if (process.platform === 'win32' && ['EACCES', 'EPERM'].includes(error.code)) symlinkUnavailable = true;
+        else throw error;
+      }
+    },
+  });
+  if (symlinkUnavailable) t.diagnostic('SKIP symlink alias assertion: Windows denied symlink creation');
+  else assert.deepEqual(latestRules(symlink.text, { ledgerPath: symlink.ledgerPath }), [], 'a real symlink and target count as one receipt file');
+
+  const distinct = makeCandidate(['receipts/one.json', 'receipts/two.json'], 2, {
+    files: { 'receipts/one.json': accepted(owner), 'receipts/two.json': accepted(owner) },
+  });
+  assert.deepEqual(latestRules(distinct.text, { ledgerPath: distinct.ledgerPath }), [], 'distinct receipt files count separately');
+
+  const differentOwners = (() => {
+    const owner2 = 'agent:other-worker';
+    const rows = [
+      item({ id: 'I1', owner, status: 'dispatched active', evidence: 'accepted receipt', mode: 'read-only', writeSet: '[]', dispatchRef: 'receipts/shared.json' }),
+      item({ id: 'I2', owner: owner2, status: 'dispatched active', evidence: 'accepted receipt', mode: 'read-only', writeSet: '[]', dispatchRef: 'receipts/shared.json' }),
+    ];
+    const candidate = fixture(v2({ items: rows, decompositionRows: [
+      `| I1 | inspect unit | dispatched | ${owner} | accepted receipt |`,
+      `| I2 | inspect unit | dispatched | ${owner2} | accepted receipt |`,
+    ], includeResplit: false, includeSplitCount: false, extra: 're-split: rows(I1: split->dispatched unitItemID:I1; I2: split->dispatched unitItemID:I2)\nsplittable: 1/2' }), {
+      'receipts/shared.json': accepted(owner),
+    });
+    const rules = latestRules(candidate.text, { ledgerPath: candidate.ledgerPath });
+    assert.ok(rules.includes('splittable-mismatch'), 'same file with different owners must count as two dispatch identities');
+    assert.ok(rules.includes('v2-dispatch-receipt'), 'a receipt cannot authenticate a different owner');
+    return candidate;
+  })();
+
+  const missing = makeCandidate(['receipts/phantom.json', './receipts/phantom.json'], 1);
+  assert.ok(latestRules(missing.text, { ledgerPath: missing.ledgerPath }).includes('v2-dispatch-receipt'), 'missing receipt aliases remain fail closed');
+  const malformed = makeCandidate(['receipts/shared.json', 'receipts/shared.json'], 1, { files: { 'receipts/shared.json': '{bad json' } });
+  assert.ok(latestRules(malformed.text, { ledgerPath: malformed.ledgerPath }).includes('v2-dispatch-receipt'), 'parse errors remain fail closed');
+
+  const cliCandidate = symlinkUnavailable ? relative : symlink;
+  const cli = spawnSync(process.execPath, [CLI, cliCandidate.ledgerPath, '--latest', '--json'], { encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr || cli.stdout);
+  assert.equal(JSON.parse(cli.stdout).passed, true, 'CLI current mode shares API receipt identity semantics');
+  const historyCli = spawnSync(process.execPath, [CLI, cliCandidate.ledgerPath, '--history', '--latest', '--json'], { encoding: 'utf8' });
+  assert.equal(historyCli.status, 1, 'history remains inspection-only');
+  assert.equal(JSON.parse(historyCli.stdout).findings.some((finding) => finding.rule === 'splittable-mismatch'), false, 'marked v2 history uses the same ledger path base as current mode');
+  // Keep the distinct-owner case live in this E2E matrix; it proves receipt identity is owner-scoped.
+  assert.ok(differentOwners.ledgerPath);
+  assert.ok(!hasMismatch(relative));
+});
+
 test('current v2 counts an explicit blocked proof with an independent dispatch', () => {
   const dispatch = item({
     id: 'I1', owner: 'agent:worker-1', worktree: 'worktrees/worker-1',
