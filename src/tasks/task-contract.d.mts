@@ -44,7 +44,6 @@ export interface TaskState {
 	objectives: TaskObjective[];
 	progress: TaskProgress;
 	phase: "active" | "completed";
-	source?: TaskSource;
 }
 export type TaskItemInput = Omit<TaskItem, "status" | "evidence"> &
 	Partial<Pick<TaskItem, "status" | "evidence">>;

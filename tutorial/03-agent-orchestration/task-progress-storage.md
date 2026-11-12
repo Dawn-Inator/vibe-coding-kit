@@ -20,7 +20,7 @@ writer process for its storage root; callers serialize access across processes.
 
 ```js
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { createTaskProgressSchemas } from './src/tasks/task-contract.mjs';
 import { TaskStore } from './src/tasks/task-store.mjs';
@@ -29,7 +29,8 @@ import { inspectHeartbeatLedger } from './src/supervision/heartbeat-ledger-api.m
 
 const schemas = createTaskProgressSchemas(z);
 const taskStore = new TaskStore(storage.storageRoot, { schemas }); // ordinary mutable task state
-const candidates = await discoverHeartbeatLedgers({ root: trustedChatCwd, threadId });
+const root = await realpath(trustedChatCwd);
+const candidates = await discoverHeartbeatLedgers({ root, threadId });
 const associated = candidates.filter((candidate) => candidate.associated);
 // Use an explicitly chosen/bound path if discovery is ambiguous; do not guess among candidates.
 if (associated.length === 1) {
@@ -39,6 +40,7 @@ if (associated.length === 1) {
   const report = inspectHeartbeatLedger(text, { mode: 'items', ledgerPath: path });
   const taskView = projectHeartbeatTask({
     report,
+    root,
     threadId,
     path,
     contentHash: createHash('sha256').update(text).digest('hex'),
@@ -46,6 +48,11 @@ if (associated.length === 1) {
   }); // read-only view; keep out of TaskStore mutations/events
 }
 ```
+
+Discovery associates a ledger only when its unfenced text contains one standalone metadata field such as
+`thread: <id>`, `thread_id: <id>`, or `threadId: <id>` with an exact value. Mentions in titles, evidence, or prose do
+not bind a source; conflicting or multiple IDs remain unassociated and require an explicit selection. Pass the same
+canonical real project root used for discovery to the pure projector; it checks normalized root/path containment.
 
 采用此契约的 Codex Task Progress 插件在 `storageRoot` 中按聊天隔离记录：
 
@@ -63,8 +70,8 @@ if (associated.length === 1) {
 `events.jsonl` 是追加的清单变更历史，`snapshot.json` 是可以从历史重建的最新状态。
 普通短任务使用共享 Kit 的 TaskStore，不需要建立心跳台账。若聊天已绑定到某份心跳台账，或发现唯一精确
 关联的台账，该台账替代任务面板中的清单展示；原有本地普通任务记录保留为休眠记录。来源绑定期间拒绝
-通过任务面板修改投影视图。台账始终是只读来源，原始 `heartbeat.md` 不移动、不改写，面板也不创建
-任务事件或快照来冒充它。
+通过面板任务变更 API 修改投影视图。投影消费者不移动或重写原始 `heartbeat.md`，也不创建任务事件或
+快照来冒充它；心跳来源仍由项目现有的账本流程维护。
 
 投影只采用台账检查器解析出的现有行 ID、标题、状态和证据。原始状态保存在来源元数据中；未知状态保持
 未完成，完成状态必须有来源证据，不能从清单存在本身推断整个会话已交付。非法或重复的行 ID、检查器
@@ -90,5 +97,6 @@ import { resolveTaskProgressStorage } from 'vibe-coding-kit/src/contracts/task-p
 发布构建可以把这个固定依赖打包进生成的 Helper；无需让用户机器在运行时另装 Kit，也无需把一份
 Kit 运行时源码提交到插件自己的源码目录。对应的 `.d.mts` 提供只读路径结果类型。
 
-记录迁移、原子写入、冲突处理和是否排除 Git 由消费者负责：迁移前保留旧记录，已有目标记录不得被
-静默覆盖，写入失败不得伪装成空任务。任务记录是本地运行数据，默认应从项目 Git 提交中排除。
+TaskStore 负责普通任务事件的持久追加、原子快照、修订号、幂等请求与冲突处理；其存储根目录只能由
+单一写入进程使用。消费者负责提供可信聊天身份、选择与路由来源、迁移旧记录并决定是否从 Git 排除。
+迁移时保留旧记录，已有目标记录不得静默覆盖。任务记录是本地运行数据，默认应从项目 Git 提交中排除。

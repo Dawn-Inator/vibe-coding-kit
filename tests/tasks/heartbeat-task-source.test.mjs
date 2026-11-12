@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -42,6 +42,9 @@ function projectRoot() {
 	return mkdtempTracked("heartbeat-task-source-");
 }
 
+const PROJECT_ROOT = realpathSync(projectRoot());
+const PROJECT_LEDGER = join(PROJECT_ROOT, "heartbeat.md");
+
 test("discovery scans project-local priority paths, excludes fenced examples, and associates exact thread tokens", async () => {
 	const root = projectRoot();
 	mkdirSync(join(root, ".workspace", "task", "session"), { recursive: true });
@@ -58,7 +61,7 @@ test("discovery scans project-local priority paths, excludes fenced examples, an
 	const fenced = join(root, "docs", "example.md");
 	writeFileSync(
 		workspaceLedger,
-		`${ledger([["I1", "report:r1", "check status", "done", "`receipt`", "[]"]])}\n${THREAD}\n`,
+		`${ledger([["I1", "report:r1", "check status", "done", "`receipt`", "[]"]])}\nthread: ${THREAD}\n`,
 	);
 	writeFileSync(
 		todoLedger,
@@ -109,6 +112,40 @@ test("discovery rejects out-of-root explicit bindings and requires exact thread 
 	);
 });
 
+test("discovery associates only one exact standalone thread metadata field", async () => {
+	const root = projectRoot();
+	const unrelated = join(root, "heartbeat-evidence.md");
+	const conflict = join(root, "heartbeat-conflict.md");
+	writeFileSync(
+		unrelated,
+		ledger([
+			[
+				"I1",
+				"report:r1",
+				"inspect evidence",
+				"done",
+				`receipt mentions ${THREAD}`,
+				"[]",
+			],
+		]),
+	);
+	writeFileSync(
+		conflict,
+		`${ledger([["I2", "report:r2", "conflicting metadata", "done", "receipt", "[]"]])}\nthread: ${THREAD}\nthread_id: other-thread\n`,
+	);
+	const candidates = await discoverHeartbeatLedgers({ root, threadId: THREAD });
+	assert.equal(
+		candidates.find((candidate) => candidate.path === realpathSync(unrelated))
+			.associated,
+		false,
+	);
+	assert.equal(
+		candidates.find((candidate) => candidate.path === realpathSync(conflict))
+			.associated,
+		false,
+	);
+});
+
 test("projection retains reported rows, evidence and raw statuses; tracking parents count linked children once", () => {
 	const text = ledger([
 		[
@@ -133,8 +170,9 @@ test("projection retains reported rows, evidence and raw statuses; tracking pare
 	assert.equal(report.passed, true, JSON.stringify(report.findings));
 	const state = projectHeartbeatTask({
 		report,
+		root: PROJECT_ROOT,
 		threadId: THREAD,
-		path: "/project/heartbeat.md",
+		path: PROJECT_LEDGER,
 		contentHash: "abc",
 		modifiedAt: "2026-01-01T00:00:00Z",
 	});
@@ -202,8 +240,9 @@ test("nested tracking hierarchies flatten to real leaves once and shared-child D
 	};
 	const state = projectHeartbeatTask({
 		report,
+		root: PROJECT_ROOT,
 		threadId: THREAD,
-		path: "/project/heartbeat.md",
+		path: PROJECT_LEDGER,
 		contentHash: "nested",
 		modifiedAt: "2026-01-01T00:00:00Z",
 	});
@@ -245,8 +284,9 @@ test("projection rejects parser errors and duplicate IDs, and surfaces unresolve
 		() =>
 			projectHeartbeatTask({
 				report: invalid,
+				root: PROJECT_ROOT,
 				threadId: THREAD,
-				path: "/project/heartbeat.md",
+				path: PROJECT_LEDGER,
 				contentHash: "abc",
 				modifiedAt: "2026-01-01T00:00:00Z",
 			}),
@@ -265,8 +305,9 @@ test("projection rejects parser errors and duplicate IDs, and surfaces unresolve
 		() =>
 			projectHeartbeatTask({
 				report: duplicateReport,
+				root: PROJECT_ROOT,
 				threadId: THREAD,
-				path: "/project/heartbeat.md",
+				path: PROJECT_LEDGER,
 				contentHash: "abc",
 				modifiedAt: "2026-01-01T00:00:00Z",
 			}),
@@ -284,13 +325,20 @@ test("projection rejects parser errors and duplicate IDs, and surfaces unresolve
 				evidence: "checked",
 				children: '["missing"]',
 			},
-			{ id: "C1", item: "Child", status: "mystery", evidence: "" },
+			{
+				id: "C1",
+				item: "Child",
+				status: "mystery",
+				evidence: "",
+				children: "[]",
+			},
 		],
 	};
 	const state = projectHeartbeatTask({
 		report: linksReport,
+		root: PROJECT_ROOT,
 		threadId: THREAD,
-		path: "/project/heartbeat.md",
+		path: PROJECT_LEDGER,
 		contentHash: "abc",
 		modifiedAt: "2026-01-01T00:00:00Z",
 	});
@@ -300,6 +348,37 @@ test("projection rejects parser errors and duplicate IDs, and surfaces unresolve
 	);
 	assert.deepEqual(state.source.linkRisks, ["P1: missing child missing"]);
 	assert.equal(state.objectives[1].status, "pending");
+});
+
+test("projection requires a normalized root and keeps the ledger path inside it", () => {
+	const report = {
+		mode: "items",
+		findings: [],
+		items: [{ id: "I1", item: "one", status: "pending", evidence: "" }],
+	};
+	const input = {
+		report,
+		threadId: THREAD,
+		root: PROJECT_ROOT,
+		path: PROJECT_LEDGER,
+		contentHash: "abc",
+		modifiedAt: "2026-01-01T00:00:00Z",
+	};
+	const outsidePath = join(PROJECT_ROOT, "..", "outside", "heartbeat.md");
+	const unnormalizedPath = `${PROJECT_ROOT}${sep}..${sep}${basename(PROJECT_ROOT)}${sep}heartbeat.md`;
+	const unnormalizedRoot = `${PROJECT_ROOT}${sep}..${sep}${basename(PROJECT_ROOT)}`;
+	assert.throws(
+		() => projectHeartbeatTask({ ...input, path: outsidePath }),
+		/within the project root/,
+	);
+	assert.throws(
+		() => projectHeartbeatTask({ ...input, path: unnormalizedPath }),
+		TypeError,
+	);
+	assert.throws(
+		() => projectHeartbeatTask({ ...input, root: unnormalizedRoot }),
+		/normalized absolute project root/,
+	);
 });
 
 test("discovery never follows a symlink that resolves outside the project root", async () => {

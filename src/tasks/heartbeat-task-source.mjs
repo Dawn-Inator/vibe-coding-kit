@@ -36,12 +36,26 @@ function withoutFencedExamples(text) {
 		.join("\n");
 }
 
-function hasExactThreadToken(text, threadId) {
-	const escaped = threadId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	return new RegExp(
-		`(?:^|[^A-Za-z0-9_-])${escaped}(?:$|[^A-Za-z0-9_-])`,
-		"m",
-	).test(text);
+function isAssociatedThread(text, threadId) {
+	const values = [];
+	for (const line of text.split("\n")) {
+		const match =
+			/^\s*(?:[-*]\s*)?(?:thread|thread_id|threadId)\s*:\s*(.*?)\s*$/i.exec(
+				line,
+			);
+		if (!match) continue;
+		let value = match[1].trim();
+		if (
+			(value.startsWith('"') && value.endsWith('"')) ||
+			(value.startsWith("'") && value.endsWith("'"))
+		)
+			value = value.slice(1, -1);
+		// A metadata value names exactly one thread; lists, prose and placeholders are ambiguous.
+		if (!value || /\s|,|;|\|/.test(value)) return false;
+		values.push(value);
+	}
+	const unique = new Set(values);
+	return unique.size === 1 && unique.has(threadId);
 }
 
 function priority(name) {
@@ -104,7 +118,7 @@ export async function discoverHeartbeatLedgers({
 			if (!report.wakeCount && !(named && report.itemCount)) return;
 			candidates.set(path, {
 				path,
-				associated: hasExactThreadToken(text, threadId),
+				associated: isAssociatedThread(text, threadId),
 			});
 		} catch {
 			// Unreadable and malformed candidates are not discoverable sources.
@@ -209,6 +223,7 @@ function rowEvidence(row, path) {
 /** Project an inspected Items inventory into a read-only shared task view. */
 export function projectHeartbeatTask({
 	report,
+	root,
 	threadId,
 	path,
 	contentHash,
@@ -226,8 +241,22 @@ export function projectHeartbeatTask({
 		);
 	if (typeof threadId !== "string" || !threadId.trim())
 		throw new TypeError("A nonblank threadId is required");
-	if (typeof path !== "string" || !path.trim() || !isAbsolute(path))
+	if (
+		typeof root !== "string" ||
+		!root.trim() ||
+		!isAbsolute(root) ||
+		resolve(root) !== root
+	)
+		throw new TypeError("A normalized absolute project root is required");
+	if (
+		typeof path !== "string" ||
+		!path.trim() ||
+		!isAbsolute(path) ||
+		resolve(path) !== path
+	)
 		throw new TypeError("A project-local absolute ledger path is required");
+	if (!isWithin(root, path))
+		throw new Error("Heartbeat ledger path must stay within the project root");
 	if (typeof contentHash !== "string" || !contentHash.trim())
 		throw new TypeError("contentHash is required");
 	const modifiedTime = new Date(modifiedAt);
@@ -267,6 +296,7 @@ export function projectHeartbeatTask({
 			linkRisks.push(`${id}: children is not a JSON array`);
 			continue;
 		}
+		if (children.length === 0) continue;
 		if (
 			mapStatus(row.status) !== "active" ||
 			!/^tracking\b/i.test(String(row.status ?? "").trim())

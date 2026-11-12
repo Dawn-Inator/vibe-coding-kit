@@ -35,12 +35,19 @@ export interface HeartbeatTaskSource extends TaskSource {
 
 export interface ProjectHeartbeatTaskOptions {
 	report: HeartbeatItemsReport;
+	/** Canonical real project root matching the root used for discovery. */
+	root: string;
 	threadId: string;
+	/** Canonical discovered ledger path, under root. */
 	path: string;
 	contentHash: string;
 	modifiedAt: string | Date;
 	title?: string;
 }
+
+export type HeartbeatTaskState = Omit<TaskState, "source"> & {
+	source: HeartbeatTaskSource;
+};
 
 /** Discover bounded project-local ledgers using Kit's canonical heartbeat parser. */
 export function discoverHeartbeatLedgers(
@@ -50,4 +57,4 @@ export function discoverHeartbeatLedgers(
 /** Purely project an inspected Items report into a read-only task state. */
 export function projectHeartbeatTask(
 	options: ProjectHeartbeatTaskOptions,
-): TaskState & { source: HeartbeatTaskSource };
+): HeartbeatTaskState;
