@@ -430,11 +430,17 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     );
     assert.equal(await readFile(localEventsPath, "utf8"), before);
     const history = (await request("history", {})).result as {
-      history: { events: unknown[]; source: { path: string; readOnly: boolean } };
+      history: {
+        events: unknown[];
+        wakes: { heading: string; rows: { num: number; state: string }[] }[];
+        source: { path: string; readOnly: boolean };
+      };
     };
     assert.deepEqual(history.history.events, []);
     assert.equal(history.history.source.path, canonicalLedgerPath);
     assert.equal(history.history.source.readOnly, true);
+    assert.equal(history.history.wakes.length, 1);
+    assert.equal(history.history.wakes[0]?.heading, "wake");
     await request("bind-heartbeat", { path: null });
     const restored = (await request("get", {})).result as { task: TaskState };
     assert.equal(restored.task.title, "Dormant local task");
@@ -542,7 +548,7 @@ test("automatic heartbeat authority stays latched through association loss and r
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
   async function request(
-    action: "initialize" | "update" | "get" | "bind-heartbeat" | "heartbeat-history",
+    action: "initialize" | "update" | "get" | "history" | "bind-heartbeat" | "heartbeat-history",
     input: unknown,
     threadId = "sticky-chat",
   ) {
@@ -550,6 +556,7 @@ test("automatic heartbeat authority stays latched through association loss and r
       initialize: "task_progress_initialize",
       update: "task_progress_update",
       get: "task_progress_get",
+      history: "task_progress_history",
       "bind-heartbeat": "task_progress_bind_heartbeat",
       "heartbeat-history": "task_progress_heartbeat_history",
     } as const;
@@ -592,7 +599,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     );
     await writeFile(
       join(root, "kit/heartbeat-ledger-api.mjs"),
-      `export function inspectHeartbeatLedger(text,{mode}) { return { mode, certifiesCurrent:true, passed:true, wakes:[{heading:"wake",timeMs:1794391200000,rows:[]}], items:[{id:"H1",source:"request",item:"Source task",status:"blocked",evidence:"Waiting",line:6}], findings:[]}; }`,
+      `export function inspectHeartbeatLedger(text,{mode}) { return { mode, certifiesCurrent:true, passed:true, wakes: mode === "history" ? [{heading:"older",timeMs:1794304800000,line:3,rows:[{num:2,category:"task",state:"active",line:4}]},{heading:"newest",timeMs:1794391200000,line:7,rows:[{num:1,category:"task",state:"done",line:8}]}] : [{heading:"wake",timeMs:1794391200000,rows:[]}], items:[{id:"H1",source:"request",item:"Source task",status:"blocked",evidence:"Waiting",line:6}], findings:[]}; }`,
     );
     await writeFile(join(root, "heartbeat-A.md"), original);
     await writeFile(
@@ -617,6 +624,36 @@ test("automatic heartbeat authority stays latched through association loss and r
       heartbeatHistory: { sourcePath: string | null };
     };
     assert.equal(projectHistory.heartbeatHistory.sourcePath, canonicalSourcePath);
+    const firstAuditPage = (await request("history", { limit: 1 })).result as {
+      history: {
+        wakes: { heading: string; rows: { num: number; state: string }[] }[];
+        nextCursor: string | null;
+        total: number;
+        source: { path: string };
+      };
+    };
+    assert.equal(firstAuditPage.history.total, 2);
+    assert.equal(firstAuditPage.history.wakes[0]?.heading, "newest");
+    assert.deepEqual(firstAuditPage.history.wakes[0]?.rows[0], {
+      num: 1,
+      category: "task",
+      state: "done",
+      line: 8,
+    });
+    assert.equal(firstAuditPage.history.source.path, canonicalSourcePath);
+    const firstAuditCursor = firstAuditPage.history.nextCursor;
+    assert.ok(firstAuditCursor);
+    const secondAuditPage = (await request("history", { cursor: firstAuditCursor, limit: 1 }))
+      .result as {
+      history: { wakes: { heading: string }[]; nextCursor: string | null };
+    };
+    assert.equal(secondAuditPage.history.wakes[0]?.heading, "older");
+    assert.equal(secondAuditPage.history.nextCursor, null);
+    const refreshedAudit = (await request("history", {})).result as {
+      history: { wakes: { heading: string }[]; total: number };
+    };
+    assert.equal(refreshedAudit.history.total, 2);
+    assert.equal(refreshedAudit.history.wakes[0]?.heading, "newest");
     await writeFile(join(root, "heartbeat-A.md"), original.replace("sticky-chat", "other-chat"));
     await writeFile(join(root, "heartbeat-C.md"), original);
     const stale = (await request("get", {})).result as {
@@ -626,6 +663,63 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.equal(stale.task, null);
     assert.equal(stale.taskSource.status, "stale");
     assert.equal(stale.taskSource.path, canonicalSourcePath);
+    const staleHistory = (await request("history", {})).result as {
+      history: { events: unknown[]; wakes: unknown[]; source: { path: string; error?: string } };
+    };
+    assert.deepEqual(staleHistory.history.events, []);
+    assert.deepEqual(staleHistory.history.wakes, []);
+    assert.equal(staleHistory.history.source.path, canonicalSourcePath);
+    assert.ok(staleHistory.history.source.error);
+    const unresolvedWorkspaceRoot = join(await realpath(root), ".workspace", "codex-task-progress");
+    const unresolvedEventsPath = eventPath(unresolvedWorkspaceRoot, "unresolved-chat");
+    await localStore.initialize("unresolved-chat", {
+      requestId: "unresolved-local",
+      expectedRevision: 0,
+      title: "Keep a dormant local task",
+      reason: "Preexisting ordinary task history",
+      objectives: [{ id: "U1", title: "Local task" }],
+    });
+    const unresolvedEvents = await readFile(unresolvedEventsPath, "utf8");
+    const unrelatedCandidate = original.replaceAll("sticky-chat", "another-chat");
+    await writeFile(join(root, "heartbeat-unrelated.md"), unrelatedCandidate);
+    const unresolvedSource = (await request("get", {}, "unresolved-chat")).result as {
+      taskSource: { status: string };
+    };
+    assert.equal(unresolvedSource.taskSource.status, "candidates");
+    const unrelatedHistory = (await request("history", {}, "unresolved-chat")).result as {
+      history: { events: unknown[] };
+    };
+    assert.equal(unrelatedHistory.history.events.length, 1);
+    const pendingThreadId = "pending-history-chat";
+    await localStore.initialize(pendingThreadId, {
+      requestId: "pending-local",
+      expectedRevision: 0,
+      title: "Keep dormant history until source selection",
+      reason: "Preexisting local task history",
+      objectives: [{ id: "P1", title: "Local task" }],
+    });
+    const pendingEventsPath = eventPath(unresolvedWorkspaceRoot, pendingThreadId);
+    const pendingEvents = await readFile(pendingEventsPath, "utf8");
+    const ambiguousSource = original.replaceAll("sticky-chat", pendingThreadId);
+    await writeFile(join(root, "heartbeat-pending-one.md"), ambiguousSource);
+    await writeFile(join(root, "heartbeat-pending-two.md"), ambiguousSource);
+    const pendingSource = (await request("get", {}, pendingThreadId)).result as {
+      taskSource: { status: string };
+    };
+    assert.equal(pendingSource.taskSource.status, "pending-selection");
+    const pendingHistory = (await request("history", {}, pendingThreadId)).result as {
+      history: {
+        events: unknown[];
+        wakes: unknown[];
+        source: { path: string | null; error?: string };
+      };
+    };
+    assert.deepEqual(pendingHistory.history.events, []);
+    assert.deepEqual(pendingHistory.history.wakes, []);
+    assert.equal(pendingHistory.history.source.path, null);
+    assert.ok(pendingHistory.history.source.error);
+    assert.equal(await readFile(unresolvedEventsPath, "utf8"), unresolvedEvents);
+    assert.equal(await readFile(pendingEventsPath, "utf8"), pendingEvents);
     await assert.rejects(
       request("initialize", {
         requestId: "parallel",

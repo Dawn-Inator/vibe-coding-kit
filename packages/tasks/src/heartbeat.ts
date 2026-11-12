@@ -56,6 +56,9 @@ export interface HeartbeatHistoryPage {
   nextCursor: string | null;
   total: number;
   sourcePath: string | null;
+  contentHash?: string;
+  itemStatuses?: Record<string, string>;
+  error?: string;
 }
 export interface HeartbeatTaskProjection {
   status: "none" | "candidates" | "pending-selection" | "ready" | "stale" | "error";
@@ -815,42 +818,80 @@ export class HeartbeatService {
     cwd: string,
     options: { cursor?: string; limit?: number } = {},
   ): Promise<HeartbeatHistoryPage> {
-    const view = await this.view(threadId, cwd);
-    if (!view?.sourcePath) return { wakes: [], nextCursor: null, total: 0, sourcePath: null };
     const before = options.cursor === undefined ? null : Number(options.cursor);
     if (before !== null && (!Number.isSafeInteger(before) || before < 0))
       throw new Error("Invalid heartbeat history cursor.");
     const limit = options.limit ?? 5;
     if (!Number.isInteger(limit) || limit < 1 || limit > 10)
       throw new Error("Heartbeat history limit must be 1–10.");
-    const root = await this.#project(cwd);
-    const config = await this.#config(root);
-    const info = await stat(view.sourcePath);
-    if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
-    const text = await readFile(view.sourcePath, "utf8");
-    const inspect = await this.#inspector(root, config);
-    const report = inspect(text, {
-      mode: "history",
-      latest: false,
-      ledgerPath: view.sourcePath,
-      now: this.#now(),
+    const empty = (sourcePath: string | null, error?: string, contentHash?: string) => ({
+      wakes: [],
+      nextCursor: null,
+      total: 0,
+      sourcePath,
+      ...(contentHash ? { contentHash } : {}),
+      ...(error ? { error: shortened(error, 2_000) } : {}),
     });
-    const end = before === null ? report.wakes.length : Math.min(before, report.wakes.length);
-    const records = report.wakes.slice(Math.max(0, end - limit), end).reverse();
-    const wakes: Record<string, unknown>[] = [];
-    for (const record of records) {
-      const compact = compactWake(record);
-      if (wakes.length && Buffer.byteLength(JSON.stringify([...wakes, compact])) > PANEL_BYTES)
-        break;
-      wakes.push(compact);
+    const view = await this.view(threadId, cwd);
+    if (!view?.sourcePath)
+      return empty(
+        null,
+        view?.error ??
+          (view?.status === "none"
+            ? undefined
+            : `Heartbeat task source is ${view?.status ?? "unavailable"}.`),
+      );
+    if (view.status !== "ready")
+      return empty(
+        view.sourcePath,
+        view.error ?? `Heartbeat task source is ${view.status}.`,
+        view.contentHash,
+      );
+    try {
+      const root = await this.#project(cwd);
+      const config = await this.#config(root);
+      const sourcePath = await realpath(view.sourcePath);
+      if (!within(root, sourcePath) || sourcePath !== view.sourcePath)
+        throw new Error("Bound heartbeat source changed outside its verified project path.");
+      const info = await stat(sourcePath);
+      if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const text = await readFile(sourcePath, "utf8");
+      const contentHash = hash(text);
+      if (contentHash !== view.contentHash)
+        return empty(
+          sourcePath,
+          "Heartbeat ledger changed while reading history; refresh before using its audit history.",
+          contentHash,
+        );
+      const inspect = await this.#inspector(root, config);
+      const report = inspect(text, {
+        mode: "history",
+        latest: false,
+        ledgerPath: sourcePath,
+        now: this.#now(),
+      });
+      if (report.mode !== "history")
+        throw new Error("Kit heartbeat inspector did not return a History report.");
+      const end = before === null ? report.wakes.length : Math.min(before, report.wakes.length);
+      const records = report.wakes.slice(Math.max(0, end - limit), end).reverse();
+      const wakes: Record<string, unknown>[] = [];
+      for (const record of records) {
+        const compact = compactWake(record);
+        if (wakes.length && Buffer.byteLength(JSON.stringify([...wakes, compact])) > PANEL_BYTES)
+          break;
+        wakes.push(compact);
+      }
+      const remaining = end - wakes.length;
+      return {
+        wakes,
+        nextCursor: remaining > 0 ? String(remaining) : null,
+        total: report.wakes.length,
+        sourcePath,
+        contentHash,
+      };
+    } catch (error) {
+      return empty(view.sourcePath, String(error), view.contentHash);
     }
-    const remaining = end - wakes.length;
-    return {
-      wakes,
-      nextCursor: remaining > 0 ? String(remaining) : null,
-      total: report.wakes.length,
-      sourcePath: view.sourcePath,
-    };
   }
 
   /** Projects paginated audit history for the current project source, without chat IDs. */

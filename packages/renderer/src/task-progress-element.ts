@@ -29,6 +29,8 @@ export interface TaskPanelState {
     kind: "kit-heartbeat";
     path: string;
     readOnly: true;
+    contentHash?: string;
+    error?: string;
     itemStatuses?: Readonly<Record<string, string>>;
     itemStatusCount?: number;
     linkRiskCount?: number;
@@ -69,6 +71,20 @@ export interface TaskPanelHistory {
   events: readonly Record<string, unknown>[];
   nextCursor: string | null;
 }
+export interface TaskPanelSourceHistory {
+  events: readonly Record<string, unknown>[];
+  nextCursor: string | null;
+  wakes: readonly Record<string, unknown>[];
+  total: number;
+  source: {
+    kind: "kit-heartbeat";
+    path: string | null;
+    readOnly: true;
+    contentHash?: string;
+    error?: string;
+    itemStatuses?: Readonly<Record<string, string>>;
+  };
+}
 export interface TaskPanelHeartbeatHistory {
   wakes: readonly Record<string, unknown>[];
   nextCursor: string | null;
@@ -88,11 +104,12 @@ export interface TaskPanelResponse {
     status: "candidates" | "pending-selection" | "ready" | "stale" | "error";
     path?: string;
     readOnly: true;
+    contentHash?: string;
     error?: string;
     itemStatuses?: Readonly<Record<string, string>>;
     itemStatusCount?: number;
   } | null;
-  history?: TaskPanelHistory;
+  history?: TaskPanelHistory | TaskPanelSourceHistory;
   heartbeatHistory?: TaskPanelHeartbeatHistory;
   execution?: TaskPanelExecution;
   completionBasis?: "registered-checklist";
@@ -189,12 +206,14 @@ export class TaskProgressElement extends LitElement {
   declare locale: string;
   private declare tab: "tasks" | "history";
   private declare selectedObjective: string | null;
-  private declare history: TaskPanelHistory | null;
+  private declare history: TaskPanelHistory | TaskPanelSourceHistory | null;
   private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
   private declare heartbeatBusy: boolean;
   private heartbeatHistorySource: string | null = null;
   private declare busy: boolean;
   private historyThread: string | null = null;
+  private historyContext: string | null = null;
+  private historyRequest = 0;
 
   constructor() {
     super();
@@ -246,6 +265,8 @@ export class TaskProgressElement extends LitElement {
     this.heartbeatBusy = false;
     this.heartbeatHistorySource = null;
     this.historyThread = null;
+    this.historyContext = null;
+    this.historyRequest++;
     this.selectedObjective = null;
     this.connectionError = null;
     this.busy = false;
@@ -266,29 +287,167 @@ export class TaskProgressElement extends LitElement {
   private async loadHistory(more = false): Promise<void> {
     const threadId = this.threadId;
     if (!threadId || !this.requester || this.busy) return;
+    const context = this.currentHistoryContext();
+    if (context !== this.historyContext) {
+      this.history = null;
+      this.historyContext = context;
+    }
+    const requestId = ++this.historyRequest;
+    const expectedSource = this.historySource();
+    if (expectedSource && !expectedSource.path) {
+      this.history = {
+        events: [],
+        wakes: [],
+        total: 0,
+        nextCursor: null,
+        source: {
+          ...expectedSource,
+          error: expectedSource.error ?? "The bound ledger path is unresolved.",
+        },
+      };
+      this.historyThread = threadId;
+      this.busy = false;
+      return;
+    }
     this.busy = true;
     try {
-      const cursor = more ? this.history?.nextCursor : null;
+      const current = this.history as (TaskPanelHistory & Partial<TaskPanelSourceHistory>) | null;
+      const cursor = more ? current?.nextCursor : null;
       const result = await this.requester({
         method: "history",
         threadId,
         ...(cursor ? { cursor } : {}),
       });
-      if (this.threadId !== threadId) return;
-      this.history = result.history
-        ? {
-            events: more
-              ? [...(this.history?.events ?? []), ...result.history.events]
-              : result.history.events,
-            nextCursor: result.history.nextCursor,
-          }
-        : { events: [], nextCursor: null };
+      if (
+        this.threadId !== threadId ||
+        this.currentHistoryContext() !== context ||
+        requestId !== this.historyRequest
+      )
+        return;
+      const page = result.history as
+        | (TaskPanelHistory & Partial<TaskPanelSourceHistory>)
+        | undefined;
+      const sourceMode = expectedSource !== null;
+      const mismatch = expectedSource
+        ? !(
+            page?.source &&
+            page.source.kind === "kit-heartbeat" &&
+            page.source.path === expectedSource.path &&
+            page.source.contentHash === expectedSource.contentHash
+          )
+        : Boolean(page?.source);
+      if (mismatch) {
+        this.history = expectedSource
+          ? {
+              events: [],
+              wakes: [],
+              total: 0,
+              nextCursor: null,
+              source: {
+                ...expectedSource,
+                error: "Ledger history response did not match the bound source. Refresh to retry.",
+              },
+            }
+          : { events: [], nextCursor: null };
+        this.historyThread = threadId;
+        return;
+      }
+      this.history = page
+        ? sourceMode
+          ? {
+              ...page,
+              events: [],
+              wakes: more ? [...(current?.wakes ?? []), ...(page.wakes ?? [])] : (page.wakes ?? []),
+            }
+          : {
+              events: more ? [...(current?.events ?? []), ...page.events] : page.events,
+              nextCursor: page.nextCursor,
+            }
+        : expectedSource
+          ? {
+              events: [],
+              wakes: [],
+              total: 0,
+              nextCursor: null,
+              source: {
+                ...expectedSource,
+                error: expectedSource.error ?? "The bound ledger history is unavailable.",
+              },
+            }
+          : { events: [], nextCursor: null };
       this.historyThread = threadId;
     } catch (error) {
-      if (this.threadId === threadId) this.connectionError = String(error);
+      if (this.threadId === threadId && this.currentHistoryContext() === context) {
+        if (expectedSource) {
+          this.history = {
+            events: [],
+            wakes: [],
+            total: 0,
+            nextCursor: null,
+            source: { ...expectedSource, error: String(error) },
+          };
+          this.historyThread = threadId;
+        } else this.connectionError = String(error);
+      }
     } finally {
-      if (this.threadId === threadId) this.busy = false;
+      if (requestId === this.historyRequest) this.busy = false;
     }
+  }
+
+  private currentHistoryContext(): string {
+    const source = this.historySource();
+    const authority = source
+      ? [
+          this.data.taskSource?.status ?? null,
+          this.data.taskSource?.error ?? null,
+          source.error ?? null,
+        ]
+      : null;
+    return JSON.stringify([
+      this.threadId,
+      source?.kind ?? "local",
+      source?.path ?? null,
+      source?.contentHash ?? null,
+      authority,
+    ]);
+  }
+
+  private historySource(): TaskPanelSourceHistory["source"] | null {
+    const taskSource = this.data.task?.source;
+    if (taskSource?.kind === "kit-heartbeat") {
+      const responseSource = this.data.taskSource;
+      const contentHash =
+        taskSource.contentHash ??
+        (responseSource?.path === taskSource.path ? responseSource.contentHash : undefined);
+      const itemStatuses = taskSource.itemStatuses ?? responseSource?.itemStatuses;
+      return {
+        kind: "kit-heartbeat",
+        path: taskSource.path,
+        readOnly: true,
+        ...(contentHash !== undefined ? { contentHash } : {}),
+        ...(taskSource.error ? { error: taskSource.error } : {}),
+        ...(itemStatuses ? { itemStatuses } : {}),
+      };
+    }
+    const source = this.data.taskSource;
+    if (!source) return null;
+    if (
+      source.path ||
+      source.error ||
+      source.status === "stale" ||
+      source.status === "error" ||
+      source.status === "pending-selection"
+    ) {
+      return {
+        kind: "kit-heartbeat",
+        path: source.path ?? null,
+        readOnly: true,
+        ...(source.contentHash !== undefined ? { contentHash: source.contentHash } : {}),
+        ...(source.error ? { error: source.error } : {}),
+        ...(source.itemStatuses ? { itemStatuses: source.itemStatuses } : {}),
+      };
+    }
+    return null;
   }
 
   private async loadHeartbeatHistory(more = false): Promise<void> {
@@ -432,6 +591,47 @@ export class TaskProgressElement extends LitElement {
   }
 
   private renderHistory() {
+    const context = this.currentHistoryContext();
+    if (this.historyContext !== context) {
+      this.historyContext = context;
+      this.history = null;
+      this.historyThread = null;
+      this.historyRequest++;
+      this.busy = false;
+    }
+    const source = this.historySource();
+    if (source) {
+      const sourceHistory = this.history && "source" in this.history ? this.history : null;
+      if (!sourceHistory && !this.busy) void this.loadHistory();
+      const wakes = sourceHistory?.wakes ?? [];
+      const sourceError = sourceHistory
+        ? (sourceHistory.source.error ?? null)
+        : (source.error ??
+          (this.data.taskSource?.status === "stale" ||
+          this.data.taskSource?.status === "error" ||
+          this.data.taskSource?.status === "pending-selection"
+            ? (this.data.taskSource.error ?? "The bound ledger is unavailable or stale.")
+            : null));
+      return html`${source?.path ? html`<p class="muted">${this.t("Read-only ledger", "只读台账")}: ${source.path}</p>` : nothing}${sourceHistory ? html`<p class="muted">${this.t("Ledger records", "台账记录")}: ${sourceHistory.total}</p>` : nothing}${
+        sourceError
+          ? html`<p class="error">${this.t("Ledger history unavailable", "台账历史不可用")}: ${sourceError}</p>`
+          : wakes.length
+            ? wakes.map(
+                (wake) =>
+                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.line}</div>` : nothing}${
+                    Array.isArray(wake.rows)
+                      ? wake.rows.map((raw) => {
+                          const row = raw as Record<string, unknown>;
+                          return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}</p>`;
+                        })
+                      : nothing
+                  }</div>`,
+              )
+            : sourceHistory
+              ? html`<p class="empty">${this.t("No recorded wake audits in this ledger.", "此台账暂无已记录的心跳巡检。")}</p>`
+              : html`<p class="empty">${this.busy ? this.t("Loading ledger history…", "正在加载台账历史…") : this.t("Waiting for ledger history…", "等待台账历史…")}</p>`
+      }${sourceHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh ledger history", "刷新台账历史")}</button>`;
+    }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     return html`${(this.history?.events ?? []).map((event) => html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`)}${!this.history?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${this.history?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
   }

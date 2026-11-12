@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { HeartbeatService } from "./heartbeat.js";
+
+const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
+  import.meta.resolve("vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs"),
+);
 
 const ledger = (thread = "", legacy = false) =>
   `# Supervision\nthread: ${thread}\n## 2026-11-11T10:00:00Z wake (${legacy ? 8 : 10}-row ledger)\n${legacy ? "" : "contract: heartbeat/v2"}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | test | blocked | waiting |\n`;
@@ -96,6 +101,107 @@ test("project heartbeat view is independent of chat associations and isolated by
       code: "ENOENT",
     });
   } finally {
+    await f.close();
+  }
+});
+
+test("pinned Kit inspector pages the bound source independently from the project latest ledger", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "pinned-kit-data"), {
+    kitPath: PINNED_KIT_HEARTBEAT_API,
+    fallbackKitPath: null,
+    refreshMs: 0,
+  });
+  const tenRowWake = (time: string, state: string) =>
+    [
+      `## ${time} wake (10-row ledger)`,
+      "contract: heartbeat/v2",
+      "| # | category | state |",
+      "| --- | --- | --- |",
+      ...Array.from(
+        { length: 10 },
+        (_, index) => `| ${index + 1} | audit ${index + 1} | ${state} |`,
+      ),
+      "",
+    ].join("\n");
+  const sourceText = [
+    "# Supervision",
+    "## Items",
+    "| id | source | item | status | evidence | children | owner | repository | worktree | mode | write_set | dispatch_ref |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| H1 | request | Bound task | pending | - | [] | - | - | - | - | - | - |",
+    "",
+    "thread: actual-chat",
+    "",
+    tenRowWake("2026-11-11T10:00Z", "done"),
+    tenRowWake("2026-11-11T11:00Z", "done"),
+  ].join("\n");
+  const latestText = [
+    "# Supervision",
+    "## Items",
+    "| id | source | item | status | evidence | children | owner | repository | worktree | mode | write_set | dispatch_ref |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| H2 | request | Other chat | pending | - | [] | - | - | - | - | - | - |",
+    "",
+    "thread: unrelated-chat",
+    "",
+    tenRowWake("2026-11-11T12:00Z", "done"),
+  ].join("\n");
+  const source = resolve(f.project, "heartbeat-bound.md");
+  const latest = resolve(f.project, "heartbeat-latest.md");
+  const localEventsPath = resolve(f.project, ".workspace/codex-task-progress/events.jsonl");
+  await mkdir(resolve(f.project, ".workspace/codex-task-progress"), { recursive: true });
+  await writeFile(source, sourceText);
+  await writeFile(latest, latestText);
+  await writeFile(localEventsPath, '{"type":"local-task.event","keep":true}\n');
+  const localEventsBefore = await readFile(localEventsPath, "utf8");
+  try {
+    const taskProjection = await service.taskProjection("actual-chat", f.project);
+    assert.equal(taskProjection.status, "error");
+    assert.match(taskProjection.error ?? "", /Cannot project invalid heartbeat Items report/);
+    const page = await service.history("actual-chat", f.project, { limit: 1 });
+    assert.equal(page.error, undefined);
+    assert.equal(page.sourcePath, await realpath(source));
+    assert.equal(page.total, 2);
+    assert.match(String(page.wakes[0]?.heading), /2026-11-11T11:00Z/);
+    assert.equal(page.wakes[0]?.line, 24);
+    const rows = page.wakes[0]?.rows as {
+      num: number;
+      category: string;
+      state: string;
+      line: number;
+    }[];
+    assert.equal(rows.length, 10);
+    assert.deepEqual(rows[0], { num: 1, category: "audit 1", state: "done", line: 28 });
+    assert.ok(page.nextCursor);
+    const older = await service.history("actual-chat", f.project, {
+      cursor: page.nextCursor,
+      limit: 1,
+    });
+    assert.match(String(older.wakes[0]?.heading), /2026-11-11T10:00Z/);
+    assert.equal(older.total, 2);
+    const projectLatest = await service.projectHistory(f.project, { limit: 1 });
+    assert.equal(projectLatest.sourcePath, await realpath(latest));
+    assert.notEqual(projectLatest.sourcePath, page.sourcePath);
+    const emptySource = resolve(f.project, "heartbeat-empty.md");
+    await writeFile(
+      emptySource,
+      sourceText
+        .replaceAll("actual-chat", "empty-chat")
+        .replace(tenRowWake("2026-11-11T10:00Z", "done"), "")
+        .replace(tenRowWake("2026-11-11T11:00Z", "done"), ""),
+    );
+    const empty = await service.history("empty-chat", f.project);
+    assert.equal(empty.sourcePath, await realpath(emptySource));
+    assert.equal(empty.total, 0);
+    assert.deepEqual(empty.wakes, []);
+    await assert.rejects(service.history("actual-chat", f.project, { cursor: "bad" }), /cursor/);
+    await assert.rejects(service.history("actual-chat", f.project, { limit: 100 }), /limit/);
+    assert.equal(await readFile(source, "utf8"), sourceText);
+    assert.equal(await readFile(latest, "utf8"), latestText);
+    assert.equal(await readFile(localEventsPath, "utf8"), localEventsBefore);
+  } finally {
+    service.close();
     await f.close();
   }
 });
@@ -480,7 +586,7 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
       `export function inspectHeartbeatLedger(text,{mode}) {
       const repeated = '审计状态'.repeat(3000);
       const count = text.includes('new wake appended') ? 81 : 80;
-      return {certifiesCurrent:true,passed:true,
+      return {mode,certifiesCurrent:true,passed:true,
         wakes:Array.from({length:count},(_,i)=>({heading:'wake-'+i,timeMs:1794391200000+i*1000,line:i+1,sectionLines:[repeated],rows:Array.from({length:10},(_,r)=>({num:r+1,category:repeated,state:repeated,line:r+1}))})),
         items:Array.from({length:1000},(_,i)=>({id:'I'+i,item:repeated,status:i%2?'blocked ← reason':'done',evidence:repeated,customSecretText:repeated,line:i+1})),
         findings:Array.from({length:500},()=>({severity:'error',message:repeated,rule:repeated}))};
@@ -493,6 +599,12 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
     });
     const view = await service.view("chat-A", f.project);
     assert.equal(view?.status, "ready");
+    const invalidItemsProjection = await service.taskProjection("chat-A", f.project);
+    assert.equal(invalidItemsProjection.status, "error");
+    assert.match(
+      invalidItemsProjection.error ?? "",
+      /Cannot project invalid heartbeat Items report/,
+    );
     assert.ok(Buffer.byteLength(JSON.stringify(view)) < 256 * 1024);
     assert.equal(view.itemCount, 1000);
     assert.equal(view.wakeCount, 80);
@@ -505,6 +617,7 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
     assert.equal(view.wakes[0]?.sectionLines, undefined);
     assert.equal(view.items[0]?.customSecretText, undefined);
     const first = await service.history("chat-A", f.project, { limit: 5 });
+    assert.equal(first.error, undefined);
     assert.equal(first.total, 80);
     assert.equal(first.wakes[0]?.heading, "wake-79");
     assert.ok(first.nextCursor);

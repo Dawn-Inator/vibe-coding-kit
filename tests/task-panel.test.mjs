@@ -15,13 +15,14 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
   const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  if(request.method==='history' && window.fixture.delayNextHistory) { const delay=window.fixture.delayNextHistory; window.fixture.delayNextHistory=0; await new Promise(resolve => setTimeout(resolve,delay)); }
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
 };
@@ -453,6 +454,379 @@ test("ordinary chat task panel browser flows", async (t) => {
         const contentBox = await page.locator("#content").boundingBox();
         const panelBox = await panel.boundingBox();
         assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await context.close();
+      },
+    );
+    await t.test(
+      "bound task History renders only its canonical Kit ledger, pages and refreshes",
+      async () => {
+        const { context, page, panel } = await open();
+        const source = {
+          kind: "kit-heartbeat",
+          path: "/repo/.workspace/task/session/heartbeat.md",
+          readOnly: true,
+          contentHash: "hash-a",
+        };
+        await page.evaluate(
+          ({ value, source }) => {
+            window.fixture.task = { ...window.fixture.task, ...value, source };
+            window.fixture.history = {
+              events: [],
+              wakes: [
+                {
+                  heading: "wake newest",
+                  line: 12,
+                  rows: [{ category: "Feature", state: "active" }],
+                },
+              ],
+              nextCursor: "older",
+              total: 2,
+              source,
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: task, source },
+        );
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText("wake newest", { exact: true }).waitFor();
+        assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
+        assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
+        assert.match(await panel.locator("section.panel").innerText(), /Feature · active/);
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
+        await mkdir(".playwright-img", { recursive: true });
+        await panel.screenshot({ path: ".playwright-img/task-history-source-preview.png" });
+        await page.evaluate(() => {
+          window.fixture.history = {
+            events: [],
+            wakes: [{ heading: "wake older", rows: [] }],
+            nextCursor: null,
+            total: 2,
+            source: { ...window.fixture.task.source },
+          };
+        });
+        await panel.getByRole("button", { name: "加载更早记录", exact: true }).click();
+        await panel.getByText("wake older", { exact: true }).waitFor();
+        assert.match(
+          await panel.locator("section.panel").innerText(),
+          /wake newest[\s\S]*wake older/,
+        );
+        await page.evaluate(() => {
+          window.fixture.history = {
+            events: [],
+            wakes: [{ heading: "wake refreshed", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            source: { ...window.fixture.task.source },
+          };
+        });
+        await panel.getByRole("button", { name: "刷新台账历史", exact: true }).click();
+        await panel.getByText("wake refreshed", { exact: true }).waitFor();
+        assert.equal(await panel.getByText("wake older", { exact: true }).count(), 0);
+        await context.close();
+      },
+    );
+    await t.test(
+      "bound ledger with zero wakes and source error uses source-specific messages",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = {
+            ...value,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/heartbeat.md",
+              readOnly: true,
+              contentHash: "hash-empty",
+            },
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [],
+            nextCursor: null,
+            total: 0,
+            source: { ...window.fixture.task.source },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText(/此台账暂无已记录的心跳巡检/).waitFor();
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
+        await page.evaluate(() => {
+          window.fixture.task.source.error = "ledger is stale";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText(/台账历史不可用.*ledger is stale/).waitFor();
+        await context.close();
+      },
+    );
+    await t.test(
+      "source metadata without a task and mismatched history pages stay out of local History",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = {
+            status: "stale",
+            path: "/repo/stale.md",
+            contentHash: "stale-hash",
+            readOnly: true,
+            error: "ledger could not be read",
+          };
+          window.fixture.history = {
+            events: [{ reason: "must not appear locally" }],
+            wakes: [],
+            nextCursor: null,
+            total: 0,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/other.md",
+              readOnly: true,
+              contentHash: "wrong-hash",
+            },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByRole("button", { name: "任务进度", exact: false }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText(/ledger could not be read/).waitFor();
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /must not appear locally|暂无变更记录/,
+        );
+        await page.waitForTimeout(200);
+        const calls = await page.evaluate(
+          () => window.fixture.calls.filter((call) => call.method === "history").length,
+        );
+        assert.equal(
+          calls,
+          1,
+          "a mismatched page must settle to an error rather than retry indefinitely",
+        );
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "pending-selection",
+            readOnly: true,
+            error: "ledger binding is unresolved",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText(/ledger binding is unresolved/).waitFor();
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
+        await context.close();
+      },
+    );
+    await t.test(
+      "valid historical ledger audits remain visible when the current task projection fails",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = {
+            status: "error",
+            path: "/repo/ledger.md",
+            contentHash: "ledger-hash",
+            readOnly: true,
+            error: "current Items projection invalid",
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [
+              {
+                heading: "historical wake remains valid",
+                line: 31,
+                rows: [{ category: "Audit", state: "verified" }],
+              },
+            ],
+            nextCursor: null,
+            total: 1,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/ledger.md",
+              contentHash: "ledger-hash",
+              readOnly: true,
+            },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByRole("button", { name: "任务进度", exact: false }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
+        const historyText = await panel.locator("section.panel").innerText();
+        assert.match(historyText, /Audit · verified/);
+        assert.doesNotMatch(historyText, /current Items projection invalid|台账历史不可用/);
+        await context.close();
+      },
+    );
+    await t.test(
+      "stale ledger authority invalidates cached valid history at the same path and hash",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = {
+            status: "ready",
+            path: "/repo/ledger.md",
+            contentHash: "ledger-hash",
+            readOnly: true,
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [{ heading: "formerly valid wake", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/ledger.md",
+              contentHash: "ledger-hash",
+              readOnly: true,
+            },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByRole("button", { name: "任务进度", exact: false }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText("formerly valid wake", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "stale",
+            path: "/repo/ledger.md",
+            contentHash: "ledger-hash",
+            readOnly: true,
+            error: "ledger association is stale",
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [],
+            nextCursor: null,
+            total: 0,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/ledger.md",
+              contentHash: "ledger-hash",
+              readOnly: true,
+              error: "ledger association is stale",
+            },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText(/ledger association is stale/).waitFor();
+        assert.equal(await panel.getByText("formerly valid wake", { exact: true }).count(), 0);
+        await page.waitForTimeout(200);
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          ),
+          2,
+          "authority change should reload once and settle on source error",
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "late ledger History is discarded after source changes and local History reloads",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = {
+            ...value,
+            source: {
+              kind: "kit-heartbeat",
+              path: "/repo/ledger-a.md",
+              readOnly: true,
+              contentHash: "hash-a",
+            },
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [{ heading: "old source wake", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            source: { ...window.fixture.task.source },
+          };
+          window.fixture.delayNextHistory = 250;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await page.waitForFunction(
+          () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
+        );
+        await page.evaluate(() => {
+          window.fixture.task.source = {
+            kind: "kit-heartbeat",
+            path: "/repo/ledger-b.md",
+            readOnly: true,
+            contentHash: "hash-b",
+          };
+          window.fixture.history = {
+            events: [],
+            wakes: [{ heading: "current source wake", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            source: { ...window.fixture.task.source },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("current source wake", { exact: true }).waitFor();
+        await page.waitForTimeout(300);
+        assert.equal(await panel.getByText("old source wake", { exact: true }).count(), 0);
+        await page.evaluate(() => {
+          delete window.fixture.task.source;
+          window.fixture.taskSource = null;
+          window.fixture.history = {
+            events: [{ reason: "local history returned" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("local history returned", { exact: true }).waitFor();
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /current source wake/,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "late History from a previous thread cannot overwrite the newly selected thread",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.history = {
+            events: [{ reason: "late thread-a history" }],
+            nextCursor: null,
+          };
+          window.fixture.delayNextHistory = 250;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await page.waitForFunction(
+          () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
+        );
+        await page.evaluate(() => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.history = {
+            events: [{ reason: "current thread-b history" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("current thread-b history", { exact: true }).waitFor();
+        await page.waitForTimeout(300);
+        assert.equal(await panel.getByText("late thread-a history", { exact: true }).count(), 0);
+        const requests = await page.evaluate(() =>
+          window.fixture.calls.filter((call) => call.method === "history"),
+        );
+        assert.deepEqual(
+          requests.map((request) => request.threadId),
+          ["thread-a", "thread-b"],
+        );
         await context.close();
       },
     );

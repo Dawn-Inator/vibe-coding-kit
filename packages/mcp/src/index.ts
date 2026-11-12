@@ -709,7 +709,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         })
         .strict(),
       description:
-        "Read local task event history, or read-only source metadata for a bound Kit heartbeat task. Source projections do not create local task events; pass nextCursor to continue local history.",
+        "Read local task event history (up to 100 records per page), or read the canonical wake audit history for a bound Kit heartbeat task (up to 10 wakes per page). Kit history is read-only and returns compact wake records with row details; it does not create local task events. Pass nextCursor to continue either history.",
     },
     {
       name: "task_progress_heartbeat_history",

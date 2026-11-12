@@ -2434,18 +2434,32 @@ export class GoalProgressHelper {
           ? sourceTask.sourcePath ||
             sourceTask.status === "error" ||
             sourceTask.status === "pending-selection"
-            ? {
-                events: [],
-                nextCursor: null,
-                source: {
-                  kind: "kit-heartbeat",
-                  path: sourceTask.sourcePath,
-                  readOnly: true,
-                  ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
-                  ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
-                  ...(sourceTask.error ? { error: sourceTask.error } : {}),
-                },
-              }
+            ? await (async () => {
+                const options = z
+                  .object({
+                    cursor: z.string().optional(),
+                    limit: z.number().int().min(1).max(10).optional(),
+                  })
+                  .parse(input ?? {});
+                const page = await heartbeatService.history(threadId, cwd, {
+                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                  ...(options.limit === undefined ? {} : { limit: options.limit }),
+                });
+                return {
+                  events: [],
+                  nextCursor: page.nextCursor,
+                  wakes: page.wakes,
+                  total: page.total,
+                  source: {
+                    kind: "kit-heartbeat",
+                    path: page.sourcePath,
+                    readOnly: true,
+                    ...(page.contentHash ? { contentHash: page.contentHash } : {}),
+                    ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
+                    ...(page.error ? { error: page.error } : {}),
+                  },
+                };
+              })()
             : await taskStore.history(
                 threadId,
                 (() => {
