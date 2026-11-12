@@ -7,12 +7,18 @@ export interface StaticFrontendDeliveryTarget {
   readonly purpose: string;
   /** Stable provider-neutral identity for the physical object namespace. */
   readonly storeId: string;
+  /** Required true only when the project explicitly approves a public origin. */
+  readonly publicOriginApproved?: boolean;
   /** Full lowercase source revision SHA-1 or SHA-256. */
   readonly version: string;
   readonly artifact: {
     readonly kind: StaticFrontendArtifactKind;
+    /** directory-prefix serializes as segments joined by `/` plus a trailing `/`; exact-object has no trailing slash. */
+    readonly keyMode: 'directory-prefix' | 'exact-object';
     readonly keySegments: readonly string[];
-    readonly access: 'public' | 'private';
+    /** Access at the viewer-facing edge; this can be public while originAccess remains private. */
+    readonly viewerAccess: 'public' | 'private';
+    readonly originAccess: 'public' | 'private';
     readonly cacheControl: string;
     readonly retention: {
       readonly policy: 'minimum-days' | 'indefinite';
@@ -61,7 +67,8 @@ export interface StaticFrontendDurableMutexStrategy {
     readonly controlRecord: {
       readonly storeId: string;
       readonly keySegments: readonly string[];
-      readonly access: 'private' | 'public';
+      readonly viewerAccess: 'private' | 'public';
+      readonly originAccess: 'private' | 'public';
       readonly cdnServed: boolean;
       readonly automaticExpiry: boolean;
       readonly ageBasedGc: boolean;

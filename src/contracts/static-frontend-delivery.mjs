@@ -3,6 +3,7 @@ const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const ARTIFACT_KINDS = Object.freeze(['public-asset', 'public-document', 'private-template', 'private-archive', 'live-pointer']);
 const PUBLIC_KINDS = new Set(['public-asset', 'public-document']);
 const IMMUTABLE_KINDS = new Set(['public-asset', 'private-template', 'private-archive']);
+const PREFIX_KINDS = new Set(['public-asset', 'public-document', 'private-template']);
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const REQUIRED_MUTATIONS = Object.freeze(['host-flip', 'pointer-update', 'garbage-collection']);
@@ -21,6 +22,69 @@ function validPathSegments(segments, path, add) {
     }
   });
   return valid;
+}
+
+function isPathPrefix(prefix, path) {
+  return prefix.length <= path.length && prefix.every((part, index) => part === path[index]);
+}
+
+function keysOverlap(left, right) {
+  if (left.keyMode === 'exact-object' && right.keyMode === 'exact-object') {
+    return left.segments.length === right.segments.length && isPathPrefix(left.segments, right.segments);
+  }
+  if (left.keyMode === 'directory-prefix' && right.keyMode === 'directory-prefix') {
+    return isPathPrefix(left.segments, right.segments) || isPathPrefix(right.segments, left.segments);
+  }
+  const directory = left.keyMode === 'directory-prefix' ? left : right;
+  const object = left.keyMode === 'exact-object' ? left : right;
+  // A directory prefix serializes with a trailing slash, so it contains only deeper path components.
+  return directory.segments.length < object.segments.length && isPathPrefix(directory.segments, object.segments);
+}
+
+function parseCacheControl(value, path, add) {
+  const directives = new Map();
+  let valid = true;
+  for (const raw of value.split(',')) {
+    const match = raw.trim().match(/^([A-Za-z][A-Za-z0-9-]*)(?:\s*=\s*(.+))?$/u);
+    if (!match || (match[2] !== undefined && !match[2].trim())) {
+      add(path, 'cache.directive', 'cacheControl contains a malformed directive.');
+      valid = false;
+      continue;
+    }
+    const name = match[1].toLowerCase();
+    if (directives.has(name)) {
+      add(path, 'cache.duplicate-directive', `cacheControl repeats the ${name} directive.`);
+      valid = false;
+      continue;
+    }
+    directives.set(name, match[2]?.trim() ?? true);
+  }
+
+  for (const name of ['max-age', 's-maxage']) {
+    if (directives.has(name) && (typeof directives.get(name) !== 'string' || !/^\d+$/u.test(directives.get(name)))) {
+      add(path, 'cache.directive-value', `${name} must have a nonnegative integer value.`);
+      valid = false;
+    }
+  }
+  for (const name of ['public', 'private', 'no-store', 'no-cache', 'immutable', 'must-revalidate']) {
+    if (directives.has(name) && directives.get(name) !== true) {
+      add(path, 'cache.directive-value', `${name} must not have a value.`);
+      valid = false;
+    }
+  }
+
+  const has = (name) => directives.has(name);
+  const maxAgeValue = directives.get('max-age');
+  const contradictory = (has('no-store') && ['immutable', 'no-cache', 'max-age', 's-maxage', 'must-revalidate'].some(has)) ||
+    (has('public') && has('private')) ||
+    (has('immutable') && (has('no-cache') || has('no-store'))) ||
+    (has('no-cache') && has('no-store')) ||
+    (has('no-cache') && typeof maxAgeValue === 'string' && /^\d+$/u.test(maxAgeValue) && Number(maxAgeValue) > 0);
+  if (contradictory) {
+    add(path, 'cache.contradictory-directives', 'cacheControl combines directives with conflicting cache behavior.');
+    valid = false;
+  }
+  return { directives, valid };
 }
 
 function validatePublication(publication, add) {
@@ -77,12 +141,12 @@ function validatePublication(publication, add) {
     }
   }
   const validControlPath = validPathSegments(record.keySegments, 'publication.mutex.controlRecord.keySegments', add);
-  if (record.access !== 'private') add('publication.mutex.controlRecord.access', 'publication.control-private', 'The mutex control record must be private.');
+  if (record.viewerAccess !== 'private' || record.originAccess !== 'private') add('publication.mutex.controlRecord', 'publication.control-private', 'The mutex control record must be private to viewers and at the origin.');
   if (record.cdnServed !== false) add('publication.mutex.controlRecord.cdnServed', 'publication.control-cdn', 'The mutex control record must not be served through a CDN.');
   if (record.automaticExpiry !== false) add('publication.mutex.controlRecord.automaticExpiry', 'publication.control-expiry', 'The mutex control record must not expire automatically.');
   if (record.ageBasedGc !== false) add('publication.mutex.controlRecord.ageBasedGc', 'publication.control-gc', 'Age-based garbage collection must not remove the mutex control record.');
   return validControlPath && typeof record.storeId === 'string' && record.storeId.trim()
-    ? { storeId: record.storeId, segments: record.keySegments }
+    ? { storeId: record.storeId, segments: record.keySegments, keyMode: 'exact-object' }
     : null;
 }
 
@@ -141,6 +205,10 @@ export function validateStaticFrontendDelivery(value) {
 
     const segments = artifact.keySegments;
     const validSegments = validPathSegments(segments, `${base}.artifact.keySegments`, add);
+    const expectedKeyMode = PREFIX_KINDS.has(kind) ? 'directory-prefix' : 'exact-object';
+    if (artifact.keyMode !== expectedKeyMode) {
+      add(`${base}.artifact.keyMode`, 'path.key-mode', `${kind} must use ${expectedKeyMode} key semantics.`);
+    }
 
     const hasValidVersion = typeof target.version === 'string' && SHA_PATTERN.test(target.version);
     if (validSegments && hasValidVersion) {
@@ -154,51 +222,59 @@ export function validateStaticFrontendDelivery(value) {
       } else if (IMMUTABLE_KINDS.has(kind) && !versioned) {
         add(`${base}.artifact.keySegments`, 'path.version-required', 'Immutable artifacts must include the declared revision as a complete path segment.');
       }
-      if (kind === 'live-pointer' && versioned) {
-        add(`${base}.artifact.keySegments`, 'path.pointer-mutable', 'A live pointer key must stay stable and must not contain the revision.');
+      if (kind === 'live-pointer' && segments.some((segment) => SHA_PATTERN.test(segment))) {
+        add(`${base}.artifact.keySegments`, 'path.pointer-mutable', 'A live pointer key must be stable and contain no revision-shaped path segment.');
       }
 
       for (const prior of seenPrefixes) {
         if (target.storeId !== prior.storeId) continue;
-        const commonLength = Math.min(segments.length, prior.segments.length);
-        const overlaps = segments.slice(0, commonLength).every((part, partIndex) => part === prior.segments[partIndex]);
-        if (overlaps) {
+        if (keysOverlap({ keyMode: expectedKeyMode, segments }, prior)) {
           add(`${base}.artifact.keySegments`, 'path.prefix-overlap', `Artifact key overlaps target ${prior.index} in the same physical store; prefixes must be disjoint.`);
           break;
         }
       }
-      seenPrefixes.push({ index, storeId: target.storeId, segments });
+      seenPrefixes.push({ index, storeId: target.storeId, keyMode: expectedKeyMode, segments });
     }
 
-    if (!['public', 'private'].includes(artifact.access)) {
-      add(`${base}.artifact.access`, 'value.enum', 'access must be public or private.');
+    if (!['public', 'private'].includes(artifact.viewerAccess)) {
+      add(`${base}.artifact.viewerAccess`, 'value.enum', 'viewerAccess must be public or private.');
     }
-    if (PUBLIC_KINDS.has(kind) && artifact.access !== 'public') {
-      add(`${base}.artifact.access`, 'access.class-mismatch', `${kind} must be publicly readable.`);
+    if (PUBLIC_KINDS.has(kind) && artifact.viewerAccess !== 'public') {
+      add(`${base}.artifact.viewerAccess`, 'access.class-mismatch', `${kind} must be publicly readable by viewers.`);
     }
-    if (['private-template', 'private-archive', 'live-pointer'].includes(kind) && artifact.access !== 'private') {
-      add(`${base}.artifact.access`, 'access.class-mismatch', `${kind} must not be publicly readable.`);
+    if (['private-template', 'private-archive', 'live-pointer'].includes(kind) && artifact.viewerAccess !== 'private') {
+      add(`${base}.artifact.viewerAccess`, 'access.class-mismatch', `${kind} must not be publicly readable by viewers.`);
+    }
+    if (!['public', 'private'].includes(artifact.originAccess)) {
+      add(`${base}.artifact.originAccess`, 'value.enum', 'originAccess must be public or private.');
+    } else if (artifact.originAccess === 'public' && target.publicOriginApproved !== true) {
+      add(`${base}.publicOriginApproved`, 'access.public-origin-approval', 'A publicly accessible origin requires an explicit project-level approval declaration.');
     }
 
     if (typeof artifact.cacheControl !== 'string') {
       add(`${base}.artifact.cacheControl`, 'cache.required', 'cacheControl must state the response caching policy.');
     } else {
-      const isPublic = /(?:^|,)\s*public\s*(?:,|$)/iu.test(artifact.cacheControl);
+      const parsed = parseCacheControl(artifact.cacheControl, `${base}.artifact.cacheControl`, add);
+      const directives = parsed.directives;
+      const maxAge = directives.get('max-age');
+      const sharedMaxAge = directives.get('s-maxage');
+      const hasPublicDirective = directives.has('public');
       if (kind === 'public-asset') {
-        const maxAge = artifact.cacheControl.match(/(?:^|,)\s*max-age=(\d+)\s*(?:,|$)/iu)?.[1];
-        const isImmutable = /(?:^|,)\s*immutable\s*(?:,|$)/iu.test(artifact.cacheControl);
-        if (!isPublic || !isImmutable || !maxAge || Number(maxAge) < 31_536_000) {
+        const validMaxAge = typeof maxAge === 'string' && /^\d+$/u.test(maxAge) && Number(maxAge) >= 31_536_000;
+        const validSharedMaxAge = sharedMaxAge === undefined ||
+          (typeof sharedMaxAge === 'string' && /^\d+$/u.test(sharedMaxAge) && Number(sharedMaxAge) >= 31_536_000);
+        if (!hasPublicDirective || !directives.has('immutable') || directives.has('no-store') || directives.has('no-cache') ||
+            !validMaxAge || !validSharedMaxAge || !parsed.valid) {
           add(`${base}.artifact.cacheControl`, 'cache.immutable-required', 'public-asset needs public, immutable caching with at least one year max-age.');
         }
       } else if (kind === 'public-document') {
-        const isNoStore = /(?:^|,)\s*no-store\s*(?:,|$)/iu.test(artifact.cacheControl);
-        const isRevalidating = /(?:^|,)\s*no-cache\s*(?:,|$)/iu.test(artifact.cacheControl) ||
-          (/(?:^|,)\s*max-age=0\s*(?:,|$)/iu.test(artifact.cacheControl) &&
-            /(?:^|,)\s*must-revalidate\s*(?:,|$)/iu.test(artifact.cacheControl));
-        if (!isPublic || (!isNoStore && !isRevalidating)) {
+        const noStore = directives.has('no-store');
+        const revalidates = directives.has('no-cache') || (maxAge === '0' && directives.has('must-revalidate'));
+        const positiveAge = [maxAge, sharedMaxAge].some((age) => typeof age === 'string' && /^\d+$/u.test(age) && Number(age) > 0);
+        if (!hasPublicDirective || (!noStore && !revalidates) || directives.has('immutable') || positiveAge || !parsed.valid) {
           add(`${base}.artifact.cacheControl`, 'cache.document-revalidation', 'public-document must be public and use no-store or an explicit revalidation policy; long-lived immutable caching is not allowed.');
         }
-      } else if (!/(?:^|,)\s*no-store\s*(?:,|$)/iu.test(artifact.cacheControl)) {
+      } else if (!directives.has('no-store') || !parsed.valid) {
         add(`${base}.artifact.cacheControl`, 'cache.no-store-required', `${kind} must use no-store caching.`);
       }
     }

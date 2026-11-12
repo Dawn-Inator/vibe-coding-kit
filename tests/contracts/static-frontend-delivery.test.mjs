@@ -16,7 +16,7 @@ const valid = () => ({
     {
       project: 'sample', environment: 'test', surface: 'web', purpose: 'browser assets', version: revision, storeId: 'site-content',
       artifact: {
-        kind: 'public-asset', keySegments: ['_assets', 'web', revision], access: 'public',
+        kind: 'public-asset', keyMode: 'directory-prefix', keySegments: ['_assets', 'web', revision], viewerAccess: 'public', originAccess: 'private',
         cacheControl: 'public, max-age=31536000, immutable',
         retention: { policy: 'minimum-days', minimumDays: 30, preserveReferenced: true },
         rollback: { currentReadable: true, previousVersions: 2, graceHours: 720 },
@@ -25,7 +25,7 @@ const valid = () => ({
     {
       project: 'sample', environment: 'test', surface: 'web', purpose: 'server-rendered shell template', version: revision, storeId: 'site-content',
       artifact: {
-        kind: 'private-template', keySegments: ['_shell', 'web', revision], access: 'private', cacheControl: 'no-store',
+        kind: 'private-template', keyMode: 'directory-prefix', keySegments: ['_shell', 'web', revision], viewerAccess: 'private', originAccess: 'private', cacheControl: 'no-store',
         retention: { policy: 'minimum-days', minimumDays: 30, preserveReferenced: true },
         rollback: { currentReadable: true, previousVersions: 1, graceHours: 24 },
       },
@@ -33,7 +33,7 @@ const valid = () => ({
     {
       project: 'sample', environment: 'test', surface: 'web', purpose: 'current release pointer', version: revision, storeId: 'site-content',
       artifact: {
-        kind: 'live-pointer', keySegments: ['_live', 'web.json'], access: 'private', cacheControl: 'no-store',
+        kind: 'live-pointer', keyMode: 'exact-object', keySegments: ['_live', 'web.json'], viewerAccess: 'private', originAccess: 'private', cacheControl: 'no-store',
         retention: { policy: 'indefinite', preserveReferenced: true },
         rollback: { currentReadable: true, previousVersions: 1, graceHours: 24 },
       },
@@ -41,7 +41,7 @@ const valid = () => ({
     {
       project: 'sample', environment: 'test', surface: 'web', purpose: 'downloadable site archive', version: revision, storeId: 'site-content',
       artifact: {
-        kind: 'private-archive', keySegments: ['_site', 'app', `${revision}.tar.gz`], access: 'private', cacheControl: 'no-store',
+        kind: 'private-archive', keyMode: 'exact-object', keySegments: ['_site', 'app', `${revision}.tar.gz`], viewerAccess: 'private', originAccess: 'private', cacheControl: 'no-store',
         retention: { policy: 'minimum-days', minimumDays: 30, preserveReferenced: true },
         rollback: { currentReadable: true, previousVersions: 1, graceHours: 24 },
       },
@@ -49,7 +49,7 @@ const valid = () => ({
     {
       project: 'sample', environment: 'test', surface: 'web', purpose: 'browser document', version: revision, storeId: 'site-content',
       artifact: {
-        kind: 'public-document', keySegments: ['index', revision, 'index.html'], access: 'public',
+        kind: 'public-document', keyMode: 'directory-prefix', keySegments: ['index', revision], viewerAccess: 'public', originAccess: 'private',
         cacheControl: 'public, max-age=0, must-revalidate',
         retention: { policy: 'minimum-days', minimumDays: 30, preserveReferenced: true },
         rollback: { currentReadable: true, previousVersions: 1, graceHours: 24 },
@@ -83,12 +83,26 @@ test('detects overlapping prefixes in the same physical store across logical pro
   assert.ok(errors.some(({ code }) => code === 'path.prefix-overlap'));
 });
 
+test('uses serialized directory boundaries so a sibling object is not mistaken for a child', () => {
+  const config = valid();
+  config.targets.push({
+    project: 'sample', environment: 'test', surface: 'web', purpose: 'stable control pointer', version: revision, storeId: 'site-content',
+    artifact: {
+      kind: 'live-pointer', keyMode: 'exact-object', keySegments: ['_assets', 'web', `${revision}-evil.json`],
+      viewerAccess: 'private', originAccess: 'private', cacheControl: 'no-store',
+      retention: { policy: 'indefinite', preserveReferenced: true },
+      rollback: { currentReadable: true, previousVersions: 1, graceHours: 24 },
+    },
+  });
+  assert.equal(validateStaticFrontendDelivery(config).ok, true);
+});
+
 test('enforces public/private class boundaries, cache rules, and versioned immutable keys', () => {
   const config = valid();
   config.targets[0].artifact.keySegments = ['_assets', 'web', 'current'];
   config.targets[0].artifact.cacheControl = 'public, max-age=3600';
-  config.targets[1].artifact.access = 'public';
-  config.targets[2].artifact.access = 'public';
+  config.targets[1].artifact.viewerAccess = 'public';
+  config.targets[2].artifact.viewerAccess = 'public';
   config.targets[4].artifact.cacheControl = 'public, max-age=31536000, immutable';
   const errors = validateStaticFrontendDelivery(config).errors;
   for (const code of ['path.version-required', 'cache.immutable-required', 'access.class-mismatch', 'cache.document-revalidation']) {
@@ -102,6 +116,29 @@ test('public documents accept no-store and must-revalidate, but not long-lived i
   assert.equal(validateStaticFrontendDelivery(config).ok, true);
   config.targets[4].artifact.cacheControl = 'public, max-age=31536000, immutable';
   assert.ok(validateStaticFrontendDelivery(config).errors.some(({ code }) => code === 'cache.document-revalidation'));
+});
+
+test('rejects contradictory and duplicate cache directives even when required directives are present', () => {
+  const assetConfig = valid();
+  assetConfig.targets[0].artifact.cacheControl = 'public, max-age=31536000, immutable, no-store';
+  assert.ok(validateStaticFrontendDelivery(assetConfig).errors.some(({ code }) => code === 'cache.contradictory-directives'));
+  const docConfig = valid();
+  docConfig.targets[4].artifact.cacheControl = 'public, max-age=31536000, immutable, no-cache';
+  const docErrors = validateStaticFrontendDelivery(docConfig).errors;
+  assert.ok(docErrors.some(({ code }) => code === 'cache.contradictory-directives'));
+  assert.ok(docErrors.some(({ code }) => code === 'cache.document-revalidation'));
+  const duplicateConfig = valid();
+  duplicateConfig.targets[0].artifact.cacheControl = 'public, max-age=31536000, max-age=31536000, immutable';
+  assert.ok(validateStaticFrontendDelivery(duplicateConfig).errors.some(({ code }) => code === 'cache.duplicate-directive'));
+});
+
+test('supports a public CDN viewer with a private origin and requires explicit approval for public origins', () => {
+  const config = valid();
+  assert.equal(validateStaticFrontendDelivery(config).ok, true);
+  config.targets[0].artifact.originAccess = 'public';
+  assert.ok(validateStaticFrontendDelivery(config).errors.some(({ code }) => code === 'access.public-origin-approval'));
+  config.targets[0].publicOriginApproved = true;
+  assert.equal(validateStaticFrontendDelivery(config).ok, true);
 });
 
 test('accepts canonical SHA-bound archives and rejects filenames bound to another revision', () => {
@@ -119,6 +156,12 @@ test('stable private pointers have no automatic expiry and referenced artifacts 
   const errors = validateStaticFrontendDelivery(config).errors;
   assert.ok(errors.some(({ code }) => code === 'retention.pointer-expiry'));
   assert.ok(errors.some(({ code }) => code === 'retention.references'));
+});
+
+test('rejects any revision-shaped path component in a live pointer key', () => {
+  const config = valid();
+  config.targets[2].artifact.keySegments = ['_live', otherRevision, 'web.json'];
+  assert.ok(validateStaticFrontendDelivery(config).errors.some(({ code }) => code === 'path.pointer-mutable'));
 });
 
 test('requires publication concurrency invariants and retention that covers rollback grace', () => {
@@ -150,7 +193,7 @@ function durableMutex(config = valid()) {
       stuckLockLeavesServingAvailable: true,
       controlRecord: {
         storeId: 'site-content', keySegments: ['_control', 'deployment.lock'],
-        access: 'private', cdnServed: false, automaticExpiry: false, ageBasedGc: false,
+        viewerAccess: 'private', originAccess: 'private', cdnServed: false, automaticExpiry: false, ageBasedGc: false,
       },
     },
   };
