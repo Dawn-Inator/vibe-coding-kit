@@ -26,6 +26,25 @@ window.__codexTaskProgressRequest = async function(request) {
   return result;
 };
 </script><script src="/bundle.js"></script></body></html>`;
+// Matches the desktop app's empty-chat topology: outer page includes the titlebar;
+// the verified content viewport begins below it, even before a durable thread exists.
+const emptyFixture = `<!doctype html><html lang="zh-CN"><head><style>
+body{font:14px system-ui;margin:0;background:#f5f5f5}*{box-sizing:border-box}
+#appframe{height:100vh;display:flex;flex-direction:column;width:100%;position:relative}
+#toolbar{height:44px;flex-shrink:0;background:#ddd}
+#main-region{display:flex;flex-direction:column;min-height:0;flex:1;margin-left:200px;width:calc(100% - 200px)}
+#layout{display:flex;flex:1;min-height:0;position:relative;overflow:hidden;width:100%}
+#content{display:flex;flex-direction:column;flex:1;min-height:0;width:100%}
+#messages{flex:1;min-height:0;overflow:auto}#composer{width:calc(100% - 48px);max-width:700px;height:100px;flex-shrink:0;margin:0 auto 20px;background:white;border:1px solid #ccc}[role=textbox]{height:80px}
+@media(max-width:600px){#main-region{margin-left:0;width:100%}}
+</style></head><body>
+<main id="outer-generic-main"><div id="appframe" data-app-shell-page-surface>
+<header id="toolbar" data-app-shell-titlebar>Codex toolbar remains unobscured</header>
+<main id="main-region" data-app-shell-main-surface="default"><div id="layout" data-app-shell-main-content-layout="default"><div id="content"><div id="messages">Empty chat content</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
+</div></main>
+<aside><div id="active-thread" data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="client-new-thread:placeholder"></div></aside>
+<div id="cached-page" data-app-shell-page-surface hidden><div data-app-shell-main-content-layout="thread-edge-scroll"><div data-codex-composer-root><div role="textbox" data-codex-composer></div></div></div></div>
+${fixture.slice(fixture.indexOf("<script>"))}`;
 const task = {
   schemaVersion: 3,
   kind: "task",
@@ -93,7 +112,9 @@ test("ordinary chat task panel browser flows", async (t) => {
       "Content-Type",
       req.url === "/bundle.js" ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8",
     );
-    res.end(req.url === "/bundle.js" ? bundle : fixture);
+    res.end(
+      req.url === "/bundle.js" ? bundle : req.url?.startsWith("/empty") ? emptyFixture : fixture,
+    );
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -110,6 +131,149 @@ test("ordinary chat task panel browser flows", async (t) => {
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
+    await t.test(
+      "new chat content dock remains below titlebar and ignores hidden cached layouts",
+      async () => {
+        const { context, page, panel } = await open("/empty");
+        const [toolbarBox, layoutBox, composerBox, panelBox, contentBox] = await Promise.all([
+          page.locator("#toolbar").boundingBox(),
+          page.locator("#layout").boundingBox(),
+          page.locator("#composer").boundingBox(),
+          panel.boundingBox(),
+          page.locator("#content").boundingBox(),
+        ]);
+        assert.equal((await page.locator("#appframe").boundingBox()).y, 0);
+        assert.equal(layoutBox.y, toolbarBox.y + toolbarBox.height);
+        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
+        assert.ok(panelBox.y >= toolbarBox.y + toolbarBox.height);
+        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
+        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
+        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
+        assert.equal(
+          await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
+          "",
+        );
+        assert.equal(
+          await page.locator("#cached-page").evaluate((node) => node.style.paddingTop),
+          "",
+        );
+        assert.equal(
+          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
+          null,
+        );
+        assert.equal(await page.evaluate(() => window.fixture.calls.length), 0);
+        await page.evaluate(() => {
+          document.querySelector("#active-thread").remove();
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.ok(Math.abs((await panel.boundingBox()).y - layoutBox.y - 8) < 1);
+        assert.equal(
+          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
+          null,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "new chat transition, resize and floating preserve dock target without stale padding",
+      async () => {
+        const { context, page, panel } = await open("/empty");
+        const initialTop = (await panel.boundingBox()).y;
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          document
+            .querySelector("#layout")
+            .setAttribute("data-app-shell-main-content-layout", "thread-edge-scroll");
+          document
+            .querySelector("#active-thread")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
+        assert.ok(Math.abs((await panel.boundingBox()).y - initialTop) < 1);
+        assert.equal(
+          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
+          "thread-a",
+        );
+        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
+        assert.equal(
+          await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
+          "",
+        );
+        await page.setViewportSize({ width: 420, height: 640 });
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        const [panelBox, composerBox, layoutBox] = await Promise.all([
+          panel.boundingBox(),
+          page.locator("#composer").boundingBox(),
+          page.locator("#layout").boundingBox(),
+        ]);
+        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
+        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
+        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
+        await panel.getByRole("button", { name: "浮动面板", exact: true }).click();
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.equal(await page.locator("#layout").evaluate((node) => node.style.paddingTop), "");
+        await panel.getByRole("button", { name: "固定面板", exact: true }).click();
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.ok(
+          Number.parseFloat(
+            await page.locator("#layout").evaluate((node) => node.style.paddingTop),
+          ) > 0,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "verified main-surface fallback never reserves outer app frame or toolbar",
+      async () => {
+        const { context, page, panel } = await open("/empty");
+        await page.evaluate(() => {
+          document.querySelector("#layout").removeAttribute("data-app-shell-main-content-layout");
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const [panelBox, regionBox, toolbarBox] = await Promise.all([
+          panel.boundingBox(),
+          page.locator("#main-region").boundingBox(),
+          page.locator("#toolbar").boundingBox(),
+        ]);
+        assert.ok(Math.abs(panelBox.y - regionBox.y - 8) < 1);
+        assert.ok(panelBox.y >= toolbarBox.y + toolbarBox.height);
+        assert.equal(await page.locator("#layout").evaluate((node) => node.style.paddingTop), "");
+        assert.ok(
+          Number.parseFloat(
+            await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
+          ) > 0,
+        );
+        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
+        assert.equal(
+          await page.locator("#outer-generic-main").evaluate((node) => node.style.paddingTop),
+          "",
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "zoomed content ancestors reserve physical panel height without changing frame",
+      async () => {
+        const { context, page, panel } = await open("/empty");
+        await page.evaluate(() => {
+          document.querySelector("#main-region").style.zoom = "0.8";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const [panelBox, composerBox, layoutBox, contentBox] = await Promise.all([
+          panel.boundingBox(),
+          page.locator("#composer").boundingBox(),
+          page.locator("#layout").boundingBox(),
+          page.locator("#content").boundingBox(),
+        ]);
+        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
+        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
+        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
+        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
+        await context.close();
+      },
+    );
     await t.test(
       "first task read stays unknown until a response confirms an empty checklist",
       async () => {

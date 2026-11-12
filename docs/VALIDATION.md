@@ -47,3 +47,13 @@ The plugin's43 core/interface checks and13 browser checks passed, as did lint, t
 Live migration of this chat preserved all10 events at revision10 byte-for-byte (SHA256 match), left the original app-support log unchanged and created private mode600 target files. A later task update advanced only the workspace copy to revision11 while the old log's SHA256 remained unchanged. The actual panel reconnected at0.4.3 without restarting Codex's main process. Initial project filesystem opening was delayed, then migration and requests recovered; no data was dropped or silently redirected globally.
 
 Tests cover existing target conflicts, exact history preservation, per-project/chat isolation, trusted cwd spoof rejection, heartbeat binding filtering, idempotence, unavailable paths and cwd moves. Moving a chat cwd carries task history but not the previous project's heartbeat binding/cache. Empty reads do not create a workspace; confirmed records/mutations create a self-ignored private directory. The global index contains paths only.
+
+## 0.4.4 empty-page alignment
+
+The actual empty composer uses `data-app-shell-main-content-layout=default`; an established conversation uses `thread-edge-scroll`. The old fallback aligned the former to the whole app surface, overlapping the titlebar. Both modes now use the measured composer-owned content region, with a verified main-surface fallback and zoom-correct reserved space.
+
+43 core/interface tests and17 browser checks passed. Added browser cases cover an unbound empty draft, hidden cached pages, unchanged left/right bounds, content-only padding, empty-to-conversation transitions, narrow resize, floating restoration and ancestor zoom. Local INSTALL_OK, DOCTOR_OK and VERIFY_OK passed at0.4.4.
+
+Actual desktop measurements for both empty and existing chats: content/titlebar boundary y44, panel top y52 (8px gap), composer/panel left550.0625 and right1286.0625 (0px difference). The content child begins below the panel plus8px, so no text is overlaid. Opened an empty composer without sending a message and restored the original chat afterward. Codex's main PID1265/start time remained unchanged across hot update.
+
+After this hot update, workspace reads initially timed out while macOS logged a Documents-folder TCC access prompt for the new Helper executable. Requests subsequently recovered without restarting Codex. The installed MCP executable then read this ordinary chat's workspace record and updated it from revision13 to14; no global fallback or data reset was used. This observes recovery, rather than proving that all future OS permission delays are eliminated.

@@ -1,6 +1,6 @@
 {
   "name": "codex-task-progress",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Always-on checklist progress, task history, and read-only Kit heartbeats for Codex chats.",
   "author": {
     "name": "Codex Goal Progress Contributors"
