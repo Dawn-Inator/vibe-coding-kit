@@ -1,4 +1,5 @@
 import type {
+	HeartbeatFinding,
 	HeartbeatInspectionMode,
 	HeartbeatInspectionReport,
 	HeartbeatItem,
@@ -26,8 +27,19 @@ export interface HeartbeatLedgerPair {
 }
 export type HeartbeatPairInspectionReport = Omit<
 	HeartbeatInspectionReport,
-	"wakes" | "items" | "tables"
+	"wakes" | "items" | "tables" | "findings"
 > & {
+	findings: Array<
+		HeartbeatFinding & {
+			sourcePath?: string;
+			sourceLine?: number;
+			sourceLocations?: Array<{
+				sourcePath: string;
+				sourceLine: number;
+				logicalLine: number;
+			}>;
+		}
+	>;
 	wakes: Array<
 		Omit<HeartbeatWake, "rows"> & {
 			sourcePath: string;

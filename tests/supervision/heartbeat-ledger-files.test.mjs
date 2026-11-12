@@ -720,3 +720,85 @@ test("owner and inventory guard findings use current Items in paired history", (
 		history.findings.some((f) => f.rule === "item-dispatched-no-owner"),
 	);
 });
+
+test("finding locations map repeated historical and manual wake occurrences to physical files", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const heading = "## 2026-01-01T10:00Z wake (10-row ledger)";
+	writeFileSync(
+		path,
+		`# title\n${heading}\n\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | report:r1 | task | done | |\n`,
+	);
+	const pair = migrate({ root: dir, path });
+	writeFileSync(path, `${pair.headText}\n${heading}\n`);
+	const current = readHeartbeatLedgerPair({ root: dir, path });
+	const report = inspectHeartbeatLedgerPair(current, {
+		mode: "history",
+		latest: false,
+	});
+	const findings = report.findings.filter((f) => f.rule === "sources-missing");
+	assert.equal(findings.length, 2);
+	assert.deepEqual(
+		findings.map((f) => [f.sourcePath, f.sourceLine]),
+		report.wakes.map((w) => [w.sourcePath, w.sourceLine]),
+	);
+	for (const finding of findings) {
+		assert.match(finding.message, new RegExp(`line ${finding.sourceLine}\\b`));
+		assert.equal(finding.sourceLocations[0].sourceLine, finding.sourceLine);
+	}
+	assert.equal(findings[0].sourcePath, current.historyPath);
+	assert.equal(findings[1].sourcePath, current.headPath);
+	const currentReport = inspectHeartbeatLedgerPair(current, {
+		mode: "current",
+	});
+	const item = currentReport.findings.find(
+		(f) => f.rule === "item-done-evidence",
+	);
+	assert.equal(item.sourcePath, current.headPath);
+	assert.equal(item.sourceLine, currentReport.items[0].line);
+	assert.match(item.message, new RegExp(`line ${item.sourceLine}\\b`));
+});
+
+test("all references in one finding map independently across files and unlocated findings remain unchanged", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const heading = "## 2026-01-01T10:00Z wake (10-row ledger)";
+	writeFileSync(path, `# t\n${heading}\n`);
+	const migrated = migrate({ root: dir, path });
+	writeFileSync(path, `${migrated.headText}\n${heading}\n`);
+	const pair = readHeartbeatLedgerPair({ root: dir, path });
+	const inspect = (text, options) => {
+		if (options.mode === "items")
+			return { items: [], itemCount: 0, tables: [], wakes: [], findings: [] };
+		const lines = text.split("\n");
+		const indexes = lines.flatMap((line, i) =>
+			line === heading ? [i + 1] : [],
+		);
+		return {
+			items: [],
+			itemCount: 0,
+			tables: [],
+			wakes: [],
+			findings: [
+				{
+					rule: "multi",
+					message: `first line ${indexes[0]} and line ${indexes[1]}`,
+				},
+				{ rule: "plain", message: "no location" },
+			],
+		};
+	};
+	const report = inspectHeartbeatLedgerPair(pair, { mode: "history", inspect });
+	const [multi, plain] = report.findings;
+	assert.deepEqual(
+		multi.sourceLocations.map((x) => [x.sourcePath, x.sourceLine]),
+		pair.wakes.map((x) => [x.sourcePath, x.sourceLine]),
+	);
+	assert.match(
+		multi.message,
+		new RegExp(`line ${pair.wakes[0].sourceLine} \\[`),
+	);
+	assert.ok(multi.message.includes(pair.historyPath));
+	assert.ok(multi.message.includes(pair.headPath));
+	assert.deepEqual(plain, { rule: "plain", message: "no location" });
+});

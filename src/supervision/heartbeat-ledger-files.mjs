@@ -293,8 +293,18 @@ export function readHeartbeatLedgerPair({ root, path }) {
 // Audit one coherent view: the live head supplies the inventory and all non-wake
 // content; historical wakes remain in their original order for cross-wake guards.
 function auditText(pair) {
-	if (pair.isLegacy) return pair.fullText;
+	if (pair.isLegacy)
+		return {
+			text: pair.fullText,
+			lineSources: pair.fullText
+				.split("\n")
+				.map((_, i) => ({ sourcePath: pair.headPath, sourceLine: i + 1 })),
+		};
 	const headLines = pair.headText.split("\n");
+	const lineSources = headLines.map((_, i) => ({
+		sourcePath: pair.headPath,
+		sourceLine: i + 1,
+	}));
 	for (const wake of parseWakes(pair.headText)) {
 		const start = wake.line - 1;
 		let inventoryLevel = null;
@@ -311,7 +321,7 @@ function auditText(pair) {
 			if (inventoryLevel === null) headLines[i] = "";
 		}
 	}
-	const wakes = parseWakes(pair.fullText).map((w) => {
+	const wakes = parseWakes(pair.fullText).map((w, index) => {
 		let inventoryLevel = null;
 		const lines = w.sectionLines.map((line) => {
 			const heading = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
@@ -325,9 +335,27 @@ function auditText(pair) {
 				inventoryLevel = heading[1].length;
 			return inventoryLevel === null ? line : "";
 		});
-		return [w.heading, ...lines].join("\n");
+		const source = pair.wakes?.[index];
+		return {
+			text: [w.heading, ...lines].join("\n"),
+			lines: [w.heading, ...lines].map((_, offset) =>
+				source
+					? {
+							sourcePath: source.sourcePath,
+							sourceLine: source.sourceLine + offset,
+						}
+					: null,
+			),
+		};
 	});
-	return `${headLines.join("\n")}\n${wakes.join("\n\n")}`;
+	for (let i = 0; i < wakes.length; i++) {
+		if (i) lineSources.push(null);
+		lineSources.push(...wakes[i].lines);
+	}
+	return {
+		text: `${headLines.join("\n")}\n${wakes.map((w) => w.text).join("\n\n")}`,
+		lineSources,
+	};
 }
 
 export function inspectHeartbeatLedgerPair(
@@ -346,8 +374,51 @@ export function inspectHeartbeatLedgerPair(
 		typeof pair.fullText !== "string"
 	)
 		throw new TypeError("A heartbeat ledger pair is required");
-	const text = mode === "items" ? pair.headText : auditText(pair);
-	const report = inspect(text, { mode, latest, now, ...options });
+	const input =
+		mode === "items"
+			? {
+					text: pair.headText,
+					lineSources: pair.headText
+						.split("\n")
+						.map((_, i) => ({ sourcePath: pair.headPath, sourceLine: i + 1 })),
+				}
+			: auditText(pair);
+	const report = inspect(input.text, { mode, latest, now, ...options });
+	if (!pair.isLegacy)
+		report.findings = report.findings.map((finding) => {
+			const locations = [];
+			const sourceReferences = [];
+			const referencePattern =
+				/\blines? \d+(?:(?:,\s*|\s+and\s+|\s*(?:-|–|to)\s*)\d+)*/gi;
+			const message = finding.message.replace(referencePattern, (reference) =>
+				reference.replace(/\d+/g, (number) => {
+					const source = input.lineSources[Number(number) - 1];
+					sourceReferences.push(source ?? null);
+					if (!source) return number;
+					locations.push({ ...source, logicalLine: Number(number) });
+					return String(source.sourceLine);
+				}),
+			);
+			if (!locations.length) return finding;
+			const paths = new Set(locations.map((location) => location.sourcePath));
+			let index = 0;
+			const contextual =
+				paths.size > 1
+					? message.replace(referencePattern, (reference) =>
+							reference.replace(/\d+/g, (number) => {
+								const loc = sourceReferences[index++];
+								return loc ? `${number} [${loc.sourcePath}]` : number;
+							}),
+						)
+					: message;
+			return {
+				...finding,
+				message: contextual,
+				sourcePath: locations[0].sourcePath,
+				sourceLine: locations[0].sourceLine,
+				sourceLocations: locations,
+			};
+		});
 	if (mode !== "items") {
 		const headInventory = inspect(pair.headText, {
 			mode: "items",
