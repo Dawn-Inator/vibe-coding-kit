@@ -65,5 +65,8 @@
   "worktrees/writable-tree.test.mjs",
   "supervision/heartbeat-history.test.mjs",
   "supervision/heartbeat-ledger-api.test.mjs",
-  "supervision/heartbeat-audit-due.test.mjs"
+  "supervision/heartbeat-audit-due.test.mjs",
+  "tasks/task-contract.test.mjs",
+  "tasks/task-store.test.mjs",
+  "tasks/heartbeat-task-source.test.mjs"
 ]
