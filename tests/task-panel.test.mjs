@@ -15,14 +15,14 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,historyFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
   const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
-  if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; throw new Error(message); }
+  if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
   if(request.method==='history' && window.fixture.delayNextHistory) { const delay=window.fixture.delayNextHistory; window.fixture.delayNextHistory=0; await new Promise(resolve => setTimeout(resolve,delay)); }
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
@@ -329,7 +329,10 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           window.fixture.heartbeat = null;
         });
-        await panel.getByText(/心跳任务来源已过期/).waitFor();
+        await panel
+          .locator(".summary")
+          .getByText(/心跳任务来源已过期/)
+          .waitFor();
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
         assert.equal(await panel.getByRole("progressbar").count(), 0);
         assert.match(await panel.locator("section.panel").innerText(), /台账文件已删除/);
@@ -341,7 +344,10 @@ test("ordinary chat task panel browser flows", async (t) => {
             error: "Kit source helper unavailable",
           };
         });
-        await panel.getByText(/心跳任务来源暂不可用/).waitFor();
+        await panel
+          .locator(".summary")
+          .getByText(/心跳任务来源暂不可用/)
+          .waitFor();
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
         assert.equal(await panel.getByRole("progressbar").count(), 0);
 
@@ -766,7 +772,10 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel.getByText(/ledger association is stale/).waitFor();
+        await panel
+          .locator(".scroll")
+          .getByText(/ledger association is stale/)
+          .waitFor();
         assert.equal(await panel.getByText("formerly valid wake", { exact: true }).count(), 0);
         await page.waitForTimeout(200);
         assert.equal(
@@ -873,7 +882,6 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
         await panel.getByText("current thread-b history", { exact: true }).waitFor();
         await page.waitForTimeout(300);
         assert.equal(await panel.getByText("late thread-a history", { exact: true }).count(), 0);
@@ -883,6 +891,67 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.deepEqual(
           requests.map((request) => request.threadId),
           ["thread-a", "thread-b"],
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "late failed History cannot overwrite a successful response after an A to B to A switch",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.historyFailureNext = "old thread-a request failed late";
+          window.fixture.holdNextHistoryFailure = true;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await page.waitForFunction(
+          () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
+        );
+        await page.waitForFunction(
+          () => typeof window.fixture.releaseHeldHistoryFailure === "function",
+        );
+        await page.evaluate(() => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.task = null;
+          window.fixture.history = {
+            events: [{ reason: "thread-b history" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("thread-b history", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
+          window.fixture.history = {
+            events: [{ reason: "new thread-a history" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("new thread-a history", { exact: true }).waitFor();
+        await page.evaluate(async () => {
+          window.fixture.releaseHeldHistoryFailure();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          );
+        });
+        const historyText = await panel.locator(".scroll").innerText();
+        assert.match(historyText, /new thread-a history/);
+        assert.doesNotMatch(historyText, /old thread-a request failed late|历史记录不可用/);
+        const requests = await page.evaluate(() =>
+          window.fixture.calls.filter((call) => call.method === "history"),
+        );
+        assert.deepEqual(
+          requests.map((request) => request.threadId),
+          ["thread-a", "thread-b", "thread-a"],
         );
         await context.close();
       },

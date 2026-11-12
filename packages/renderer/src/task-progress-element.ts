@@ -378,7 +378,11 @@ export class TaskProgressElement extends LitElement {
           : { events: [], nextCursor: null };
       this.historyThread = threadId;
     } catch (error) {
-      if (this.threadId === threadId && this.currentHistoryContext() === context) {
+      if (
+        requestId === this.historyRequest &&
+        this.threadId === threadId &&
+        this.currentHistoryContext() === context
+      ) {
         if (expectedSource) {
           this.history = {
             events: [],
