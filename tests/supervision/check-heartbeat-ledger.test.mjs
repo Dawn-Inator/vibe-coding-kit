@@ -642,8 +642,8 @@ test('--history --latest uses marked-v2 counts while preserving unmarked legacy 
 
   const mixed = 're-split: rows(r6: split->dispatched C0; r7: cannot-split: owner-gated)\nsplittable: 1/2';
   const marked = inspect(wake(WAKE_A, { ...twoOpen, extra: `contract: heartbeat/v2\n${mixed}` }));
-  assert.equal(marked.passed, true, 'marked v2 counts every valid assessed row in history mode');
-  assert.ok(!marked.findings.some((finding) => finding.rule.startsWith('splittable-')), '1/2 is the marked-v2 mixed assessment denominator');
+  assert.equal(marked.passed, false, 'marked v2 split verdicts must resolve to a real dispatched Item even in history mode');
+  assert.ok(marked.findings.some((finding) => finding.rule === 'resplit-dispatch-target'), 'the historical C0 prose target has no dispatched Item or receipt');
 
   const unmarked = inspect(wake(WAKE_A, { ...twoOpen, extra: mixed.replace('splittable: 1/2', 'splittable: 1/1') }));
   assert.equal(unmarked.passed, true, 'unmarked historical wakes keep the original with-proof denominator');
@@ -679,20 +679,25 @@ test('v2 re-split dispatch count counts unique canonical unit references, while 
     `re-split: rows(${rows})`,
     `splittable: ${count}`,
   ];
-  const check = (rows, count) => checkSplittable({
+  const check = (rows, count, itemRows = []) => checkSplittable({
     loc: 'v2 fixture',
     sectionLines: section(rows, count),
     cells: [],
-    itemRows: [],
+    itemRows,
   });
 
   assert.deepEqual(check(
     'I1: split->dispatched dispatchref:agent:worker-1; I2: split->dispatched dispatchref:agent:worker-1',
     '1/2',
+    [{ id: 'I3', status: 'dispatched worker-1', owner: 'worker-1', dispatch_ref: 'agent:worker-1' }],
   ), [], 'two assessed source rows dispatching one exact unit count as one dispatch and two assessments');
   assert.deepEqual(check(
     'I1: split->dispatched unitItemID:I-7; I2: split->dispatched unitItemID:I.7',
     '2/2',
+    [
+      { id: 'I-7', status: 'dispatched worker-1', owner: 'worker-1', dispatch_ref: 'receipts/one.json' },
+      { id: 'I.7', status: 'dispatched worker-2', owner: 'worker-2', dispatch_ref: 'receipts/two.json' },
+    ],
   ), [], 'distinct canonical unit labels, including punctuation differences, remain distinct');
 
   const legacy = checkSplittable({

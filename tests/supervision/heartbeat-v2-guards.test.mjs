@@ -317,6 +317,14 @@ test('v2 split targets must resolve to a real dispatched Item with an accepted r
   assert.ok(rulesFor(ownerMismatch, 'resplit-dispatch-target').length > 0, 'owner text must uniquely identify the registry target');
 });
 
+test('v2 split target validation fails closed when the Items table has no rows', () => {
+  const candidate = fixture(ledger([], [wake('40', {
+    verdicts: 'r2: split->dispatched unitItemID:I999',
+    split: '1/1',
+  })]));
+  assert.ok(rulesFor(candidate, 'resplit-dispatch-target').length > 0, 'an empty registry cannot validate a phantom split target');
+});
+
 test('v2 D counts one canonical target across shared batches and mixed reference forms', () => {
   const shared = fixture(ledger([
     item({ id: 'I1', status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }),
@@ -363,5 +371,54 @@ test('v2 split target owner prose must resolve exactly and does not inflate D', 
   })]), { 'receipts/worker-2.json': accepted('worker-2') });
   assert.equal(rulesFor(candidate, 'resplit-dispatch-target').length, 1, 'only the exact owner label resolves; free-form prose is rejected');
   assert.deepEqual(rulesFor(candidate, 'splittable-mismatch'), [], 'unresolved prose does not count as another dispatch');
+});
+
+test('v2 D deduplicates distinct Items sharing the same normalized receipt and owner', () => {
+  const sources = ['I1', 'I3'].map((id) => item({ id, status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }));
+  const sharedReceiptItems = ['I2', 'I4'].map((id) => item({
+    id, source: `report:${id}`, name: 'one shared dispatch batch', status: 'dispatched worker-2',
+    owner: 'worker-2', worktree: '/worktrees/worker-2', mode: 'write',
+    writeSet: '["src/shared-batch.mjs"]', dispatchRef: 'receipts/./worker-2.json',
+  }));
+  const decompositionRows = [
+    '| I1 | split deferred work | deferred | coordinator | waiting |',
+    '| I3 | split deferred work | deferred | coordinator | waiting |',
+    '| I2 | batch child A | dispatched | worker-2 | receipts/./worker-2.json |',
+    '| I4 | batch child B | dispatched | worker-2 | receipts/./worker-2.json |',
+  ];
+  const make = (split) => fixture(ledger([...sources, ...sharedReceiptItems], [wake('40', {
+    decompositionRows,
+    verdicts: 'I1: split->dispatched unitItemID:I2; I3: split->dispatched dispatchref:receipts/worker-2.json',
+    split,
+  })]), { 'receipts/worker-2.json': accepted('worker-2') });
+
+  const deduped = make('1/2');
+  assert.deepEqual(findingsFor(deduped).filter((finding) => finding.severity === 'error'), [], 'distinct registry Items tied to the same normalized receipt and owner are one batch dispatch');
+  const overcounted = make('2/2');
+  assert.ok(rulesFor(overcounted, 'splittable-mismatch').length > 0, 'two Item IDs must not inflate one accepted receipt batch to D=2');
+});
+
+test('v2 dispatches with different owners remain distinct and same-file writers still conflict', () => {
+  const sourceRows = ['I1', 'I3'].map((id) => item({ id, status: 'deferred <- worker report ETA <=20m', owner: 'coordinator', mode: 'read-only', writeSet: '[]', dispatchRef: '-' }));
+  const workers = [
+    item({ id: 'I2', source: 'report:worker-2', name: 'writer two', status: 'dispatched worker-2', owner: 'worker-2', worktree: '/worktrees/worker-2', mode: 'write', writeSet: '["src/shared.mjs"]', dispatchRef: 'receipts/worker-2.json' }),
+    item({ id: 'I4', source: 'report:worker-4', name: 'writer four', status: 'dispatched worker-4', owner: 'worker-4', worktree: '/worktrees/worker-4', mode: 'write', writeSet: '["src/shared.mjs"]', dispatchRef: 'receipts/worker-4.json' }),
+  ];
+  const candidate = fixture(ledger([...sourceRows, ...workers], [wake('40', {
+    decompositionRows: [
+      '| I1 | split work | deferred | coordinator | waiting |',
+      '| I3 | split work | deferred | coordinator | waiting |',
+      '| I2 | writer two | dispatched | worker-2 | receipts/worker-2.json |',
+      '| I4 | writer four | dispatched | worker-4 | receipts/worker-4.json |',
+    ],
+    verdicts: 'I1: split->dispatched unitItemID:I2; I3: split->dispatched unitItemID:I4',
+    split: '2/2',
+  })]), {
+    'receipts/worker-2.json': accepted('worker-2'),
+    'receipts/worker-4.json': accepted('worker-4'),
+  });
+  const findings = findingsFor(candidate);
+  assert.ok(findings.some((finding) => finding.rule === 'v2-write-conflict'), 'different owners writing the same file stay a conflict');
+  assert.deepEqual(findings.filter((finding) => finding.rule === 'splittable-mismatch'), [], 'distinct owners remain distinct dispatch identities');
 });
 

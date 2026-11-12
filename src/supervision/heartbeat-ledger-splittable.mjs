@@ -34,6 +34,21 @@ const LEGACY_ENTRY_RE = /^(r\d+[ab]?|I-?\d+)\s*[:=]?\s*(\S.*)$/i;
 const V2_ENTRY_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*[:=]?\s*(\S.*)$/i;
 const TOKEN_RE = /\bsplittable:\s*(\d+)\s*\/\s*(\d+)/i;
 
+function normalizeDispatchRef(ref) {
+  const raw = String(ref ?? '').trim().replaceAll('\\', '/');
+  const drive = raw.match(/^([A-Za-z]:)(\/|$)/);
+  const prefix = drive?.[1] ?? '';
+  const absolute = raw.startsWith('/') || Boolean(drive?.[2]);
+  const parts = (prefix ? raw.slice(prefix.length) : raw).split('/');
+  const normalized = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..' && normalized.length > 0 && normalized.at(-1) !== '..') normalized.pop();
+    else if (part !== '..' || !absolute) normalized.push(part);
+  }
+  return `${prefix}${absolute ? '/' : ''}${normalized.join('/')}` || '.';
+}
+
 export function normalizeResplitId(id, { allowGenericIds = false } = {}) {
   const value = String(id);
   // `allowGenericIds` controls which IDs the parser accepts; normalization itself preserves
@@ -104,17 +119,25 @@ export function resolveDispatchedUnit(verdict, itemRows = []) {
     const wanted = normalizeResplitId(verdict.unitReference.value, { allowGenericIds: true });
     matches = allItems.filter((row) => row.id && normalizeResplitId(row.id, { allowGenericIds: true }) === wanted);
   } else if (verdict.unitReference?.kind === 'dispatchref') {
-    matches = allItems.filter((row) => String(row.dispatch_ref ?? '').trim() === verdict.unitReference.value);
+    const wanted = normalizeDispatchRef(verdict.unitReference.value);
+    matches = allItems.filter((row) => normalizeDispatchRef(row.dispatch_ref) === wanted);
   } else {
     // Backward-compatible owner form: the entire detail must equal one dispatched Item owner.
     matches = allItems.filter((row) => String(row.owner ?? '').trim() === detail);
   }
-  if (matches.length !== 1) return { item: null, canonicalId: null, error: matches.length ? 'target is ambiguous' : 'target does not resolve to a registry Item' };
+  if (matches.length === 0) return { item: null, canonicalId: null, error: 'target does not resolve to a registry Item' };
+  if (matches.length > 1) {
+    const sameAcceptedBatch = verdict.unitReference?.kind === 'dispatchref' &&
+      matches.every((row) => String(row.owner ?? '').trim() === String(matches[0].owner ?? '').trim() && /^dispatched\b/i.test(String(row.status ?? '').trim()));
+    if (!sameAcceptedBatch) return { item: null, canonicalId: null, error: 'target is ambiguous' };
+  }
   const item = matches[0];
   if (!/^dispatched\b/i.test(String(item.status ?? '').trim())) return { item, canonicalId: null, error: `target Item ${item.id} is not dispatched` };
   if (!String(item.dispatch_ref ?? '').trim() || /^[-—]$/.test(String(item.dispatch_ref).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no dispatch_ref` };
   if (!String(item.owner ?? '').trim() || /^[-—]$/.test(String(item.owner).trim())) return { item, canonicalId: null, error: `target Item ${item.id} has no owner` };
-  return { item, canonicalId: normalizeResplitId(item.id, { allowGenericIds: true }), error: null };
+  const owner = String(item.owner).trim();
+  const dispatchKey = `${normalizeDispatchRef(item.dispatch_ref)}\u0000${owner}`;
+  return { item, canonicalId: normalizeResplitId(item.id, { allowGenericIds: true }), dispatchKey, error: null };
 }
 
 /** Open (`blocked <-` / `deferred <-`) rows of one wake: wake-table cells plus `## Items` rows. */
@@ -203,12 +226,10 @@ export function checkSplittable({ loc, sectionLines, cells, itemRows, requireAud
   const uniqueValidVerdicts = v2Format
     ? [...byId.values()].filter((v) => ['dispatched', 'cannot-split', 'continuing'].includes(v.verdict))
     : null;
-  const hasV2RegistryMetadata = (itemRows ?? []).some((row) => Object.hasOwn(row, 'owner') || Object.hasOwn(row, 'dispatch_ref'));
   const dispatched = v2Format
     ? new Set(uniqueValidVerdicts.filter((v) => v.verdict === 'dispatched').flatMap((v) => {
-      const resolved = resolveDispatchedUnit(v, itemRows).canonicalId;
-      if (resolved) return [resolved];
-      return hasV2RegistryMetadata ? [] : [v.unitIdentity];
+      const resolved = resolveDispatchedUnit(v, itemRows).dispatchKey;
+      return resolved ? [resolved] : [];
     })).size
     : verdicts.filter((v) => v.verdict === 'dispatched').length;
   const withProof = verdicts.filter((v) => v.verdict === 'cannot-split').length;

@@ -12,6 +12,29 @@ const SHA256_RE = /^[0-9a-f]{64}$/i;
 const ISO_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/;
 const add = (findings, rule, message) => findings.push({ severity: 'error', rule, message });
 const concrete = (value) => typeof value === 'string' && isConcreteCoordinationField(value);
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+
+function meaningfulLocator(value) {
+  if (concrete(value)) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.some(meaningfulLocator);
+  if (!plainObject(value)) return false;
+  return Object.entries(value).some(([key, child]) => concrete(key) && meaningfulLocator(child));
+}
+
+function validReference(value) {
+  if (concrete(value)) return true;
+  if (!plainObject(value) || !concrete(value.path)) return false;
+  if (Object.hasOwn(value, 'result') && !concrete(value.result)) return false;
+  if (Object.hasOwn(value, 'locator') && !meaningfulLocator(value.locator)) return false;
+  if (Object.hasOwn(value, 'sha256') && (typeof value.sha256 !== 'string' || !SHA256_RE.test(value.sha256))) return false;
+  return concrete(value.result) || meaningfulLocator(value.locator);
+}
+
+function validAuditor(value) {
+  if (concrete(value)) return true;
+  if (!plainObject(value) || !concrete(value.taskName)) return false;
+  return !Object.hasOwn(value, 'requestedModel') || concrete(value.requestedModel);
+}
 
 function validTimestamp(value) {
   if (typeof value !== 'string') return false;
@@ -26,10 +49,13 @@ function validTimestamp(value) {
 
 function validSource(source) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return false;
-  const hasLocator = concrete(source.locator);
+  const hasLocator = typeof source.locator === 'string' ? concrete(source.locator) : meaningfulLocator(source.locator);
   const hasResult = concrete(source.result);
   const hasSha = typeof source.sha256 === 'string' && SHA256_RE.test(source.sha256);
+  const hasShaField = Object.hasOwn(source, 'sha256');
   const explicitlyMissing = source.missing === true;
+  if (Object.hasOwn(source, 'missing') && typeof source.missing !== 'boolean') return false;
+  if (hasShaField && !hasSha) return false;
   return concrete(source.path) && (hasLocator || hasResult) && (hasSha !== explicitlyMissing);
 }
 
@@ -41,7 +67,7 @@ function validateTransitions(transitions) {
   }
   for (const key of ['accepted', 'privateFinal', 'landed']) {
     const transition = transitions[key];
-    if (!transition || typeof transition !== 'object' || Array.isArray(transition) || !['known', 'unknown'].includes(transition.state) || !concrete(transition.source)) {
+    if (!transition || typeof transition !== 'object' || Array.isArray(transition) || !['known', 'unknown'].includes(transition.state) || !validReference(transition.source)) {
       add(findings, 'audit-evidence-transitions', `transitions.${key} must have state known/unknown and a concrete source`);
     }
   }
@@ -84,12 +110,12 @@ export function validateDeferredAuditEvidence({ auditRef, item, currentRowText, 
   if (!Array.isArray(audit.missingFields) || audit.missingFields.length === 0 || audit.missingFields.some((field) => !concrete(field))) {
     add(findings, 'audit-evidence-missing-fields', `${loc}: missingFields must be a nonempty array of concrete field names`);
   }
-  if (!concrete(audit.auditor)) add(findings, 'audit-evidence-auditor', `${loc}: auditor must be concrete`);
+  if (!validAuditor(audit.auditor)) add(findings, 'audit-evidence-auditor', `${loc}: auditor must be concrete text or an object with a concrete taskName and optional requestedModel`);
   if (!validTimestamp(audit.checkedAt)) add(findings, 'audit-evidence-time', `${loc}: checkedAt must be a valid ISO timestamp with timezone`);
   if (audit.historicalDispatchState !== 'unknown') add(findings, 'audit-evidence-dispatch-state', `${loc}: historicalDispatchState must be unknown`);
   const writer = audit.currentWriter;
-  if (!writer || typeof writer !== 'object' || Array.isArray(writer) || !['inactive', 'unknown', 'active'].includes(writer.state) || !concrete(writer.evidence)) {
-    add(findings, 'audit-evidence-current-writer', `${loc}: currentWriter needs state inactive/unknown/active and concrete evidence`);
+  if (!writer || typeof writer !== 'object' || Array.isArray(writer) || !['inactive', 'unknown', 'active'].includes(writer.state) || !validReference(writer.evidence)) {
+    add(findings, 'audit-evidence-current-writer', `${loc}: currentWriter needs state inactive/unknown/active and concrete evidence reference`);
   } else if (writer.state === 'active') {
     add(findings, 'audit-evidence-current-writer', `${loc}: an active current writer cannot be covered by audit-evidence-unrecoverable`);
   }

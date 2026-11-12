@@ -42,7 +42,7 @@ function splitVerdicts(wake) {
 }
 
 function dispatchedTargets(items, wake) {
-  if (!isV2Wake(wake) || !items?.length) return [];
+  if (!isV2Wake(wake)) return [];
   return rowVerdicts(wake).filter((verdict) => verdict.verdict === 'dispatched').flatMap((verdict) => {
     const target = resolveDispatchedUnit(verdict, items);
     if (!target.error) return [];
