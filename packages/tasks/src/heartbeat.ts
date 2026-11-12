@@ -33,8 +33,22 @@ export interface HeartbeatView {
   items: Record<string, unknown>[];
   wakes: Record<string, unknown>[];
   findings: HeartbeatFinding[];
+  itemCount: number;
+  wakeCount: number;
+  itemStatusCounts: Record<string, number>;
+  itemsTruncated: boolean;
+  wakesTruncated: boolean;
+  candidateCount?: number;
+  candidatesTruncated?: boolean;
+  findingsTruncated?: boolean;
   error?: string;
   contentHash?: string;
+}
+export interface HeartbeatHistoryPage {
+  wakes: Record<string, unknown>[];
+  nextCursor: string | null;
+  total: number;
+  sourcePath: string | null;
 }
 interface KitReport {
   certifiesCurrent: boolean;
@@ -72,6 +86,76 @@ const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
+
+const PANEL_BYTES = 192 * 1024;
+const shortened = (value: unknown, max = 500): string => {
+  const text = typeof value === "string" ? value : "";
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+};
+function compactItem(item: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries([
+    ...[
+      "id",
+      "source",
+      "item",
+      "status",
+      "evidence",
+      "owner",
+      "repository",
+      "worktree",
+      "mode",
+      "write_set",
+      "dispatch_ref",
+    ].map((field) => [field, shortened(item[field], field === "evidence" ? 700 : 300)]),
+    ["line", typeof item.line === "number" ? item.line : null],
+  ]);
+}
+function compactWake(wake: Record<string, unknown>): Record<string, unknown> {
+  const rows = Array.isArray(wake.rows) ? wake.rows : [];
+  return {
+    heading: shortened(wake.heading, 240),
+    timeMs: typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs) ? wake.timeMs : null,
+    line: typeof wake.line === "number" ? wake.line : null,
+    rows: rows.slice(0, 10).map((row: Record<string, unknown>) => ({
+      num: typeof row.num === "number" ? row.num : null,
+      category: shortened(row.category, 150),
+      state: shortened(row.state, 500),
+      line: typeof row.line === "number" ? row.line : null,
+    })),
+    rowCount: rows.length,
+    truncated: true,
+  };
+}
+function compactView(view: HeartbeatView): HeartbeatView {
+  const value: HeartbeatView = {
+    ...view,
+    itemCount: view.itemCount ?? view.items.length,
+    wakeCount: view.wakeCount ?? view.wakes.length,
+    candidateCount: view.candidateCount ?? view.candidates.length,
+    itemStatusCounts: view.itemStatusCounts ?? {},
+    items: view.items.slice(0, 20).map(compactItem),
+    wakes: view.wakes.slice(-5).map(compactWake),
+    candidates: view.candidates.slice(0, 40),
+    findings: view.findings.slice(0, 30).map((finding) => ({
+      severity: shortened(finding.severity, 20),
+      message: shortened(finding.message, 300),
+      ...(finding.rule ? { rule: shortened(finding.rule, 100) } : {}),
+    })),
+    ...(view.error ? { error: shortened(view.error, 1000) } : {}),
+  };
+  while (Buffer.byteLength(JSON.stringify(value)) > PANEL_BYTES) {
+    if (value.items.length) value.items.pop();
+    else if (value.wakes.length) value.wakes.shift();
+    else if (value.candidates.length) value.candidates.pop();
+    else if (value.findings.length) value.findings.pop();
+    else break;
+  }
+  value.itemsTruncated = value.items.length < value.itemCount;
+  value.wakesTruncated = value.wakes.length < value.wakeCount;
+  value.candidatesTruncated = value.candidates.length < (value.candidateCount ?? 0);
+  value.findingsTruncated = value.findings.length < view.findings.length;
+  return value;
+}
 
 /** Read-only ledger consumer. It never arms timers or writes project/Kit files. */
 export class HeartbeatService {
@@ -115,7 +199,7 @@ export class HeartbeatService {
         await readFile(resolve(this.#root, `${hash(threadId)}.snapshot.json`), "utf8"),
       ) as { key: string; view: HeartbeatView };
       if (saved.view.status === "ready" && saved.view.sourcePath && saved.view.contentHash) {
-        this.#last.set(threadId, saved.view);
+        this.#last.set(threadId, compactView(saved.view));
         this.#observed.set(threadId, saved.key);
       }
     } catch (error) {
@@ -304,6 +388,11 @@ export class HeartbeatService {
       items: [],
       wakes: [],
       findings: [],
+      itemCount: 0,
+      wakeCount: 0,
+      itemStatusCounts: {},
+      itemsTruncated: false,
+      wakesTruncated: false,
     };
     let source = this.#bindings.get(threadId);
     if (source === null) return null;
@@ -314,7 +403,7 @@ export class HeartbeatService {
       if (source === undefined) {
         const associated = candidates.filter((candidate) => candidate.associated);
         if (associated.length !== 1) {
-          if (candidates.length) return { ...empty, candidates };
+          if (candidates.length) return compactView({ ...empty, candidates });
           source = this.#last.get(threadId)?.sourcePath ?? undefined;
           if (!source) return null;
         } else source = associated[0]?.path;
@@ -352,7 +441,26 @@ export class HeartbeatService {
           : lastTime !== null && cadenceMinutes !== null
             ? new Date(lastTime + cadenceMinutes * 60_000).toISOString()
             : null;
-      const view: HeartbeatView = {
+      const itemStatusCounts: Record<string, number> = {};
+      for (const item of inventory.items) {
+        const token = shortened(item.status, 64).split(/\s+/)[0]?.toLowerCase() || "unknown";
+        const status = [
+          "done",
+          "completed",
+          "blocked",
+          "dispatched",
+          "in-flight",
+          "active",
+          "pending",
+          "deferred",
+          "owner",
+          "cancelled",
+        ].includes(token)
+          ? token
+          : "unknown";
+        itemStatusCounts[status] = (itemStatusCounts[status] ?? 0) + 1;
+      }
+      const view: HeartbeatView = compactView({
         ...empty,
         status: "ready",
         sourcePath: source,
@@ -367,7 +475,10 @@ export class HeartbeatService {
         items: inventory.items,
         wakes: history.wakes,
         findings: current.findings,
-      };
+        itemCount: inventory.items.length,
+        wakeCount: history.wakes.length,
+        itemStatusCounts,
+      });
       this.#last.set(threadId, view);
       const eventKey = `${source}:${view.contentHash}`;
       if (this.#observed.get(threadId) !== eventKey) {
@@ -393,15 +504,58 @@ export class HeartbeatService {
       return view;
     } catch (error) {
       const previous = this.#last.get(threadId);
-      return {
+      return compactView({
         ...(previous ?? empty),
         status: previous ? "stale" : "error",
         sourcePath: source ?? null,
         refreshedAt: now,
         certifiesCurrent: false,
         error: String(error),
-      };
+      });
     }
+  }
+
+  async history(
+    threadId: string,
+    cwd: string,
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<HeartbeatHistoryPage> {
+    const view = await this.view(threadId, cwd);
+    if (!view?.sourcePath) return { wakes: [], nextCursor: null, total: 0, sourcePath: null };
+    const before = options.cursor === undefined ? null : Number(options.cursor);
+    if (before !== null && (!Number.isSafeInteger(before) || before < 0))
+      throw new Error("Invalid heartbeat history cursor.");
+    const limit = options.limit ?? 5;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10)
+      throw new Error("Heartbeat history limit must be 1–10.");
+    const root = await this.#project(cwd);
+    const config = await this.#config(root);
+    const info = await stat(view.sourcePath);
+    if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+    const text = await readFile(view.sourcePath, "utf8");
+    const inspect = await this.#inspector(root, config);
+    const report = inspect(text, {
+      mode: "history",
+      latest: false,
+      ledgerPath: view.sourcePath,
+      now: this.#now(),
+    });
+    const end = before === null ? report.wakes.length : Math.min(before, report.wakes.length);
+    const records = report.wakes.slice(Math.max(0, end - limit), end).reverse();
+    const wakes: Record<string, unknown>[] = [];
+    for (const record of records) {
+      const compact = compactWake(record);
+      if (wakes.length && Buffer.byteLength(JSON.stringify([...wakes, compact])) > PANEL_BYTES)
+        break;
+      wakes.push(compact);
+    }
+    const remaining = end - wakes.length;
+    return {
+      wakes,
+      nextCursor: remaining > 0 ? String(remaining) : null,
+      total: report.wakes.length,
+      sourcePath: view.sourcePath,
+    };
   }
 
   async bind(threadId: string, path: string | null, cwd: string): Promise<HeartbeatView | null> {

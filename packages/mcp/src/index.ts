@@ -712,6 +712,19 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         "Read a page of this chat's persisted task events, evidence and progress changes; pass nextCursor to continue.",
     },
     {
+      name: "task_progress_heartbeat_history",
+      action: "heartbeat-history",
+      title: "Read Heartbeat History",
+      schema: z
+        .object({
+          cursor: z.string().max(512).optional(),
+          limit: z.number().int().min(1).max(10).optional(),
+        })
+        .strict(),
+      description:
+        "Read a bounded page of the associated Kit heartbeat history, newest first. Pass nextCursor to continue. Does not run or certify an audit.",
+    },
+    {
       name: "task_progress_bind_heartbeat",
       action: "bind-heartbeat",
       title: "Associate Heartbeat Ledger",

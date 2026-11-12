@@ -294,3 +294,69 @@ test("documentation markers and fenced heartbeat examples do not become ledger c
     await f.close();
   }
 });
+
+test("large canonical reports stay below IPC budget and all wakes are paged without raw section text", async () => {
+  const f = await fixture();
+  let service: HeartbeatService | undefined;
+  try {
+    const hugeKit = resolve(f.root, "large-kit.mjs");
+    await writeFile(
+      hugeKit,
+      `export function inspectHeartbeatLedger(text,{mode}) {
+      const repeated = '审计状态'.repeat(3000);
+      const count = text.includes('new wake appended') ? 81 : 80;
+      return {certifiesCurrent:true,passed:true,
+        wakes:Array.from({length:count},(_,i)=>({heading:'wake-'+i,timeMs:1794391200000+i*1000,line:i+1,sectionLines:[repeated],rows:Array.from({length:10},(_,r)=>({num:r+1,category:repeated,state:repeated,line:r+1}))})),
+        items:Array.from({length:1000},(_,i)=>({id:'I'+i,item:repeated,status:i%2?'blocked ← reason':'done',evidence:repeated,customSecretText:repeated,line:i+1})),
+        findings:Array.from({length:500},()=>({severity:'error',message:repeated,rule:repeated}))};
+    }`,
+    );
+    await writeFile(f.source, ledger("chat-A"));
+    service = new HeartbeatService(resolve(f.root, "large-data"), {
+      kitPath: hugeKit,
+      refreshMs: 0,
+    });
+    const view = await service.view("chat-A", f.project);
+    assert.equal(view?.status, "ready");
+    assert.ok(Buffer.byteLength(JSON.stringify(view)) < 256 * 1024);
+    assert.equal(view.itemCount, 1000);
+    assert.equal(view.wakeCount, 80);
+    assert.equal(view.itemStatusCounts.blocked, 500);
+    assert.equal(view.itemStatusCounts.done, 500);
+    assert.equal(view.itemsTruncated, true);
+    assert.equal(view.wakesTruncated, true);
+    assert.ok(view.items.length <= 20);
+    assert.ok(view.wakes.length <= 5);
+    assert.equal(view.wakes[0]?.sectionLines, undefined);
+    assert.equal(view.items[0]?.customSecretText, undefined);
+    const first = await service.history("chat-A", f.project, { limit: 5 });
+    assert.equal(first.total, 80);
+    assert.equal(first.wakes[0]?.heading, "wake-79");
+    assert.ok(first.nextCursor);
+    await writeFile(f.source, `${ledger("chat-A")}\nnew wake appended`);
+    const second = await service.history("chat-A", f.project, {
+      cursor: first.nextCursor,
+      limit: 5,
+    });
+    assert.equal(second.wakes[0]?.heading, "wake-74");
+    assert.equal(second.total, 81);
+    assert.ok(Buffer.byteLength(JSON.stringify(second)) < 256 * 1024);
+    const seen = new Set(first.wakes.map((wake) => wake.heading));
+    let cursor: string | null = first.nextCursor;
+    while (cursor !== null) {
+      const page = await service.history("chat-A", f.project, { cursor, limit: 10 });
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) < 256 * 1024);
+      for (const wake of page.wakes) {
+        assert.ok(!seen.has(wake.heading));
+        seen.add(wake.heading);
+      }
+      cursor = page.nextCursor;
+    }
+    assert.equal(seen.size, 80);
+    await assert.rejects(service.history("chat-A", f.project, { cursor: "wrong" }), /cursor/);
+    await assert.rejects(service.history("chat-A", f.project, { limit: 100 }), /limit/);
+  } finally {
+    service?.close();
+    await f.close();
+  }
+});

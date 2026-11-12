@@ -1,10 +1,5 @@
 import {
-  GOAL_PROGRESS_ELEMENT_NAME,
-  GOAL_PROGRESS_HOT_ELEMENT_NAME,
-} from "../../contracts/src/renderer-events.js";
-import {
   registerTaskProgressElement,
-  TASK_PROGRESS_ELEMENT_NAME,
   type TaskPanelRequest,
   type TaskPanelResponse,
   type TaskProgressElement,
@@ -13,6 +8,7 @@ import { readCurrentCodexPage } from "./anchor-adapter.js";
 
 export interface TaskPageHostDiagnostics {
   version: 1;
+  elementName: string;
   threadId: string | null;
   visible: boolean;
   status: "waiting" | "connected" | "error";
@@ -35,9 +31,10 @@ declare global {
 /** Uses the same visible-thread proof as the Goal adapter. It never infers identity from recency. */
 export function installTaskProgressPageHost(window: Window): TaskPageHost {
   window.__CODEX_TASK_PROGRESS__?.destroy();
-  registerTaskProgressElement(window);
+  const elementName = registerTaskProgressElement(window);
   const document = window.document;
-  const element = document.createElement(TASK_PROGRESS_ELEMENT_NAME) as TaskProgressElement;
+  const element = document.createElement(elementName) as TaskProgressElement;
+  element.dataset.codexTaskPanel = "true";
   element.style.cssText = "position:fixed;z-index:50;display:none;max-width:calc(100vw - 24px);";
   document.body.append(element);
   let destroyed = false;
@@ -47,6 +44,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   let floatPosition: { x: number; y: number } | null = null;
   let diagnostic: TaskPageHostDiagnostics = {
     version: 1,
+    elementName,
     threadId: null,
     visible: false,
     status: "waiting",
@@ -55,10 +53,44 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     revision: null,
   };
 
+  let reservation: {
+    target: HTMLElement;
+    paddingTop: string;
+    paddingPriority: string;
+    boxSizing: string;
+    boxPriority: string;
+    basePadding: number;
+  } | null = null;
+  const releaseReservation = (): void => {
+    if (!reservation) return;
+    const { target, paddingTop, paddingPriority, boxSizing, boxPriority } = reservation;
+    if (paddingTop) target.style.setProperty("padding-top", paddingTop, paddingPriority);
+    else target.style.removeProperty("padding-top");
+    if (boxSizing) target.style.setProperty("box-sizing", boxSizing, boxPriority);
+    else target.style.removeProperty("box-sizing");
+    reservation = null;
+  };
+  const reserveTop = (target: HTMLElement, height: number): void => {
+    if (reservation?.target !== target) {
+      releaseReservation();
+      reservation = {
+        target,
+        paddingTop: target.style.getPropertyValue("padding-top"),
+        paddingPriority: target.style.getPropertyPriority("padding-top"),
+        boxSizing: target.style.getPropertyValue("box-sizing"),
+        boxPriority: target.style.getPropertyPriority("box-sizing"),
+        basePadding: Number.parseFloat(window.getComputedStyle(target).paddingTop) || 0,
+      };
+    }
+    target.style.boxSizing = "border-box";
+    target.style.paddingTop = `${reservation.basePadding + height + 16}px`;
+  };
+
   const synchronizeThread = (): ReturnType<typeof readCurrentCodexPage> => {
     const page = readCurrentCodexPage(document);
     if (page.threadId !== diagnostic.threadId) {
       generation++;
+      releaseReservation();
       element.resetThread(page.threadId);
       diagnostic = {
         ...diagnostic,
@@ -75,25 +107,29 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     if (destroyed) return;
     const page = synchronizeThread();
     const rect = page.composer?.getBoundingClientRect();
-    // Goal and task panels remain independently accessible. Dock above both native UI regions.
-    const goalRects = Array.from(
+    const layouts = Array.from(
       document.querySelectorAll<HTMLElement>(
-        `${GOAL_PROGRESS_ELEMENT_NAME},${GOAL_PROGRESS_HOT_ELEMENT_NAME}`,
+        "[data-app-shell-main-content-layout='thread-edge-scroll']",
       ),
-    ).flatMap((goal) => {
-      const rect = goal.getBoundingClientRect();
-      const style = window.getComputedStyle(goal);
-      return rect.width > 0 &&
-        rect.height > 0 &&
-        style.display !== "none" &&
-        style.visibility !== "hidden"
-        ? [rect]
-        : [];
-    });
-    const visible = !!rect && rect.width > 0 && !page.rejectionReason;
+    ).filter(
+      (layout) =>
+        !!page.composer &&
+        layout.contains(page.composer) &&
+        layout.getBoundingClientRect().width > 0,
+    );
+    const fallback =
+      page.surface instanceof HTMLElement
+        ? page.surface
+        : page.composer?.closest<HTMLElement>("main");
+    const layoutRoot = layouts.length === 1 ? layouts[0] : fallback;
+    const visible = !!rect && rect.width > 0 && !!layoutRoot && !page.rejectionReason;
     diagnostic.visible = visible;
     element.style.display = visible ? "block" : "none";
-    if (!rect || !visible) return;
+    if (!rect || !visible || !layoutRoot) {
+      releaseReservation();
+      return;
+    }
+    if (element.floating) releaseReservation();
     const computed = window.getComputedStyle(page.composer ?? document.body);
     const dark =
       document.documentElement.classList.contains("dark") ||
@@ -118,19 +154,23 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     element.style.fontFamily = computed.fontFamily;
     element.locale = document.documentElement.lang || window.navigator.language || "en";
     element.dir = document.documentElement.dir || "auto";
-    const dockTop = Math.min(rect.top, ...goalRects.map((goal) => goal.top));
-    const availableHeight = element.floating ? window.innerHeight - 24 : dockTop - 16;
+    const layoutRect = layoutRoot.getBoundingClientRect();
+    const dockTop = Math.max(0, layoutRect.top) + 8;
+    const availableHeight = element.floating
+      ? window.innerHeight - 24
+      : Math.min(window.innerHeight * 0.5, Math.max(40, rect.top - dockTop - 24));
     element.style.setProperty("--ctp-panel-max-height", `${Math.max(40, availableHeight)}px`);
     element.style.setProperty("--ctp-scroll-max-height", `${Math.max(0, availableHeight - 90)}px`);
     element.style.width = `${Math.max(180, Math.min(rect.width, window.innerWidth - 24))}px`;
     const height = element.getBoundingClientRect().height || 40;
     if (element.floating) {
-      const position = floatPosition ?? { x: rect.left, y: Math.max(12, dockTop - height - 24) };
+      const position = floatPosition ?? { x: rect.left, y: Math.max(12, dockTop) };
       element.style.left = `${Math.max(12, Math.min(position.x, window.innerWidth - element.getBoundingClientRect().width - 12))}px`;
       element.style.top = `${Math.max(12, Math.min(position.y, window.innerHeight - height - 12))}px`;
     } else {
       element.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - rect.width - 12))}px`;
-      element.style.top = `${Math.max(8, dockTop - height - 8)}px`;
+      element.style.top = `${dockTop}px`;
+      reserveTop(layoutRoot, height);
     }
   };
 
@@ -249,6 +289,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     destroy: () => {
       destroyed = true;
       generation++;
+      releaseReservation();
       observer.disconnect();
       resizeObserver.disconnect();
       window.clearInterval(interval);

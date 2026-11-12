@@ -6,17 +6,22 @@ import test from "node:test";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild";
 
-const fixture = `<!doctype html><html lang="zh-CN"><head><style>body{font:14px system-ui;margin:0;background:#f5f5f5}aside{position:absolute;left:0;top:0}main{margin:auto;width:700px;height:100vh}#composer{position:fixed;bottom:20px;width:700px;height:100px;background:white;border:1px solid #ccc} [role=textbox]{height:80px}</style></head><body>
+const fixture = `<!doctype html><html lang="zh-CN"><head><style>
+body{font:14px system-ui;margin:0;background:#f5f5f5}aside{position:absolute;left:0;top:0}
+main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 44px);position:relative;display:flex;flex-direction:column}
+#layout{height:100%;width:100%}#content{height:100%;width:100%;display:flex;flex-direction:column}
+#messages{flex:1;min-height:0;overflow:auto}#composer{width:100%;height:100px;flex-shrink:0;background:white;border:1px solid #ccc;margin-bottom:20px;box-sizing:border-box}[role=textbox]{height:80px}
+</style></head><body>
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
-<main data-app-shell-page-surface><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></main>
+<main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {task:null, heartbeat:null, history:{events:[],nextCursor:null}, calls:[]};
+window.fixture = {task:null, heartbeat:null, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.task,heartbeat:window.fixture.heartbeat,...(request.method==='history'?{history:window.fixture.history}:{})};
+  const result = {task:window.fixture.task,heartbeat:window.fixture.heartbeat,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
 };
@@ -104,22 +109,31 @@ test("ordinary chat task panel browser flows", async (t) => {
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
-    await t.test("empty chat stays docked and hides heartbeat; identity confirmed", async () => {
-      const { context, page, panel } = await open();
-      assert.match(await panel.locator("section.panel").innerText(), /尚未建立任务/);
-      assert.equal(await panel.getByRole("progressbar").count(), 0);
-      await panel.getByRole("button", { name: /任务进度/ }).click();
-      assert.equal(await panel.getByRole("heading", { name: "心跳", exact: true }).count(), 0);
-      const state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-      assert.equal(state.threadId, "thread-a");
-      assert.equal(state.status, "connected");
-      const [panelBox, composerBox] = await Promise.all([
-        panel.boundingBox(),
-        page.locator("#composer").boundingBox(),
-      ]);
-      assert.ok(panelBox.y + panelBox.height <= composerBox.y);
-      await context.close();
-    });
+    await t.test(
+      "empty chat reserves top space and hides heartbeat; identity confirmed",
+      async () => {
+        const { context, page, panel } = await open();
+        assert.match(await panel.locator("section.panel").innerText(), /尚未建立任务/);
+        assert.equal(await panel.getByRole("progressbar").count(), 0);
+        await panel.getByRole("button", { name: /任务进度/ }).click();
+        assert.equal(await panel.getByRole("heading", { name: "心跳", exact: true }).count(), 0);
+        const state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
+        assert.equal(state.threadId, "thread-a");
+        assert.equal(state.status, "connected");
+        const [panelBox, composerBox] = await Promise.all([
+          panel.boundingBox(),
+          page.locator("#composer").boundingBox(),
+        ]);
+        assert.ok(panelBox.y + panelBox.height <= composerBox.y);
+        const [layoutBox, contentBox] = await Promise.all([
+          page.locator("#layout").boundingBox(),
+          page.locator("#content").boundingBox(),
+        ]);
+        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
+        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await context.close();
+      },
+    );
     await t.test(
       "subtasks, evidence, progress regression, paginated history, float and dock",
       async () => {
@@ -167,8 +181,63 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.match(await panel.locator("section.panel").innerText(), /新增验证任务/);
         await panel.getByRole("button", { name: "浮动面板", exact: true }).click();
         assert.equal(await panel.getAttribute("floating"), "");
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.equal(
+          await page.locator("#layout").evaluate((element) => element.style.paddingTop),
+          "",
+        );
         await panel.getByRole("button", { name: "固定面板", exact: true }).click();
         assert.equal(await panel.getAttribute("floating"), null);
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        const contentBox = await page.locator("#content").boundingBox();
+        const panelBox = await panel.boundingBox();
+        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await context.close();
+      },
+    );
+    await t.test(
+      "objective display status reflects children rather than stale stored status",
+      async () => {
+        const { context, page, panel } = await open();
+        const objective = {
+          ...task.objectives[0],
+          status: "pending",
+          items: [task.objectives[0].items[0]],
+        };
+        await page.evaluate(
+          (value) => {
+            window.fixture.task = {
+              ...value.task,
+              objectives: [value.objective],
+              progress: { completed: 1, total: 1, percent: 100 },
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { task, objective },
+        );
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+        const status = panel.getByRole("button", { name: /普通聊天界面/ }).locator(".status");
+        assert.equal(await status.innerText(), "已完成");
+        await page.evaluate(() => {
+          window.fixture.task.objectives[0].items.push({
+            id: "next",
+            title: "下一项",
+            status: "pending",
+            evidence: [],
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await status.innerText(), "进行中");
+        await page.evaluate(() => {
+          window.fixture.task.objectives[0].items[1].status = "blocked";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await status.innerText(), "阻塞");
+        await page.evaluate(() => {
+          window.fixture.task.objectives[0].status = "cancelled";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await status.innerText(), "已取消");
         await context.close();
       },
     );
@@ -241,6 +310,86 @@ test("ordinary chat task panel browser flows", async (t) => {
       assert.ok(narrow.y >= 0 && narrow.y + narrow.height <= goalNarrow.y);
       await context.close();
     });
+    await t.test(
+      "large heartbeat history loads compact pages and displays full counts",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            wakeCount: 5000,
+            itemCount: 200,
+            wakesTruncated: true,
+            itemsTruncated: true,
+            itemStatusCounts: { completed: 180, blocked: 20 },
+          };
+          window.fixture.heartbeatHistory = {
+            wakes: [{ heading: "巡检第5000轮", rows: [] }],
+            nextCursor: "1",
+            total: 5000,
+            sourcePath: value.sourcePath,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await panel.getByRole("button", { name: /任务进度/ }).click();
+        assert.match(
+          await panel.locator("section.panel").innerText(),
+          /200 · 已完成 180 · 阻塞 20/,
+        );
+        await panel.locator("summary").filter({ hasText: "心跳历史 (5000)" }).click();
+        await panel.getByText("巡检第5000轮", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.heartbeatHistory = {
+            wakes: [{ heading: "巡检第4999轮", rows: [] }],
+            nextCursor: null,
+            total: 5000,
+            sourcePath: window.fixture.heartbeat.sourcePath,
+          };
+        });
+        await panel.getByRole("button", { name: "加载更早心跳", exact: true }).click();
+        await panel.getByText("巡检第4999轮", { exact: true }).waitFor();
+        assert.match(await panel.locator("section.panel").innerText(), /巡检第5000轮/);
+        assert.equal(
+          await panel.getByRole("button", { name: "加载更早心跳", exact: true }).count(),
+          0,
+        );
+        const requests = await page.evaluate(() =>
+          window.fixture.calls.filter((call) => call.method === "heartbeat-history"),
+        );
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].cursor, "1");
+        await context.close();
+      },
+    );
+    await t.test(
+      "hot bundle updates replace the element and restore layout on destroy",
+      async () => {
+        const { context, page } = await open();
+        const firstName = await page.evaluate(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().elementName,
+        );
+        await page.addScriptTag({ content: bundle });
+        await page.locator("[data-codex-task-panel]").waitFor({ state: "visible" });
+        const newName = await page.evaluate(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().elementName,
+        );
+        assert.notEqual(firstName, newName);
+        assert.equal(await page.locator("[data-codex-task-panel]").count(), 1);
+        const panelBox = await page.locator("[data-codex-task-panel]").boundingBox();
+        const contentBox = await page.locator("#content").boundingBox();
+        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.destroy());
+        assert.equal(
+          await page.locator("#layout").evaluate((element) => element.style.paddingTop),
+          "",
+        );
+        assert.equal(
+          await page.locator("#layout").evaluate((element) => element.style.boxSizing),
+          "",
+        );
+        await context.close();
+      },
+    );
     await t.test("switching threads clears old data and rejects delayed replies", async () => {
       const { context, page, panel } = await open();
       await page.evaluate((value) => {

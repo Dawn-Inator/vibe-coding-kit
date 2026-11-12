@@ -486,7 +486,7 @@ if (manifest) {
     validateHookEvent(
       hookEvents,
       "PreToolUse",
-      "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|bind_heartbeat))$",
+      "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|heartbeat_history|bind_heartbeat))$",
       undefined,
       1,
       undefined,

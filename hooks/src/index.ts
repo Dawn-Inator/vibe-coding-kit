@@ -15,7 +15,7 @@ import {
 import { resolveGoalProgressPaths } from "../../packages/store/src/index.js";
 
 export const GOAL_PROGRESS_TOOL_PATTERN =
-  "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|bind_heartbeat))$";
+  "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|heartbeat_history|bind_heartbeat))$";
 export const GOAL_PROGRESS_TOOL_MATCHER = new RegExp(GOAL_PROGRESS_TOOL_PATTERN);
 export const GOAL_PROGRESS_POST_TOOL_PATTERN = "^update_goal$";
 export const GOAL_PROGRESS_HOOK_STDIN_PROTOCOL_VERSION = 1 as const;

@@ -2396,7 +2396,31 @@ export class GoalProgressHelper {
               })(),
             )
           : undefined;
-      result = { task, heartbeat, ...(history ? { history } : {}) };
+      const heartbeatHistory =
+        action === "heartbeat-history"
+          ? await this.#heartbeat.history(
+              threadId,
+              cwd,
+              (() => {
+                const options = z
+                  .object({
+                    cursor: z.string().optional(),
+                    limit: z.number().int().min(1).max(10).optional(),
+                  })
+                  .parse(input ?? {});
+                return {
+                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                  ...(options.limit === undefined ? {} : { limit: options.limit }),
+                };
+              })(),
+            )
+          : undefined;
+      result = {
+        task,
+        heartbeat,
+        ...(history ? { history } : {}),
+        ...(heartbeatHistory ? { heartbeatHistory } : {}),
+      };
     }
     const state = await this.#taskStore.get(threadId);
     return { revision: state?.revision ?? null, result };

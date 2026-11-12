@@ -38,7 +38,7 @@ import {
 import type { GoalProgressRendererBundle } from "./renderer-bundle.js";
 
 export interface TaskPageRequest {
-  method: "get" | "history" | "bind-heartbeat";
+  method: "get" | "history" | "heartbeat-history" | "bind-heartbeat";
   threadId: string;
   cursor?: string | undefined;
   path?: string | null | undefined;
@@ -592,7 +592,7 @@ export class GoalProgressRendererBridge {
           id: z.string().max(128),
           request: z
             .object({
-              method: z.enum(["get", "history", "bind-heartbeat"]),
+              method: z.enum(["get", "history", "heartbeat-history", "bind-heartbeat"]),
               threadId: z.string().min(1).max(512),
               cursor: z.string().max(512).optional(),
               path: z.string().max(4096).nullable().optional(),

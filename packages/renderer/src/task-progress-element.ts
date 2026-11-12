@@ -1,4 +1,5 @@
 import { css, html, LitElement, nothing } from "lit";
+import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/release-version.js";
 
 export interface TaskPanelEvidence {
   summary: string;
@@ -38,6 +39,11 @@ export interface TaskPanelHeartbeat {
   passed: boolean;
   items: readonly Record<string, unknown>[];
   wakes: readonly Record<string, unknown>[];
+  itemCount?: number;
+  wakeCount?: number;
+  itemsTruncated?: boolean;
+  wakesTruncated?: boolean;
+  itemStatusCounts?: Readonly<Record<string, number>>;
   findings: readonly { severity: string; message: string; rule?: string }[];
   error?: string;
 }
@@ -45,13 +51,20 @@ export interface TaskPanelHistory {
   events: readonly Record<string, unknown>[];
   nextCursor: string | null;
 }
+export interface TaskPanelHeartbeatHistory {
+  wakes: readonly Record<string, unknown>[];
+  nextCursor: string | null;
+  total: number;
+  sourcePath?: string | null;
+}
 export interface TaskPanelResponse {
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
   history?: TaskPanelHistory;
+  heartbeatHistory?: TaskPanelHeartbeatHistory;
 }
 export interface TaskPanelRequest {
-  method: "get" | "history" | "bind-heartbeat";
+  method: "get" | "history" | "bind-heartbeat" | "heartbeat-history";
   threadId: string;
   cursor?: string;
   path?: string | null;
@@ -84,6 +97,8 @@ export class TaskProgressElement extends LitElement {
     tab: { state: true },
     selectedObjective: { state: true },
     history: { state: true },
+    heartbeatHistory: { state: true },
+    heartbeatBusy: { state: true },
     busy: { state: true },
     floating: { type: Boolean, reflect: true },
     locale: { attribute: false },
@@ -140,6 +155,9 @@ export class TaskProgressElement extends LitElement {
   private declare tab: "tasks" | "history";
   private declare selectedObjective: string | null;
   private declare history: TaskPanelHistory | null;
+  private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
+  private declare heartbeatBusy: boolean;
+  private heartbeatHistorySource: string | null = null;
   private declare busy: boolean;
   private historyThread: string | null = null;
 
@@ -155,6 +173,9 @@ export class TaskProgressElement extends LitElement {
     this.tab = "tasks";
     this.selectedObjective = null;
     this.history = null;
+    this.heartbeatHistory = null;
+    this.heartbeatBusy = false;
+    this.heartbeatHistorySource = null;
     this.busy = false;
   }
 
@@ -184,6 +205,9 @@ export class TaskProgressElement extends LitElement {
     this.threadId = threadId;
     this.data = { task: null, heartbeat: null };
     this.history = null;
+    this.heartbeatHistory = null;
+    this.heartbeatBusy = false;
+    this.heartbeatHistorySource = null;
     this.historyThread = null;
     this.selectedObjective = null;
     this.connectionError = null;
@@ -236,12 +260,78 @@ export class TaskProgressElement extends LitElement {
     this.busy = true;
     try {
       const result = await this.requester({ method: "bind-heartbeat", threadId, path });
-      if (this.threadId === threadId) this.data = result;
+      if (this.threadId === threadId) {
+        this.data = result;
+        this.heartbeatHistory = null;
+        this.heartbeatHistorySource = null;
+      }
     } catch (error) {
       if (this.threadId === threadId) this.connectionError = String(error);
     } finally {
       if (this.threadId === threadId) this.busy = false;
     }
+  }
+
+  private async loadHeartbeatHistory(more = false): Promise<void> {
+    const threadId = this.threadId;
+    const sourcePath = this.data.heartbeat?.sourcePath;
+    if (!threadId || !sourcePath || !this.requester || this.heartbeatBusy) return;
+    this.heartbeatBusy = true;
+    try {
+      const cursor =
+        more && this.heartbeatHistorySource === sourcePath
+          ? this.heartbeatHistory?.nextCursor
+          : null;
+      const result = await this.requester({
+        method: "heartbeat-history",
+        threadId,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (this.threadId !== threadId || this.data.heartbeat?.sourcePath !== sourcePath) return;
+      const page = result.heartbeatHistory;
+      if (page && (!page.sourcePath || page.sourcePath === sourcePath)) {
+        this.heartbeatHistory = {
+          ...page,
+          wakes:
+            more && this.heartbeatHistorySource === sourcePath
+              ? [...(this.heartbeatHistory?.wakes ?? []), ...page.wakes]
+              : page.wakes,
+        };
+        this.heartbeatHistorySource = sourcePath;
+      }
+    } catch (error) {
+      if (this.threadId === threadId && this.data.heartbeat?.sourcePath === sourcePath) {
+        this.connectionError = String(error);
+      }
+    } finally {
+      if (this.threadId === threadId) this.heartbeatBusy = false;
+    }
+  }
+
+  private renderHeartbeatHistory(heartbeat: TaskPanelHeartbeat) {
+    const history =
+      this.heartbeatHistorySource === heartbeat.sourcePath ? this.heartbeatHistory : null;
+    const wakes = history?.wakes ?? [...heartbeat.wakes].reverse();
+    return html`<details @toggle=${(event: Event) => {
+      if ((event.target as HTMLDetailsElement).open && !history && !this.heartbeatBusy) {
+        void this.loadHeartbeatHistory();
+      }
+    }}><summary>${this.t("Heartbeat history", "心跳历史")} (${history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length})</summary>
+      ${wakes.map(
+        (wake) =>
+          html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.line}</div>` : nothing}${
+            Array.isArray(wake.rows)
+              ? wake.rows.map((raw) => {
+                  const row = raw as Record<string, unknown>;
+                  return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}</p>`;
+                })
+              : nothing
+          }</div>`,
+      )}
+      ${history?.nextCursor ? html`<button ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
+      ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
+      <button ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory()}>${this.heartbeatBusy ? this.t("Loading…", "加载中…") : this.t("Refresh heartbeat history", "刷新心跳历史")}</button>
+    </details>`;
   }
 
   private evidence(items: readonly TaskPanelEvidence[]) {
@@ -256,10 +346,22 @@ export class TaskProgressElement extends LitElement {
       ? objective.items.filter((item) => item.status !== "cancelled")
       : [objective];
     const done = effective.filter((item) => item.status === "completed").length;
+    const displayedStatus =
+      objective.status === "cancelled" || objective.items.length === 0 || effective.length === 0
+        ? objective.status
+        : done === effective.length
+          ? "completed"
+          : effective.some((item) => item.status === "active")
+            ? "active"
+            : effective.some((item) => item.status === "blocked")
+              ? "blocked"
+              : done > 0
+                ? "active"
+                : "pending";
     const selected = this.selectedObjective === objective.id;
     return html`<button class="row" aria-expanded=${selected} @click=${() => {
       this.selectedObjective = selected ? null : objective.id;
-    }}><span>${selected ? "▾" : "▸"}</span><span class="name">${objective.title}${!objective.required ? html` <span class="muted">${this.t("optional", "可选")}</span>` : nothing}</span><span class="muted">${done}/${effective.length}</span><span class="status">${this.status(objective.status)}</span></button>
+    }}><span>${selected ? "▾" : "▸"}</span><span class="name">${objective.title}${!objective.required ? html` <span class="muted">${this.t("optional", "可选")}</span>` : nothing}</span><span class="muted">${done}/${effective.length}</span><span class="status">${this.status(displayedStatus)}</span></button>
       ${selected ? html`<div class="detail">${this.evidence(objective.evidence)}${objective.items.map((item) => html`<div class="check"><div><span>${item.status === "completed" ? "✓" : item.status === "cancelled" ? "−" : "○"}</span><span>${item.title}</span><span class="muted">${this.status(item.status)}</span></div>${this.evidence(item.evidence)}</div>`)}</div>` : nothing}`;
   }
 
@@ -275,24 +377,16 @@ export class TaskProgressElement extends LitElement {
       }}><option value="">${this.t("Select a ledger…", "选择台账…")}</option>${heartbeat.candidates.map((candidate) => html`<option value=${candidate.path}>${candidate.path}</option>`)}</select><button @click=${() => void this.bindHeartbeat(null)}>${this.t("Hide", "隐藏")}</button></div>`;
     return html`<div class="heartbeat"><h3>${this.t("Heartbeat", "心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3>
       ${heartbeat.error ? html`<p class="error">${heartbeat.error}</p>` : nothing}
-      <dl><dt>${this.t("Latest audit", "最近巡检")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.items.length} · ${this.itemSummary(heartbeat.items)}</dd></dl>
+      <dl><dt>${this.t("Latest audit", "最近巡检")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
+        heartbeat.itemStatusCounts
+          ? Object.entries(heartbeat.itemStatusCounts)
+              .map(([status, count]) => `${this.status(status)} ${count}`)
+              .join(" · ")
+          : this.itemSummary(heartbeat.items)
+      }${heartbeat.itemsTruncated && !heartbeat.itemStatusCounts ? this.t(" (counts from visible sample)", "（状态统计为当前样本）") : nothing}</dd></dl>
       ${heartbeat.findings.length ? html`<details><summary>${this.t("Audit findings", "审计结果")} (${heartbeat.findings.length})</summary>${heartbeat.findings.map((finding) => html`<p class="muted">${finding.severity}: ${finding.message}</p>`)}</details>` : nothing}
       <details><summary>${this.t("Items and blockers", "登记项与阻塞")}</summary>${heartbeat.items.map((item) => html`<div class="event"><span class="status">${String(item.status ?? "")}</span> ${String(item.item ?? item.id ?? "")}<p class="muted">${String(item.evidence ?? "")}</p></div>`)}</details>
-      <details><summary>${this.t("Heartbeat history", "心跳历史")} (${heartbeat.wakes.length})</summary>${[
-        ...heartbeat.wakes,
-      ]
-        .reverse()
-        .map(
-          (wake) =>
-            html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${
-              Array.isArray(wake.rows)
-                ? wake.rows.map((raw) => {
-                    const row = raw as Record<string, unknown>;
-                    return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}</p>`;
-                  })
-                : nothing
-            }</div>`,
-        )}</details>
+      ${this.renderHeartbeatHistory(heartbeat)}
       <details><summary class="muted">${this.t("Source", "来源")}</summary><p class="muted">${heartbeat.sourcePath}</p><button ?disabled=${this.busy} @click=${() => void this.bindHeartbeat(null)}>${this.t("Unbind and hide heartbeat", "解除关联并隐藏心跳")}</button></details>
     </div>`;
   }
@@ -321,7 +415,7 @@ export class TaskProgressElement extends LitElement {
     const task = this.data.task;
     const progress = task?.progress;
     const title = task?.title ?? this.t("Task progress", "任务进度");
-    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${progress && progress.percent !== null ? `${progress.completed}/${progress.total} · ${progress.percent}%` : this.t("No task checklist", "尚未建立任务")}</span>${progress && progress.percent !== null ? html`<div class="track" role="progressbar" aria-valuenow=${progress.percent} aria-valuemin="0" aria-valuemax="100" aria-label=${title}><div class="fill" style=${`width:${Math.max(0, Math.min(100, progress.percent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock above composer", "固定在输入框上方") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${this.connectionError ? html`<div role="status" class="error">${this.connectionError}</div>` : nothing}${
+    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${progress && progress.percent !== null ? `${progress.completed}/${progress.total} · ${progress.percent}%` : this.t("No task checklist", "尚未建立任务")}</span>${progress && progress.percent !== null ? html`<div class="track" role="progressbar" aria-valuenow=${progress.percent} aria-valuemin="0" aria-valuemax="100" aria-label=${title}><div class="fill" style=${`width:${Math.max(0, Math.min(100, progress.percent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${this.connectionError ? html`<div role="status" class="error">${this.connectionError}</div>` : nothing}${
       this.expanded
         ? html`<div class="body"><nav role="tablist"><button role="tab" aria-selected=${this.tab === "tasks"} @click=${() => {
             this.tab = "tasks";
@@ -334,8 +428,20 @@ export class TaskProgressElement extends LitElement {
   }
 }
 
-export function registerTaskProgressElement(window: Window): void {
-  if (!window.customElements.get(TASK_PROGRESS_ELEMENT_NAME)) {
-    window.customElements.define(TASK_PROGRESS_ELEMENT_NAME, TaskProgressElement);
+/** A new bundle cannot redefine a custom element already registered by an older build. */
+export function registerTaskProgressElement(window: Window): string {
+  const registry = window.customElements;
+  if (registry.get(TASK_PROGRESS_ELEMENT_NAME) === TaskProgressElement)
+    return TASK_PROGRESS_ELEMENT_NAME;
+  if (!registry.get(TASK_PROGRESS_ELEMENT_NAME)) {
+    registry.define(TASK_PROGRESS_ELEMENT_NAME, TaskProgressElement);
+    return TASK_PROGRESS_ELEMENT_NAME;
   }
+  const versioned = `${TASK_PROGRESS_ELEMENT_NAME}-v${GOAL_PROGRESS_RELEASE_VERSION.replaceAll(".", "-")}`;
+  let name = versioned;
+  let revision = 1;
+  while (registry.get(name) && registry.get(name) !== TaskProgressElement)
+    name = `${versioned}-r${++revision}`;
+  if (!registry.get(name)) registry.define(name, TaskProgressElement);
+  return name;
 }

@@ -29,7 +29,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = await client.listTools();
-    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 6);
+    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 7);
     const initialize = tools.tools.find((tool) => tool.name === "task_progress_initialize");
     assert.ok(initialize);
     assert.equal(initialize.inputSchema.additionalProperties, false);

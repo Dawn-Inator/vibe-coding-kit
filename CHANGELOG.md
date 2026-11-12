@@ -1,3 +1,10 @@
+# Task Progress 0.4.1
+
+- Dock at the top of chat and reserve layout space; floating placement remains optional.
+- Bound large heartbeat responses and add paginated history with complete source counts.
+- Replace versioned custom elements during live updates without restarting Codex.
+- Derive objective display status from its effective checklist items.
+
 # Task Progress 0.4.0
 
 - Add ordinary-chat task tracking, equal checklist counting, evidence and progress regression history.
