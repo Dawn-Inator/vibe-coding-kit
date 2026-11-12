@@ -43,7 +43,7 @@ export interface TaskPanelState {
   };
 }
 export interface TaskPanelHeartbeat {
-  status: "candidates" | "ready" | "stale" | "error";
+  status: "none" | "candidates" | "ready" | "stale" | "error";
   sourcePath: string | null;
   candidates: readonly { path: string; associated: boolean }[];
   refreshedAt: string;
@@ -62,6 +62,8 @@ export interface TaskPanelHeartbeat {
   itemStatusCounts?: Readonly<Record<string, number>>;
   findings: readonly { severity: string; message: string; rule?: string }[];
   error?: string;
+  warning?: string;
+  basis?: "configured" | "latest-recorded-wake" | "items-inventory" | "none";
 }
 export interface TaskPanelHistory {
   events: readonly Record<string, unknown>[];
@@ -141,10 +143,10 @@ export class TaskProgressElement extends LitElement {
     :host { display: block; font: inherit; color: var(--ctp-text, #222); color-scheme: light dark; }
     * { box-sizing: border-box; }
     section.panel { max-height: var(--ctp-panel-max-height, calc(100vh - 24px)); border: 1px solid var(--ctp-border, #ddd); border-radius: 12px; background: var(--ctp-surface, #fff); box-shadow: 0 3px 16px #00000012; overflow: hidden; }
-    button, select { font: inherit; color: inherit; }
+    button { font: inherit; color: inherit; }
     button { cursor: pointer; border: 0; border-radius: 6px; background: transparent; padding: .35em .6em; }
     button:hover { background: var(--ctp-hover, #88888815); }
-    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--ctp-accent, #2977d4); outline-offset: -2px; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid var(--ctp-accent, #2977d4); outline-offset: -2px; }
     button:disabled { opacity: .55; cursor: default; }
     .summary { display: flex; align-items: center; min-height: 36px; gap: 6px; padding: 3px 7px; }
     .main { flex: 1; display: grid; grid-template-columns: minmax(70px, 1fr) auto; align-items: center; text-align: start; gap: 2px 12px; min-width: 0; }
@@ -170,7 +172,6 @@ export class TaskProgressElement extends LitElement {
     h3 { font-size: 1em; margin: 0 0 7px; font-weight: 600; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 5px 0; font-size: .88em; }
     dt { color: var(--ctp-muted, #707070); } dd { margin: 0; overflow-wrap: anywhere; }
-    select { max-width: 100%; padding: 6px; border: 1px solid var(--ctp-border, #ddd); border-radius: 6px; background: var(--ctp-surface, #fff); }
     .event { border-bottom: 1px solid var(--ctp-border, #ddd); padding: 7px 0; overflow-wrap: anywhere; }
     .event p { margin: 3px 0; } .error { color: var(--ctp-error, #bd4d3a); font-size: .88em; padding: 5px 10px; overflow-wrap: anywhere; }
     .grip { cursor: move; touch-action: none; user-select: none; color: var(--ctp-muted, #707070); }
@@ -290,24 +291,6 @@ export class TaskProgressElement extends LitElement {
     }
   }
 
-  private async bindHeartbeat(path: string | null): Promise<void> {
-    const threadId = this.threadId;
-    if (!threadId || !this.requester || this.busy) return;
-    this.busy = true;
-    try {
-      const result = await this.requester({ method: "bind-heartbeat", threadId, path });
-      if (this.threadId === threadId) {
-        this.data = result;
-        this.heartbeatHistory = null;
-        this.heartbeatHistorySource = null;
-      }
-    } catch (error) {
-      if (this.threadId === threadId) this.connectionError = String(error);
-    } finally {
-      if (this.threadId === threadId) this.busy = false;
-    }
-  }
-
   private async loadHeartbeatHistory(more = false): Promise<void> {
     const threadId = this.threadId;
     const sourcePath = this.data.heartbeat?.sourcePath;
@@ -404,16 +387,16 @@ export class TaskProgressElement extends LitElement {
   private renderHeartbeat() {
     const heartbeat = this.data.heartbeat;
     if (!heartbeat) return nothing;
-    if (heartbeat.status === "candidates")
-      return html`<div class="heartbeat"><h3>${this.t("Heartbeat source", "心跳来源")}</h3><p class="muted">${this.t("Choose the ledger associated with this chat.", "请选择与此聊天关联的心跳台账。")}</p><select aria-label=${this.t("Heartbeat ledger", "心跳台账")} ?disabled=${this.busy} @change=${(
-        event: Event,
-      ) => {
-        const value = (event.target as HTMLSelectElement).value;
-        if (value) void this.bindHeartbeat(value);
-      }}><option value="">${this.t("Select a ledger…", "选择台账…")}</option>${heartbeat.candidates.map((candidate) => html`<option value=${candidate.path}>${candidate.path}</option>`)}</select><button @click=${() => void this.bindHeartbeat(null)}>${this.t("Hide", "隐藏")}</button></div>`;
-    return html`<div class="heartbeat"><h3>${this.t("Heartbeat", "心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3>
+    if (
+      heartbeat.status === "none" ||
+      heartbeat.status === "candidates" ||
+      (heartbeat.status === "error" && !heartbeat.sourcePath)
+    )
+      return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")}</h3><p class=${heartbeat.error ? "error" : "muted"}>${heartbeat.error ?? heartbeat.warning ?? this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p></div>`;
+    return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3>
       ${heartbeat.error ? html`<p class="error">${heartbeat.error}</p>` : nothing}
-      <dl><dt>${this.t("Latest audit", "最近巡检")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
+      ${heartbeat.warning ? html`<p class="muted">${heartbeat.warning}</p>` : nothing}
+      <dl><dt>${this.t("Source path", "来源路径")}</dt><dd>${heartbeat.sourcePath}</dd><dt>${this.t("Access", "访问方式")}</dt><dd>${this.t("Read only", "只读")}</dd>${heartbeat.basis ? html`<dt>${this.t("Source basis", "来源依据")}</dt><dd>${this.heartbeatBasisLabel(heartbeat.basis)}</dd>` : nothing}<dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
         heartbeat.itemStatusCounts
           ? Object.entries(heartbeat.itemStatusCounts)
               .map(([status, count]) => `${this.status(status)} ${count}`)
@@ -423,7 +406,6 @@ export class TaskProgressElement extends LitElement {
       ${heartbeat.findings.length ? html`<details><summary>${this.t("Audit findings", "审计结果")} (${heartbeat.findings.length})</summary>${heartbeat.findings.map((finding) => html`<p class="muted">${finding.severity}: ${finding.message}</p>`)}</details>` : nothing}
       <details><summary>${this.t("Items and blockers", "登记项与阻塞")}</summary>${heartbeat.items.map((item) => html`<div class="event"><span class="status">${String(item.status ?? "")}</span> ${String(item.item ?? item.id ?? "")}<p class="muted">${String(item.evidence ?? "")}</p></div>`)}</details>
       ${this.renderHeartbeatHistory(heartbeat)}
-      <details><summary class="muted">${this.t("Source", "来源")}</summary><p class="muted">${heartbeat.sourcePath}</p><button ?disabled=${this.busy} @click=${() => void this.bindHeartbeat(null)}>${this.t("Unbind and hide heartbeat", "解除关联并隐藏心跳")}</button></details>
     </div>`;
   }
 
@@ -434,6 +416,19 @@ export class TaskProgressElement extends LitElement {
       counts.set(status, (counts.get(status) ?? 0) + 1);
     }
     return [...counts].map(([status, count]) => `${this.status(status)} ${count}`).join(" · ");
+  }
+
+  private heartbeatBasisLabel(basis: NonNullable<TaskPanelHeartbeat["basis"]>): string {
+    switch (basis) {
+      case "configured":
+        return this.t("Project configuration", "项目配置");
+      case "latest-recorded-wake":
+        return this.t("Latest heartbeat record", "最近心跳记录");
+      case "items-inventory":
+        return this.t("Project ledger (no heartbeat record yet)", "项目台账（暂无心跳记录）");
+      default:
+        return this.t("Automatic resolution", "自动定位");
+    }
   }
 
   private renderHistory() {
@@ -480,7 +475,7 @@ export class TaskProgressElement extends LitElement {
         sourceStatus === "stale"
           ? this.t("Heartbeat task source is stale", "心跳任务来源已过期")
           : sourceStatus === "pending-selection"
-            ? this.t("Heartbeat source selection is required", "需要选择心跳来源")
+            ? this.t("Current task source is unresolved", "当前任务来源尚未解析")
             : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
       return `${label}${this.data.taskSource?.path ? ` · ${this.data.taskSource.path}` : ""}${this.data.taskSource?.error ? ` · ${this.data.taskSource.error}` : ""}`;
     }

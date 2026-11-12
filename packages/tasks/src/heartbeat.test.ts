@@ -70,7 +70,37 @@ test("absent source stays hidden; unrelated unique source requires selection", a
   }
 });
 
-test("exact thread association auto-selects, multiple matches do not", async () => {
+test("project heartbeat view is independent of chat associations and isolated by project root", async () => {
+  const f = await fixture();
+  try {
+    const absent = await f.service.projectView(f.project);
+    assert.equal(absent.status, "none");
+    await assert.rejects(readFile(resolve(f.root, "data", "heartbeat", "bindings.json")), {
+      code: "ENOENT",
+    });
+    await writeFile(f.source, ledger("some-other-chat"));
+    const secondProject = resolve(f.root, "second-project");
+    await mkdir(resolve(secondProject, ".git"), { recursive: true });
+    const secondLedger = resolve(secondProject, "heartbeat.md");
+    await writeFile(secondLedger, ledger("unrelated-chat"));
+    const project = await f.service.projectView(f.project);
+    const otherProject = await f.service.projectView(secondProject);
+    assert.equal(project.sourcePath, await realpath(f.source));
+    assert.equal(otherProject.sourcePath, await realpath(secondLedger));
+    assert.equal(project.status, "ready");
+    assert.equal(project.status, otherProject.status);
+    assert.ok(project.basis === "items-inventory" || project.basis === "latest-recorded-wake");
+    const history = await f.service.projectHistory(f.project);
+    assert.equal(history.sourcePath, await realpath(f.source));
+    await assert.rejects(readFile(resolve(f.root, "data", "heartbeat", "bindings.json")), {
+      code: "ENOENT",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("first unique association latches; an initially ambiguous set requires selection", async () => {
   const f = await fixture();
   try {
     await writeFile(f.source, ledger("chat-AB"));
@@ -80,12 +110,101 @@ test("exact thread association auto-selects, multiple matches do not", async () 
     assert.equal(view?.status, "ready");
     assert.equal(view?.certifiesCurrent, true);
     await writeFile(resolve(f.project, "second.md"), ledger("chat-A"));
-    const ambiguous = await f.service.view("chat-A", f.project);
+    const latched = await f.service.view("chat-A", f.project);
+    assert.equal(latched?.status, "ready");
+    assert.equal(latched?.sourcePath, f.source);
+    await f.service.bind("chat-A", null, f.project);
+    const ambiguousService = new HeartbeatService(resolve(f.root, "ambiguous-data"), {
+      kitPath: f.kitPath,
+      refreshMs: 0,
+    });
+    const ambiguous = await ambiguousService.view("chat-A", f.project);
     assert.equal(ambiguous?.status, "candidates");
     assert.equal(ambiguous?.candidates.length, 2);
-    const task = await f.service.taskProjection("chat-A", f.project);
-    assert.equal(task.status, "pending-selection");
-    assert.equal(task.task, null);
+    assert.equal(
+      (await ambiguousService.taskProjection("chat-A", f.project)).status,
+      "pending-selection",
+    );
+    ambiguousService.close();
+  } finally {
+    await f.close();
+  }
+});
+
+test("automatic source remains latched and stale through loss of association, deletion, and restart", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const selected = await f.service.view("chat-A", f.project);
+    assert.equal(selected?.status, "ready");
+    const replacement = resolve(f.project, "replacement.md");
+    await writeFile(f.source, ledger("chat-B"));
+    await writeFile(replacement, ledger("chat-A"));
+    const invalidated = await f.service.view("chat-A", f.project);
+    assert.equal(invalidated?.status, "stale");
+    assert.equal(invalidated?.sourcePath, f.source);
+    assert.equal((await f.service.taskProjection("chat-A", f.project)).status, "stale");
+    await rm(f.source);
+    f.service.close();
+    const reopened = new HeartbeatService(resolve(f.root, "data"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      refreshMs: 0,
+    });
+    const afterRestart = await reopened.view("chat-A", f.project);
+    assert.equal(afterRestart?.status, "stale");
+    assert.equal(afterRestart?.sourcePath, f.source);
+    assert.equal((await reopened.taskProjection("chat-A", f.project)).status, "stale");
+    reopened.close();
+  } finally {
+    await f.close();
+  }
+});
+
+test("incomplete file and depth scans block automatic selection but allow explicit candidate binding", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    await writeFile(resolve(f.project, "other.md"), ledger("chat-A"));
+    const fileLimited = new HeartbeatService(resolve(f.root, "file-limited"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      maxFiles: 1,
+      refreshMs: 0,
+    });
+    const pending = await fileLimited.view("chat-A", f.project);
+    assert.equal(pending?.discoveryComplete, false);
+    assert.equal(
+      (await fileLimited.taskProjection("chat-A", f.project)).status,
+      "pending-selection",
+    );
+    const selected = await fileLimited.bind(
+      "chat-A",
+      pending?.candidates[0]?.path ?? f.source,
+      f.project,
+    );
+    assert.equal(selected?.status, "ready");
+    fileLimited.close();
+
+    const nested = resolve(f.project, "nested");
+    await mkdir(nested);
+    await writeFile(resolve(nested, "nested.md"), ledger("chat-Z"));
+    const depthLimited = new HeartbeatService(resolve(f.root, "depth-limited"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      maxDepth: 0,
+      refreshMs: 0,
+    });
+    const depthView = await depthLimited.view("chat-Z", f.project);
+    assert.equal(depthView?.discoveryComplete, false);
+    assert.equal(
+      (await depthLimited.taskProjection("chat-Z", f.project)).status,
+      "pending-selection",
+    );
+    const projectView = await depthLimited.projectView(f.project);
+    assert.equal(projectView.status, "ready");
+    assert.match(projectView.warning ?? "", /discovery was incomplete/);
+    depthLimited.close();
   } finally {
     await f.close();
   }

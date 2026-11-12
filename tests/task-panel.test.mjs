@@ -58,6 +58,7 @@ const task = {
 const heartbeat = {
   status: "ready",
   sourcePath: "/workspace/heartbeat.md",
+  basis: "configured",
   candidates: [{ path: "/workspace/heartbeat.md", associated: true }],
   refreshedAt: "2026-11-11T12:00:00Z",
   modifiedAt: "2026-11-11T11:59:00Z",
@@ -183,7 +184,8 @@ test("ordinary chat task panel browser flows", async (t) => {
             error: "Multiple heartbeat ledgers match this chat",
           };
         });
-        await panel.getByText(/需要选择心跳来源/).waitFor();
+        await panel.getByText(/当前任务来源尚未解析/).waitFor();
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /请选择|选择台账/);
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
 
         await page.evaluate(() => {
@@ -460,7 +462,7 @@ test("ordinary chat task panel browser flows", async (t) => {
       },
     );
     await t.test(
-      "heartbeat candidate selection, stale state, findings, history and unbind",
+      "automatic project Heartbeat status, stale state, findings, history and source details",
       async () => {
         const { context, page, panel } = await open();
         await page.evaluate((value) => {
@@ -468,10 +470,32 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await panel.getByRole("button", { name: /任务进度/ }).click();
-        await panel
-          .getByRole("combobox", { name: "心跳台账" })
-          .selectOption("/workspace/heartbeat.md");
-        await panel.getByRole("heading", { name: /心跳 当前未认证/ }).waitFor();
+        await panel.getByRole("heading", { name: "项目心跳" }).waitFor();
+        assert.match(
+          await panel.locator("section.panel").innerText(),
+          /当前项目没有可显示的心跳来源/,
+        );
+        assert.equal(await panel.getByRole("combobox").count(), 0);
+        assert.equal(await panel.getByRole("button", { name: /隐藏|解除关联/ }).count(), 0);
+        assert.equal(
+          await page.evaluate(() =>
+            window.fixture.calls.some((call) => call.method === "bind-heartbeat"),
+          ),
+          false,
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = { ...value, status: "ready" };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await panel.getByRole("heading", { name: /项目心跳 当前未认证/ }).waitFor();
+        assert.match(await panel.locator("section.panel").innerText(), /只读/);
+        assert.match(await panel.locator("section.panel").innerText(), /\/workspace\/heartbeat.md/);
+        assert.match(await panel.locator("section.panel").innerText(), /项目配置/);
+        assert.match(await panel.locator("section.panel").innerText(), /最近心跳记录/);
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /latest-recorded-wake|items-inventory/,
+        );
         assert.equal(await panel.getByText("预期下次巡检", { exact: true }).count(), 0);
         await panel.locator("summary").filter({ hasText: "登记项与阻塞" }).click();
         assert.match(await panel.locator("section.panel").innerText(), /处理阻塞/);
@@ -484,12 +508,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         });
         assert.match(await panel.locator("section.panel").innerText(), /已过期/);
         assert.match(await panel.locator("section.panel").innerText(), /台账文件已删除/);
-        await panel
-          .locator("summary")
-          .filter({ hasText: /^来源$/ })
-          .click();
-        await panel.getByRole("button", { name: "解除关联并隐藏心跳" }).click();
-        assert.equal(await panel.getByRole("heading", { name: /心跳/ }).count(), 0);
+        assert.equal(await panel.getByRole("button", { name: /解除关联并隐藏心跳/ }).count(), 0);
         await context.close();
       },
     );
@@ -509,7 +528,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         { task, heartbeat },
       );
       await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-      await panel.getByRole("heading", { name: /心跳 当前未认证/ }).waitFor();
+      await panel.getByRole("heading", { name: /项目心跳 当前未认证/ }).waitFor();
       const [panelBox, goalBox] = await Promise.all([
         panel.boundingBox(),
         page.locator("#goal-fixture").boundingBox(),

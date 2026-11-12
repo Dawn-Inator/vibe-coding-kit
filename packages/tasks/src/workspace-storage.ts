@@ -302,7 +302,16 @@ export class WorkspaceTaskStorage {
             if (bindingsText !== null) {
               const bindings = JSON.parse(bindingsText) as Record<string, unknown>;
               const binding = bindings[threadId];
-              if (typeof binding === "string" || binding === null) {
+              const bindingRecord =
+                binding && typeof binding === "object" && !Array.isArray(binding)
+                  ? (binding as { path?: unknown; origin?: unknown })
+                  : null;
+              if (
+                typeof binding === "string" ||
+                binding === null ||
+                (typeof bindingRecord?.path === "string" &&
+                  (bindingRecord.origin === "automatic" || bindingRecord.origin === "explicit"))
+              ) {
                 await ensureWritable();
                 migrated =
                   (await atomicCreateFile(
@@ -317,7 +326,10 @@ export class WorkspaceTaskStorage {
         // Validate migrated/previous workspace identity and rebuild the derived snapshot there.
         const current = await taskStore.get(threadId);
         if (current) await ensureWritable();
-        const heartbeat = new HeartbeatService(heartbeatBase, this.#options.heartbeat);
+        const heartbeat = new HeartbeatService(heartbeatBase, {
+          ...(this.#options.heartbeat ?? {}),
+          prepareWrite: ensureWritable,
+        });
         const context: WorkspaceTaskStorageContext = {
           taskStore,
           heartbeat,

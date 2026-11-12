@@ -111,13 +111,15 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     const empty = await request("get", {});
     const emptyState = empty.result as {
       task: TaskState | null;
-      heartbeat: unknown;
+      heartbeat: { status: string; sourcePath: string | null; itemCount: number };
       execution: { state: string; source: string; observedAt: string };
       completionBasis: string;
       storage: StorageDescriptor;
     };
     assert.equal(emptyState.task, null);
-    assert.equal(emptyState.heartbeat, null);
+    assert.equal(emptyState.heartbeat.status, "none");
+    assert.equal(emptyState.heartbeat.sourcePath, null);
+    assert.equal(emptyState.heartbeat.itemCount, 0);
     assert.equal(emptyState.execution.state, "idle");
     assert.equal(emptyState.execution.source, "codex-app-server");
     assert.ok(Number.isFinite(Date.parse(emptyState.execution.observedAt)));
@@ -417,12 +419,13 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     const ambiguous = (await request("get", {}, "ambiguous-chat")).result as {
       task: TaskState | null;
       taskSource: { status: string; error?: string };
-      heartbeat: { status: string; candidates: readonly unknown[] };
+      heartbeat: { status: string; sourcePath: string | null; candidates: readonly unknown[] };
     };
     assert.equal(ambiguous.task, null);
     assert.equal(ambiguous.taskSource.status, "pending-selection");
-    assert.equal(ambiguous.heartbeat.status, "candidates");
-    assert.equal(ambiguous.heartbeat.candidates.length, 2);
+    assert.equal(ambiguous.heartbeat.status, "ready");
+    assert.equal(ambiguous.heartbeat.sourcePath, await realpath(join(root, "heartbeat-one.md")));
+    assert.equal(ambiguous.heartbeat.candidates.length, 0);
     assert.match(ambiguous.taskSource.error ?? "", /Multiple heartbeat ledgers/);
     const ambiguousEventsPath = eventPath(
       join(await realpath(root), ".workspace", "codex-task-progress"),
@@ -433,7 +436,223 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       history: { events: unknown[] };
     };
     assert.deepEqual(ambiguousHistory.history.events, []);
+
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs", maxFiles: 1 } }),
+    );
+    const boundedLedger = ambiguousLedger.replaceAll("ambiguous-chat", "bounded-chat");
+    await writeFile(join(root, "heartbeat-bounded-a.md"), boundedLedger);
+    await writeFile(join(root, "heartbeat-bounded-b.md"), boundedLedger);
+    await assert.rejects(
+      request(
+        "initialize",
+        {
+          requestId: "bounded-init",
+          expectedRevision: 0,
+          title: "Wait for complete discovery",
+          reason: "Bounded discovery is inconclusive",
+          objectives: [{ id: "B1", title: "Do not create local scope" }],
+        },
+        "bounded-chat",
+      ),
+      hasCode("TASK_SOURCE_SELECTION_REQUIRED"),
+    );
+    const bounded = (await request("get", {}, "bounded-chat")).result as {
+      task: TaskState | null;
+      taskSource: { status: string; error?: string };
+      heartbeat: {
+        status: string;
+        sourcePath: string | null;
+        warning?: string;
+        discoveryComplete?: boolean;
+      };
+    };
+    assert.equal(bounded.task, null);
+    assert.equal(bounded.taskSource.status, "pending-selection");
+    assert.equal(bounded.heartbeat.discoveryComplete, false);
+    assert.equal(bounded.heartbeat.status, "ready");
+    assert.ok(
+      bounded.heartbeat.sourcePath,
+      "project Heartbeat displays independently of ambiguous chat-task association",
+    );
+    assert.match(bounded.heartbeat.warning ?? "", /discovery was incomplete/);
+    assert.match(bounded.taskSource.error ?? "", /incomplete/);
   } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic heartbeat authority stays latched through association loss and restart", async () => {
+  const root = await mkdtemp("/tmp/ctph-heartbeat-latched-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  async function request(
+    action: "initialize" | "update" | "get" | "bind-heartbeat" | "heartbeat-history",
+    input: unknown,
+    threadId = "sticky-chat",
+  ) {
+    const toolNames = {
+      initialize: "task_progress_initialize",
+      update: "task_progress_update",
+      get: "task_progress_get",
+      "bind-heartbeat": "task_progress_bind_heartbeat",
+      "heartbeat-history": "task_progress_heartbeat_history",
+    } as const;
+    const auth: GoalProgressIpcAuthorization = {
+      kind: "codex-request",
+      toolName: toolNames[action],
+      identity: {
+        threadId,
+        sessionId: threadId,
+        turnId: "turn-1",
+        callId: `sticky-${++call}`,
+        model: "test",
+        threadSource: "user",
+        cwd: root,
+      },
+    };
+    return client.request({ method: "task.request", params: { action, auth, input } });
+  }
+  const localEvents = eventPath(
+    join(await realpath(root), ".workspace", "codex-task-progress"),
+    "sticky-chat",
+  );
+  const original =
+    "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n";
+  let reopened: GoalProgressHelper | undefined;
+  let canonicalSourcePath: string | undefined;
+  try {
+    const localStore = new TaskStore(join(root, ".workspace", "codex-task-progress"));
+    await localStore.initialize("sticky-chat", {
+      requestId: "dormant",
+      expectedRevision: 0,
+      title: "Dormant",
+      reason: "Keep prior local record",
+      objectives: [{ id: "L1", title: "Local" }],
+    });
+    await mkdir(join(root, "kit"), { recursive: true });
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs" } }),
+    );
+    await writeFile(
+      join(root, "kit/heartbeat-ledger-api.mjs"),
+      `export function inspectHeartbeatLedger(text,{mode}) { return { mode, certifiesCurrent:true, passed:true, wakes:[{heading:"wake",timeMs:1794391200000,rows:[]}], items:[{id:"H1",source:"request",item:"Source task",status:"blocked",evidence:"Waiting",line:6}], findings:[]}; }`,
+    );
+    await writeFile(join(root, "heartbeat-A.md"), original);
+    await writeFile(
+      join(root, "heartbeat-B.md"),
+      original.replace("sticky-chat", "unrelated-chat"),
+    );
+    await helper.start();
+    const initial = (await request("get", {})).result as {
+      taskSource: { status: string; path: string };
+      heartbeat: { status: string; sourcePath: string | null; basis?: string };
+    };
+    assert.equal(initial.taskSource.status, "ready");
+    assert.equal(initial.heartbeat.status, "ready");
+    canonicalSourcePath = await realpath(join(root, "heartbeat-A.md"));
+    assert.equal(initial.taskSource.path, canonicalSourcePath);
+    assert.equal(
+      await readFile(join(root, ".workspace", "codex-task-progress", ".gitignore"), "utf8"),
+      "*\n",
+    );
+    const before = await readFile(localEvents, "utf8");
+    const projectHistory = (await request("heartbeat-history", { limit: 1 })).result as {
+      heartbeatHistory: { sourcePath: string | null };
+    };
+    assert.equal(projectHistory.heartbeatHistory.sourcePath, canonicalSourcePath);
+    await writeFile(join(root, "heartbeat-A.md"), original.replace("sticky-chat", "other-chat"));
+    await writeFile(join(root, "heartbeat-C.md"), original);
+    const stale = (await request("get", {})).result as {
+      task: TaskState | null;
+      taskSource: { status: string; path: string };
+    };
+    assert.equal(stale.task, null);
+    assert.equal(stale.taskSource.status, "stale");
+    assert.equal(stale.taskSource.path, canonicalSourcePath);
+    await assert.rejects(
+      request("initialize", {
+        requestId: "parallel",
+        expectedRevision: 0,
+        title: "Forbidden",
+        reason: "No duplicate checklist",
+        objectives: [{ id: "X", title: "X" }],
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    await rm(join(root, "heartbeat-A.md"));
+    await helper.stop();
+    const restartHelper = new GoalProgressHelper({
+      paths,
+      runtime: runtime(root),
+      resolveNativeGoal: async () => null,
+      visibleThreadRecoveryDelaysMs: [],
+    });
+    reopened = restartHelper;
+    await restartHelper.start();
+    const afterRestart = (
+      await client.request({
+        method: "task.request",
+        params: {
+          action: "get",
+          auth: {
+            kind: "codex-request",
+            toolName: "task_progress_get",
+            identity: {
+              threadId: "sticky-chat",
+              sessionId: "sticky-chat",
+              turnId: "turn-2",
+              callId: `sticky-${++call}`,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input: {},
+        },
+      })
+    ).result as { task: TaskState | null; taskSource: { status: string; path: string } };
+    assert.equal(afterRestart.task, null);
+    assert.equal(afterRestart.taskSource.status, "stale");
+    assert.equal(afterRestart.taskSource.path, canonicalSourcePath);
+    assert.equal(await readFile(localEvents, "utf8"), before);
+    await rm(join(root, ".workspace", "codex-task-progress", ".gitignore"));
+    await writeFile(
+      join(root, "heartbeat-fresh.md"),
+      original.replaceAll("sticky-chat", "fresh-chat"),
+    );
+    const fresh = (await request("get", {}, "fresh-chat")).result as {
+      task: (TaskState & { source?: { kind: string; path: string; readOnly: boolean } }) | null;
+      taskSource: { status: string };
+    };
+    assert.equal(fresh.task?.source?.kind, "kit-heartbeat");
+    assert.equal(fresh.task?.source?.readOnly, true);
+    assert.equal(fresh.task?.source?.path, await realpath(join(root, "heartbeat-fresh.md")));
+    assert.equal(fresh.taskSource.status, "ready");
+    await assert.rejects(
+      readFile(
+        eventPath(join(await realpath(root), ".workspace", "codex-task-progress"), "fresh-chat"),
+      ),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      await readFile(join(root, ".workspace", "codex-task-progress", ".gitignore"), "utf8"),
+      "*\n",
+    );
+    await restartHelper.stop();
+  } finally {
+    await reopened?.stop();
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

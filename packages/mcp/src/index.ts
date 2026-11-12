@@ -672,7 +672,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Read Task Progress",
       schema: EmptyBusinessSchema,
       description:
-        "Read this ordinary chat's task, revision and heartbeat state. A taskSource path means a read-only Kit projection; pending-selection means choose or unbind a matching ledger before local writes. Stale/error sources also block local writes. Otherwise initialize only if no local task exists.",
+        "Read this ordinary chat's task, revision and current project Heartbeat. The project source is displayed automatically. A taskSource path means a related read-only Kit task record; unresolved or stale task sources do not permit parallel local writes. Otherwise initialize only if no local task exists.",
     },
     {
       name: "task_progress_initialize",
@@ -680,7 +680,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Initialize Task Progress",
       schema: TaskInitializeInputSchema,
       description:
-        "Create this chat's local task checklist when no Kit source is bound or awaiting selection. Bound sources reject writes with TASK_SOURCE_READ_ONLY; ambiguous sources require selection. No native Goal is created. Use stable IDs, requestId and expectedRevision 0.",
+        "Create this chat's local task checklist when no related Kit task source or local task exists. Related sources reject parallel writes with TASK_SOURCE_READ_ONLY; unresolved source relations also block local writes. No native Goal is created. Use stable IDs, requestId and expectedRevision 0.",
     },
     {
       name: "task_progress_update",
@@ -688,7 +688,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Update Task Progress",
       schema: TaskUpdateInputSchema,
       description:
-        "Update a local checklist. A task projected from a Kit heartbeat ledger is read-only; update that source through its normal workflow or unbind it. Read first, use returned expectedRevision, and retry identical requests with the same requestId.",
+        "Update a local checklist. A related Kit task source is read-only; update that canonical source through its normal project workflow. Read first, use returned expectedRevision, and retry identical requests with the same requestId.",
     },
     {
       name: "task_progress_rescope",
@@ -696,7 +696,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Adjust Task Scope",
       schema: TaskRescopeInputSchema,
       description:
-        "Extend or correct a local checklist. A task projected from a Kit heartbeat ledger is read-only; update that source through its normal workflow or unbind it. Preserve stable IDs and previous work.",
+        "Extend or correct a local checklist. A related Kit task source is read-only; update that canonical source through its normal project workflow. Preserve stable IDs and previous work.",
     },
     {
       name: "task_progress_history",
@@ -730,7 +730,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       title: "Associate Heartbeat Ledger",
       schema: z.object({ path: z.string().min(1).max(4096).nullable() }).strict(),
       description:
-        "Select a discovered project heartbeat ledger for read-only display, or pass null to unbind. Does not create a timer, change the ledger, or perform an audit.",
+        "Compatibility and recovery operation for existing chat task-source bindings. Project Heartbeat display is automatic; this tool is not for routine project source selection. It does not create a timer, change the ledger, or perform an audit.",
     },
   ] as const;
   for (const tool of taskTools) {

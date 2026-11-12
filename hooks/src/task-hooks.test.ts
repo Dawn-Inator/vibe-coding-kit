@@ -31,7 +31,9 @@ test("ordinary SessionStart routes through shared guidance and honors read-only 
   );
   assert.match(TASK_PROGRESS_SESSION_CONTEXT, /task_progress_get first/);
   assert.match(TASK_PROGRESS_SESSION_CONTEXT, /taskSource/);
-  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /pending-selection/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /shows project Heartbeat automatically/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /do not ask the user to choose/);
+  assert.doesNotMatch(TASK_PROGRESS_SESSION_CONTEXT, /pending-selection|select a ledger/i);
   assert.doesNotMatch(TASK_PROGRESS_SESSION_CONTEXT, /A 100% checklist|verified evidence/);
   assert.ok(TASK_PROGRESS_SESSION_CONTEXT.length <= 512);
 });

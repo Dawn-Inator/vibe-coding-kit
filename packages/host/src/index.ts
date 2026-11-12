@@ -2372,12 +2372,12 @@ export class GoalProgressHelper {
     const { taskStore, heartbeat: heartbeatService } = workspace;
     const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
-    let heartbeat = await heartbeatService.view(threadId, cwd);
+    const heartbeat = await heartbeatService.projectView(cwd);
     let sourceTask = await heartbeatService.taskProjection(threadId, cwd);
     if (action === "bind-heartbeat") {
       await workspace.ensureWritable();
       const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
-      heartbeat = await heartbeatService.bind(threadId, bind.path, cwd);
+      await heartbeatService.bind(threadId, bind.path, cwd);
       sourceTask = await heartbeatService.taskProjection(threadId, cwd);
     }
     if (
@@ -2395,12 +2395,12 @@ export class GoalProgressHelper {
     )
       throw new GoalProgressIpcHandlerError(
         "TASK_SOURCE_SELECTION_REQUIRED",
-        `${sourceTask.error ?? "Multiple heartbeat ledgers may belong to this chat."} Use task_progress_bind_heartbeat to select one or pass null to intentionally unbind before editing a local checklist.`,
+        `${sourceTask.error ?? "The current-task Kit source relation is unresolved."} Do not create or change a parallel local checklist until the runtime resolves the task-source relation.`,
       );
     if (["initialize", "update", "rescope"].includes(action) && sourceTask.sourcePath)
       throw new GoalProgressIpcHandlerError(
         "TASK_SOURCE_READ_ONLY",
-        `This task is projected from read-only heartbeat source ${sourceTask.sourcePath}. Update the source ledger, or unbind it with task_progress_bind_heartbeat before using local task records.`,
+        `This task is projected from read-only current-task Kit source ${sourceTask.sourcePath}. Update that canonical source through the project workflow; do not create a parallel local checklist.`,
       );
     if (["initialize", "update", "rescope"].includes(action)) await workspace.ensureWritable();
     if (action === "initialize")
@@ -2464,8 +2464,7 @@ export class GoalProgressHelper {
           : undefined;
       const heartbeatHistory =
         action === "heartbeat-history"
-          ? await heartbeatService.history(
-              threadId,
+          ? await heartbeatService.projectHistory(
               cwd,
               (() => {
                 const options = z

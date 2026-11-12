@@ -21,8 +21,8 @@ importers:
         specifier: ^3.3.3
         version: 3.3.3
       vibe-coding-kit:
-        specifier: github:Dawn-Inator/vibe-coding-kit#33e391b96aad99e6c7323fa27072c641e92491d9
-        version: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/33e391b96aad99e6c7323fa27072c641e92491d9(zod@4.4.3)
+        specifier: github:Dawn-Inator/vibe-coding-kit#5ce3ff484aee635875b221550ea461eb3679a937
+        version: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/5ce3ff484aee635875b221550ea461eb3679a937(zod@4.4.3)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -832,8 +832,8 @@ packages:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
 
-  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/33e391b96aad99e6c7323fa27072c641e92491d9:
-    resolution: {gitHosted: true, integrity: sha512-Apt63tUaYOsOBhDyqQF37S3du79pTLuHjMzHifp6wLpbN3OC4Qo62QY0Efc7PLI8dKkmvqjK51UPiVZtM1xt9A==, tarball: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/33e391b96aad99e6c7323fa27072c641e92491d9}
+  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/5ce3ff484aee635875b221550ea461eb3679a937:
+    resolution: {gitHosted: true, integrity: sha512-lj3MGaCbge3kYQoNn+rnB6EHvmSetib66JyE9tQirD56JxWKYuu+sidY3Sm5eaKKalhf57XzX7dGO2m+o8hPvA==, tarball: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/5ce3ff484aee635875b221550ea461eb3679a937}
     version: 0.1.0
     engines: {node: '>=20'}
     hasBin: true
@@ -1535,7 +1535,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/33e391b96aad99e6c7323fa27072c641e92491d9(zod@4.4.3):
+  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/5ce3ff484aee635875b221550ea461eb3679a937(zod@4.4.3):
     optionalDependencies:
       zod: 4.4.3
 
