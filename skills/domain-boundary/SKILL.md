@@ -16,6 +16,13 @@ most of this still applies — just collapse "product domain" and "company domai
 keep the "don't use raw provider URLs as product entries" rule, which matters regardless of how many
 domains you have.
 
+## Naming and environment mapping
+
+For concrete api / dev-api / stg-api names, frontend and CDN hostnames, read
+[域名命名与环境映射](references/naming.md). Use it as the new-project default; preserve registered
+existing contracts. For bucket and object-key layout, use
+[object-storage-layout](../object-storage-layout/SKILL.md).
+
 ## Hard Rule
 
 - Use the **product domain** (e.g. `*.<product>.example.com`) for every user-facing product asset: API

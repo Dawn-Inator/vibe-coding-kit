@@ -21,6 +21,7 @@ The runtime under `src/` is called directly from the pinned checkout. Consumers 
 ## Contents
 
 - [`skills/`](skills/) contains the current reusable skills (backend, frontend, data, workflow and agent-orchestration). Projects select and extend them according to their own needs.
+- 域名与对象存储规范：[`domain-boundary`](skills/domain-boundary/SKILL.md) 提供 `api` / `dev-api` 等命名模板；[`object-storage-layout`](skills/object-storage-layout/SKILL.md) 提供分桶、环境隔离与对象目录规则。
 - [`tutorial/`](tutorial/) explains the methods and tradeoffs behind the skills. Tutorial examples are illustrative, not mandatory project policy.
 - [`guidance/environment-and-secrets.md`](guidance/environment-and-secrets.md) provides an adoptable baseline for configuration naming, precedence, and secrets.
 - [`src/`](src/) contains reusable runtime mechanisms.
