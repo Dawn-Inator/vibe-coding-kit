@@ -639,3 +639,84 @@ test("realistic closeout wake heading is the only current wake and all audit row
 		text,
 	);
 });
+
+test("current and history audit current inventory instead of archived Items", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const table = (row) =>
+		`## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n${row}\n`;
+	const historical = `${wake("2026-01-01T10:00Z")}\n${table("| I1 | report:r1 | old | done | receipt |")}`;
+	writeFileSync(path, historical);
+	migrate({ root: dir, path });
+	const live = `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | done | |")}\n## Notes\n| I2 | report:r2 | stray | done | receipt |\n`;
+	const pair = write({ root: dir, path, text: live });
+	const current = inspectHeartbeatLedgerPair(pair, {
+		mode: "current",
+		now: new Date("2026-01-01T11:30Z"),
+	});
+	const items = inspectHeartbeatLedgerPair(pair, {
+		mode: "items",
+		now: new Date("2026-01-01T11:30Z"),
+	});
+	for (const rule of ["item-done-evidence", "item-outside-table"]) {
+		assert.ok(
+			items.findings.some((f) => f.rule === rule),
+			rule,
+		);
+		assert.ok(
+			current.findings.some((f) => f.rule === rule),
+			rule,
+		);
+	}
+	assert.equal(current.passed, false);
+	assert.equal(current.certifiesCurrent, false);
+	assert.equal(current.items[0].item, "changed");
+	const history = inspectHeartbeatLedgerPair(pair, {
+		mode: "history",
+		latest: true,
+		now: new Date("2026-01-01T11:30Z"),
+	});
+	assert.ok(history.findings.some((f) => f.rule === "item-outside-table"));
+	assert.equal(history.items[0].item, "changed");
+	assert.equal(history.wakes.length, 2);
+});
+
+test("owner and inventory guard findings use current Items in paired history", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const table = (row) =>
+		`## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n${row}\n`;
+	writeFileSync(
+		path,
+		`${wake("2026-01-01T10:00Z")}\n${table("| I1 | report:r1 | old | done | receipt |")}`,
+	);
+	migrate({ root: dir, path });
+	const pair = write({
+		root: dir,
+		path,
+		text: `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | owner <- it is hard | |")}`,
+	});
+	for (const mode of ["current", "items"]) {
+		const result = inspectHeartbeatLedgerPair(pair, { mode, latest: true });
+		assert.ok(
+			result.findings.some((f) => f.rule === "item-owner-category"),
+			mode,
+		);
+		assert.ok(
+			result.findings.some((f) => f.rule === "item-owner-authorization-note"),
+			mode,
+		);
+	}
+	const dispatched = write({
+		root: dir,
+		path,
+		text: `${wake("2026-01-01T12:00Z")}\n${table("| I1 | report:r1 | changed | dispatched worker | |")}`,
+	});
+	const history = inspectHeartbeatLedgerPair(dispatched, {
+		mode: "history",
+		latest: true,
+	});
+	assert.ok(
+		history.findings.some((f) => f.rule === "item-dispatched-no-owner"),
+	);
+});

@@ -91,13 +91,19 @@ export async function verifyTaskHistoryHead(path, identity, records) {
 		if (e?.code === "ENOENT") return;
 		throw e;
 	}
-	const match = /^```json task-heartbeat-v1\n([\s\S]*?)\n```\s*$/gm.exec(text);
-	if (!match) return;
+	const matches = [
+		...text.matchAll(/^```json task-heartbeat-v1\n([\s\S]*?)\n```\s*$/gm),
+	];
+	if (matches.length !== 1)
+		throw new Error(
+			"Task history head is corrupt: missing or duplicate managed payload",
+		);
+	const match = matches[0];
 	let payload;
 	try {
 		payload = JSON.parse(match[1]);
 	} catch {
-		return;
+		throw new Error("Task history head is corrupt: invalid payload JSON");
 	}
 	if (
 		!payload ||
@@ -110,6 +116,11 @@ export async function verifyTaskHistoryHead(path, identity, records) {
 	if (proof !== undefined) {
 		if (
 			!proof ||
+			typeof proof !== "object" ||
+			Array.isArray(proof) ||
+			Object.keys(proof).some(
+				(k) => !["recordCount", "historyDigest"].includes(k),
+			) ||
 			!Number.isSafeInteger(proof.recordCount) ||
 			proof.recordCount < 0 ||
 			typeof proof.historyDigest !== "string" ||
@@ -126,6 +137,14 @@ export async function verifyTaskHistoryHead(path, identity, records) {
 			);
 	} else {
 		const revision = payload.state?.revision;
+		if (
+			!payload.state ||
+			typeof payload.state !== "object" ||
+			payload.state.threadId !== identity ||
+			!Number.isSafeInteger(revision) ||
+			revision < 1
+		)
+			throw new Error("Task history legacy head is corrupt");
 		const last =
 			records.filter((r) => r?.type === "task-event").at(-1)?.event?.revision ??
 			0;

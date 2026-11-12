@@ -261,7 +261,7 @@ test("legacy import preserves bytes and rebuilds heartbeat on restart", async ()
 	const event = (await store.history("thread")).events[0];
 	const legacy = `${JSON.stringify(event)}\n{"truncated":`;
 	await writeFile(join(directory, "events.jsonl"), legacy);
-	await writeFile(join(directory, "heartbeat.md"), "broken");
+	await rm(join(directory, "heartbeat.md"));
 	assert.deepEqual(
 		await new TaskStore(root, { schemas }).get("thread"),
 		initial.state,
@@ -623,4 +623,41 @@ test("pre-proof legacy heartbeat revision prevents task history rollback", async
 	});
 	await assert.rejects(store.get("thread"), hasCode("TASK_HISTORY_CORRUPT"));
 	assert.equal(await readFile(paths.heartbeat, "utf8"), legacy);
+});
+
+test("corrupt head plus valid-prefix rollback cannot erase a committed revision", async () => {
+	const { store, root } = await setup();
+	await store.initialize("thread", {
+		requestId: "init",
+		expectedRevision: 0,
+		reason: "Task",
+		title: "Work",
+		objectives,
+	});
+	const first = (await store.history("thread")).events[0];
+	await store.update("thread", {
+		requestId: "update",
+		expectedRevision: 1,
+		reason: "Start",
+		changes: [{ targetId: "C1.1", status: "active" }],
+	});
+	const { taskMarkdownPaths } = await import("../../src/tasks/task-store.mjs");
+	const { writeMarkdownRecords } = await import(
+		"../../src/tasks/markdown-records.mjs"
+	);
+	const paths = taskMarkdownPaths(root, "thread");
+	await writeMarkdownRecords(paths.history, {
+		kind: "task-progress",
+		identity: "thread",
+		records: [{ type: "task-event", event: first }],
+	});
+	for (const broken of [
+		"# truncated\n",
+		"# broken\n```json task-heartbeat-v1\n{invalid\n```\n",
+		`# invalid\n\`\`\`json task-heartbeat-v1\n${JSON.stringify({ schemaVersion: 1, kind: "task-heartbeat", identity: "thread", state: first.state, historyProof: { recordCount: "1", historyDigest: "a".repeat(64) } })}\n\`\`\`\n`,
+	]) {
+		await writeFile(paths.heartbeat, broken);
+		await assert.rejects(store.get("thread"), hasCode("TASK_HISTORY_CORRUPT"));
+		assert.equal(await readFile(paths.heartbeat, "utf8"), broken);
+	}
 });

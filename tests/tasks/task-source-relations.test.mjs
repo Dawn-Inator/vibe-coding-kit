@@ -298,3 +298,28 @@ test("loss or divergence of binding-only suffix fails before relation mutation",
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("corrupt managed head blocks both binding reads and writes", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-proof-corrupt-"));
+	try {
+		const rel = new TaskSourceRelations(root);
+		await rel.set("thread", { path: join(root, "a.md"), origin: "explicit" });
+		const { taskMarkdownPaths } = await import(
+			"../../src/tasks/task-store.mjs"
+		);
+		const paths = taskMarkdownPaths(root, "thread");
+		const history = await readFile(paths.history, "utf8");
+		for (const corrupt of [
+			"# missing payload",
+			"```json task-heartbeat-v1\n{\n```\n",
+		]) {
+			await writeFile(paths.heartbeat, corrupt);
+			await assert.rejects(rel.get("thread"), /head.*corrupt/i);
+			await assert.rejects(rel.set("thread", null), /head.*corrupt/i);
+			assert.equal(await readFile(paths.history, "utf8"), history);
+			assert.equal(await readFile(paths.heartbeat, "utf8"), corrupt);
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});

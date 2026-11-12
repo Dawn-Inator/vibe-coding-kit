@@ -290,6 +290,46 @@ export function readHeartbeatLedgerPair({ root, path }) {
 	return readPair(safePaths(root, path));
 }
 
+// Audit one coherent view: the live head supplies the inventory and all non-wake
+// content; historical wakes remain in their original order for cross-wake guards.
+function auditText(pair) {
+	if (pair.isLegacy) return pair.fullText;
+	const headLines = pair.headText.split("\n");
+	for (const wake of parseWakes(pair.headText)) {
+		const start = wake.line - 1;
+		let inventoryLevel = null;
+		for (let i = start; i <= start + wake.sectionLines.length; i++) {
+			const heading = /^(#{1,6})\s+(.*?)\s*$/.exec(headLines[i]);
+			if (
+				inventoryLevel !== null &&
+				heading &&
+				heading[1].length <= inventoryLevel
+			)
+				inventoryLevel = null;
+			if (heading && /^Items$/i.test(heading[2]))
+				inventoryLevel = heading[1].length;
+			if (inventoryLevel === null) headLines[i] = "";
+		}
+	}
+	const wakes = parseWakes(pair.fullText).map((w) => {
+		let inventoryLevel = null;
+		const lines = w.sectionLines.map((line) => {
+			const heading = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
+			if (
+				inventoryLevel !== null &&
+				heading &&
+				heading[1].length <= inventoryLevel
+			)
+				inventoryLevel = null;
+			if (heading && /^Items$/i.test(heading[2]))
+				inventoryLevel = heading[1].length;
+			return inventoryLevel === null ? line : "";
+		});
+		return [w.heading, ...lines].join("\n");
+	});
+	return `${headLines.join("\n")}\n${wakes.join("\n\n")}`;
+}
+
 export function inspectHeartbeatLedgerPair(
 	pair,
 	{
@@ -306,7 +346,7 @@ export function inspectHeartbeatLedgerPair(
 		typeof pair.fullText !== "string"
 	)
 		throw new TypeError("A heartbeat ledger pair is required");
-	const text = mode === "items" ? pair.headText : pair.fullText;
+	const text = mode === "items" ? pair.headText : auditText(pair);
 	const report = inspect(text, { mode, latest, now, ...options });
 	if (mode !== "items") {
 		const headInventory = inspect(pair.headText, {
