@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
-import {
-	heartbeatAuditDue,
-	inspectHeartbeatLedger,
-} from "../supervision/heartbeat-ledger-api.mjs";
+import { heartbeatAuditDue } from "../supervision/heartbeat-ledger-api.mjs";
 import { parseStrictIsoTimestamp } from "../supervision/heartbeat-audit-due.mjs";
+import {
+	inspectHeartbeatLedgerPair,
+	readHeartbeatLedgerPair,
+} from "../supervision/heartbeat-ledger-files.mjs";
 import { discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
 import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
 
@@ -45,28 +45,38 @@ async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
 	);
 	if (info.size > MAX_BYTES)
 		throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
-	const text = await readFile(canonicalPath, "utf8");
-	const current = inspectHeartbeatLedger(text, {
+	const pair = readHeartbeatLedgerPair({
+		root: projectRoot,
+		path: canonicalPath,
+	});
+	if (
+		Buffer.byteLength(pair.headText, "utf8") +
+			Buffer.byteLength(pair.historyText, "utf8") >
+		MAX_BYTES
+	)
+		throw new Error("Paired heartbeat ledger exceeds the 8 MiB read limit");
+	const current = inspectHeartbeatLedgerPair(pair, {
 		mode: "current",
 		latest: true,
 		now,
 		ledgerPath: canonicalPath,
 	});
-	const history = inspectHeartbeatLedger(text, {
+	const history = inspectHeartbeatLedgerPair(pair, {
 		mode: "history",
 		latest: false,
 		now,
 		ledgerPath: canonicalPath,
 	});
-	const inventory = inspectHeartbeatLedger(text, {
+	const inventory = inspectHeartbeatLedgerPair(pair, {
 		mode: "items",
 		now,
 		ledgerPath: canonicalPath,
 	});
 	return {
 		path: canonicalPath,
-		contentHash: createHash("sha256").update(text).digest("hex"),
-		modifiedAt: info.mtime.toISOString(),
+		contentHash: pair.contentHash,
+		modifiedAt: pair.modifiedAt || info.mtime.toISOString(),
+		historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
 		lastRecordedAt: lastRecordedWakeAt(history, now),
 		current,
 		history,
@@ -74,7 +84,7 @@ async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
 		cadence:
 			intervalMinutes === undefined
 				? null
-				: heartbeatAuditDue(text, { now, intervalMinutes }),
+				: heartbeatAuditDue(pair.fullText, { now, intervalMinutes }),
 	};
 }
 
@@ -153,6 +163,7 @@ export async function readProjectHeartbeat({
 				candidate.path,
 				now,
 				intervalMinutes,
+				false,
 			);
 			readableCount += 1;
 			if (

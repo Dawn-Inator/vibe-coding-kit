@@ -19,6 +19,9 @@ const SKIP = new Set([
 	".cache",
 ]);
 const MAX_BYTES = 8 * 1024 * 1024;
+function isHeartbeatCompanion(name) {
+	return /^taskhistory\.md$/i.test(name) || /(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(name);
+}
 function withoutFencedExamples(text) {
 	let fence = null;
 	return text
@@ -103,6 +106,10 @@ export async function discoverHeartbeatLedgerSources({
 	let visitedFiles = 0;
 	let explicitRealPath = null;
 	const inspect = async (candidatePath, failClosed = false) => {
+		if (isHeartbeatCompanion(basename(candidatePath))) {
+			if (failClosed) throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
+			return null;
+		}
 		let path;
 		let info;
 		try {
@@ -189,6 +196,7 @@ export async function discoverHeartbeatLedgerSources({
 			} else if (
 				entry.isFile() &&
 				entry.name.toLowerCase().endsWith(".md") &&
+				!isHeartbeatCompanion(entry.name) &&
 				!seenFiles.has(path)
 			) {
 				if (visitedFiles >= maxFiles) {

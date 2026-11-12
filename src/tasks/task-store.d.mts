@@ -16,6 +16,16 @@ export class TaskStore {
 	readonly root: string;
 	constructor(root: string, options: { schemas: TaskProgressSchemas });
 	get(threadId: string): Promise<TaskState | null>;
+	/** Imports prefix-compatible history without modifying the source. */
+	importFrom(
+		threadId: string,
+		sourceDirectory: string,
+		options?: { includeBindings?: boolean },
+	): Promise<{
+		migrated: boolean;
+		importedEvents: number;
+		partialTail: boolean;
+	}>;
 	initialize(
 		threadId: string,
 		value: TaskInitializeInput,
@@ -30,3 +40,15 @@ export class TaskStore {
 		options?: { cursor?: string; limit?: number },
 	): Promise<TaskHistoryPage>;
 }
+export function taskMarkdownPaths(
+	root: string,
+	threadId: string,
+): {
+	directory: string;
+	heartbeat: string;
+	history: string;
+	legacyEvents: string;
+	legacySnapshot: string;
+};
+/** Internal dependency-free corruption guard shared by task history writers. */
+export function validateTaskEventStructure(event: unknown): boolean;

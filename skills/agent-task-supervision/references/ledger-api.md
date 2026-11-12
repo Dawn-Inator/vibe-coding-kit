@@ -85,6 +85,84 @@ checker wrapper, or duplicate policy guard. A consuming project should provide a
 the canonical API and any native helpers it needs. This keeps one report schema and one source of current
 format validation.
 
+## Durable heartbeat head and history pair
+
+The Kit stores a project heartbeat as a readable current head plus its complete historical wake stream:
+
+```text
+<project>/heartbeat.md                    # current head
+<project>/taskhistory.md                  # complete history when the head is heartbeat.md
+<project>/<custom-head>.taskhistory.md    # complete history for a custom head, e.g. release.taskhistory.md
+<project>/heartbeat.md.legacy             # immutable original bytes after migration
+```
+
+`heartbeatLedgerPairPaths(path)` returns `headPath`, `historyPath`, and `legacyBackupPath`. A companion or
+`.legacy` file cannot be selected as a ledger head. `readHeartbeatLedgerPair({root, path})` reads a legacy
+single-file ledger without changing it, or returns the logical full text for an existing pair. A legacy source
+remains a single file during display/read; its `historyPath` and wake source path are the original head path.
+`readProjectHeartbeat` is always read-only; its deprecated `migrate` option is ignored for compatibility.
+Reading an unrelated active heartbeat must never trigger a cutover, since the owner may still be appending
+directly to it. For a paired ledger, `historyPath` and archived wake sources point to the companion, while the
+current head suffix points to the head. Call `inspectHeartbeatLedgerPair(pair, options)` when reports must
+point to real file locations. `mode: 'items'` inspects the current head's Items table; history/current modes
+inspect the complete logical text.
+
+Migration and source writes are explicit writer-owned cutovers, never part of project display or a read API.
+Before each operation, obtain a fresh `contentHash` from `readHeartbeatLedgerPair({root, path})` and call the
+write API with that value:
+
+```js
+const observed = readHeartbeatLedgerPair({ root, path });
+const ownership = {
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: observed.contentHash,
+};
+migrateHeartbeatLedgerPair(ownership); // explicit one-time cutover
+```
+
+`legacyWritersQuiescent: true` is a factual caller assertion: all writers that may still append directly to
+the legacy source must stay stopped for the complete transaction. The Kit's exclusive cross-process lock
+coordinates Kit writers and serializes cutovers; it cannot stop or lock an unrelated raw legacy writer. The
+fresh `expectedContentHash` adds optimistic version checking so a source change fails closed. A cutover preserves
+the original complete file in `.legacy`, copies earlier wakes into the version-marked companion, and leaves the
+latest wake and Items in the readable head. `appendHeartbeatWake` and `writeHeartbeatLedgerPair` require that
+this explicit cutover has already completed; they update companion and head together. Before each later write,
+read a fresh version and pass it with the ownership assertion:
+
+```js
+const current = readHeartbeatLedgerPair({ root, path });
+appendHeartbeatWake({
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: current.contentHash,
+  wakeText,
+});
+```
+
+Never let a display/read path claim ownership or write to an unrelated active project heartbeat.
+
+`readHeartbeatLedgerPairVersion({root, path})` returns the raw pair hash without interpreting an interrupted
+pair. If a history-first publication is interrupted, pass the caller's quiescence assertion and a fresh hash
+from that helper to `recoverHeartbeatLedgerPair(options)`. Recovery verifies the v3 history body, immutable
+backup, planned head and previous-head hash; it publishes only if the current head still equals the previous
+or planned head. Any other change is a conflict. Do not edit an incomplete pair by hand:
+
+```js
+const rawVersion = readHeartbeatLedgerPairVersion({ root, path });
+recoverHeartbeatLedgerPair({
+  root,
+  path,
+  legacyWritersQuiescent: true,
+  expectedContentHash: rawVersion.contentHash,
+});
+```
+
+`inspectHeartbeatLedger` remains the parser and validator for a logical text stream; pair APIs compose the
+physical files and map report lines back to their source.
+
 ## Audit due probe
 
 For event-anchored cadence checks, use the read-only helper from the canonical API:

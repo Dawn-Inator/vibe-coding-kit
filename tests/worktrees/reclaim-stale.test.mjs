@@ -30,8 +30,12 @@ after(cleanupTempDirs);
 const config = loadConfig(undefined, {});
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function run(args, cwd) {
-  const result = spawnSync('git', withFixtureCommitIdentity(args), { cwd, encoding: 'utf8', env: isolatedFixtureGitEnv() });
+function run(args, cwd, envOverrides = {}) {
+  const result = spawnSync('git', withFixtureCommitIdentity(args), {
+    cwd,
+    encoding: 'utf8',
+    env: { ...isolatedFixtureGitEnv(), ...envOverrides },
+  });
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 }
@@ -680,8 +684,8 @@ test('close fails closed for dirty, ignored, committed, switched-branch and unan
     if (scenario === 'switched') run(['checkout', '-b', 'claude/different-branch'], path);
     if (scenario === 'unanchored') {
       const earlier = run(['commit-tree', 'HEAD^{tree}', '-m', 'unrelated base'], fx.primaryDir);
-      run(['update-ref', 'refs/heads/main', earlier], fx.primaryDir);
-      run(['update-ref', 'refs/remotes/origin/main', earlier], fx.primaryDir);
+      run(['update-ref', 'refs/heads/main', earlier], fx.primaryDir, { WTG_PRIMARY_LOCK_ALLOW: '1' });
+      run(['update-ref', 'refs/remotes/origin/main', earlier], fx.primaryDir, { WTG_PRIMARY_LOCK_ALLOW: '1' });
     }
     const out = await withCwd(path, () => capture(() => main(['close'])));
     assert.equal(out.result, 1, `${scenario}: ${out.errors.join('\n')}`);

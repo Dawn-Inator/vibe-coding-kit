@@ -34,8 +34,8 @@
 // `replays:<unit>=<N>` in status/evidence counts full-chain re-dispatches of one unit: N >= 3 needs an
 // `audit:<unit>` item (done/dispatched), and a count must never decrease.
 
-import { readFileSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -539,8 +539,17 @@ async function main() {
     return;
   }
   let text;
+  let pair = null;
   try {
-    text = readFileSync(resolve(process.cwd(), target), 'utf8');
+    const targetPath = resolve(process.cwd(), target);
+    if (existsSync(targetPath)) {
+      const { heartbeatLedgerPairPaths, readHeartbeatLedgerPair } = await import('./heartbeat-ledger-files.mjs');
+      const paths = heartbeatLedgerPairPaths(realpathSync(targetPath));
+      if (existsSync(paths.historyPath) || readFileSync(targetPath, 'utf8').startsWith('<!-- heartbeat-head:v1 ')) {
+        pair = readHeartbeatLedgerPair({ root: dirname(targetPath), path: targetPath });
+        text = itemsMode ? pair.headText : pair.fullText;
+      } else text = readFileSync(targetPath, 'utf8');
+    } else text = readFileSync(targetPath, 'utf8');
   } catch (error) {
     process.stderr.write(`cannot read ${target}: ${error.message}\n`);
     exitDrained(2);
@@ -549,12 +558,15 @@ async function main() {
   const ledgerPath = resolve(process.cwd(), target);
   const mode = itemsMode ? 'items' : historyMode ? 'history' : 'current';
   const { inspectHeartbeatLedger } = await import('./heartbeat-ledger-api.mjs');
-  const report = inspectHeartbeatLedger(text, {
+  const inspectOptions = {
     mode,
     latest: mode === 'history' ? flags.has('--latest') : true,
     now,
     ledgerPath,
-  });
+  };
+  const report = pair
+    ? (await import('./heartbeat-ledger-files.mjs')).inspectHeartbeatLedgerPair(pair, inspectOptions)
+    : inspectHeartbeatLedger(text, inspectOptions);
   if (flags.has('--legacy')) report.findings.push({ severity: 'advisory', rule: 'deprecated-legacy-alias', message: '--legacy is deprecated; use --history' });
   const failed = !report.passed || mode === 'history';
   if (flags.has('--json')) {

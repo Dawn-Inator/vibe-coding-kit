@@ -41,6 +41,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CATEGORIES, countWakeSections } from './check-heartbeat-ledger.mjs';
+import { readHeartbeatLedgerPair } from './heartbeat-ledger-files.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
 
 // Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
@@ -335,7 +336,15 @@ export async function runHeartbeatArm(argv = process.argv.slice(2), deps = {}) {
   }
   const { seconds, probe, ledger, commands } = parsed;
   if (!probe) {
-    const text = existsSync(ledger) ? readFileSync(ledger, 'utf8') : '';
+    let text = '';
+    if (existsSync(ledger)) {
+      try { text = readHeartbeatLedgerPair({ root: process.cwd(), path: ledger }).fullText; }
+      catch (error) {
+        process.stdout.write(`HEARTBEAT_ARM_REFUSED Cannot read paired heartbeat ledger: ${error.message}\n`);
+        exitDrained(3);
+        return;
+      }
+    }
     const armsPath = armsPathFor(ledger);
     const refusal = checkLedgerBeforeArm(text, countArms(armsPath));
     if (refusal) {

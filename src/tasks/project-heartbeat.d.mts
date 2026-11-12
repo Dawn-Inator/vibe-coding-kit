@@ -12,6 +12,7 @@ export type ProjectHeartbeatBasis =
 
 export interface ProjectHeartbeatSource {
 	path: string;
+	historyPath: string;
 	contentHash: string;
 	modifiedAt: string;
 	lastRecordedAt: string | null;
@@ -38,6 +39,8 @@ export interface ReadProjectHeartbeatOptions {
 	maxFiles?: number;
 	maxDepth?: number;
 	intervalMinutes?: number;
+	/** @deprecated Ignored; all observation is read-only. */
+	migrate?: boolean;
 }
 
 /** Automatically display the latest recorded heartbeat in one current project root. */
