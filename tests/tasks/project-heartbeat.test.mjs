@@ -32,6 +32,12 @@ function writeLedger(
 	return path;
 }
 
+function writeWakeOnly(root, filename, wake) {
+	const path = join(root, filename);
+	writeFileSync(path, `## ${wake} wake (10-row ledger)\n`);
+	return path;
+}
+
 test("project heartbeat stays isolated to its trusted current project", async () => {
 	const firstRoot = projectRoot();
 	const secondRoot = projectRoot();
@@ -48,6 +54,38 @@ test("project heartbeat stays isolated to its trusted current project", async ()
 	assert.equal(secondView.source.path, second);
 	assert.equal(firstView.projectRoot, firstRoot);
 	assert.equal(secondView.projectRoot, secondRoot);
+});
+
+test("nested Git projects are excluded from discovery and explicit project pointers", async () => {
+	const root = projectRoot();
+	const rootLedger = writeLedger(root, "heartbeat.md", {
+		wake: "2026-01-01T10:00Z",
+	});
+	const nestedRoot = join(root, ".vibe-coding", "kit");
+	mkdirSync(nestedRoot, { recursive: true });
+	writeFileSync(join(nestedRoot, ".git"), "gitdir: ../.git/worktrees/kit\n");
+	const nestedLedger = writeLedger(nestedRoot, "heartbeat.md", {
+		wake: "2026-01-01T11:55Z",
+	});
+
+	const automatic = await readProjectHeartbeat({ root, now: NOW });
+	assert.equal(automatic.source.path, rootLedger);
+	assert.equal(
+		automatic.discovery.candidates.some(
+			(candidate) => candidate.path === nestedLedger,
+		),
+		false,
+	);
+	assert.equal(automatic.discovery.complete, true);
+
+	const configuredNested = await readProjectHeartbeat({
+		root,
+		ledgerPath: nestedLedger,
+		now: NOW,
+	});
+	assert.equal(configuredNested.status, "error");
+	assert.equal(configuredNested.source, null);
+	assert.match(configuredNested.error, /nested Git project/);
 });
 
 test("latest valid recorded wake outranks file mtime and ties use lexical canonical path", async () => {
@@ -116,6 +154,23 @@ test("invalid and future wake timestamps do not become the recorded display basi
 	const view = await readProjectHeartbeat({ root, now: NOW });
 	assert.equal(view.source.lastRecordedAt, null);
 	assert.equal(view.basis, "items-inventory");
+});
+
+test("Items fallback outranks future-only wake files, and empty future-only candidates return none", async () => {
+	const mixedRoot = projectRoot();
+	writeWakeOnly(mixedRoot, "a.md", "2026-01-01T13:00Z");
+	const inventoryPath = writeLedger(mixedRoot, "b-heartbeat.md");
+	const mixed = await readProjectHeartbeat({ root: mixedRoot, now: NOW });
+	assert.equal(mixed.source.path, inventoryPath);
+	assert.equal(mixed.basis, "items-inventory");
+
+	const emptyRoot = projectRoot();
+	writeWakeOnly(emptyRoot, "a.md", "2026-01-01T13:00Z");
+	writeWakeOnly(emptyRoot, "b.md", "2026-01-01T14:00Z");
+	const empty = await readProjectHeartbeat({ root: emptyRoot, now: NOW });
+	assert.equal(empty.status, "none");
+	assert.equal(empty.source, null);
+	assert.equal(empty.basis, "none");
 });
 
 test("cadence stays absent unless the project reader receives an explicit interval", async () => {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import {
 	heartbeatAuditDue,
@@ -14,6 +14,18 @@ const isWithin = (root, candidate) => {
 	const rel = relative(root, candidate);
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
+
+async function nestedGitBoundary(root, path) {
+	let directory = dirname(path);
+	while (directory !== root && isWithin(root, directory)) {
+		if (await lstat(resolve(directory, ".git")).catch(() => null))
+			return directory;
+		const parent = dirname(directory);
+		if (parent === directory) break;
+		directory = parent;
+	}
+	return null;
+}
 
 function resultWithoutSource(discovery, status, basis, error) {
 	return {
@@ -129,6 +141,10 @@ export async function readProjectHeartbeat({
 				throw new Error(
 					"Configured heartbeat ledger resolves outside the project root",
 				);
+			if (await nestedGitBoundary(projectRoot, canonicalRequested))
+				throw new Error(
+					"Configured heartbeat ledger is inside a nested Git project",
+				);
 			source = await readCanonicalSource(
 				projectRoot,
 				canonicalRequested,
@@ -153,18 +169,35 @@ export async function readProjectHeartbeat({
 		};
 	}
 
-	const readable = [];
 	const readErrors = [];
+	let readableCount = 0;
+	let bestRecorded = null;
+	let bestInventory = null;
+	const comparePath = (a, b) => a.path.localeCompare(b.path);
 	for (const candidate of discovery.candidates) {
 		try {
-			readable.push(
-				await readCanonicalSource(
-					projectRoot,
-					candidate.path,
-					now,
-					intervalMinutes,
-				),
+			const entry = await readCanonicalSource(
+				projectRoot,
+				candidate.path,
+				now,
+				intervalMinutes,
 			);
+			readableCount += 1;
+			if (
+				entry.lastRecordedAt !== null &&
+				(!bestRecorded ||
+					Date.parse(entry.lastRecordedAt) >
+						Date.parse(bestRecorded.lastRecordedAt) ||
+					(Date.parse(entry.lastRecordedAt) ===
+						Date.parse(bestRecorded.lastRecordedAt) &&
+						comparePath(entry, bestRecorded) < 0))
+			)
+				bestRecorded = entry;
+			if (
+				entry.inventory.itemCount > 0 &&
+				(!bestInventory || comparePath(entry, bestInventory) < 0)
+			)
+				bestInventory = entry;
 		} catch (error) {
 			readErrors.push(
 				`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -177,7 +210,7 @@ export async function readProjectHeartbeat({
 			...new Set([...discovery.reasons, "unreadable-file"]),
 		].sort();
 	}
-	if (!readable.length) {
+	if (readableCount === 0) {
 		if (readErrors.length)
 			return resultWithoutSource(
 				discovery,
@@ -188,23 +221,9 @@ export async function readProjectHeartbeat({
 		return resultWithoutSource(discovery, "none", "none");
 	}
 
-	const recorded = readable.filter((entry) => entry.lastRecordedAt !== null);
-	const orderByPath = (a, b) => a.path.localeCompare(b.path);
-	let source;
-	let basis;
-	if (recorded.length) {
-		recorded.sort(
-			(a, b) =>
-				Date.parse(b.lastRecordedAt) - Date.parse(a.lastRecordedAt) ||
-				orderByPath(a, b),
-		);
-		source = recorded[0];
-		basis = "latest-recorded-wake";
-	} else {
-		readable.sort(orderByPath);
-		source = readable[0];
-		basis = "items-inventory";
-	}
+	const source = bestRecorded ?? bestInventory;
+	if (!source) return resultWithoutSource(discovery, "none", "none");
+	const basis = bestRecorded ? "latest-recorded-wake" : "items-inventory";
 	return {
 		schemaVersion: 1,
 		projectRoot,

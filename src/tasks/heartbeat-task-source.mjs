@@ -19,6 +19,11 @@ const isWithin = (root, path) => {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
 
+async function isNestedGitProject(projectRoot, directory) {
+	if (directory === projectRoot) return false;
+	return Boolean(await lstat(resolve(directory, ".git")).catch(() => null));
+}
+
 function withoutFencedExamples(text) {
 	let fence = null;
 	return text
@@ -170,6 +175,7 @@ export async function discoverHeartbeatLedgerSources({
 			return;
 		}
 		if (seenDirectories.has(canonicalDirectory)) return;
+		if (await isNestedGitProject(projectRoot, canonicalDirectory)) return;
 		seenDirectories.add(canonicalDirectory);
 		let entries;
 		try {
@@ -185,6 +191,7 @@ export async function discoverHeartbeatLedgerSources({
 		for (const entry of entries) {
 			const path = resolve(canonicalDirectory, entry.name);
 			if (entry.isDirectory() && !SKIP.has(entry.name)) {
+				if (await isNestedGitProject(projectRoot, path)) continue;
 				if (depth + 1 > maxDepth) reasons.add("depth-limit");
 				else await scan(path, depth + 1);
 			} else if (
@@ -205,6 +212,7 @@ export async function discoverHeartbeatLedgerSources({
 	for (const directory of [".workspace", ".todolist"]) {
 		const path = resolve(projectRoot, directory);
 		if ((await lstat(path).catch(() => null))?.isDirectory()) {
+			if (await isNestedGitProject(projectRoot, path)) continue;
 			if (1 > maxDepth) reasons.add("depth-limit");
 			else await scan(path, 1);
 		}
