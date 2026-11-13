@@ -246,9 +246,11 @@ test("ordinary chat task panel browser flows", async (t) => {
           assert.equal(state.threadId, "thread-a");
           assert.equal(state.visible, true);
 
-          await page.locator('[data-codex-composer-root] [role="textbox"]').evaluate((node) => {
-            node.setAttribute("data-codex-composer", "");
-          });
+          await page
+            .locator('[data-codex-composer-root] [role="textbox"]:visible')
+            .evaluate((node) => {
+              node.setAttribute("data-codex-composer", "");
+            });
           await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
           state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
           assert.equal(state.textboxCount, 1);
