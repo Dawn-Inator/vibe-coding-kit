@@ -1,5 +1,10 @@
-import { css, html, LitElement, nothing } from "lit";
+import { html, LitElement, nothing, svg } from "lit";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/release-version.js";
+import {
+  GOAL_PROGRESS_ELEMENT_NAME,
+  GOAL_PROGRESS_HOT_ELEMENT_NAME,
+} from "../../contracts/src/renderer-events.js";
+import { taskPanelStyles } from "./styles/task-panel.js";
 
 export interface TaskPanelEvidence {
   summary: string;
@@ -151,6 +156,7 @@ export class TaskProgressElement extends LitElement {
     requester: { attribute: false },
     connectionError: { attribute: false },
     expanded: { state: true },
+    closing: { state: true },
     tab: { state: true },
     selectedObjective: { state: true },
     history: { state: true },
@@ -161,50 +167,7 @@ export class TaskProgressElement extends LitElement {
     locale: { attribute: false },
   };
 
-  static override styles = css`
-    :host { display: block; font: inherit; color: var(--ctp-text, #222); color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    section.panel { max-height: var(--ctp-panel-max-height, calc(100vh - 24px)); border: 1px solid var(--ctp-border, #ddd); border-radius: 12px; background: var(--ctp-surface, #fff); box-shadow: 0 3px 16px #00000012; overflow: hidden; }
-    button { font: inherit; color: inherit; }
-    button { cursor: pointer; border: 0; border-radius: 6px; background: transparent; padding: .35em .6em; }
-    button:hover { background: var(--ctp-hover, #88888815); }
-    button:focus-visible, summary:focus-visible { outline: 2px solid var(--ctp-accent, #2977d4); outline-offset: -2px; }
-    button:disabled { opacity: .55; cursor: default; }
-    .summary { display: flex; align-items: center; min-height: 36px; gap: 6px; padding: 3px 7px; }
-    .main { flex: 1; display: grid; grid-template-columns: minmax(70px, 1fr) auto; align-items: center; text-align: start; gap: 2px 12px; min-width: 0; }
-    .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .muted { color: var(--ctp-muted, #707070); font-size: .88em; overflow-wrap: anywhere; }
-    .main .muted { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .track { grid-column: 1 / -1; height: 3px; border-radius: 3px; background: var(--ctp-track, #88888825); overflow: hidden; }
-    .fill { height: 100%; background: var(--ctp-accent, #2977d4); transition: width 180ms ease; }
-    .body { border-top: 1px solid var(--ctp-border, #ddd); }
-    nav { display: flex; gap: 3px; padding: 5px 8px; }
-    nav button[aria-selected="true"] { background: var(--ctp-hover, #88888815); font-weight: 600; }
-    .scroll { max-height: min(44vh, 340px, var(--ctp-scroll-max-height, 340px)); overflow: auto; overscroll-behavior: contain; padding: 3px 12px 12px; }
-    .row { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: start; padding: 8px 2px; border-bottom: 1px solid var(--ctp-border, #ddd); }
-    .row .name { flex: 1; }
-    .row[aria-expanded="true"] { color: var(--ctp-accent, #2977d4); }
-    .status { font-size: .8em; border: 1px solid var(--ctp-border, #ddd); padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
-    .detail { padding: 4px 6px 8px 15px; }
-    .check { padding: 6px 0; }
-    .check > div { display: flex; gap: 7px; align-items: baseline; }
-    .evidence { margin: 4px 0 2px 19px; font-size: .86em; color: var(--ctp-muted, #707070); overflow-wrap: anywhere; }
-    .evidence strong { font-weight: 500; }
-    .empty { margin: 10px 0; color: var(--ctp-muted, #707070); }
-    .heartbeat { margin-top: 10px; border-top: 1px solid var(--ctp-border, #ddd); padding-top: 10px; }
-    h3 { font-size: 1em; margin: 0 0 7px; font-weight: 600; }
-    dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 5px 0; font-size: .88em; }
-    dt { color: var(--ctp-muted, #707070); } dd { margin: 0; overflow-wrap: anywhere; }
-    .event { border-bottom: 1px solid var(--ctp-border, #ddd); padding: 7px 0; overflow-wrap: anywhere; }
-    .event p { margin: 3px 0; } .error { color: var(--ctp-error, #bd4d3a); font-size: .88em; padding: 5px 10px; overflow-wrap: anywhere; }
-    .path-value { overflow-wrap: anywhere; word-break: break-word; }
-    .diagnostic { margin: 6px 0; overflow-wrap: anywhere; }
-    .diagnostic-text { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; user-select: text; padding: 7px; border: 1px solid var(--ctp-border, #ddd); border-radius: 6px; background: var(--ctp-hover, #8888880a); font: .82em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-    .grip { cursor: move; touch-action: none; user-select: none; color: var(--ctp-muted, #707070); }
-    details { margin-top: 7px; } summary { cursor: pointer; }
-    @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
-  `;
+  static override styles = taskPanelStyles;
 
   declare data: TaskPanelResponse;
   declare observed: boolean;
@@ -214,7 +177,11 @@ export class TaskProgressElement extends LitElement {
   declare expanded: boolean;
   declare floating: boolean;
   declare locale: string;
-  private declare tab: "tasks" | "history";
+  private declare tab: "tasks" | "history" | "heartbeat";
+  private declare closing: boolean;
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
+  private sizeObserver: ResizeObserver | null = null;
+  private heartbeatRequest = 0;
   private declare selectedObjective: string | null;
   private declare history: TaskPanelHistory | TaskPanelSourceHistory | null;
   private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
@@ -236,6 +203,7 @@ export class TaskProgressElement extends LitElement {
     this.floating = persisted("floating") === "true";
     this.locale = "en";
     this.tab = "tasks";
+    this.closing = false;
     this.selectedObjective = null;
     this.history = null;
     this.heartbeatHistory = null;
@@ -253,6 +221,14 @@ export class TaskProgressElement extends LitElement {
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return String(value);
     return date.toLocaleString(this.locale || "en");
+  }
+
+  private time(value: unknown): string {
+    if (typeof value !== "string" && typeof value !== "number") return "—";
+    const date = new Date(value);
+    return Number.isFinite(date.getTime())
+      ? date.toLocaleTimeString(this.locale || "en", { hour: "2-digit", minute: "2-digit" })
+      : "—";
   }
 
   private status(value: string): string {
@@ -274,6 +250,7 @@ export class TaskProgressElement extends LitElement {
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
     this.heartbeatHistorySource = null;
+    this.heartbeatRequest++;
     this.historyThread = null;
     this.historyContext = null;
     this.historyRequest++;
@@ -282,10 +259,167 @@ export class TaskProgressElement extends LitElement {
     this.busy = false;
   }
 
-  private toggleExpanded(): void {
-    this.expanded = !this.expanded;
-    persist("expanded", String(this.expanded));
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.ownerDocument.addEventListener("click", this.outsideClick);
+    this.ownerDocument.addEventListener("focusin", this.outsideFocus);
+    this.ownerDocument.addEventListener("keydown", this.escapeKey);
+    this.ownerDocument.defaultView?.addEventListener("resize", this.positionPopover);
+    this.ownerDocument.defaultView?.addEventListener("scroll", this.positionPopover, true);
+    this.addEventListener("task-progress-position", this.positionPopover);
+    this.sizeObserver = new ResizeObserver(() => {
+      this.drawEdge();
+      this.positionPopover();
+    });
+    this.sizeObserver.observe(this);
+  }
+
+  override disconnectedCallback(): void {
+    this.ownerDocument.removeEventListener("click", this.outsideClick);
+    this.ownerDocument.removeEventListener("focusin", this.outsideFocus);
+    this.ownerDocument.removeEventListener("keydown", this.escapeKey);
+    this.ownerDocument.defaultView?.removeEventListener("resize", this.positionPopover);
+    this.ownerDocument.defaultView?.removeEventListener("scroll", this.positionPopover, true);
+    this.removeEventListener("task-progress-position", this.positionPopover);
+    this.sizeObserver?.disconnect();
+    this.sizeObserver = null;
+    if (this.closeTimer) clearTimeout(this.closeTimer);
+    super.disconnectedCallback();
+  }
+
+  protected override updated(): void {
+    this.drawEdge();
+    this.positionPopover();
+  }
+
+  private readonly outsideClick = (event: Event): void => {
+    if (!this.expanded || event.composedPath().includes(this)) return;
+    const target = event.composedPath()[0];
+    const focusable =
+      target instanceof Element &&
+      target.closest("button,a[href],input,textarea,select,[tabindex]");
+    this.closePanel(!focusable);
+  };
+
+  private readonly outsideFocus = (event: Event): void => {
+    if (this.expanded && !event.composedPath().includes(this)) this.closePanel(false);
+  };
+
+  private readonly escapeKey = (event: KeyboardEvent): void => {
+    if (!this.expanded || event.key !== "Escape") return;
+    event.preventDefault();
+    const active = this.shadowRoot?.activeElement;
+    if (this.tab === "tasks" && this.selectedObjective && active?.closest(".modules")) {
+      const row = [...this.renderRoot.querySelectorAll<HTMLButtonElement>(".row")].find(
+        (element) => element.dataset.objective === this.selectedObjective,
+      );
+      this.selectedObjective = null;
+      row?.focus({ preventScroll: true });
+    } else this.closePanel();
+  };
+
+  private closePanel(restoreFocus = true): void {
+    if (!this.expanded) return;
+    const trigger = this.renderRoot.querySelector<HTMLButtonElement>(
+      this.tab === "tasks" ? ".main" : `.${this.tab}-trigger`,
+    );
+    this.expanded = false;
+    this.closing = !this.ownerDocument.defaultView?.matchMedia("(prefers-reduced-motion: reduce)")
+      .matches;
+    persist("expanded", "false");
+    if (restoreFocus) trigger?.focus({ preventScroll: true });
+    if (this.closeTimer) clearTimeout(this.closeTimer);
+    if (this.closing)
+      this.closeTimer = setTimeout(() => {
+        this.closing = false;
+      }, 130);
+  }
+
+  private async openPanel(view: "tasks" | "history" | "heartbeat"): Promise<void> {
+    if (this.expanded && this.tab === view) {
+      this.closePanel();
+      return;
+    }
+    if (this.closeTimer) clearTimeout(this.closeTimer);
+    this.closing = false;
+    this.tab = view;
+    this.expanded = true;
+    persist("expanded", "true");
+    if (view === "history") void this.loadHistory();
+    await this.updateComplete;
+    if (this.expanded && this.tab === view)
+      this.renderRoot.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
     this.dispatchEvent(new CustomEvent("task-progress-layout", { bubbles: true, composed: true }));
+  }
+
+  private toggleExpanded(): void {
+    void this.openPanel("tasks");
+  }
+
+  private drawEdge(): void {
+    const main = this.renderRoot.querySelector<HTMLElement>(".main");
+    const svg = this.renderRoot.querySelector<SVGSVGElement>(".edge-progress");
+    if (!main || !svg) return;
+    const width = main.getBoundingClientRect().width;
+    svg.setAttribute("viewBox", `0 0 ${width} 44`);
+    const path = `M 1.5 22 A 20.5 20.5 0 0 0 22 42.5 H ${Math.max(22, width - 22)} A 20.5 20.5 0 0 0 ${width - 1.5} 22`;
+    for (const element of svg.querySelectorAll("path")) element.setAttribute("d", path);
+  }
+
+  private readonly positionPopover = (): void => {
+    const body = this.renderRoot.querySelector<HTMLElement>(".body");
+    const window = this.ownerDocument.defaultView;
+    if (!body || !window) return;
+    const rect = this.getBoundingClientRect();
+    const style = window.getComputedStyle(this);
+    const composerTop = Number.parseFloat(style.getPropertyValue("--ctp-composer-top"));
+    const budget = Number.parseFloat(style.getPropertyValue("--ctp-panel-max-height")) || 496;
+    const occupied = [
+      ...this.ownerDocument.querySelectorAll<HTMLElement>(
+        `${GOAL_PROGRESS_ELEMENT_NAME},${GOAL_PROGRESS_HOT_ELEMENT_NAME}`,
+      ),
+    ]
+      .map((element) => element.getBoundingClientRect())
+      .filter(
+        (box) =>
+          box.width > 0 &&
+          box.height > 0 &&
+          box.top > rect.bottom &&
+          box.right > rect.left &&
+          box.left < rect.right,
+      )
+      .map((box) => box.top - 8);
+    const bottom = Math.min(
+      window.innerHeight - 12,
+      Number.isFinite(composerTop) ? composerTop - 12 : window.innerHeight - 12,
+      ...occupied,
+    );
+    const available = bottom - rect.top - 55;
+    const compact = available < 230;
+    body.classList.toggle("compact", compact);
+    const top = compact ? 12 : rect.top + 55;
+    const width = Math.min(464, window.innerWidth - 24);
+    body.style.setProperty("--ctp-popover-top", `${top}px`);
+    body.style.setProperty(
+      "--ctp-popover-left",
+      `${Math.min(Math.max(12, rect.left), window.innerWidth - width - 12)}px`,
+    );
+    body.style.setProperty("--ctp-popover-width", `${width}px`);
+    body.style.maxHeight = `${Math.max(0, Math.min(budget, bottom - top))}px`;
+  };
+
+  private icon(name: string, className = "") {
+    const paths: Record<string, string> = {
+      layers: "m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5",
+      history: "M3.5 10a8.5 8.5 0 1 1 1.8 7.4M3 4v6h6M12 7v5l3 2",
+      heartbeat: "M3 12h4l3-7 4 14 3-7h4",
+      chevron: "m8 5 7 7-7 7",
+      down: "m6 9 6 6 6-6",
+      check: "m5 12 4.5 4.5L19 7",
+      close: "m6 6 12 12M6 18 18 6",
+      shield: "m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Zm-4 9 3 3 5-6",
+    };
+    return html`<svg class=${className} viewBox="0 0 24 24" aria-hidden="true"><path d=${paths[name] ?? paths.layers}></path></svg>`;
   }
 
   private toggleFloating(): void {
@@ -473,6 +607,7 @@ export class TaskProgressElement extends LitElement {
     const threadId = this.threadId;
     const sourcePath = this.data.heartbeat?.sourcePath;
     if (!threadId || !sourcePath || !this.requester || this.heartbeatBusy) return;
+    const requestId = ++this.heartbeatRequest;
     this.heartbeatBusy = true;
     try {
       const cursor =
@@ -484,7 +619,12 @@ export class TaskProgressElement extends LitElement {
         threadId,
         ...(cursor ? { cursor } : {}),
       });
-      if (this.threadId !== threadId || this.data.heartbeat?.sourcePath !== sourcePath) return;
+      if (
+        requestId !== this.heartbeatRequest ||
+        this.threadId !== threadId ||
+        this.data.heartbeat?.sourcePath !== sourcePath
+      )
+        return;
       const page = result.heartbeatHistory;
       if (page && (!page.sourcePath || page.sourcePath === sourcePath)) {
         this.heartbeatHistory = {
@@ -497,11 +637,16 @@ export class TaskProgressElement extends LitElement {
         this.heartbeatHistorySource = sourcePath;
       }
     } catch (error) {
-      if (this.threadId === threadId && this.data.heartbeat?.sourcePath === sourcePath) {
+      if (
+        requestId === this.heartbeatRequest &&
+        this.threadId === threadId &&
+        this.data.heartbeat?.sourcePath === sourcePath
+      ) {
         this.connectionError = String(error);
       }
     } finally {
-      if (this.threadId === threadId) this.heartbeatBusy = false;
+      if (requestId === this.heartbeatRequest && this.threadId === threadId)
+        this.heartbeatBusy = false;
     }
   }
 
@@ -538,13 +683,17 @@ export class TaskProgressElement extends LitElement {
     );
   }
 
-  private objective(objective: TaskPanelObjective) {
-    const effective = objective.items.length
-      ? objective.items.filter((item) => item.status !== "cancelled")
-      : [objective];
+  private objective(objective: TaskPanelObjective, index: number) {
+    const effective =
+      objective.status === "cancelled"
+        ? []
+        : objective.items.length
+          ? objective.items.filter((item) => item.status !== "cancelled")
+          : [objective];
     const done = effective.filter((item) => item.status === "completed").length;
+    const percent = effective.length ? Math.round((done / effective.length) * 100) : 0;
     const displayedStatus =
-      objective.status === "cancelled" || objective.items.length === 0 || effective.length === 0
+      objective.status === "cancelled" || !effective.length
         ? objective.status
         : done === effective.length
           ? "completed"
@@ -556,31 +705,52 @@ export class TaskProgressElement extends LitElement {
                 ? "active"
                 : "pending";
     const selected = this.selectedObjective === objective.id;
-    return html`<button class="row" aria-expanded=${selected} @click=${() => {
+    return html`<button class="row" id=${`module-${index}`} data-objective=${objective.id} aria-expanded=${selected} aria-controls=${`nodes-${index}`} @click=${async () => {
       this.selectedObjective = selected ? null : objective.id;
-    }}><span>${selected ? "▾" : "▸"}</span><span class="name">${objective.title}${!objective.required ? html` <span class="muted">${this.t("optional", "可选")}</span>` : nothing}</span><span class="muted">${done}/${effective.length}</span><span class="status">${this.status(displayedStatus)}</span></button>
-      ${selected ? html`<div class="detail">${this.evidence(objective.evidence)}${objective.items.map((item) => html`<div class="check"><div><span>${item.status === "completed" ? "✓" : item.status === "cancelled" ? "−" : "○"}</span><span>${item.title}</span><span class="muted">${this.status(item.status)}</span></div>${this.evidence(item.evidence)}</div>`)}</div>` : nothing}`;
+      await this.updateComplete;
+      const row = this.renderRoot.querySelector<HTMLElement>(`#module-${index}`);
+      const scroll = this.renderRoot.querySelector<HTMLElement>(".scroll");
+      if (row && scroll) {
+        const box = row.getBoundingClientRect();
+        const viewport = scroll.getBoundingClientRect();
+        if (box.top < viewport.top || box.bottom > viewport.bottom)
+          scroll.scrollTop += box.top - viewport.top;
+      }
+    }}>
+      <span class="module-icon" data-status=${displayedStatus}>${displayedStatus === "completed" ? this.icon("check") : String(index + 1).padStart(2, "0")}</span>
+      <span class="module-content"><span class="module-title-line"><span class="name">${objective.title}${!objective.required ? html` <span class="muted">${this.t("optional", "可选")}</span>` : nothing}</span><span class="module-percent">${percent}%</span></span>
+      <span class="module-track" role="meter" aria-label=${objective.title} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${percent} aria-valuetext=${`${done}/${effective.length}`}><span class="module-fill" style=${`transform:scaleX(${percent / 100})`}></span></span>
+      <span class="module-meta"><span>${done}/${effective.length}</span><span>${this.t("nodes completed", "节点完成")}</span><span class="status">${this.status(displayedStatus)}</span></span></span>${this.icon("chevron", "module-arrow")}
+    </button>${
+      selected
+        ? html`<div class="detail" id=${`nodes-${index}`} role="group" aria-labelledby=${`module-${index}`}>
+      ${this.evidence(objective.evidence)}${objective.items.map((item) => html`<article class="check"><span class="node-symbol" data-status=${item.status} aria-hidden="true">${item.status === "completed" ? this.icon("check") : item.status === "blocked" ? "!" : item.status === "active" ? "·" : item.status === "cancelled" ? "−" : ""}</span><div class="node-head"><span class="node-title">${item.title}</span><span class="node-status" data-status=${item.status}>${this.status(item.status)}</span></div>${this.evidence(item.evidence)}${!item.evidence.length ? html`<p class="evidence">${this.t("No explanation or verification recorded yet.", "尚无说明或验证记录。")}</p>` : nothing}</article>`)}
+    </div>`
+        : nothing
+    }`;
   }
 
   private renderHeartbeat() {
     const heartbeat = this.data.heartbeat;
-    if (!heartbeat) return nothing;
+    if (!heartbeat)
+      return html`<p class="empty">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`;
     if (
       heartbeat.status === "none" ||
       heartbeat.status === "candidates" ||
       (heartbeat.status === "error" && !heartbeat.sourcePath)
     )
       return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")}</h3>${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : html`<p class="muted">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`}</div>`;
-    return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3>
+    return html`<div class="heartbeat"><div class="audit-summary"><span class="audit-symbol">${this.icon("heartbeat")}</span><div><h3>${this.t("Project heartbeat", "项目心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3><p>${this.t("Recorded audit status", "已记录的巡检状态")}</p></div></div>
+      <dl class="audit-time"><div><dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.time(heartbeat.lastWakeAt)}</dd></div><div><dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.time(heartbeat.nextWakeAt)}</dd></div></dl>
       ${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
       ${heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : nothing}
-      <dl><dt>${this.t("Source path", "来源路径")}</dt><dd>${heartbeat.sourcePath}</dd><dt>${this.t("Access", "访问方式")}</dt><dd>${this.t("Read only", "只读")}</dd>${heartbeat.basis ? html`<dt>${this.t("Source basis", "来源依据")}</dt><dd>${this.heartbeatBasisLabel(heartbeat.basis)}</dd>` : nothing}<dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
+      <details><summary>${this.t("Source and diagnostics", "来源与诊断")}</summary><dl><dt>${this.t("Source path", "来源路径")}</dt><dd>${heartbeat.sourcePath}</dd><dt>${this.t("Access", "访问方式")}</dt><dd>${this.t("Read only", "只读")}</dd>${heartbeat.basis ? html`<dt>${this.t("Source basis", "来源依据")}</dt><dd>${this.heartbeatBasisLabel(heartbeat.basis)}</dd>` : nothing}<dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
         heartbeat.itemStatusCounts
           ? Object.entries(heartbeat.itemStatusCounts)
               .map(([status, count]) => `${this.status(status)} ${count}`)
               .join(" · ")
           : this.itemSummary(heartbeat.items)
-      }${heartbeat.itemsTruncated && !heartbeat.itemStatusCounts ? this.t(" (counts from visible sample)", "（状态统计为当前样本）") : nothing}</dd></dl>
+      }${heartbeat.itemsTruncated && !heartbeat.itemStatusCounts ? this.t(" (counts from visible sample)", "（状态统计为当前样本）") : nothing}</dd></dl></details>
       ${heartbeat.findings.length ? html`<details><summary>${this.t("Audit findings", "审计结果")} (${heartbeat.findings.length})</summary>${heartbeat.findings.map((finding) => html`<p class="muted">${finding.severity}: ${finding.message}</p>`)}</details>` : nothing}
       <details><summary>${this.t("Items and blockers", "登记项与阻塞")}</summary>${heartbeat.items.map((item) => html`<div class="event"><span class="status">${String(item.status ?? "")}</span> ${String(item.item ?? item.id ?? "")}<p class="muted">${String(item.evidence ?? "")}</p></div>`)}</details>
       ${this.renderHeartbeatHistory(heartbeat)}
@@ -763,22 +933,55 @@ export class TaskProgressElement extends LitElement {
     const title = task?.title ?? this.t("Task progress", "任务进度");
     const checklistComplete =
       !!progress && progress.total > 0 && progress.completed === progress.total;
+    const sourceUnavailable = ["stale", "error", "pending-selection"].includes(
+      this.data.taskSource?.status ?? "",
+    );
     const showProgressBar =
+      this.observed &&
+      !this.connectionError &&
+      !sourceUnavailable &&
       progress &&
       progress.percent !== null &&
       (!checklistComplete || this.data.execution?.state === "idle");
-    const countedPercent = progress?.percent ?? 0;
+    const countedPercent = Math.max(0, Math.min(100, progress?.percent ?? 0));
     const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
-    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div><div class="sr-status" role="status" aria-live="polite" aria-atomic="true">${this.connectionError ? this.t("Checklist unavailable", "清单暂不可用") : ""}</div>${
-      this.expanded
-        ? html`<div class="body"><nav role="tablist"><button role="tab" aria-selected=${this.tab === "tasks"} @click=${() => {
-            this.tab = "tasks";
-          }}>${this.t("Subtasks", "子任务")}</button><button role="tab" aria-selected=${this.tab === "history"} @click=${() => {
-            this.tab = "history";
-            void this.loadHistory();
-          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.connectionError ? this.diagnostic(this.t("Connection error details", "连接错误详情"), this.connectionError) : nothing}${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${this.data.taskSource?.status === "stale" || this.data.taskSource?.status === "error" || this.data.taskSource?.status === "pending-selection" ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}${this.renderHeartbeat()}`}</div></div>`
-        : nothing
-    }</section>`;
+    const viewTitle =
+      this.tab === "tasks"
+        ? title
+        : this.tab === "history"
+          ? this.t("Task history", "任务历史")
+          : this.t("Project heartbeat", "项目心跳");
+    const execution = this.executionLabel(checklistComplete);
+    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}>
+      <div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}
+        <button class="main" title=${title} aria-label=${`${title} · ${this.checklistLabel()} · ${execution}`} aria-expanded=${this.expanded && this.tab === "tasks"} aria-controls="task-popover" @click=${this.toggleExpanded}>
+          ${this.icon("layers", "capsule-icon")}<span class="capsule-copy"><span class="title">${title}</span><span class="summary-state"><span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${execution}</span> · ${this.checklistLabel()}</span></span>
+          <span class="percent">${showProgressBar ? (checklistComplete ? this.icon("check") : html`${countedPercent}<small>%</small>`) : "—"}</span>${this.icon("down", "capsule-chevron")}
+          <svg class="edge-progress" viewBox="0 0 368 44" aria-hidden="true"><path class="edge-track" pathLength="100"></path>${showProgressBar ? svg`<path class="edge-fill" pathLength="100" stroke-dasharray=${`${countedPercent} 100`}></path>` : nothing}</svg>
+          ${showProgressBar ? html`<span class="track sr-status" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><span class="fill" style=${`width:${countedPercent}%`}></span></span>` : nothing}
+        </button>
+        <span class="orb-wrap"><button class="orb history-trigger" aria-label=${this.t("History", "历史")} aria-expanded=${this.expanded && this.tab === "history"} aria-controls="task-popover" @click=${() => void this.openPanel("history")}>${this.icon("history")}</button><span class="tooltip" aria-hidden="true">${this.t("History", "历史")}</span></span>
+        <span class="orb-wrap"><button class="orb heartbeat-trigger" aria-label=${this.t("Heartbeat", "心跳")} aria-expanded=${this.expanded && this.tab === "heartbeat"} aria-controls="task-popover" @click=${() => void this.openPanel("heartbeat")}>${this.icon("heartbeat")}<span class="heartbeat-mark" data-status=${this.data.heartbeat?.status ?? "none"} aria-hidden="true"></span></button><span class="tooltip" aria-hidden="true">${this.t("Heartbeat", "心跳")}</span></span>
+      </div>
+      <div class="sr-status" role="status" aria-live="polite" aria-atomic="true">${this.connectionError ? this.t("Checklist unavailable", "清单暂不可用") : ""}</div>
+      ${
+        this.expanded || this.closing
+          ? html`<div class="body" id="task-popover" role="region" aria-labelledby="panel-title" data-state=${this.closing ? "closing" : "open"} ?inert=${this.closing}>
+        <header class="panel-head"><div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.tab === "history" ? this.t("Recorded changes", "变更记录") : this.t("Read-only project records", "项目只读记录")}</div>
+          <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2><button class="close-panel" aria-label=${this.t("Close panel", "关闭面板")} @click=${() => this.closePanel()}>${this.icon("close")}</button></div>
+          ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : html`<p class="panel-subtitle">${this.tab === "history" ? this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。") : this.t("Recorded audits do not imply the agent is currently working.", "已记录的巡检不代表当前正在执行任务。")}</p>`}
+        </header>
+        <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>
+          ${this.connectionError ? this.diagnostic(this.t("Connection error details", "连接错误详情"), this.connectionError) : nothing}
+          ${this.tab === "history" ? this.renderHistory() : this.tab === "heartbeat" ? this.renderHeartbeat() : html`${task?.objectives.length ? task.objectives.map((objective, index) => this.objective(objective, index)) : html`<p class="empty">${sourceUnavailable ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}`}
+        </div>
+        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}` : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span>
+          <details class="panel-actions"><summary aria-label=${this.t("Display settings", "显示设置")}>${this.t("Display settings", "显示设置")}</summary><div class="display-menu"><button aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")}</button></div></details>
+        </footer>
+      </div>`
+          : nothing
+      }
+    </section>`;
   }
 }
 

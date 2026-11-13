@@ -174,22 +174,29 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     element.dir = document.documentElement.dir || "auto";
     const layoutRect = layoutRoot.getBoundingClientRect();
     const dockTop = Math.max(0, layoutRect.top) + 8;
-    const availableHeight = element.floating
-      ? window.innerHeight - 24
-      : Math.min(window.innerHeight * 0.5, Math.max(40, rect.top - dockTop - 24));
-    element.style.setProperty("--ctp-panel-max-height", `${Math.max(40, availableHeight)}px`);
-    element.style.setProperty("--ctp-scroll-max-height", `${Math.max(0, availableHeight - 90)}px`);
-    element.style.width = `${Math.max(180, Math.min(rect.width, window.innerWidth - 24))}px`;
-    const height = element.getBoundingClientRect().height || 40;
+    // The dock remains a single 44px row. Its independently positioned popover
+    // uses the viewport budget rather than growing the reserved content space.
+    const availableHeight = Math.max(0, Math.min(496, window.innerHeight - 24));
+    element.style.setProperty("--ctp-panel-max-height", `${availableHeight}px`);
+    element.style.setProperty("--ctp-scroll-max-height", `${Math.max(0, availableHeight - 170)}px`);
+    element.style.setProperty("--ctp-composer-top", `${rect.top}px`);
+    const width = Math.max(0, Math.min(464, rect.width, window.innerWidth - 24));
+    element.style.width = `${width}px`;
+    const height = element.getBoundingClientRect().height || 44;
+    const dockLeft = Math.max(
+      12,
+      Math.min(rect.left + (rect.width - width) / 2, window.innerWidth - width - 12),
+    );
     if (element.floating) {
-      const position = floatPosition ?? { x: rect.left, y: Math.max(12, dockTop) };
-      element.style.left = `${Math.max(12, Math.min(position.x, window.innerWidth - element.getBoundingClientRect().width - 12))}px`;
+      const position = floatPosition ?? { x: dockLeft, y: Math.max(12, dockTop) };
+      element.style.left = `${Math.max(12, Math.min(position.x, window.innerWidth - width - 12))}px`;
       element.style.top = `${Math.max(12, Math.min(position.y, window.innerHeight - height - 12))}px`;
     } else {
-      element.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - rect.width - 12))}px`;
+      element.style.left = `${dockLeft}px`;
       element.style.top = `${dockTop}px`;
       reserveTop(layoutRoot, height);
     }
+    element.dispatchEvent(new CustomEvent("task-progress-position"));
   };
 
   const request = async (input: TaskPanelRequest): Promise<TaskPanelResponse> => {

@@ -1,3 +1,12 @@
+# Task Progress 0.5.0
+
+- Replace the task card with a 44px frosted capsule and progress along its lower curved edge.
+- Add separate 40px History and Heartbeat round buttons with mutually exclusive panels.
+- Show real task → module → node hierarchy, per-module progress, node status and completion evidence.
+- Preserve authoritative task/source selection, paginated task and heartbeat history, and read-only project observation.
+- Support host light/dark themes, reduced motion, keyboard/focus return and constrained short-window panels.
+- Retain draggable floating placement through display settings and version the renderer for hot replacement.
+
 # Task Progress 0.4.4
 
 - Align empty and existing chats to their measured main content viewport below the titlebar.

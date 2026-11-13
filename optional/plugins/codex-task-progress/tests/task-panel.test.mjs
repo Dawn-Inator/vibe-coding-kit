@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -15,7 +15,7 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,getFailureThrownCount:0,delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,getFailureThrownCount:0,delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method==='get' && window.fixture.getFailureNext) { const message=window.fixture.getFailureNext; window.fixture.getFailureNext=null; if(window.fixture.holdNextGetFailure) { window.fixture.holdNextGetFailure=false; await new Promise(resolve => { window.fixture.releaseHeldGetFailure=resolve; }); window.fixture.releaseHeldGetFailure=null; } window.fixture.getFailureThrownCount++; throw new Error(message); }
@@ -24,6 +24,7 @@ window.__codexTaskProgressRequest = async function(request) {
   }
   const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
+  if(request.method==='heartbeat-history' && window.fixture.holdNextHeartbeatHistory) { window.fixture.holdNextHeartbeatHistory=false; await new Promise(resolve => { window.fixture.releaseHeldHeartbeatHistory=resolve; }); window.fixture.releaseHeldHeartbeatHistory=null; }
   if(request.method==='heartbeat-history' && window.fixture.heartbeatHistoryFailureNext) { const message=window.fixture.heartbeatHistoryFailureNext; window.fixture.heartbeatHistoryFailureNext=null; throw new Error(message); }
   if(request.method==='history' && window.fixture.delayNextHistory) { const delay=window.fixture.delayNextHistory; window.fixture.delayNextHistory=0; await new Promise(resolve => setTimeout(resolve,delay)); }
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
@@ -128,6 +129,20 @@ test("ordinary chat task panel browser flows", async (t) => {
   });
   const url = `http://127.0.0.1:${server.address().port}`;
   const contexts = new Set();
+  const showView = async (panel, view) => {
+    const trigger =
+      view === "tasks"
+        ? panel.locator(".summary .main")
+        : panel.getByRole("button", { name: view === "history" ? "历史" : "心跳", exact: true });
+    if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  };
+  const changePlacement = async (panel, name) => {
+    const main = panel.locator(".summary .main");
+    if (!(await panel.locator(".body").isVisible())) await main.click();
+    const settings = panel.locator(".panel-actions summary").filter({ hasText: "显示设置" });
+    if ((await settings.locator("..").getAttribute("open")) === null) await settings.click();
+    await panel.getByRole("button", { name, exact: true }).click();
+  };
   const open = async (query = "") => {
     const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
     contexts.add(context);
@@ -180,8 +195,10 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.equal(layoutBox.y, toolbarBox.y + toolbarBox.height);
         assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
         assert.ok(panelBox.y >= toolbarBox.y + toolbarBox.height);
-        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
-        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
+        assert.ok(
+          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
+        );
+        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
         assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
         assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
         assert.equal(
@@ -242,12 +259,14 @@ test("ordinary chat task panel browser flows", async (t) => {
           page.locator("#layout").boundingBox(),
         ]);
         assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
-        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
-        await panel.getByRole("button", { name: "浮动面板", exact: true }).click();
+        assert.ok(
+          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
+        );
+        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
+        await changePlacement(panel, "浮动面板");
         await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
         assert.equal(await page.locator("#layout").evaluate((node) => node.style.paddingTop), "");
-        await panel.getByRole("button", { name: "固定面板", exact: true }).click();
+        await changePlacement(panel, "固定面板");
         await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
         assert.ok(
           Number.parseFloat(
@@ -301,8 +320,10 @@ test("ordinary chat task panel browser flows", async (t) => {
           page.locator("#content").boundingBox(),
         ]);
         assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(Math.abs(panelBox.x - composerBox.x) < 1);
-        assert.ok(Math.abs(panelBox.width - composerBox.width) < 1);
+        assert.ok(
+          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
+        );
+        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
         assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
         assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
         await context.close();
@@ -527,7 +548,10 @@ test("ordinary chat task panel browser flows", async (t) => {
             },
           };
         });
-        await panel.getByText(/只读 Kit 心跳来源/).waitFor();
+        await panel
+          .locator(".summary")
+          .getByText(/只读 Kit 心跳来源/)
+          .waitFor();
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
@@ -596,7 +620,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
-        const historyTab = panel.getByRole("tab", { name: "历史", exact: true });
+        const historyTab = panel.getByRole("button", { name: "历史", exact: true });
         try {
           await historyTab.waitFor({ timeout: 5_000 });
         } catch (error) {
@@ -619,10 +643,12 @@ test("ordinary chat task panel browser flows", async (t) => {
           .filter({ hasText: "来源错误详情" });
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.ok((await scroll.locator(".path-value").textContent()).includes(longPath));
-        assert.ok((await panel.boundingBox()).height < 500);
-        assert.ok((await scroll.boundingBox()).height <= 340);
+        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
+        assert.ok(
+          (await scroll.boundingBox()).height < (await panel.locator(".body").boundingBox()).height,
+        );
         await mkdir(".playwright-img", { recursive: true });
-        await panel.screenshot({ path: ".playwright-img/task-source-error-bounded.png" });
+        await page.screenshot({ path: ".playwright-img/task-source-error-bounded.png" });
 
         await page.evaluate(
           ({ longError, projectHeartbeat }) => {
@@ -636,6 +662,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           },
           { longError, projectHeartbeat: heartbeat },
         );
+        await showView(panel, "heartbeat");
         await scroll.locator("summary").filter({ hasText: "心跳历史" }).click();
         const liveStatus = panel.locator('[role="status"][aria-live="polite"]');
         await liveStatus.filter({ hasText: "清单暂不可用" }).waitFor();
@@ -658,7 +685,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           await connectionDiagnostic.locator(".diagnostic-text").textContent(),
           String(new Error(longError)),
         );
-        await mainButton.click();
+        await panel.getByRole("button", { name: "心跳", exact: true }).click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "false");
         assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
         assert.equal(await liveStatus.count(), 1);
@@ -681,7 +708,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           },
           { longError, projectHeartbeat: heartbeat },
         );
-        await panel.getByRole("tab", { name: "子任务", exact: true }).click();
+        await showView(panel, "heartbeat");
         const projectError = scroll
           .locator("details.diagnostic summary")
           .filter({ hasText: "项目心跳错误" });
@@ -691,7 +718,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           .locator("details.diagnostic")
           .filter({ hasText: "项目心跳错误" });
         assert.equal(await projectDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.boundingBox()).height < 500);
+        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
 
         for (const [status, expected] of [
           ["error", /心跳任务来源暂不可用/],
@@ -709,7 +736,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           );
         }
 
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         const historyError = scroll
           .locator("details.diagnostic summary")
           .filter({ hasText: "台账历史不可用" });
@@ -719,10 +746,185 @@ test("ordinary chat task panel browser flows", async (t) => {
           .locator("details.diagnostic")
           .filter({ hasText: "台账历史不可用" });
         assert.equal(await historyDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.boundingBox()).height < 500);
+        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
 
-        await panel.locator(".summary .main").click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
+        await panel.locator(".body").waitFor({ state: "hidden" });
+        assert.equal(await panel.locator(".body").isVisible(), false);
         assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
+        await context.close();
+      },
+    );
+    await t.test(
+      "capsule hierarchy, independent circles, lazy history and keyboard dismissal",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(
+          ({ task, heartbeat }) => {
+            window.fixture.task = {
+              ...task,
+              objectives: [
+                {
+                  ...task.objectives[0],
+                  items: [
+                    ...task.objectives[0].items,
+                    { id: "cancelled", title: "取消的节点", status: "cancelled", evidence: [] },
+                  ],
+                },
+              ],
+            };
+            window.fixture.heartbeat = heartbeat;
+            window.fixture.history = {
+              events: [{ occurredAt: "2026-11-11T12:01:00Z", reason: "真实历史请求" }],
+              nextCursor: null,
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { task, heartbeat },
+        );
+        const main = panel.locator(".summary .main");
+        assert.equal((await main.boundingBox()).height, 44);
+        assert.equal(
+          await panel.locator(".edge-fill").evaluate((element) => element.namespaceURI),
+          "http://www.w3.org/2000/svg",
+        );
+        for (const name of ["历史", "心跳"]) {
+          const circle = await panel.getByRole("button", { name, exact: true }).boundingBox();
+          assert.equal(circle.width, 40);
+          assert.equal(circle.height, 40);
+        }
+        assert.equal(await panel.locator(".body").isVisible(), false);
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          ),
+          0,
+        );
+        await main.click();
+        const module = panel.getByRole("button", { name: /普通聊天界面/ });
+        const meter = panel.getByRole("meter");
+        assert.equal(await meter.getAttribute("aria-valuenow"), "50");
+        assert.match(await module.innerText(), /1\s*\/\s*2/);
+        await module.click();
+        assert.equal(await module.getAttribute("aria-expanded"), "true");
+        assert.equal(await panel.locator(".check").count(), 3);
+        assert.match(await panel.locator(".detail").innerText(), /浏览器实测通过/);
+        await module.press("Escape");
+        assert.equal(await module.getAttribute("aria-expanded"), "false");
+        await module.press("Escape");
+        await panel.locator(".body").waitFor({ state: "hidden" });
+        assert.equal(
+          await panel.evaluate((element) =>
+            element.shadowRoot.activeElement?.classList.contains("main"),
+          ),
+          true,
+        );
+        await main.press("Enter");
+        await panel.locator(".body").waitFor({ state: "visible" });
+        await module.focus();
+        await module.press("Space");
+        assert.equal(await module.getAttribute("aria-expanded"), "true");
+        await showView(panel, "history");
+        await panel.getByText("真实历史请求", { exact: true }).waitFor();
+        assert.equal(await main.getAttribute("aria-expanded"), "false");
+        assert.equal(
+          await panel
+            .getByRole("button", { name: "历史", exact: true })
+            .getAttribute("aria-expanded"),
+          "true",
+        );
+        assert.equal(await panel.getByRole("meter").count(), 0);
+        await showView(panel, "heartbeat");
+        assert.equal(await panel.locator(".body").count(), 1);
+        assert.equal(
+          await panel
+            .getByRole("button", { name: "历史", exact: true })
+            .getAttribute("aria-expanded"),
+          "false",
+        );
+        assert.equal(
+          await panel
+            .getByRole("button", { name: "心跳", exact: true })
+            .getAttribute("aria-expanded"),
+          "true",
+        );
+        assert.equal(await panel.getByText("真实历史请求", { exact: true }).count(), 0);
+        await page.locator("#messages").click({ position: { x: 3, y: 160 } });
+        await panel.locator(".body").waitFor({ state: "hidden" });
+        assert.equal(
+          await panel.evaluate((element) =>
+            element.shadowRoot.activeElement?.classList.contains("heartbeat-trigger"),
+          ),
+          true,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "long task and evidence remain bounded in narrow short windows with reduced motion",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.setViewportSize({ width: 390, height: 400 });
+        const title = "长标题".repeat(300);
+        const reference = `/workspace/${"long-unbroken-evidence-reference-".repeat(25)}acceptance.md`;
+        await page.evaluate(
+          ({ task, title, reference }) => {
+            window.fixture.task = {
+              ...task,
+              title,
+              objectives: [
+                {
+                  ...task.objectives[0],
+                  items: [
+                    {
+                      ...task.objectives[0].items[0],
+                      evidence: [{ summary: "长证据", verification: "verified", reference }],
+                    },
+                    task.objectives[0].items[1],
+                  ],
+                },
+              ],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { task, title, reference },
+        );
+        await showView(panel, "tasks");
+        const body = panel.locator(".body");
+        const bounds = await body.boundingBox();
+        assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+        assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 400);
+        assert.ok(await panel.locator(".scroll").evaluate((element) => element.clientHeight > 40));
+        const close = await panel.locator(".close-panel").boundingBox();
+        assert.ok(close.x >= 0 && close.x + close.width <= 390);
+        assert.ok(close.y >= 0 && close.y + close.height <= 400);
+        assert.equal(await panel.locator(".panel-title").getAttribute("title"), title);
+        await page.evaluate(() => {
+          document.documentElement.dir = "rtl";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const rtlBounds = await body.boundingBox();
+        assert.ok(rtlBounds.x >= 0 && rtlBounds.x + rtlBounds.width <= 390);
+        assert.ok(rtlBounds.y >= 0 && rtlBounds.y + rtlBounds.height <= 400);
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+        assert.equal(
+          await body.evaluate((element) => getComputedStyle(element).animationName),
+          "none",
+        );
+        await panel.getByRole("button", { name: /普通聊天界面/ }).click();
+        const evidence = panel.locator(".evidence").filter({ hasText: "长证据" });
+        assert.ok(
+          await evidence.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+        );
+        assert.ok(
+          await panel
+            .locator(".scroll")
+            .evaluate((element) => element.scrollHeight > element.clientHeight),
+        );
         await context.close();
       },
     );
@@ -756,7 +958,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "33.33");
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("新增验证任务", { exact: true }).waitFor();
         assert.match(
           await panel.locator("section.panel").innerText(),
@@ -771,14 +973,14 @@ test("ordinary chat task panel browser flows", async (t) => {
         await panel.getByRole("button", { name: "加载更多" }).click();
         await panel.getByText("建立任务", { exact: true }).waitFor();
         assert.match(await panel.locator("section.panel").innerText(), /新增验证任务/);
-        await panel.getByRole("button", { name: "浮动面板", exact: true }).click();
+        await changePlacement(panel, "浮动面板");
         assert.equal(await panel.getAttribute("floating"), "");
         await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
         assert.equal(
           await page.locator("#layout").evaluate((element) => element.style.paddingTop),
           "",
         );
-        await panel.getByRole("button", { name: "固定面板", exact: true }).click();
+        await changePlacement(panel, "固定面板");
         assert.equal(await panel.getAttribute("floating"), null);
         await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
         const contentBox = await page.locator("#content").boundingBox();
@@ -797,7 +999,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         const historyError = panel
           .locator(".scroll details.diagnostic summary")
           .filter({ hasText: "历史记录不可用" });
@@ -858,7 +1060,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           { value: task, source },
         );
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("wake newest", { exact: true }).waitFor();
         assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
@@ -866,7 +1068,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.match(await panel.locator("section.panel").innerText(), /Feature · active/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
         await mkdir(".playwright-img", { recursive: true });
-        await panel.screenshot({ path: ".playwright-img/task-history-source-preview.png" });
+        await page.screenshot({ path: ".playwright-img/task-history-source-preview.png" });
         await page.evaluate(() => {
           window.fixture.history = {
             events: [],
@@ -951,7 +1153,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           { value: task, headPath, historyPath, projectHeartbeat: heartbeat },
         );
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("paired task-history wake", { exact: true }).waitFor();
         const scroll = panel.locator(".scroll");
         assert.match(await scroll.innerText(), /只读心跳来源.*heartbeat\.md/s);
@@ -959,7 +1161,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.match(await scroll.innerText(), /taskhistory\.md:24/);
         assert.match(await scroll.innerText(), /taskhistory\.md:25/);
         await mkdir(".playwright-img", { recursive: true });
-        await panel.screenshot({ path: ".playwright-img/task-history-paired-preview.png" });
+        await page.screenshot({ path: ".playwright-img/task-history-paired-preview.png" });
 
         const historyCallsBeforeHeartbeatChange = await page.evaluate(
           () => window.fixture.calls.filter((call) => call.method === "history").length,
@@ -1030,7 +1232,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText(/此台账暂无已记录的心跳巡检/).waitFor();
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
         await page.evaluate(() => {
@@ -1089,7 +1291,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         const mismatchDetails = panel
           .locator(".scroll details.diagnostic summary")
           .filter({ hasText: "台账历史不可用" });
@@ -1175,7 +1377,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
         const historyText = await panel.locator(".scroll").innerText();
         assert.match(historyText, /Audit · verified/);
@@ -1184,7 +1386,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           await panel.locator(".summary").innerText(),
           /current Items projection invalid/,
         );
-        await panel.getByRole("tab", { name: "子任务", exact: true }).click();
+        await panel.locator(".summary .main").click();
         await panel
           .locator(".scroll details.heartbeat summary")
           .filter({ hasText: "只读 Kit 任务来源" })
@@ -1201,7 +1403,7 @@ test("ordinary chat task panel browser flows", async (t) => {
             .textContent(),
           "current Items projection invalid",
         );
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
         await context.close();
       },
@@ -1233,7 +1435,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("formerly valid wake", { exact: true }).waitFor();
         await page.evaluate(() => {
           window.fixture.taskSource = {
@@ -1308,7 +1510,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await page.waitForFunction(
           () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
         );
@@ -1362,7 +1564,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await page.waitForFunction(
           () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
         );
@@ -1401,7 +1603,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
-        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByRole("button", { name: "历史", exact: true }).click();
         await page.waitForFunction(
           () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
         );
@@ -1478,7 +1680,8 @@ test("ordinary chat task panel browser flows", async (t) => {
         window.fixture.execution.state = "idle";
         return window.__CODEX_TASK_PROGRESS__.refresh();
       });
-      assert.match(await header.innerText(), /已登记清单 2\/2 · 当前空闲/);
+      assert.match(await header.innerText(), /已登记清单 2\/2/);
+      assert.match(await header.innerText(), /当前空闲/);
       assert.match(await panel.getByRole("progressbar").getAttribute("aria-label"), /已登记清单/);
       assert.doesNotMatch(
         await panel.getByRole("progressbar").getAttribute("aria-valuetext"),
@@ -1492,7 +1695,8 @@ test("ordinary chat task panel browser flows", async (t) => {
         window.fixture.execution.state = "working";
         return window.__CODEX_TASK_PROGRESS__.refresh();
       });
-      assert.match(await header.innerText(), /已登记清单 2\/3 · 清单进度 66.67% · 正在执行/);
+      assert.match(await header.innerText(), /已登记清单 2\/3 · 清单进度 66.67%/);
+      assert.match(await header.innerText(), /正在执行/);
       await page.evaluate(() => {
         window.fixture.execution.state = "unknown";
         return window.__CODEX_TASK_PROGRESS__.refresh();
@@ -1617,6 +1821,13 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.equal(await status.innerText(), "已取消");
+        await page.evaluate(() => {
+          for (const item of window.fixture.task.objectives[0].items) item.status = "completed";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await status.innerText(), "已取消");
+        assert.equal(await panel.getByRole("meter").getAttribute("aria-valuenow"), "0");
+        assert.equal(await panel.getByRole("meter").getAttribute("aria-valuetext"), "0/0");
         await context.close();
       },
     );
@@ -1628,8 +1839,11 @@ test("ordinary chat task panel browser flows", async (t) => {
           window.fixture.heartbeat = { ...value, status: "candidates", sourcePath: null };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        await panel.getByRole("button", { name: /任务进度/ }).click();
-        await panel.getByRole("heading", { name: "项目心跳" }).waitFor();
+        await showView(panel, "heartbeat");
+        await panel
+          .locator(".scroll")
+          .getByRole("heading", { name: "项目心跳", exact: true })
+          .waitFor();
         assert.match(
           await panel.locator("section.panel").innerText(),
           /当前项目没有可显示的心跳来源/,
@@ -1647,6 +1861,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await panel.getByRole("heading", { name: /项目心跳 当前未认证/ }).waitFor();
+        await panel.locator("summary").filter({ hasText: "来源与诊断" }).click();
         assert.match(await panel.locator("section.panel").innerText(), /只读/);
         assert.match(await panel.locator("section.panel").innerText(), /\/workspace\/heartbeat.md/);
         assert.match(await panel.locator("section.panel").innerText(), /项目配置/);
@@ -1655,7 +1870,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           await panel.locator("section.panel").innerText(),
           /latest-recorded-wake|items-inventory/,
         );
-        assert.equal(await panel.getByText("预期下次巡检", { exact: true }).count(), 0);
+        assert.equal(await panel.locator(".audit-time dd").last().innerText(), "—");
         await panel.locator("summary").filter({ hasText: "登记项与阻塞" }).click();
         assert.match(await panel.locator("section.panel").innerText(), /处理阻塞/);
         await panel.locator("summary").filter({ hasText: "心跳历史" }).click();
@@ -1698,21 +1913,44 @@ test("ordinary chat task panel browser flows", async (t) => {
         },
         { task, heartbeat },
       );
-      await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
+      await showView(panel, "heartbeat");
       await panel.getByRole("heading", { name: /项目心跳 当前未认证/ }).waitFor();
-      const [panelBox, goalBox] = await Promise.all([
-        panel.boundingBox(),
+      const [popoverBox, goalBox] = await Promise.all([
+        panel.locator(".body").boundingBox(),
         page.locator("#goal-fixture").boundingBox(),
       ]);
-      assert.ok(panelBox.y + panelBox.height <= goalBox.y);
+      assert.ok(popoverBox.y + popoverBox.height <= goalBox.y);
+      const releaseVersion = JSON.parse(
+        readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+      ).version;
+      const { pageHostVersion } = JSON.parse(
+        readFileSync(
+          new URL("../packages/contracts/src/page-host-version.json", import.meta.url),
+          "utf8",
+        ),
+      );
+      const hotGoalElementName = `codex-task-progress-v${releaseVersion.replaceAll(".", "-")}-p${pageHostVersion}`;
+      await page.evaluate((tagName) => {
+        const previous = document.querySelector("#goal-fixture");
+        const current = document.createElement(tagName);
+        current.id = previous.id;
+        current.style.cssText = previous.style.cssText;
+        previous.replaceWith(current);
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      }, hotGoalElementName);
+      const [hotPopover, hotGoal] = await Promise.all([
+        panel.locator(".body").boundingBox(),
+        page.locator("#goal-fixture").boundingBox(),
+      ]);
+      assert.ok(hotPopover.y + hotPopover.height <= hotGoal.y);
       await mkdir(".playwright-img", { recursive: true });
-      await panel.screenshot({ path: ".playwright-img/task-panel-preview.png" });
+      await page.screenshot({ path: ".playwright-img/task-panel-preview.png" });
       await panel.locator("summary").filter({ hasText: "心跳历史" }).click();
       await panel.getByText("2026-11-11 wake", { exact: true }).scrollIntoViewIfNeeded();
-      await panel.screenshot({ path: ".playwright-img/task-panel-heartbeat-history-preview.png" });
+      await page.screenshot({ path: ".playwright-img/task-panel-heartbeat-history-preview.png" });
       await page.setViewportSize({ width: 420, height: 640 });
       await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-      const narrow = await panel.boundingBox();
+      const narrow = await panel.locator(".body").boundingBox();
       const goalNarrow = await page.locator("#goal-fixture").boundingBox();
       assert.ok(narrow.x >= 0 && narrow.x + narrow.width <= 420);
       assert.ok(narrow.y >= 0 && narrow.y + narrow.height <= goalNarrow.y);
@@ -1739,7 +1977,8 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        await panel.getByRole("button", { name: /任务进度/ }).click();
+        await showView(panel, "heartbeat");
+        await panel.locator("summary").filter({ hasText: "来源与诊断" }).click();
         assert.match(
           await panel.locator("section.panel").innerText(),
           /200 · 已完成 180 · 阻塞 20/,
@@ -1766,6 +2005,73 @@ test("ordinary chat task panel browser flows", async (t) => {
         );
         assert.equal(requests.length, 2);
         assert.equal(requests[1].cursor, "1");
+        await context.close();
+      },
+    );
+    await t.test(
+      "late heartbeat history cannot overwrite newer records after an A to B to A switch",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = value;
+          window.fixture.heartbeatHistory = {
+            wakes: [{ heading: "old thread-a heartbeat", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            sourcePath: value.sourcePath,
+          };
+          window.fixture.holdNextHeartbeatHistory = true;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await showView(panel, "heartbeat");
+        await panel.locator("summary").filter({ hasText: "心跳历史" }).click();
+        await page.waitForFunction(
+          () => typeof window.fixture.releaseHeldHeartbeatHistory === "function",
+        );
+        await page.evaluate(() => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.heartbeat = {
+            ...window.fixture.heartbeat,
+            sourcePath: "/workspace/thread-b/heartbeat.md",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await page.evaluate((value) => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
+          window.fixture.heartbeat = value;
+          window.fixture.heartbeatHistory = {
+            wakes: [{ heading: "new thread-a heartbeat", rows: [] }],
+            nextCursor: null,
+            total: 1,
+            sourcePath: value.sourcePath,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        const heartbeatHistory = panel.locator("summary").filter({ hasText: "心跳历史" });
+        if ((await heartbeatHistory.locator("..").getAttribute("open")) === null)
+          await heartbeatHistory.click();
+        else await panel.getByRole("button", { name: "刷新心跳历史", exact: true }).click();
+        await panel.getByText("new thread-a heartbeat", { exact: true }).waitFor();
+        await page.evaluate(async () => {
+          window.fixture.releaseHeldHeartbeatHistory();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          );
+        });
+        assert.equal(await panel.getByText("old thread-a heartbeat", { exact: true }).count(), 0);
+        assert.equal(await panel.getByText("new thread-a heartbeat", { exact: true }).count(), 1);
+        const requests = await page.evaluate(() =>
+          window.fixture.calls.filter((call) => call.method === "heartbeat-history"),
+        );
+        assert.deepEqual(
+          requests.map((request) => request.threadId),
+          ["thread-a", "thread-a"],
+        );
         await context.close();
       },
     );
@@ -1829,7 +2135,7 @@ test("ordinary chat task panel browser flows", async (t) => {
       const { context, page, panel } = await open();
       await panel.getByRole("button", { name: /任务进度/ }).click();
       await page.reload();
-      await panel.getByRole("tab", { name: "子任务", exact: true }).waitFor();
+      await panel.locator(".summary .main").waitFor();
       await page.evaluate((value) => {
         window.fixture.task = value;
         return window.__CODEX_TASK_PROGRESS__.refresh();
