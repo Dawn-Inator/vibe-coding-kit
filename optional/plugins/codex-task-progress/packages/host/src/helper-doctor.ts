@@ -70,6 +70,8 @@ export interface GoalProgressDoctorResult {
     };
     readonly renderer: {
       readonly taskPanel: GoalProgressRendererBridgeDoctor["taskPanel"] | null;
+      readonly taskPanels: NonNullable<GoalProgressRendererBridgeDoctor["taskPanels"]>;
+      readonly taskPanelTargetCount: number;
       readonly displayState: GoalProgressRendererBridgeDoctor["displayState"] | null;
       readonly displayRequired: boolean | null;
       readonly receivedViewModelRevision: number | null;
@@ -112,6 +114,8 @@ function emptyDoctorRuntime(lastErrorCode: string | null): GoalProgressDoctorRes
     cdp: { port: null, loopback: null, targetUrl: null },
     renderer: {
       taskPanel: null,
+      taskPanels: [],
+      taskPanelTargetCount: 0,
       displayState: null,
       displayRequired: null,
       receivedViewModelRevision: null,
@@ -336,6 +340,8 @@ export async function inspectGoalProgressRuntime(
 ): Promise<GoalProgressDoctorResult["runtime"]> {
   let renderer: GoalProgressRendererBridgeDoctor | undefined;
   let lastErrorCode: string | null = null;
+  let failedTaskPanels: NonNullable<GoalProgressRendererBridgeDoctor["taskPanels"]> = [];
+  let failedTaskPanelTargetCount = 0;
   try {
     renderer = await dependencies.rendererDoctor?.(sessionId);
     if (!renderer && !dependencies.rendererDoctor) {
@@ -343,6 +349,12 @@ export async function inspectGoalProgressRuntime(
     }
   } catch (error) {
     lastErrorCode = helperDiagnosticCauseCode(error);
+    if (error instanceof Error && "taskPanels" in error && Array.isArray(error.taskPanels)) {
+      failedTaskPanels = error.taskPanels.slice(0, 64) as typeof failedTaskPanels;
+      if ("taskPanelTargetCount" in error && typeof error.taskPanelTargetCount === "number") {
+        failedTaskPanelTargetCount = error.taskPanelTargetCount;
+      }
+    }
   }
 
   let actualThreadProven: boolean | null = null;
@@ -394,6 +406,8 @@ export async function inspectGoalProgressRuntime(
     },
     renderer: {
       taskPanel: renderer?.taskPanel ?? null,
+      taskPanels: renderer?.taskPanels ?? failedTaskPanels,
+      taskPanelTargetCount: renderer?.taskPanelTargetCount ?? failedTaskPanelTargetCount,
       displayState: renderer?.displayState ?? null,
       displayRequired: renderer?.displayRequired ?? null,
       receivedViewModelRevision: renderer?.receivedViewModelRevision ?? null,

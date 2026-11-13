@@ -11,6 +11,8 @@ import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 import rendererBundlePolicy from "../../contracts/src/renderer-bundle-policy.json" with {
   type: "json",
 };
+import { inspectGoalProgressRuntime } from "../../host/src/helper-doctor.js";
+import { RendererTargetManager } from "../../host/src/renderer-target-manager.js";
 import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
 import { discoverCodexCdp, isCodexRendererPageUrl } from "../src/cdp.js";
 import { GOAL_PROGRESS_PAGE_HOST_VERSION } from "../src/page-host.js";
@@ -492,6 +494,11 @@ test("doctor exposes the ordinary task panel independently of native Goal health
     connected: true,
     count: 1,
     threadMatched: true,
+    composerCount: 1,
+    textboxCount: 1,
+    threadCandidateCount: 1,
+    rejectionReason: null,
+    threadRejectionReason: null,
     bounds: { x: 1, y: 2, width: 100, height: 44 },
     status: "connected",
     lastError: null,
@@ -529,5 +536,88 @@ test("doctor exposes the ordinary task panel independently of native Goal health
     assert.equal(mismatch.taskPanel?.bounds, null);
   } finally {
     await bridge.close();
+  }
+});
+
+test("target doctor reports bounded per-window task diagnostics without changing selected Goal results", async () => {
+  let failB = false;
+  const targets = ["a", "b"].map((targetId) => ({
+    targetId,
+    type: "page",
+    url: "app://-/index.html",
+  }));
+  const manager = new RendererTargetManager({
+    connector: async () => ({
+      initialTargets: targets,
+      onTargetInfo: () => () => undefined,
+      onTargetDestroyed: () => () => undefined,
+      close: async () => undefined,
+      connectTarget: async ({ targetId }) =>
+        ({
+          clear: async () => undefined,
+          recoverVisibleThreadId: async () => (targetId === "a" ? "chat-a" : null),
+          doctor: async () => {
+            if (targetId === "b" && failB) throw new Error("private path /tmp/secret");
+            return {
+              lastErrorCode: null,
+              displayRequired: null,
+              taskPanel: {
+                version: 1,
+                elementName: "codex-task-panel",
+                threadId: targetId === "a" ? "chat-a" : null,
+                connected: true,
+                visible: targetId === "a",
+                count: 1,
+                threadMatched: targetId === "a",
+                composerCount: targetId === "a" ? 1 : 0,
+                textboxCount: targetId === "a" ? 1 : 0,
+                threadCandidateCount: targetId === "a" ? 1 : 0,
+                rejectionReason: targetId === "a" ? null : "composer-root-missing",
+                threadRejectionReason: targetId === "a" ? null : "visible-thread-marker-missing",
+                bounds: null,
+                status: targetId === "a" ? "connected" : "waiting",
+                lastError: null,
+                lastRefreshAt: null,
+                revision: null,
+              },
+            };
+          },
+          close: async () => undefined,
+        }) as never,
+    }),
+  });
+  try {
+    await manager.start();
+    const selected = await manager.doctor("chat-a");
+    assert.equal(selected.taskPanel?.threadId, "chat-a");
+    assert.equal(selected.taskPanelTargetCount, 2);
+    assert.deepEqual(
+      selected.taskPanels?.map((entry) => [entry.targetId, entry.taskPanel?.status]),
+      [
+        ["a", "connected"],
+        ["b", "waiting"],
+      ],
+    );
+    const runtime = await inspectGoalProgressRuntime("unknown-chat", {
+      rendererDoctor: (threadId) => manager.doctor(threadId),
+      store: { load: async () => ({ contract: null }) } as never,
+      refreshUsage: async () => undefined,
+      readNativeGoal: async () => null,
+      startupListener: undefined,
+    });
+    assert.equal(runtime.renderer.taskPanel, null);
+    assert.equal(runtime.renderer.taskPanels.length, 2);
+    assert.equal(
+      runtime.renderer.taskPanels[1]?.taskPanel?.threadRejectionReason,
+      "visible-thread-marker-missing",
+    );
+    assert.equal(runtime.lastErrorCode, "RENDERER_TARGET_UNAVAILABLE");
+    failB = true;
+    const withFailure = await manager.doctor("chat-a");
+    assert.equal(withFailure.taskPanel?.threadId, "chat-a");
+    assert.equal(withFailure.taskPanels?.[1]?.errorCode, "RENDERER_TARGET_UNAVAILABLE");
+    await assert.rejects(manager.doctor(), /private path/);
+  } finally {
+    await manager.close();
   }
 });

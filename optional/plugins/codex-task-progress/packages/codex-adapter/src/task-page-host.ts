@@ -16,6 +16,11 @@ export interface TaskPageHostDiagnostics {
   connected: boolean;
   count: number;
   threadMatched: boolean;
+  composerCount: number;
+  textboxCount: number;
+  threadCandidateCount: number;
+  rejectionReason: ReturnType<typeof readCurrentCodexPage>["rejectionReason"];
+  threadRejectionReason: ReturnType<typeof readCurrentCodexPage>["threadRejectionReason"];
   bounds: { x: number; y: number; width: number; height: number } | null;
   status: "waiting" | "connected" | "error";
   lastError: string | null;
@@ -58,6 +63,11 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     connected: false,
     count: 0,
     threadMatched: false,
+    composerCount: 0,
+    textboxCount: 0,
+    threadCandidateCount: 0,
+    rejectionReason: null,
+    threadRejectionReason: null,
     bounds: null,
     status: "waiting",
     lastError: null,
@@ -391,6 +401,11 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
         connected,
         count: document.querySelectorAll('[data-codex-task-panel="true"]').length,
         threadMatched,
+        composerCount: page.composerCount,
+        textboxCount: page.textboxCount,
+        threadCandidateCount: page.threadCandidateCount,
+        rejectionReason: page.rejectionReason,
+        threadRejectionReason: page.threadRejectionReason,
         visible,
         bounds:
           visible && rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,

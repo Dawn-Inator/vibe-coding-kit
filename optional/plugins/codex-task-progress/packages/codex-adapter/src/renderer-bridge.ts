@@ -120,6 +120,26 @@ const TaskPanelDiagnosticsSchema = z.object({
   connected: z.boolean(),
   count: z.number().int().nonnegative(),
   threadMatched: z.boolean(),
+  composerCount: z.number().int().nonnegative(),
+  textboxCount: z.number().int().nonnegative(),
+  threadCandidateCount: z.number().int().nonnegative(),
+  rejectionReason: z
+    .enum([
+      "composer-root-missing",
+      "composer-root-ambiguous",
+      "composer-textbox-missing",
+      "composer-textbox-ambiguous",
+      "goal-anchor-missing",
+      "goal-anchor-ambiguous",
+    ])
+    .nullable(),
+  threadRejectionReason: z
+    .enum([
+      "visible-thread-marker-missing",
+      "visible-thread-marker-ambiguous",
+      "visible-thread-id-missing",
+    ])
+    .nullable(),
   bounds: z
     .object({
       x: z.number().finite(),
@@ -134,7 +154,15 @@ const TaskPanelDiagnosticsSchema = z.object({
   revision: z.number().int().nonnegative().nullable(),
 });
 
+export interface TaskPanelTargetDiagnostics {
+  readonly targetId: string;
+  readonly taskPanel: TaskPageHostDiagnostics | null;
+  readonly errorCode: string | null;
+}
+
 export interface GoalProgressRendererBridgeDoctor {
+  readonly taskPanels?: readonly TaskPanelTargetDiagnostics[];
+  readonly taskPanelTargetCount?: number;
   readonly taskPanel?: TaskPageHostDiagnostics | null;
   readonly displayState?: "rendered" | "pending" | "not-needed" | "unrecognized";
   readonly displayRequired?: boolean | null;

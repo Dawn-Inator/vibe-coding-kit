@@ -350,21 +350,43 @@ export class RendererTargetManager implements ViewModelPublisherSink {
   async doctor(expectedThreadId?: string): Promise<GoalProgressRendererBridgeDoctor> {
     let lastError: unknown;
     const doctors: GoalProgressRendererBridgeDoctor[] = [];
-    const results = await Promise.allSettled(
-      this.targetIds()
-        .filter(
-          (targetId) =>
-            expectedThreadId === undefined ||
-            this.#targets.get(targetId)?.visibleThreadId === expectedThreadId,
-        )
-        .map((targetId) => this.doctorTarget(targetId, expectedThreadId)),
+    const targetIds = this.targetIds();
+    const selected = new Set(
+      targetIds.filter(
+        (targetId) =>
+          expectedThreadId === undefined ||
+          this.#targets.get(targetId)?.visibleThreadId === expectedThreadId,
+      ),
     );
-    for (const result of results) {
-      if (result.status === "fulfilled") doctors.push(result.value);
-      else lastError = result.reason;
+    // Preserve every selected Goal doctor while bounding the additional ordinary-panel snapshots.
+    const snapshotIds = targetIds.slice(0, 64);
+    const queriedIds = [
+      ...new Set([...targetIds.filter((id) => selected.has(id)), ...snapshotIds]),
+    ];
+    const results = await Promise.allSettled(
+      queriedIds.map((targetId) =>
+        this.doctorTarget(targetId, selected.has(targetId) ? expectedThreadId : undefined),
+      ),
+    );
+    const taskPanels: NonNullable<GoalProgressRendererBridgeDoctor["taskPanels"]>[number][] = [];
+    for (const [index, targetId] of queriedIds.entries()) {
+      const result = results[index];
+      if (!result) continue;
+      if (selected.has(targetId)) {
+        if (result.status === "fulfilled") doctors.push(result.value);
+        else lastError = result.reason;
+      }
+      if (snapshotIds.includes(targetId)) {
+        taskPanels.push(
+          result.status === "fulfilled"
+            ? { targetId, taskPanel: result.value.taskPanel ?? null, errorCode: null }
+            : { targetId, taskPanel: null, errorCode: stableTargetError(result.reason) },
+        );
+      }
     }
+    const taskPanelTargetCount = targetIds.length;
     if (doctors.length > 0 && lastError === undefined) {
-      return (
+      const selectedDoctor =
         doctors.find((doctor) => doctor.lastErrorCode !== null) ??
         doctors.find(
           (doctor) =>
@@ -381,10 +403,16 @@ export class RendererTargetManager implements ViewModelPublisherSink {
         ) ??
         doctors.find((doctor) => doctor.displayRequired == null) ??
         doctors.find((doctor) => doctor.displayRequired === true) ??
-        (doctors[0] as GoalProgressRendererBridgeDoctor)
-      );
+        (doctors[0] as GoalProgressRendererBridgeDoctor);
+      return { ...selectedDoctor, taskPanels, taskPanelTargetCount };
     }
-    throw lastError ?? new Error("RENDERER_TARGET_UNAVAILABLE");
+    const original = lastError ?? new Error("RENDERER_TARGET_UNAVAILABLE");
+    const error = new Error(
+      original instanceof Error ? original.message : "RENDERER_TARGET_UNAVAILABLE",
+      { cause: original },
+    );
+    Object.assign(error, { taskPanels, taskPanelTargetCount });
+    throw error;
   }
 
   async handleDisconnect(code: string): Promise<void> {

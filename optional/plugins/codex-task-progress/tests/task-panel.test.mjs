@@ -13,7 +13,7 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 #messages{flex:1;min-height:0;overflow:auto}#composer{width:100%;height:100px;flex-shrink:0;background:white;border:1px solid #ccc;margin-bottom:20px;box-sizing:border-box}[role=textbox]{height:80px}
 </style></head><body>
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
-<main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
+<main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></div></main>
 <script>
 window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,getFailureThrownCount:0,delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
 window.__codexTaskProgressRequest = async function(request) {
@@ -45,10 +45,10 @@ body{font:14px system-ui;margin:0;background:#f5f5f5}*{box-sizing:border-box}
 </style></head><body>
 <main id="outer-generic-main"><div id="appframe" data-app-shell-page-surface>
 <header id="toolbar" data-app-shell-titlebar>Codex toolbar remains unobscured</header>
-<main id="main-region" data-app-shell-main-surface="default"><div id="layout" data-app-shell-main-content-layout="default"><div id="content"><div id="messages">Empty chat content</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
+<main id="main-region" data-app-shell-main-surface="default"><div id="layout" data-app-shell-main-content-layout="default"><div id="content"><div id="messages">Empty chat content</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></div></main>
 </div></main>
 <aside><div id="active-thread" data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="client-new-thread:placeholder"></div></aside>
-<div id="cached-page" data-app-shell-page-surface hidden><div data-app-shell-main-content-layout="thread-edge-scroll"><div data-codex-composer-root><div role="textbox" data-codex-composer></div></div></div></div>
+<div id="cached-page" data-app-shell-page-surface hidden><div data-app-shell-main-content-layout="thread-edge-scroll"><div data-codex-composer-root><div role="textbox"></div></div></div></div>
 ${fixture.slice(fixture.indexOf("<script>"))}`;
 const task = {
   schemaVersion: 3,
@@ -161,6 +161,11 @@ test("ordinary chat task panel browser flows", async (t) => {
             window.fixture.task = value;
             await window.__CODEX_TASK_PROGRESS__.refresh();
           }, task);
+          assert.equal(
+            await page.locator('[role="textbox"]').getAttribute("data-codex-composer"),
+            null,
+            "the current Codex textbox no longer needs the legacy marker",
+          );
           const health = await page.evaluate(() => window.__CODEX_GOAL_PROGRESS__.health());
           assert.equal(health.reason, "not-configured");
           assert.equal(health.hostCount, 0);
@@ -190,6 +195,11 @@ test("ordinary chat task panel browser flows", async (t) => {
           assert.equal(switched.visible, false);
           assert.equal(switched.threadMatched, false);
           assert.equal(switched.bounds, null);
+          await page.waitForFunction(
+            () =>
+              window.__CODEX_TASK_PROGRESS__.diagnostics().lastError ===
+              "TASK_RESPONSE_THREAD_MISMATCH",
+          );
           await page.evaluate(() =>
             document
               .querySelector("[data-app-action-sidebar-thread-id]")
@@ -213,6 +223,99 @@ test("ordinary chat task panel browser flows", async (t) => {
         }
       },
     );
+    await t.test(
+      "current composer shape scopes textbox proof and preserves legacy marker support",
+      async () => {
+        const { context, page, panel } = await open();
+        try {
+          await page.evaluate((value) => {
+            window.fixture.task = value;
+            const outside = document.createElement("div");
+            outside.setAttribute("role", "textbox");
+            document.body.append(outside);
+            const hidden = document.createElement("div");
+            hidden.setAttribute("role", "textbox");
+            hidden.hidden = true;
+            document.querySelector("[data-codex-composer-root]").append(hidden);
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, task);
+          await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
+          let state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
+          assert.equal(state.textboxCount, 1);
+          assert.equal(state.rejectionReason, null);
+          assert.equal(state.threadId, "thread-a");
+          assert.equal(state.visible, true);
+
+          await page.locator('[data-codex-composer-root] [role="textbox"]').evaluate((node) => {
+            node.setAttribute("data-codex-composer", "");
+          });
+          await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+          state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
+          assert.equal(state.textboxCount, 1);
+          assert.equal(state.rejectionReason, null);
+          assert.equal(state.visible, true);
+        } finally {
+          await context.close();
+        }
+      },
+    );
+    await t.test("ambiguous visible textboxes and competing surfaces fail closed", async () => {
+      const { context, page } = await open();
+      try {
+        const ambiguousTextbox = await page.evaluate(() => {
+          const second = document.createElement("div");
+          second.setAttribute("role", "textbox");
+          document.querySelector("[data-codex-composer-root]").append(second);
+          return window.__CODEX_TASK_PROGRESS__.diagnostics();
+        });
+        assert.equal(ambiguousTextbox.textboxCount, 2);
+        assert.equal(ambiguousTextbox.rejectionReason, "composer-textbox-ambiguous");
+        assert.equal(ambiguousTextbox.visible, false);
+
+        await page
+          .locator("[data-codex-composer-root] [role=textbox]")
+          .nth(1)
+          .evaluate((node) => node.remove());
+        const ambiguousSurface = await page.evaluate(() => {
+          const surface = document.createElement("main");
+          surface.setAttribute("data-app-shell-page-surface", "");
+          surface.innerHTML = '<div data-codex-composer-root><div role="textbox"></div></div>';
+          document.body.append(surface);
+          return window.__CODEX_TASK_PROGRESS__.diagnostics();
+        });
+        assert.equal(ambiguousSurface.rejectionReason, "composer-root-ambiguous");
+        assert.equal(ambiguousSurface.visible, false);
+      } finally {
+        await context.close();
+      }
+    });
+    await t.test("waiting diagnostics show proof counts and sanitize errors", async () => {
+      const { context, page } = await open();
+      try {
+        await page.evaluate(async () => {
+          window.fixture.getFailureNext = "private message containing a path /tmp/secret";
+          await window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const error = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
+        assert.equal(error.status, "error");
+        assert.equal(error.lastError, "TASK_PROGRESS_ERROR");
+        const waiting = await page.evaluate(async () => {
+          document.querySelector("[data-app-action-sidebar-thread-row]").remove();
+          await window.__CODEX_TASK_PROGRESS__.refresh();
+          return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
+        });
+        assert.equal(waiting.status, "waiting");
+        assert.equal(waiting.threadId, null);
+        assert.equal(waiting.visible, false);
+        assert.equal(waiting.composerCount, 1);
+        assert.equal(waiting.textboxCount, 1);
+        assert.equal(waiting.threadCandidateCount, 0);
+        assert.equal(waiting.rejectionReason, null);
+        assert.equal(waiting.threadRejectionReason, "visible-thread-marker-missing");
+      } finally {
+        await context.close();
+      }
+    });
     await t.test(
       "disabled project hides panel without stale data; omitted legacy flag stays enabled",
       async () => {

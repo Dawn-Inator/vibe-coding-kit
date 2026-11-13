@@ -109,7 +109,10 @@ export function readCurrentCodexPage(document: Document): CurrentCodexPage {
   ).filter(visibility.exposed);
   const composer = surface && composers.length === 1 ? (composers[0] ?? null) : null;
   const textboxes = Array.from(
-    composer?.querySelectorAll<HTMLElement>('[role="textbox"][data-codex-composer]') ?? [],
+    // Current Codex editors expose role="textbox" inside the verified composer
+    // root but no longer carry data-codex-composer. Scope to that unique root;
+    // never fall back to a document-wide textbox search.
+    composer?.querySelectorAll<HTMLElement>('[role="textbox"]') ?? [],
   ).filter(visibility.exposed);
   const textbox = textboxes.length === 1 ? (textboxes[0] ?? null) : null;
   const rejectionReason =
