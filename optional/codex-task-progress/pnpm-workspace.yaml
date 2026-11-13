@@ -1,0 +1,9 @@
+packages:
+  - "packages/*"
+  - "platform/*"
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  hono: 4.13.7

@@ -1,0 +1,44 @@
+{
+  "description": "Keep ordinary task progress current, restore Goal sessions and inject verified runtime identity.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(?:startup|resume|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$PLUGIN_ROOT/runtime/run-bootstrap.sh\" hook",
+            "timeout": 3,
+            "additionalContextLimit": 512
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|heartbeat_history|bind_heartbeat))$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$PLUGIN_ROOT/runtime/run-bootstrap.sh\" hook",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^update_goal$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$PLUGIN_ROOT/runtime/run-bootstrap.sh\" hook",
+            "timeout": 2,
+            "async": true,
+            "additionalContextLimit": 64
+          }
+        ]
+      }
+    ]
+  }
+}
