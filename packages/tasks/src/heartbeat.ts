@@ -10,6 +10,8 @@ import type {
   InspectHeartbeatLedgerOptions,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type { HeartbeatTaskState } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
+import { z } from "zod";
 import {
   atomicCreateFile,
   atomicWriteFile,
@@ -277,6 +279,7 @@ function loadPairFilesApi(): Promise<PairFilesApi> {
   return pairFilesApi;
 }
 const PANEL_BYTES = 192 * 1024;
+const taskProgressSchemas = createTaskProgressSchemas(z);
 const shortened = (value: unknown, max = 500): string => {
   const text = typeof value === "string" ? value : "";
   return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -383,6 +386,7 @@ export class HeartbeatService {
   async #relations() {
     const { TaskSourceRelations } = await loadRelationsApi();
     return new TaskSourceRelations(this.#root, {
+      schemas: taskProgressSchemas,
       legacyHeartbeatRoots: this.#legacyHeartbeatRoots,
       ...(this.#options.prepareWrite ? { beforeWrite: this.#options.prepareWrite } : {}),
     });

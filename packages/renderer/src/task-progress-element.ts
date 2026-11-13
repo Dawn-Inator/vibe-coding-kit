@@ -172,7 +172,8 @@ export class TaskProgressElement extends LitElement {
     .summary { display: flex; align-items: center; min-height: 36px; gap: 6px; padding: 3px 7px; }
     .main { flex: 1; display: grid; grid-template-columns: minmax(70px, 1fr) auto; align-items: center; text-align: start; gap: 2px 12px; min-width: 0; }
     .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .muted { color: var(--ctp-muted, #707070); font-size: .88em; }
+    .muted { color: var(--ctp-muted, #707070); font-size: .88em; overflow-wrap: anywhere; }
+    .main .muted { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .track { grid-column: 1 / -1; height: 3px; border-radius: 3px; background: var(--ctp-track, #88888825); overflow: hidden; }
     .fill { height: 100%; background: var(--ctp-accent, #2977d4); transition: width 180ms ease; }
     .body { border-top: 1px solid var(--ctp-border, #ddd); }
@@ -195,6 +196,9 @@ export class TaskProgressElement extends LitElement {
     dt { color: var(--ctp-muted, #707070); } dd { margin: 0; overflow-wrap: anywhere; }
     .event { border-bottom: 1px solid var(--ctp-border, #ddd); padding: 7px 0; overflow-wrap: anywhere; }
     .event p { margin: 3px 0; } .error { color: var(--ctp-error, #bd4d3a); font-size: .88em; padding: 5px 10px; overflow-wrap: anywhere; }
+    .path-value { overflow-wrap: anywhere; word-break: break-word; }
+    .diagnostic { margin: 6px 0; overflow-wrap: anywhere; }
+    .diagnostic-text { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; user-select: text; padding: 7px; border: 1px solid var(--ctp-border, #ddd); border-radius: 6px; background: var(--ctp-hover, #8888880a); font: .82em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .grip { cursor: move; touch-action: none; user-select: none; color: var(--ctp-muted, #707070); }
     details { margin-top: 7px; } summary { cursor: pointer; }
     @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
@@ -564,10 +568,10 @@ export class TaskProgressElement extends LitElement {
       heartbeat.status === "candidates" ||
       (heartbeat.status === "error" && !heartbeat.sourcePath)
     )
-      return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")}</h3><p class=${heartbeat.error ? "error" : "muted"}>${heartbeat.error ?? heartbeat.warning ?? this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p></div>`;
+      return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")}</h3>${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : html`<p class="muted">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`}</div>`;
     return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3>
-      ${heartbeat.error ? html`<p class="error">${heartbeat.error}</p>` : nothing}
-      ${heartbeat.warning ? html`<p class="muted">${heartbeat.warning}</p>` : nothing}
+      ${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
+      ${heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : nothing}
       <dl><dt>${this.t("Source path", "来源路径")}</dt><dd>${heartbeat.sourcePath}</dd><dt>${this.t("Access", "访问方式")}</dt><dd>${this.t("Read only", "只读")}</dd>${heartbeat.basis ? html`<dt>${this.t("Source basis", "来源依据")}</dt><dd>${this.heartbeatBasisLabel(heartbeat.basis)}</dd>` : nothing}<dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
         heartbeat.itemStatusCounts
           ? Object.entries(heartbeat.itemStatusCounts)
@@ -635,7 +639,7 @@ export class TaskProgressElement extends LitElement {
           : nothing
       }${sourceHistory ? html`<p class="muted">${this.t("Ledger records", "台账记录")}: ${sourceHistory.total}</p>` : nothing}${
         sourceError
-          ? html`<p class="error">${this.t("Ledger history unavailable", "台账历史不可用")}: ${sourceError}</p>`
+          ? this.diagnostic(this.t("Ledger history unavailable", "台账历史不可用"), sourceError)
           : wakes.length
             ? wakes.map(
                 (wake) =>
@@ -661,7 +665,7 @@ export class TaskProgressElement extends LitElement {
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    return html`${(localHistory?.events ?? []).map((event) => html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`)}${localHistory?.error ? html`<p class="error">${this.t("History unavailable", "历史记录不可用")}: ${localHistory.error}</p>` : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
+    return html`${(localHistory?.events ?? []).map((event) => html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`)}${localHistory?.error ? this.diagnostic(this.t("History unavailable", "历史记录不可用"), localHistory.error) : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
   }
 
   private progressText(value: unknown): string {
@@ -705,8 +709,9 @@ export class TaskProgressElement extends LitElement {
           : sourceStatus === "pending-selection"
             ? this.t("Current task source is unresolved", "当前任务来源尚未解析")
             : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
-      return `${label}${this.data.taskSource?.path ? ` · ${this.data.taskSource.path}` : ""}${this.data.taskSource?.error ? ` · ${this.data.taskSource.error}` : ""}`;
+      return label;
     }
+    if (this.connectionError) return this.t("Checklist unavailable", "清单暂不可用");
     const counts = `${this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
     const source =
       this.data.task?.source?.kind === "kit-heartbeat"
@@ -719,6 +724,10 @@ export class TaskProgressElement extends LitElement {
       : `${counts}${source ? ` · ${source}` : ""}`;
   }
 
+  private diagnostic(label: string, content: string) {
+    return html`<details class="diagnostic"><summary>${label}</summary><pre class="diagnostic-text">${content}</pre></details>`;
+  }
+
   private renderTaskSource() {
     const source = this.data.task?.source;
     const sourceInfo = this.data.taskSource;
@@ -728,8 +737,8 @@ export class TaskProgressElement extends LitElement {
     const risks = source?.linkRisks ?? [];
     const presentation = source?.presentation;
     return html`<details class="heartbeat"><summary>${this.t("Read-only Kit task source", "只读 Kit 任务来源")}</summary>
-      ${path ? html`<p class="muted">${path}</p>` : nothing}
-      ${sourceInfo?.status === "stale" || sourceInfo?.status === "error" || sourceInfo?.status === "pending-selection" ? html`<p class="error">${sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。")}</p>` : nothing}
+      ${path ? html`<p class="muted path-value">${path}</p>` : nothing}
+      ${sourceInfo?.status === "stale" || sourceInfo?.status === "error" || sourceInfo?.status === "pending-selection" ? this.diagnostic(this.t("Source error details", "来源错误详情"), sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。")) : nothing}
       ${presentation?.truncated ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("source items. Progress counts the full source.", "个来源项；进度按全部来源项计算。")}</p>` : nothing}
       ${
         statuses
@@ -758,14 +767,14 @@ export class TaskProgressElement extends LitElement {
       (!checklistComplete || this.data.execution?.state === "idle");
     const countedPercent = progress?.percent ?? 0;
     const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
-    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${this.connectionError ? html`<div role="status" class="error">${this.connectionError}</div>` : nothing}${
+    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${
       this.expanded
         ? html`<div class="body"><nav role="tablist"><button role="tab" aria-selected=${this.tab === "tasks"} @click=${() => {
             this.tab = "tasks";
           }}>${this.t("Subtasks", "子任务")}</button><button role="tab" aria-selected=${this.tab === "history"} @click=${() => {
             this.tab = "history";
             void this.loadHistory();
-          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${this.data.taskSource?.status === "stale" || this.data.taskSource?.status === "error" || this.data.taskSource?.status === "pending-selection" ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}${this.renderHeartbeat()}`}</div></div>`
+          }}>${this.t("History", "历史")}</button></nav><div class="scroll" role="tabpanel">${this.connectionError ? this.diagnostic(this.t("Connection error details", "连接错误详情"), this.connectionError) : nothing}${this.tab === "history" ? this.renderHistory() : html`${task?.objectives.length ? task.objectives.map((objective) => this.objective(objective)) : html`<p class="empty">${this.data.taskSource?.status === "stale" || this.data.taskSource?.status === "error" || this.data.taskSource?.status === "pending-selection" ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}${this.renderHeartbeat()}`}</div></div>`
         : nothing
     }</section>`;
   }

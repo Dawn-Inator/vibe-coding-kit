@@ -334,8 +334,15 @@ test("ordinary chat task panel browser flows", async (t) => {
           .getByText(/心跳任务来源已过期/)
           .waitFor();
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
+        assert.doesNotMatch(await panel.locator(".summary").innerText(), /台账文件已删除/);
         assert.equal(await panel.getByRole("progressbar").count(), 0);
-        assert.match(await panel.locator("section.panel").innerText(), /台账文件已删除/);
+        await panel.locator(".summary .main").click();
+        await panel
+          .locator(".scroll details.heartbeat summary")
+          .filter({ hasText: "只读 Kit 任务来源" })
+          .click();
+        await panel.locator(".scroll details.diagnostic summary").click();
+        await panel.getByText("台账文件已删除", { exact: true }).waitFor();
 
         await page.evaluate(() => {
           window.fixture.taskSource = {
@@ -358,7 +365,10 @@ test("ordinary chat task panel browser flows", async (t) => {
             error: "Multiple heartbeat ledgers match this chat",
           };
         });
-        await panel.getByText(/当前任务来源尚未解析/).waitFor();
+        await panel
+          .locator(".summary")
+          .getByText(/当前任务来源尚未解析/)
+          .waitFor();
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /请选择|选择台账/);
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /尚未建立任务/);
 
@@ -402,6 +412,161 @@ test("ordinary chat task panel browser flows", async (t) => {
           .click();
         await panel.getByText(/P1: missing child C1/).waitFor();
         await panel.getByText(/P1: done · C1: blocked/).waitFor();
+        await context.close();
+      },
+    );
+    await t.test(
+      "large source and connection diagnostics stay bounded and readable across source states",
+      async () => {
+        const { context, page, panel } = await open();
+        const pageErrors = [];
+        page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
+        const longError = Array.from(
+          { length: 700 },
+          (_, index) =>
+            `Kit Items validation failed at I${index + 9}: missing linked item\nDetail ${index}: verify source row and parent association.`,
+        ).join("\n");
+        const longPath = `/repo/${"very-long-unbroken-path-segment-".repeat(48)}heartbeat.md`;
+        await page.evaluate(
+          ({ longError, longPath }) => {
+            window.fixture.task = null;
+            window.fixture.taskSource = {
+              status: "stale",
+              path: longPath,
+              readOnly: true,
+              contentHash: "items-hash",
+              error: longError,
+            };
+            window.fixture.history = {
+              events: [],
+              wakes: [],
+              total: 0,
+              nextCursor: null,
+              source: {
+                kind: "kit-heartbeat",
+                path: longPath,
+                readOnly: true,
+                contentHash: "items-hash",
+                error: longError,
+              },
+            };
+            window.fixture.heartbeat = null;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { longError, longPath },
+        );
+        await panel
+          .locator(".summary")
+          .getByText(/心跳任务来源已过期/)
+          .waitFor();
+        await panel.evaluate((element, error) => {
+          element.connectionError = error;
+        }, longError);
+        const summary = panel.locator(".summary");
+        assert.ok((await summary.innerText()).length < 180);
+        assert.doesNotMatch(
+          await summary.innerText(),
+          /I9: missing linked item|very-long-unbroken/,
+        );
+        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
+
+        const mainButton = panel.locator(".summary .main");
+        if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
+        assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
+        const historyTab = panel.getByRole("tab", { name: "历史", exact: true });
+        try {
+          await historyTab.waitFor({ timeout: 5_000 });
+        } catch (error) {
+          throw new Error(
+            `History tab did not render. pageerrors=${pageErrors.join("\n")}\npanel=${await panel.innerText()}`,
+            { cause: error },
+          );
+        }
+        const scroll = panel.locator(".scroll");
+        await scroll
+          .locator("details.heartbeat summary")
+          .filter({ hasText: "只读 Kit 任务来源" })
+          .click();
+        await scroll
+          .locator("details.diagnostic summary")
+          .filter({ hasText: "来源错误详情" })
+          .click();
+        const sourceDiagnostic = scroll
+          .locator("details.diagnostic")
+          .filter({ hasText: "来源错误详情" });
+        assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
+        assert.ok((await scroll.locator(".path-value").textContent()).includes(longPath));
+        assert.ok((await panel.boundingBox()).height < 500);
+        assert.ok((await scroll.boundingBox()).height <= 340);
+        await mkdir(".playwright-img", { recursive: true });
+        await panel.screenshot({ path: ".playwright-img/task-source-error-bounded.png" });
+
+        const connectionDetails = scroll
+          .locator("details.diagnostic summary")
+          .filter({ hasText: "连接错误详情" });
+        await connectionDetails.click();
+        const connectionDiagnostic = scroll
+          .locator("details.diagnostic")
+          .filter({ hasText: "连接错误详情" });
+        assert.equal(
+          await connectionDiagnostic.locator(".diagnostic-text").textContent(),
+          longError,
+        );
+
+        await page.evaluate(
+          ({ longError, projectHeartbeat }) => {
+            window.fixture.heartbeat = {
+              ...projectHeartbeat,
+              status: "error",
+              sourcePath: null,
+              error: longError,
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { longError, projectHeartbeat: heartbeat },
+        );
+        await panel.getByRole("tab", { name: "子任务", exact: true }).click();
+        const projectError = scroll
+          .locator("details.diagnostic summary")
+          .filter({ hasText: "项目心跳错误" });
+        await projectError.waitFor();
+        await projectError.click();
+        const projectDiagnostic = scroll
+          .locator("details.diagnostic")
+          .filter({ hasText: "项目心跳错误" });
+        assert.equal(await projectDiagnostic.locator(".diagnostic-text").textContent(), longError);
+        assert.ok((await panel.boundingBox()).height < 500);
+
+        for (const [status, expected] of [
+          ["error", /心跳任务来源暂不可用/],
+          ["pending-selection", /当前任务来源尚未解析/],
+        ]) {
+          await page.evaluate((nextStatus) => {
+            window.fixture.taskSource.status = nextStatus;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, status);
+          await summary.getByText(expected).waitFor();
+          assert.ok((await summary.innerText()).length < 180);
+          assert.doesNotMatch(
+            await summary.innerText(),
+            /I9: missing linked item|very-long-unbroken/,
+          );
+        }
+
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        const historyError = scroll
+          .locator("details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await historyError.waitFor();
+        await historyError.click();
+        const historyDiagnostic = scroll
+          .locator("details.diagnostic")
+          .filter({ hasText: "台账历史不可用" });
+        assert.equal(await historyDiagnostic.locator(".diagnostic-text").textContent(), longError);
+        assert.ok((await panel.boundingBox()).height < 500);
+
+        await panel.locator(".summary .main").click();
+        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
         await context.close();
       },
     );
@@ -477,10 +642,19 @@ test("ordinary chat task panel browser flows", async (t) => {
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("tab", { name: "历史", exact: true }).click();
-        await panel
-          .locator(".scroll")
-          .getByText(/历史记录不可用.*temporary history failure/)
-          .waitFor();
+        const historyError = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "历史记录不可用" });
+        await historyError.waitFor();
+        await historyError.click();
+        assert.equal(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "历史记录不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          "temporary history failure",
+        );
         assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
         await page.waitForTimeout(150);
         assert.equal(
@@ -659,7 +833,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           },
           { headPath, historyPath },
         );
-        await scroll.getByText(/did not match the bound source/).waitFor();
+        const mismatchDetails = scroll
+          .locator("details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await mismatchDetails.waitFor();
+        await mismatchDetails.click();
+        assert.match(
+          await scroll
+            .locator("details.diagnostic")
+            .filter({ hasText: "台账历史不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          /did not match the bound source/,
+        );
         assert.doesNotMatch(await scroll.innerText(), /paired task-history wake/);
         await context.close();
       },
@@ -703,10 +889,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           window.fixture.history.source.error = "ledger is stale";
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel
-          .locator(".scroll")
-          .getByText(/台账历史不可用.*ledger is stale/)
-          .waitFor();
+        const historyError = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await historyError.waitFor();
+        await historyError.click();
+        assert.match(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "台账历史不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          /ledger is stale/,
+        );
         await context.close();
       },
     );
@@ -739,10 +934,19 @@ test("ordinary chat task panel browser flows", async (t) => {
         });
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
         await panel.getByRole("tab", { name: "历史", exact: true }).click();
-        await panel
-          .locator(".scroll")
-          .getByText(/did not match the bound source/)
-          .waitFor();
+        const mismatchDetails = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await mismatchDetails.waitFor();
+        await mismatchDetails.click();
+        assert.match(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "台账历史不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          /did not match the bound source/,
+        );
         assert.doesNotMatch(
           await panel.locator(".scroll").innerText(),
           /must not appear locally|暂无变更记录/,
@@ -764,10 +968,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel
-          .locator(".scroll")
-          .getByText(/ledger binding is unresolved/)
-          .waitFor();
+        const unresolvedDetails = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await unresolvedDetails.waitFor();
+        await unresolvedDetails.click();
+        assert.equal(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "台账历史不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          "ledger binding is unresolved",
+        );
         assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
         await context.close();
       },
@@ -811,10 +1024,29 @@ test("ordinary chat task panel browser flows", async (t) => {
         const historyText = await panel.locator(".scroll").innerText();
         assert.match(historyText, /Audit · verified/);
         assert.doesNotMatch(historyText, /current Items projection invalid|台账历史不可用/);
-        assert.match(
+        assert.doesNotMatch(
           await panel.locator(".summary").innerText(),
           /current Items projection invalid/,
         );
+        await panel.getByRole("tab", { name: "子任务", exact: true }).click();
+        await panel
+          .locator(".scroll details.heartbeat summary")
+          .filter({ hasText: "只读 Kit 任务来源" })
+          .click();
+        const sourceError = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "来源错误详情" });
+        await sourceError.click();
+        assert.equal(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "来源错误详情" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          "current Items projection invalid",
+        );
+        await panel.getByRole("tab", { name: "历史", exact: true }).click();
+        await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
         await context.close();
       },
     );
@@ -870,10 +1102,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel
-          .locator(".scroll")
-          .getByText(/ledger association is stale/)
-          .waitFor();
+        const staleDetails = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "台账历史不可用" });
+        await staleDetails.waitFor();
+        await staleDetails.click();
+        assert.equal(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "台账历史不可用" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          "ledger association is stale",
+        );
         assert.equal(await panel.getByText("formerly valid wake", { exact: true }).count(), 0);
         await page.waitForTimeout(200);
         assert.equal(
@@ -1269,7 +1510,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.match(await panel.locator("section.panel").innerText(), /已过期/);
-        assert.match(await panel.locator("section.panel").innerText(), /台账文件已删除/);
+        const projectError = panel
+          .locator(".scroll details.diagnostic summary")
+          .filter({ hasText: "项目心跳错误" });
+        await projectError.waitFor();
+        await projectError.click();
+        assert.equal(
+          await panel
+            .locator(".scroll details.diagnostic")
+            .filter({ hasText: "项目心跳错误" })
+            .locator(".diagnostic-text")
+            .textContent(),
+          "台账文件已删除",
+        );
         assert.equal(await panel.getByRole("button", { name: /解除关联并隐藏心跳/ }).count(), 0);
         await context.close();
       },

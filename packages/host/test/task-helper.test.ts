@@ -582,6 +582,244 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
   }
 });
 
+test("incomplete discovery preserves known local history but still guards new and stale-source chats", async () => {
+  const root = await mkdtemp("/tmp/ctph-incomplete-known-task-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  let call = 0;
+  async function request(
+    action: "get" | "initialize" | "update" | "history" | "bind-heartbeat",
+    input: unknown,
+    threadId = "known-local-chat",
+  ) {
+    const toolNames = {
+      get: "task_progress_get",
+      initialize: "task_progress_initialize",
+      update: "task_progress_update",
+      history: "task_progress_history",
+      "bind-heartbeat": "task_progress_bind_heartbeat",
+    } as const;
+    const auth: GoalProgressIpcAuthorization = {
+      kind: "codex-request",
+      toolName: toolNames[action],
+      identity: {
+        threadId,
+        sessionId: threadId,
+        turnId: "turn-1",
+        callId: `bounded-known-${++call}`,
+        model: "test",
+        threadSource: "user",
+        cwd: root,
+      },
+    };
+    return client.request({ method: "task.request", params: { action, auth, input } });
+  }
+  const kitPath = join(root, "kit", "heartbeat-ledger-api.mjs");
+  const configPath = join(root, ".codex-task-progress.json");
+  const projectLedgerPath = join(root, "heartbeat-project.md");
+  const boundLedgerPath = join(root, "heartbeat-bound.md");
+  const ledger = (threadId: string, title: string) =>
+    `# Supervision\nthread: ${threadId}\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | ${title} | pending | - |\n`;
+  let helperStarted = false;
+  try {
+    await mkdir(join(root, "kit"), { recursive: true });
+    await writeFile(
+      kitPath,
+      `export function inspectHeartbeatLedger(text,{mode}) {
+        const lines=text.split('\\n');
+        const headings=lines.filter(line=>/^#{1,6}\\s+.* wake \\(/i.test(line));
+        const selected=mode==='history'?headings:headings.slice(-1);
+        const wakes=selected.map((heading,index)=>({heading:heading.trim(),timeMs:1794391200000+index,line:lines.indexOf(heading)+1,rows:[]}));
+        const items=lines.flatMap((line,index)=>{if(!/^\\| H/.test(line))return [];const cells=line.slice(1,-1).split('|').map(cell=>cell.trim());return [{id:cells[0],source:cells[1],item:cells[2],status:cells[3],evidence:cells[4],line:index+1}];});
+        return {mode,certifiesCurrent:mode==='current',passed:true,wakeCount:wakes.length,itemCount:items.length,wakes,items,findings:[]};
+      }`,
+    );
+    await writeFile(
+      configPath,
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs" } }),
+    );
+    await helper.start();
+    helperStarted = true;
+
+    await request("initialize", {
+      requestId: "known-init",
+      expectedRevision: 0,
+      title: "Known local task",
+      reason: "Create durable local task history before bounded discovery",
+      objectives: [{ id: "K1", title: "Known objective" }],
+    });
+    await request("update", {
+      requestId: "known-active",
+      expectedRevision: 1,
+      reason: "Start the known task",
+      changes: [{ targetId: "K1", status: "active" }],
+    });
+    await request(
+      "initialize",
+      {
+        requestId: "bound-init",
+        expectedRevision: 0,
+        title: "Local task before source binding",
+        reason: "Retain local events behind source authority",
+        objectives: [{ id: "B1", title: "Dormant objective" }],
+      },
+      "invalid-bound-chat",
+    );
+    await writeFile(boundLedgerPath, ledger("invalid-bound-chat", "Bound source"));
+    const bound = (await request("bind-heartbeat", { path: boundLedgerPath }, "invalid-bound-chat"))
+      .result as { taskSource: { status: string; path?: string } };
+    assert.equal(bound.taskSource.status, "ready");
+    assert.equal(bound.taskSource.path, await realpath(boundLedgerPath));
+    const canonicalBoundLedgerPath = bound.taskSource.path;
+
+    const knownEventsBefore = await taskEvents(root, "known-local-chat");
+    const boundEventsBefore = await taskEvents(root, "invalid-bound-chat");
+    assert.equal(knownEventsBefore.length, 2);
+    assert.equal(boundEventsBefore.length, 1);
+    await helper.stop();
+    helperStarted = false;
+
+    await writeFile(projectLedgerPath, ledger("unrelated-project-chat", "Project Heartbeat"));
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        heartbeat: {
+          kitPath: "kit/heartbeat-ledger-api.mjs",
+          maxFiles: 1,
+          maxDepth: 0,
+          ledgerPath: "heartbeat-project.md",
+        },
+      }),
+    );
+    helper = new GoalProgressHelper({
+      paths,
+      runtime: runtime(root),
+      resolveNativeGoal: async () => null,
+      visibleThreadRecoveryDelaysMs: [],
+    });
+    await helper.start();
+    helperStarted = true;
+
+    const known = (await request("get", {})).result as {
+      task: TaskState | null;
+      taskSource: unknown;
+      heartbeat: {
+        status: string;
+        sourcePath: string | null;
+        discoveryComplete?: boolean;
+        warning?: string;
+      };
+    };
+    assert.equal(known.task?.title, "Known local task");
+    assert.equal(known.task?.revision, 2);
+    assert.equal(known.taskSource, null);
+    assert.equal(known.heartbeat.status, "ready");
+    assert.equal(known.heartbeat.sourcePath, await realpath(projectLedgerPath));
+    assert.equal(known.heartbeat.discoveryComplete, false);
+    assert.match(known.heartbeat.warning ?? "", /discovery was incomplete/);
+    const knownHistory = (await request("history", {}, "known-local-chat")).result as {
+      history: { events: unknown[] };
+    };
+    assert.deepEqual(knownHistory.history.events, knownEventsBefore);
+    assert.doesNotMatch(
+      await readFile(
+        eventPath(
+          join(await realpath(root), ".workspace", "codex-task-progress"),
+          "known-local-chat",
+        ),
+        "utf8",
+      ),
+      /source-binding/,
+      "known local task history must not gain an inferred source binding",
+    );
+    const updated = (
+      await request("update", {
+        requestId: "known-blocked",
+        expectedRevision: 2,
+        reason: "Continue the known task despite incomplete discovery",
+        changes: [{ targetId: "K1", status: "blocked" }],
+      })
+    ).result as TaskMutationResult;
+    assert.equal(updated.state.revision, 3);
+    const knownEventsAfter = await taskEvents(root, "known-local-chat");
+    assert.equal(knownEventsAfter.length, 3);
+    assert.deepEqual(knownEventsAfter.slice(1), knownEventsBefore);
+    const historyAfterUpdate = (await request("history", {}, "known-local-chat")).result as {
+      history: { events: unknown[] };
+    };
+    assert.deepEqual(historyAfterUpdate.history.events, knownEventsAfter);
+
+    const freshChat = "new-incomplete-chat";
+    const fresh = (await request("get", {}, freshChat)).result as {
+      task: TaskState | null;
+      taskSource: { status: string; error?: string };
+    };
+    assert.equal(fresh.task, null);
+    assert.equal(fresh.taskSource.status, "pending-selection");
+    assert.match(fresh.taskSource.error ?? "", /incomplete/);
+    await assert.rejects(
+      request(
+        "initialize",
+        {
+          requestId: "fresh-init",
+          expectedRevision: 0,
+          title: "Must wait for complete discovery",
+          reason: "Do not bypass incomplete source selection",
+          objectives: [{ id: "N1", title: "New objective" }],
+        },
+        freshChat,
+      ),
+      hasCode("TASK_SOURCE_SELECTION_REQUIRED"),
+    );
+    await assert.rejects(
+      access(eventPath(join(await realpath(root), ".workspace", "codex-task-progress"), freshChat)),
+      { code: "ENOENT" },
+    );
+
+    await rm(boundLedgerPath);
+    const invalidBound = (await request("get", {}, "invalid-bound-chat")).result as {
+      task: TaskState | null;
+      taskSource: { status: string; path?: string; error?: string; readOnly?: boolean };
+    };
+    assert.equal(invalidBound.task, null);
+    assert.equal(invalidBound.taskSource.status, "stale");
+    assert.equal(invalidBound.taskSource.path, canonicalBoundLedgerPath);
+    assert.equal(invalidBound.taskSource.readOnly, true);
+    assert.ok(invalidBound.taskSource.error);
+    await assert.rejects(
+      request(
+        "update",
+        {
+          requestId: "invalid-source-update",
+          expectedRevision: 1,
+          reason: "Cannot update a task hidden by a stale source binding",
+          changes: [{ targetId: "B1", status: "active" }],
+        },
+        "invalid-bound-chat",
+      ),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    const invalidHistory = (await request("history", {}, "invalid-bound-chat")).result as {
+      history: { events: unknown[]; source: { error?: string; readOnly: boolean } };
+    };
+    assert.deepEqual(invalidHistory.history.events, []);
+    assert.equal(invalidHistory.history.source.readOnly, true);
+    assert.ok(invalidHistory.history.source.error);
+    assert.deepEqual(await taskEvents(root, "invalid-bound-chat"), boundEventsBefore);
+    assert.deepEqual(await taskEvents(root, "known-local-chat"), knownEventsAfter);
+  } finally {
+    if (helperStarted) await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic heartbeat authority stays latched through association loss and restart", async () => {
   const root = await mkdtemp("/tmp/ctph-heartbeat-latched-");
   await mkdir(join(root, ".git"));
