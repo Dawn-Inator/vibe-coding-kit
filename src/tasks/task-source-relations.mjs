@@ -115,8 +115,11 @@ export class TaskSourceRelations {
 		});
 		await writeTaskHistoryHead(paths.heartbeat, threadId, records);
 	}
-	async getUnlocked(threadId) {
-		const data = await this.load(threadId);
+	async getUnlocked(
+		threadId,
+		{ existingData, skipEmptyMigration = false } = {},
+	) {
+		const data = existingData ?? (await this.load(threadId));
 		let binding = data.records
 			.filter((r) => r.type === "source-binding")
 			.at(-1);
@@ -177,7 +180,7 @@ export class TaskSourceRelations {
 				}
 			}
 		const selected = explicit !== undefined ? explicit : automatic;
-		if (selected === undefined && !data.exists)
+		if (selected === undefined && (!data.exists || skipEmptyMigration))
 			return { found: false, binding: null };
 		data.records.push({ type: "source-migration", version: 1 });
 		if (selected !== undefined)
@@ -207,7 +210,20 @@ export class TaskSourceRelations {
 		return withMarkdownLock(
 			taskMarkdownPaths(this.root, threadId).directory,
 			async () => {
-				const previous = await this.getUnlocked(threadId);
+				const associated = discovery.candidates.filter((c) => c.associated);
+				// A validated existing ordinary task remains usable when discovery found no
+				// association, even if the bounded scan could not cover the whole project.
+				const incompleteWithoutAssociation =
+					!discovery.complete && associated.length === 0;
+				const data = incompleteWithoutAssociation
+					? await this.load(threadId)
+					: undefined;
+				const hasTask =
+					data?.records.some((record) => record.type === "task-event") ?? false;
+				const previous = await this.getUnlocked(threadId, {
+					existingData: data,
+					skipEmptyMigration: hasTask && incompleteWithoutAssociation,
+				});
 				if (previous.found) {
 					if (previous.binding === null)
 						return { status: "none", binding: null };
@@ -233,7 +249,8 @@ export class TaskSourceRelations {
 						};
 					}
 				}
-				const associated = discovery.candidates.filter((c) => c.associated);
+				if (incompleteWithoutAssociation && hasTask)
+					return { status: "none", binding: null };
 				if (!discovery.complete || associated.length > 1)
 					return { status: "pending-selection", binding: null };
 				if (associated.length === 1) {

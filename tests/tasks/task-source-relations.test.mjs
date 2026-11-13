@@ -323,3 +323,174 @@ test("corrupt managed head blocks both binding reads and writes", async () => {
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("incomplete discovery with no associated sources preserves a validated ordinary task", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-existing-task-"));
+	try {
+		const store = new TaskStore(root, {
+			schemas: createTaskProgressSchemas(z),
+		});
+		const rel = new TaskSourceRelations(root);
+		await store.initialize("thread", {
+			requestId: "init",
+			expectedRevision: 0,
+			reason: "Start",
+			title: "Work",
+			objectives: [{ id: "A", title: "A" }],
+		});
+		await store.update("thread", {
+			requestId: "update",
+			expectedRevision: 1,
+			reason: "Begin",
+			changes: [{ targetId: "A", status: "active" }],
+		});
+		const { taskMarkdownPaths } = await import(
+			"../../src/tasks/task-store.mjs"
+		);
+		const paths = taskMarkdownPaths(root, "thread");
+		const unrelated = join(root, "heartbeat.md");
+		await writeFile(unrelated, "unrelated source bytes");
+		const history = await readFile(paths.history, "utf8"),
+			head = await readFile(paths.heartbeat, "utf8"),
+			source = await readFile(unrelated, "utf8");
+		for (const candidates of [[], [{ path: unrelated, associated: false }]]) {
+			assert.deepEqual(
+				await rel.resolve("thread", {
+					projectRoot: root,
+					discovery: { complete: false, candidates },
+				}),
+				{ status: "none", binding: null },
+			);
+		}
+		assert.equal(await readFile(paths.history, "utf8"), history);
+		assert.equal(await readFile(paths.heartbeat, "utf8"), head);
+		assert.equal(await readFile(unrelated, "utf8"), source);
+		assert.equal((await store.history("thread")).events.length, 2);
+		assert.equal(
+			(
+				await store.update("thread", {
+					requestId: "next",
+					expectedRevision: 2,
+					reason: "Continue",
+					changes: [{ targetId: "A", status: "blocked" }],
+				})
+			).state.revision,
+			3,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("incomplete discovery never treats empty, migration-only or corrupt records as an existing task", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-empty-task-"));
+	try {
+		const rel = new TaskSourceRelations(root);
+		const discovery = { complete: false, candidates: [] };
+		assert.equal(
+			(await rel.resolve("new", { projectRoot: root, discovery })).status,
+			"pending-selection",
+		);
+		const { taskMarkdownPaths } = await import(
+			"../../src/tasks/task-store.mjs"
+		);
+		const { writeMarkdownRecords } = await import(
+			"../../src/tasks/markdown-records.mjs"
+		);
+		const migration = taskMarkdownPaths(root, "migration");
+		await writeMarkdownRecords(migration.history, {
+			kind: "task-progress",
+			identity: "migration",
+			records: [{ type: "source-migration", version: 1 }],
+		});
+		assert.equal(
+			(await rel.resolve("migration", { projectRoot: root, discovery })).status,
+			"pending-selection",
+		);
+		const corrupt = taskMarkdownPaths(root, "corrupt");
+		await writeMarkdownRecords(corrupt.history, {
+			kind: "task-progress",
+			identity: "corrupt",
+			records: [{ type: "task-event", event: { threadId: "corrupt" } }],
+		});
+		const bytes = await readFile(corrupt.history, "utf8");
+		await assert.rejects(
+			rel.resolve("corrupt", { projectRoot: root, discovery }),
+			/Invalid task event/,
+		);
+		assert.equal(await readFile(corrupt.history, "utf8"), bytes);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("existing tasks do not weaken durable bindings or associated candidate protections", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-task-guards-"));
+	try {
+		const store = new TaskStore(root, {
+			schemas: createTaskProgressSchemas(z),
+		});
+		const rel = new TaskSourceRelations(root);
+		const init = (thread) =>
+			store.initialize(thread, {
+				requestId: "init",
+				expectedRevision: 0,
+				reason: "Start",
+				title: "Work",
+				objectives: [{ id: "A", title: "A" }],
+			});
+		for (const thread of ["one", "two", "bound", "unbound"]) await init(thread);
+		const a = join(root, "a.md"),
+			b = join(root, "b.md");
+		await writeFile(a, "a");
+		await writeFile(b, "b");
+		assert.equal(
+			(
+				await rel.resolve("one", {
+					projectRoot: root,
+					discovery: {
+						complete: false,
+						candidates: [{ path: a, associated: true }],
+					},
+				})
+			).status,
+			"pending-selection",
+		);
+		assert.equal(
+			(
+				await rel.resolve("two", {
+					projectRoot: root,
+					discovery: {
+						complete: true,
+						candidates: [
+							{ path: a, associated: true },
+							{ path: b, associated: true },
+						],
+					},
+				})
+			).status,
+			"pending-selection",
+		);
+		const binding = { path: join(root, "missing.md"), origin: "explicit" };
+		await rel.set("bound", binding);
+		const stale = await rel.resolve("bound", {
+			projectRoot: root,
+			discovery: { complete: false, candidates: [] },
+		});
+		assert.equal(stale.status, "stale");
+		assert.deepEqual(stale.binding, binding);
+		await rel.set("unbound", null);
+		assert.deepEqual(
+			await rel.resolve("unbound", {
+				projectRoot: root,
+				discovery: {
+					complete: false,
+					candidates: [{ path: a, associated: true }],
+				},
+			}),
+			{ status: "none", binding: null },
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
