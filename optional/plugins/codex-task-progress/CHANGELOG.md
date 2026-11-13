@@ -1,3 +1,9 @@
+# Task Progress 0.5.1
+
+- Recognize ordinary task and source-association history through Kit's read-only recovery API, including completed and legacy records.
+- Reconnect startup recovery to a verified existing CDP process and reject stale process identity.
+- Require explicit authorization before a startup handoff can terminate or relaunch Codex; automatic recovery reports unavailable CDP without restarting the application.
+
 # Task Progress 0.5.0
 
 - Replace the task card with a 44px frosted capsule and progress along its lower curved edge.

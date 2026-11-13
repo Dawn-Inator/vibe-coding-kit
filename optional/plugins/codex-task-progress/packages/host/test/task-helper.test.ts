@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
+import type {
+  CodexCdpListenerOwnership,
+  CodexCdpRuntimeState,
+} from "../../../platform/macos/src/index.js";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import { GoalProgressIpcClient, GoalProgressIpcClientError } from "../../ipc/src/index.js";
 import type {
@@ -21,6 +26,12 @@ import {
   TaskStore,
 } from "../../tasks/src/index.js";
 import { GoalProgressHelper } from "../src/index.js";
+import {
+  hasRecoverableStartupProgress,
+  type MacosCodexStartupEvent,
+  type MacosCodexStartupResponse,
+  MacosStartupHandoffController,
+} from "../src/startup-listener.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
   const root = await mkdtemp("/tmp/ctph-optional-");
@@ -1398,6 +1409,305 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     });
   } finally {
     await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+const startupExecutablePath = "/Applications/Codex.app/Contents/MacOS/Codex";
+const startupAppPath = "/Applications/Codex.app";
+const startupStartedAt = "2026-11-13T12:00:00.000Z";
+const startupPort = 9222;
+
+function startupEvent(_command: string, pid = 4242): MacosCodexStartupEvent {
+  return {
+    schemaVersion: 1,
+    event: "codex.willLaunch",
+    pid,
+    bundleId: "com.openai.codex",
+    appPath: startupAppPath,
+    executablePath: startupExecutablePath,
+    launchedAt: startupStartedAt,
+    deadlineAtMs: Date.parse(startupStartedAt) + 30_000,
+  };
+}
+
+function startupAppIdentity() {
+  return {
+    appPath: startupAppPath,
+    realAppPath: startupAppPath,
+    executablePath: startupExecutablePath,
+    realExecutablePath: startupExecutablePath,
+    bundleId: "com.openai.codex",
+    teamId: "7P5S3ZLCN7",
+    version: "1.0",
+  } as const;
+}
+
+function startupProcessSnapshot(pid: number, command: string, start = startupStartedAt) {
+  return { pid, parentPid: 1, startedAt: start, command };
+}
+
+function startupOwnership(
+  pid: number,
+  command: string,
+  start = startupStartedAt,
+): CodexCdpListenerOwnership {
+  return {
+    mainProcess: startupProcessSnapshot(pid, command, start),
+    listeners: [{ pid: pid + 1, commandName: "Codex Helper", address: `127.0.0.1:${startupPort}` }],
+    listenerPids: [pid + 1],
+  };
+}
+
+function startupController(
+  root: string,
+  overrides: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {},
+) {
+  const paths = resolveGoalProgressPaths({ root });
+  let signals = 0;
+  let launches = 0;
+  let allocations = 0;
+  let writes = 0;
+  const instance = new MacosStartupHandoffController({
+    paths,
+    inspectApp: async () => startupAppIdentity() as never,
+    inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, startupExecutablePath),
+    listMainProcesses: async () => [],
+    readRuntimeState: async () => {
+      throw new Error("ENOENT");
+    },
+    verifyExistingOwnership: async (_app, pid) => startupOwnership(pid, startupExecutablePath),
+    allocatePort: async () => {
+      allocations += 1;
+      return startupPort;
+    },
+    launchWithCdp: async () => {
+      launches += 1;
+      throw new Error("unexpected launch");
+    },
+    waitForOwnership: async () => startupOwnership(4242, startupExecutablePath),
+    createRuntimeState: () => ({}) as CodexCdpRuntimeState,
+    writeRuntimeState: async () => {
+      writes += 1;
+    },
+    signalProcess: () => {
+      signals += 1;
+    },
+    now: () => Date.parse(startupStartedAt) + 1,
+    sleep: async () => undefined,
+    ...overrides,
+  });
+  return {
+    instance,
+    paths,
+    counts: () => ({ signals, launches, allocations, writes }),
+  };
+}
+
+test("ordinary task recovery makes startup eligible without creating task state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const paths = resolveGoalProgressPaths({ root });
+    let detections = 0;
+    assert.equal(
+      await hasRecoverableStartupProgress(paths, {
+        async hasRecoverableTasks() {
+          detections += 1;
+          return true;
+        },
+      }),
+      true,
+    );
+    assert.equal(detections, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Helper startup handler admits a real ordinary task without restarting Codex", async () => {
+  const root = await mkdtemp("/tmp/ctph-startup-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  assert.ok(
+    paths.helperSocketPath.length < 100,
+    `Helper IPC socket path exceeds the macOS UNIX socket path limit: ${paths.helperSocketPath}`,
+  );
+  let startupHandler:
+    | ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>)
+    | undefined;
+  const startupListener = {
+    start(handler: typeof startupHandler) {
+      startupHandler = handler;
+    },
+    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
+    isPending: (pid: number) => pid === 4242,
+    waitUntilReady: async () => true,
+    stop: async () => undefined,
+  };
+  const setup = startupController(paths.root);
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+    startupListener: startupListener as never,
+    startupHandoff: setup.instance,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    await helper.start();
+    await client.request({
+      method: "task.request",
+      params: {
+        action: "initialize",
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_initialize",
+          identity: {
+            threadId: "startup-ordinary-chat",
+            sessionId: "startup-ordinary-chat",
+            turnId: "turn-1",
+            callId: "startup-init",
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+        input: {
+          requestId: "startup-init",
+          expectedRevision: 0,
+          title: "Recover ordinary task",
+          reason: "User requested recovery",
+          objectives: [{ id: "C1", title: "Build" }],
+        },
+      },
+    });
+    assert.ok(startupHandler);
+    const response = await startupHandler(startupEvent(startupExecutablePath));
+    assert.equal(response.code, "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE");
+    assert.equal(response.action, "continue");
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("eligible ordinary tasks never kill or relaunch Codex when no verified CDP exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const { instance, counts } = startupController(root);
+    const response = await instance.handle(startupEvent(startupExecutablePath), true);
+    assert.equal(response.code, "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE");
+    assert.deepEqual(counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("valid CDP startup is reattached and runtime identity is rebuilt from verified ownership", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, pid, requestedPort) => {
+        assert.equal(requestedPort, startupPort);
+        return startupOwnership(pid, command);
+      },
+    });
+    const response = await setup.instance.handle(startupEvent(command), true);
+    assert.equal(response.action, "continue");
+    assert.equal(response.code, "STARTUP_EVENT_EXISTING_CDP");
+    assert.equal(response.mainPid, 4242);
+    assert.equal(response.port, startupPort);
+    assert.ok(response.launchId);
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 1 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CDP command with stale process ownership fails closed without side effects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, pid) =>
+        startupOwnership(pid, command, "2026-11-13T11:00:00.000Z"),
+    });
+    const response = await setup.instance.handle(startupEvent(command), true);
+    assert.equal(response.code, "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("superseded CDP ownership check returns continue and does not rewrite runtime state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    let releaseOwnership: ((value: CodexCdpListenerOwnership) => void) | undefined;
+    let ownershipStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolveStarted) => {
+      ownershipStarted = resolveStarted;
+    });
+    let verifyCount = 0;
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, _pid) => {
+        if (verifyCount++ > 0) throw new Error("no second verified CDP owner");
+        ownershipStarted?.();
+        return new Promise<CodexCdpListenerOwnership>((resolveOwnership) => {
+          releaseOwnership = resolveOwnership;
+        });
+      },
+    });
+    const first = setup.instance.handle(startupEvent(command), true);
+    await started;
+    await setup.instance.handle(startupEvent(startupExecutablePath, 4243), true);
+    releaseOwnership?.(startupOwnership(4242, command));
+    const response = await first;
+    assert.equal(response.action, "continue");
+    assert.equal(response.code, "STARTUP_EVENT_RELEASED");
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stopped Helper during CDP ownership check returns continue without runtime writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    let releaseOwnership: ((value: CodexCdpListenerOwnership) => void) | undefined;
+    let ownershipStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolveStarted) => {
+      ownershipStarted = resolveStarted;
+    });
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, _pid) => {
+        ownershipStarted?.();
+        return new Promise<CodexCdpListenerOwnership>((resolveOwnership) => {
+          releaseOwnership = resolveOwnership;
+        });
+      },
+    });
+    let stopped = false;
+    const pending = setup.instance.handle(startupEvent(command), true, {
+      isPending: () => true,
+      isStopped: () => stopped,
+    });
+    await started;
+    stopped = true;
+    releaseOwnership?.(startupOwnership(4242, command));
+    const response = await pending;
+    assert.equal(response.action, "continue");
+    assert.equal(response.code, "STARTUP_EVENT_RELEASED");
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -118,6 +118,18 @@ export class WorkspaceTaskStorage {
     return adapted;
   }
 
+  async hasRecoverableTasks(): Promise<boolean> {
+    if (this.#closed)
+      throw new TaskStoreError("TASK_STORAGE_CLOSED", "Workspace storage is closed");
+    const kit = await this.#adapter();
+    if (typeof kit.hasRecoverableTasks !== "function")
+      throw new TaskStoreError(
+        "TASK_STORAGE_CONTRACT_INVALID",
+        "Kit workspace storage recovery detection is missing",
+      );
+    return kit.hasRecoverableTasks();
+  }
+
   close(): void {
     this.#closed = true;
     for (const context of this.#contexts.values()) context.heartbeat.close();

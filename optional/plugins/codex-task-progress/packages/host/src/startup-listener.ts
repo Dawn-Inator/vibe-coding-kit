@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -118,6 +119,20 @@ export interface MacosStartupHandoffControllerOptions {
 export interface MacosStartupHandoffContext {
   readonly isPending: () => boolean;
   readonly isStopped?: () => boolean;
+  /** Explicit authorization for replacing the current Codex process. Defaults to false. */
+  readonly allowRestart?: boolean;
+}
+
+export interface RecoverableTaskDetector {
+  hasRecoverableTasks(): Promise<boolean>;
+}
+
+export async function hasRecoverableStartupProgress(
+  paths: GoalProgressPaths,
+  tasks: RecoverableTaskDetector,
+): Promise<boolean> {
+  if (await hasRecoverableGoalProgress(paths)) return true;
+  return tasks.hasRecoverableTasks();
 }
 
 function eventResponse(
@@ -149,6 +164,17 @@ function commandHasCdp(command: string): boolean {
         argument.startsWith("--remote-debugging-port=") ||
         argument.startsWith("--remote-debugging-address="),
     );
+}
+
+function cdpPortFromCommand(command: string): number | undefined {
+  for (const argument of command.split(/\s+/u)) {
+    const match = /^--remote-debugging-port=(\d+)$/u.exec(argument);
+    if (match) {
+      const port = Number(match[1]);
+      if (Number.isInteger(port) && port >= 1_024 && port <= 65_535) return port;
+    }
+  }
+  return undefined;
 }
 
 async function processStillExists(
@@ -291,11 +317,11 @@ export class MacosStartupHandoffController {
   async #existingInstanceResponse(
     event: MacosCodexStartupEvent,
     app: CodexMacosAppIdentity,
+    isCurrent: () => boolean,
   ): Promise<MacosCodexStartupResponse | undefined> {
     try {
       const state = await this.#readRuntimeState(this.#paths.cdpRuntimePath);
       if (
-        state.mainPid !== event.pid &&
         state.appPath === app.realAppPath &&
         state.executablePath === app.realExecutablePath &&
         state.bundleId === app.bundleId &&
@@ -303,15 +329,25 @@ export class MacosStartupHandoffController {
       ) {
         const ownership = await this.#verifyExistingOwnership(app, state.mainPid, state.port);
         if (
+          state.mainPid !== event.pid &&
+          isCurrent() &&
           ownership.mainProcess.startedAt === state.processStartedAt &&
-          ownership.mainProcess.command === state.command
+          ownership.mainProcess.command === state.command &&
+          commandHasCdp(state.command) &&
+          cdpPortFromCommand(state.command) === state.port
         ) {
           this.#rememberReusedMainProcess(ownership.mainProcess);
           return eventResponse(event, "continue", "STARTUP_EVENT_EXISTING_CDP", state);
         }
+        if (!isCurrent()) {
+          return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
+        }
       }
     } catch {
       // A stale or unavailable runtime record does not prove that no main process exists.
+    }
+    if (!isCurrent()) {
+      return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
     }
 
     let processes: readonly Awaited<ReturnType<typeof inspectProcess>>[];
@@ -320,16 +356,64 @@ export class MacosStartupHandoffController {
     } catch {
       return eventResponse(event, "continue", "STARTUP_EVENT_INSTANCE_CHECK_FAILED");
     }
-    const existing = processes.find((process) => process.pid !== event.pid);
-    if (existing) {
-      this.#rememberReusedMainProcess(existing);
+    if (!isCurrent()) {
+      return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
     }
-    return existing
-      ? {
-          ...eventResponse(event, "continue", "STARTUP_EVENT_EXISTING_INSTANCE"),
-          mainPid: existing.pid,
+    const existing = processes.find(
+      (process) => process.pid !== event.pid && commandHasCdp(process.command),
+    );
+    if (existing) {
+      const port = cdpPortFromCommand(existing.command);
+      if (port !== undefined) {
+        try {
+          const ownership = await this.#verifyExistingOwnership(app, existing.pid, port);
+          if (
+            ownership.mainProcess.startedAt === existing.startedAt &&
+            ownership.mainProcess.command === existing.command
+          ) {
+            this.#rememberReusedMainProcess(ownership.mainProcess);
+            const state = this.#runtimeFromVerifiedOwnership(app, ownership, port);
+            if (!(await this.#writeRuntimeIfCurrent(state, isCurrent)) || !isCurrent()) {
+              return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
+            }
+            if (isCurrent()) {
+              return eventResponse(event, "continue", "STARTUP_EVENT_EXISTING_CDP", state);
+            }
+          }
+        } catch {
+          // A process command alone does not prove a loopback listener belongs to Codex.
         }
+      }
+      if (!isCurrent()) {
+        return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
+      }
+      return eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
+    }
+    return processes.some((process) => process.pid !== event.pid)
+      ? eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE")
       : undefined;
+  }
+
+  #runtimeFromVerifiedOwnership(
+    app: CodexMacosAppIdentity,
+    ownership: Awaited<ReturnType<typeof verifyCodexCdpListenerOwnership>>,
+    port: number,
+  ): CodexCdpRuntimeState {
+    return {
+      schemaVersion: 1,
+      launchId: randomUUID(),
+      address: "127.0.0.1",
+      port,
+      mainPid: ownership.mainProcess.pid,
+      launchedAt: new Date(this.#now()).toISOString(),
+      processStartedAt: ownership.mainProcess.startedAt,
+      executablePath: app.realExecutablePath,
+      appPath: app.realAppPath,
+      bundleId: app.bundleId as CodexCdpRuntimeState["bundleId"],
+      teamId: app.teamId as CodexCdpRuntimeState["teamId"],
+      command: ownership.mainProcess.command,
+      listenerPids: ownership.listenerPids,
+    };
   }
 
   #processIdentity(process: { readonly startedAt: string; readonly command: string }): string {
@@ -512,10 +596,8 @@ export class MacosStartupHandoffController {
     if (original.parentPid === process.pid) {
       return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_HELPER_LAUNCH"));
     }
-    if (commandHasCdp(original.command)) {
-      return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_ALREADY_CDP"));
-    }
-    if (original.command !== event.executablePath) {
+    const alreadyCdp = commandHasCdp(original.command);
+    if (!alreadyCdp && original.command !== event.executablePath) {
       return this.#remember(key, {
         ...eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
         mismatchReason: "command",
@@ -537,9 +619,54 @@ export class MacosStartupHandoffController {
       return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_APP_MISMATCH"));
     }
 
-    const existingInstance = await this.#existingInstanceResponse(event, app);
+    if (alreadyCdp) {
+      const port = cdpPortFromCommand(original.command);
+      if (port === undefined) {
+        return this.#remember(
+          key,
+          eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE"),
+        );
+      }
+      try {
+        const ownership = await this.#verifyExistingOwnership(app, event.pid, port);
+        if (
+          ownership.mainProcess.startedAt !== original.startedAt ||
+          ownership.mainProcess.command !== original.command
+        ) {
+          return this.#remember(
+            key,
+            eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE"),
+          );
+        }
+        if (!canStart()) {
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
+        }
+        const state = this.#runtimeFromVerifiedOwnership(app, ownership, port);
+        if (!(await this.#writeRuntimeIfCurrent(state, canStart)) || !canStart()) {
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
+        }
+        return this.#remember(
+          key,
+          eventResponse(event, "continue", "STARTUP_EVENT_EXISTING_CDP", state),
+        );
+      } catch {
+        return this.#remember(
+          key,
+          eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE"),
+        );
+      }
+    }
+
+    const existingInstance = await this.#existingInstanceResponse(event, app, canStart);
     if (existingInstance) {
       return this.#remember(key, existingInstance);
+    }
+
+    if (context.allowRestart !== true) {
+      return this.#remember(
+        key,
+        eventResponse(event, "continue", "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE"),
+      );
     }
 
     let launched: Awaited<ReturnType<typeof launchCodexWithCdp>> | undefined;
@@ -560,7 +687,7 @@ export class MacosStartupHandoffController {
       if (!canFinish()) {
         return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
       }
-      const concurrentInstance = await this.#existingInstanceResponse(event, app);
+      const concurrentInstance = await this.#existingInstanceResponse(event, app, canFinish);
       if (concurrentInstance) {
         return this.#remember(key, concurrentInstance);
       }

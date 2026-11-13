@@ -131,7 +131,7 @@ import { connectHelperRendererTargetSource } from "./renderer-bridge-runtime.js"
 import { RendererTargetManager } from "./renderer-target-manager.js";
 import {
   type GoalProgressStartupListener,
-  hasRecoverableGoalProgress,
+  hasRecoverableStartupProgress,
   type MacosCodexStartupEvent,
   type MacosCodexStartupResponse,
   MacosStartupHandoffController,
@@ -502,13 +502,16 @@ export class GoalProgressHelper {
       } else {
         response = await this.#startupHandoff.handle(
           event,
-          await hasRecoverableGoalProgress(this.paths),
+          await hasRecoverableStartupProgress(this.paths, this.#workspaceStorage),
           {
             isPending: () => this.#startupListener?.isPending(event.pid) === true,
             isStopped: () => this.#server === undefined,
           },
         );
-        if (response.code === "STARTUP_HANDOFF_COMPLETE") {
+        if (
+          response.code === "STARTUP_HANDOFF_COMPLETE" ||
+          response.code === "STARTUP_EVENT_EXISTING_CDP"
+        ) {
           try {
             await this.#recoverAfterStartupHandoff(response);
           } catch (error) {

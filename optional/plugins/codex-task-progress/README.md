@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.5.0 provides ordinary-chat tracking with a capsule interface; it is not an official Codex extension API.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.5.1 provides ordinary-chat tracking with a capsule interface; it is not an official Codex extension API.
 
 The 44px capsule appears at the top of the chat and reserves layout space. Progress follows its lower curved edge. Click the capsule to expand the real task's modules (`objectives`), then click a module to inspect its nodes (`items`), statuses and evidence. Each module has its own progress bar. The two 40px round buttons open task History and the project's read-only Heartbeat; only one panel opens at a time. History and heartbeat records retain their paginated data sources. New work can lower the percentage. Display settings retain draggable floating placement. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
@@ -51,6 +51,10 @@ To remove a release installation while preserving history, run the installed `bi
 ## Hot updates
 
 Once the verified CDP connection is established, build a new release and run `./install.sh` without `--restart-codex`. The installer switches the local release and restarts only the Helper; the browser reconnects and replaces the versioned Task panel in place. Main Codex PID/start time should remain unchanged. If CDP needs rebuilding, this command reports that requirement instead of silently restarting Codex.
+
+Startup recovery also recognizes ordinary task history and source associations through Kit's read-only workspace API, including completed tasks and legacy records. When a verified CDP process is available, the Helper reconnects and restores the visible chat's panel. Automatic recovery never authorizes stopping or relaunching Codex. A running process without CDP reports `*_PENDING_CDP_UNAVAILABLE`; retrying record reads cannot create a debugging port in that process.
+
+For an existing installation, `goal-progress upgrade --json` can update the Helper and packaged plugin while CDP is unavailable. Its `connectionRebuildPending` result means the software was updated but the top panel is still unavailable. Check Doctor and the actual visible panel separately; a completed upgrade is not evidence of restored display.
 
 Backend and panel changes are live after reconnect. A changed MCP tool catalog or Skill/Hook session context needs reopening the affected chat; this is separate from restarting the application. Heartbeat panel data is bounded; use its paginated history or `task_progress_heartbeat_history` to browse earlier audits. Counts describe the complete source, while displayed text is summarized with source line references.
 
