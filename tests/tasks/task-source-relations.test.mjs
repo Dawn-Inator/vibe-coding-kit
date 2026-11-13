@@ -330,7 +330,9 @@ test("incomplete discovery with no associated sources preserves a validated ordi
 		const store = new TaskStore(root, {
 			schemas: createTaskProgressSchemas(z),
 		});
-		const rel = new TaskSourceRelations(root);
+		const rel = new TaskSourceRelations(root, {
+			schemas: createTaskProgressSchemas(z),
+		});
 		await store.initialize("thread", {
 			requestId: "init",
 			expectedRevision: 0,
@@ -490,6 +492,88 @@ test("existing tasks do not weaken durable bindings or associated candidate prot
 			}),
 			{ status: "none", binding: null },
 		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("without full schemas an incomplete scan cannot promote existing task records to authority", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-no-schema-"));
+	try {
+		const store = new TaskStore(root, {
+			schemas: createTaskProgressSchemas(z),
+		});
+		await store.initialize("thread", {
+			requestId: "init",
+			expectedRevision: 0,
+			reason: "Start",
+			title: "Work",
+			objectives: [{ id: "A", title: "A" }],
+		});
+		const { taskMarkdownPaths } = await import(
+			"../../src/tasks/task-store.mjs"
+		);
+		const paths = taskMarkdownPaths(root, "thread");
+		const before = await readFile(paths.history, "utf8");
+		const rel = new TaskSourceRelations(root);
+		const discovery = { complete: false, candidates: [] };
+		assert.deepEqual(
+			await rel.resolve("thread", { projectRoot: root, discovery }),
+			{ status: "pending-selection", binding: null },
+		);
+		assert.equal(await readFile(paths.history, "utf8"), before);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("incomplete discovery rejects schema-invalid timestamps and normalized duplicate item IDs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-full-validation-"));
+	try {
+		const schemas = createTaskProgressSchemas(z),
+			store = new TaskStore(root, { schemas });
+		const rel = new TaskSourceRelations(root, { schemas });
+		const { taskMarkdownPaths } = await import(
+			"../../src/tasks/task-store.mjs"
+		);
+		const { readMarkdownRecords, writeMarkdownRecords } = await import(
+			"../../src/tasks/markdown-records.mjs"
+		);
+		for (const kind of ["date", "duplicate"]) {
+			await store.initialize(kind, {
+				requestId: "init",
+				expectedRevision: 0,
+				reason: "Start",
+				title: "Work",
+				objectives: [{ id: "A", title: "A" }],
+			});
+			const paths = taskMarkdownPaths(root, kind),
+				data = await readMarkdownRecords(paths.history, {
+					kind: "task-progress",
+					identity: kind,
+				});
+			const event = data.records[0].event;
+			if (kind === "date") event.occurredAt = "2026-02-30T00:00:00.000Z";
+			else
+				event.state.objectives[0].items = [
+					{ id: " A ", title: "Duplicate", status: "pending", evidence: [] },
+				];
+			await writeMarkdownRecords(paths.history, {
+				kind: "task-progress",
+				identity: kind,
+				records: data.records,
+			});
+			await rm(paths.heartbeat);
+			const before = await readFile(paths.history, "utf8");
+			await assert.rejects(
+				rel.resolve(kind, {
+					projectRoot: root,
+					discovery: { complete: false, candidates: [] },
+				}),
+				/invalid committed record/i,
+			);
+			assert.equal(await readFile(paths.history, "utf8"), before);
+		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

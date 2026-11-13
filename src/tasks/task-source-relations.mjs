@@ -9,6 +9,7 @@ import {
 	writeTaskHistoryHead,
 } from "./markdown-records.mjs";
 import {
+	TaskStore,
 	taskMarkdownPaths,
 	validateTaskEventStructure,
 } from "./task-store.mjs";
@@ -34,10 +35,11 @@ async function optionalJson(path) {
 	}
 }
 export class TaskSourceRelations {
-	constructor(root, { legacyHeartbeatRoots = [], beforeWrite } = {}) {
+	constructor(root, { legacyHeartbeatRoots = [], beforeWrite, schemas } = {}) {
 		this.root = resolve(root);
 		this.legacyHeartbeatRoots = legacyHeartbeatRoots.map((p) => resolve(p));
 		this.beforeWrite = beforeWrite;
+		this.schemas = schemas;
 	}
 	async load(threadId) {
 		const paths = taskMarkdownPaths(this.root, threadId);
@@ -218,11 +220,15 @@ export class TaskSourceRelations {
 				const data = incompleteWithoutAssociation
 					? await this.load(threadId)
 					: undefined;
-				const hasTask =
-					data?.records.some((record) => record.type === "task-event") ?? false;
+				const events =
+					data?.records
+						.filter((record) => record.type === "task-event")
+						.map((record) => record.event) ?? [];
+				// The caller supplies the same schemas as TaskStore. Without them, an
+				// incomplete scan cannot elevate structural records to task authority.
 				const previous = await this.getUnlocked(threadId, {
 					existingData: data,
-					skipEmptyMigration: hasTask && incompleteWithoutAssociation,
+					skipEmptyMigration: events.length > 0 && incompleteWithoutAssociation,
 				});
 				if (previous.found) {
 					if (previous.binding === null)
@@ -249,6 +255,12 @@ export class TaskSourceRelations {
 						};
 					}
 				}
+				const hasTask = events.length > 0 && !!this.schemas;
+				if (hasTask)
+					new TaskStore(this.root, { schemas: this.schemas }).validateEvents(
+						threadId,
+						events,
+					);
 				if (incompleteWithoutAssociation && hasTask)
 					return { status: "none", binding: null };
 				if (!discovery.complete || associated.length > 1)

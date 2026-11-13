@@ -1,3 +1,4 @@
+import type { TaskProgressSchemas } from "./task-contract.mjs";
 export type TaskSourceBinding = {
 	path: string;
 	origin: "automatic" | "explicit";
@@ -8,6 +9,8 @@ export class TaskSourceRelations {
 		options?: {
 			legacyHeartbeatRoots?: string[];
 			beforeWrite?: () => Promise<void>;
+			/** Same schemas as TaskStore; required to recognize an existing task as fallback authority. */
+			schemas?: TaskProgressSchemas;
 		},
 	);
 	get(
