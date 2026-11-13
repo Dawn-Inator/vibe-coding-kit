@@ -243,3 +243,21 @@ test('custom pack unknown entries and members remain visible to fail-closed vali
   assert.match(errors, /missing-member/);
   assert.match(errors, /missing-entry/);
 });
+
+test('catalog supports typed and legacy paths while rejecting mismatched type and symlinks', async (t) => {
+  const { renameSync, symlinkSync } = await import('node:fs');
+  const f = fixture(t);
+  assert.ok(loadOptionalCatalog(f.kitRoot));
+  const legacyPath = join(f.kitRoot, 'optional', 'lark');
+  const typedParent = join(f.kitRoot, 'optional', 'skills');
+  mkdirSync(typedParent, { recursive: true });
+  renameSync(legacyPath, join(typedParent, 'lark'));
+  f.catalog.components.lark.path = 'optional/skills/lark'; f.writeCatalog();
+  assert.ok(resolveOptionalSelection({ ...f, overrides: { lark: true } }).skills.has('lark'));
+  f.catalog.components.lark.path = 'optional/plugins/lark'; f.writeCatalog();
+  assert.throws(() => loadOptionalCatalog(f.kitRoot), /invalid component/);
+  f.catalog.components.lark.path = 'optional/skills/lark'; f.writeCatalog();
+  renameSync(join(typedParent, 'lark'), legacyPath);
+  symlinkSync(legacyPath, join(typedParent, 'lark'));
+  assert.throws(() => resolveOptionalSelection({ ...f, overrides: { lark: true } }), /symlink/);
+});

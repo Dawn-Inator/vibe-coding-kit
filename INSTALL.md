@@ -108,7 +108,7 @@ node .vibe-coding/kit/cli.mjs help
 
 ## 选择可选组件
 
-可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记，类别是 `aliyun`、`lark`、`non-code` 和 `task-progress`。新项目默认关闭前三类。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会识别并复用现有插件，不升级，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
+可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记。源码按物理类型放在 `optional/plugins/` 与 `optional/skills/`；安装用途类别仍是 `aliyun`、`lark`、`non-code` 和 `task-progress`，由 catalog 映射到对应组件。完整目录与映射见[可选组件指南](optional/README.md)。新项目默认关闭前三类。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会识别并复用现有插件，不升级，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
 
 ```sh
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --optional lark=on --optional non-code=off

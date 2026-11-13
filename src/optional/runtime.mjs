@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { constants, existsSync, realpathSync, statSync, accessSync } from 'node:fs';
+import { constants, existsSync, lstatSync, realpathSync, statSync, accessSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -49,6 +49,14 @@ function inside(root, path) {
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
+function rejectSymlinks(root, path) {
+  let current = root;
+  for (const part of relative(root, path).split(sep).filter(Boolean)) {
+    current = join(current, part);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) throw new Error('optional source contains a symlink');
+  }
+}
+
 function componentDirectory(kitRoot, component) {
   if (!component || typeof component !== 'object' || typeof component.id !== 'string' || typeof component.path !== 'string' || isAbsolute(component.path)) {
     throw new Error('invalid optional component descriptor');
@@ -56,6 +64,7 @@ function componentDirectory(kitRoot, component) {
   const root = resolve(kitRoot);
   const path = resolve(root, component.path);
   if (!inside(root, path)) throw new Error('optional component path escapes kit root');
+  rejectSymlinks(root, path);
   if (existsSync(path)) {
     const realRoot = realpathSync(root), realPath = realpathSync(path);
     if (!inside(realRoot, realPath)) throw new Error('optional component path escapes kit root');
@@ -72,13 +81,14 @@ function supportsDeclaredPlatform(component, platform, arch) {
 }
 
 function componentInstallerPath(kitRoot, component) {
-  const script = component.installation?.script ?? `optional/${component.id}/scripts/install-from-kit.mjs`;
+  const script = component.installation?.script ?? `${component.path}/scripts/install-from-kit.mjs`;
   if (typeof script !== 'string' || !script || isAbsolute(script) || script.includes('\\') || script.split('/').some((part) => !part || part === '.' || part === '..')) {
     throw new Error('invalid optional component installer script path');
   }
   const root = resolve(kitRoot);
   const path = resolve(root, script);
   if (!inside(root, path)) throw new Error('optional component installer escapes kit root');
+  rejectSymlinks(root, path);
   if (existsSync(path) && !inside(realpathSync(root), realpathSync(path))) throw new Error('optional component installer escapes kit root');
   return path;
 }

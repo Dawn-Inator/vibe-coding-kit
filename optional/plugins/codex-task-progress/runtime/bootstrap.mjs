@@ -336,7 +336,7 @@ function copyBuildInputs(stagingRoot) {
       recursive: true,
     });
   }
-  const kitSource = resolve(repositoryRoot, "../../src");
+  const kitSource = resolve(repositoryRoot, "../../../src");
   if (!existsSync(resolve(kitSource, "tasks/task-contract.mjs"))) {
     throw new Error("GOAL_PROGRESS_KIT_SOURCE_MISSING");
   }

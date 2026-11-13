@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// This file is located in optional/codex-task-progress/scripts in the Kit checkout.
-export const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+// This file is located in optional/plugins/codex-task-progress/scripts in the Kit checkout.
+export const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 export function kitRevision(root = kitRoot) {
   const result = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
     cwd: root,

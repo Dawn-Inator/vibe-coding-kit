@@ -2,6 +2,22 @@
 
 Optional components extend the Kit for projects that need them. Their registry is [`catalog.json`](catalog.json); the Kit installer reads that catalog to resolve the categories below. New installs leave the first three categories off by default. Project settings live in `.vibe-coding/project.config.json` under `optional` and do not override project-specific policies.
 
+The directory tree groups sources by physical type:
+
+```text
+optional/
+├── catalog.json
+├── plugins/
+│   └── codex-task-progress/
+└── skills/
+    ├── aliyun-skill-discovery/
+    ├── hyperframes/
+    ├── lark/
+    └── presentations/
+```
+
+These folders do not change the four installation-purpose categories. `catalog.json` maps `task-progress` to the plugin, `aliyun` to its skill component, `lark` to its skill component, and `non-code` to both `hyperframes` and `presentations`.
+
 Choose categories during a new interactive install, or pass repeated flags in scripted installs:
 
 ```sh
@@ -28,9 +44,9 @@ For a registered project, ordinary `install` checks the pinned Kit and current p
 | `non-code` | `hyperframes`, `presentations` | Add the HyperFrames video workflow and presentation authoring guidance. |
 | `task-progress` | `codex-task-progress` | Add Codex chat task progress and its optional project Heartbeat view. |
 
-The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. When the plugin is already installed, Kit reuses it without upgrading it or restarting Codex. When it is selected and supported but missing, Kit invokes the component installer at `optional/codex-task-progress/scripts/install-from-kit.mjs` from the pinned Kit checkout. That installer builds and installs from the component embedded in Kit; it does not depend on cloning another repository. The plugin package is built with its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path.
+The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. When the plugin is already installed, Kit reuses it without upgrading it or restarting Codex. When it is selected and supported but missing, Kit invokes [`plugins/codex-task-progress/scripts/install-from-kit.mjs`](plugins/codex-task-progress/scripts/install-from-kit.mjs) from the pinned Kit checkout. That installer builds and installs from the component embedded in Kit; it does not depend on cloning another repository. The plugin package is built with its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path.
 
-The Task Progress component retains its upstream license and attribution notices. Its source is maintained here with the Kit; projects should follow the component's own setup and compatibility instructions in [`codex-task-progress/README.md`](codex-task-progress/README.md). The plugin does not silently restart Codex; distinguish installer health checks from confirmation that the panel is visible in the UI.
+The Task Progress component retains its upstream license and attribution notices. Its source is maintained here with the Kit; projects should follow the component's own setup and compatibility instructions in [`plugins/codex-task-progress/README.md`](plugins/codex-task-progress/README.md). The plugin does not silently restart Codex; distinguish installer health checks from confirmation that the panel is visible in the UI.
 
 ## Project-specific boundaries
 

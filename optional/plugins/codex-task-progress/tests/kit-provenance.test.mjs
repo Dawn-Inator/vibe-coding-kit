@@ -31,3 +31,22 @@ test("Kit provenance rejects dirty source and records the actual checkout HEAD",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("component paths resolve to the enclosing Kit checkout after the optional plugins move", async () => {
+  const { kitRoot } = await import("../scripts/kit_root.mjs");
+  const packageJson = JSON.parse(
+    await (await import("node:fs/promises")).readFile(join(kitRoot, "package.json"), "utf8"),
+  );
+  assert.equal(packageJson.name, "vibe-coding-kit");
+  const componentJson = JSON.parse(
+    await (await import("node:fs/promises")).readFile(
+      new URL("../package.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal(componentJson.dependencies["vibe-coding-kit"], "link:../../..");
+  const { resolve, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(resolve(componentRoot, "../../../src"), join(kitRoot, "src"));
+});

@@ -30,7 +30,7 @@
   "components": {
     "aliyun-skill-discovery": {
       "type": "skills",
-      "path": "optional/aliyun-skill-discovery",
+      "path": "optional/skills/aliyun-skill-discovery",
       "skillsPath": "skills",
       "skills": [
         "alibabacloud-find-skills"
@@ -63,7 +63,7 @@
     },
     "lark": {
       "type": "skills",
-      "path": "optional/lark",
+      "path": "optional/skills/lark",
       "skillsPath": "skills",
       "skills": [
         "feishu-bugfix-workflow",
@@ -107,7 +107,7 @@
         "externalReferenceUrls": [
           "https://github.com/larksuite/cli/blob/v1.0.98/events/im/message_receive.go"
         ],
-        "stagedTreeSha256": "b7c8b333aac407e97cb394c722888147c656181c56525fc81d069fd73f652b3b",
+        "stagedTreeSha256": "4eaee96eb25db7f929dfb043db4f7845107f95ee4bf135f84b7ff72f6387ba7d",
         "license": "not-stated-in-imported-files",
         "notes": "The lark entry is authored for this optional pack; the lark-cli-install managed-repository instructions were generalized; broken intra-pack links were repaired and the event source link was pinned to its official upstream file. feishu-bugfix-workflow is Kit-authored and remains generic. No license assertion."
       },
@@ -131,7 +131,7 @@
     },
     "hyperframes": {
       "type": "skills",
-      "path": "optional/hyperframes",
+      "path": "optional/skills/hyperframes",
       "skillsPath": "skills",
       "skills": [
         "embedded-captions",
@@ -197,7 +197,7 @@
     },
     "presentations": {
       "type": "skills",
-      "path": "optional/presentations",
+      "path": "optional/skills/presentations",
       "skillsPath": "skills",
       "skills": [
         "animated-presentations"
@@ -226,12 +226,12 @@
     },
     "codex-task-progress": {
       "type": "plugin",
-      "path": "optional/codex-task-progress",
+      "path": "optional/plugins/codex-task-progress",
       "skillsPath": "skills",
       "skills": [],
       "nativePluginSkill": true,
       "provenance": {
-        "sourceUrl": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
+        "sourceUrl": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/plugins/codex-task-progress",
         "sourceRevision": "0.4.4",
         "license": "MIT",
         "notes": "Optional Codex plugin; native plugin skills are loaded through the plugin manifest."
@@ -247,7 +247,7 @@
       "installation": {
         "entry": "src/optional/runtime.mjs",
         "export": "installOptionalComponent",
-        "script": "optional/codex-task-progress/scripts/install-from-kit.mjs"
+        "script": "optional/plugins/codex-task-progress/scripts/install-from-kit.mjs"
       }
     }
   }

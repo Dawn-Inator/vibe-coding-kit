@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { OPTIONAL_GROUPS, validateOptionalPreferences } from './preferences.mjs';
 
@@ -14,6 +14,11 @@ function inside(root, path) {
 function assertRealInside(root, path) {
   if (!existsSync(path)) fail(`missing source: ${path}`);
   if (!inside(realpathSync(root), realpathSync(path))) fail(`source escapes kit: ${path}`);
+  let current = root;
+  for (const part of relative(root, path).split(sep).filter(Boolean)) {
+    current = join(current, part);
+    if (lstatSync(current).isSymbolicLink()) fail(`symlink source is not supported: ${current}`);
+  }
 }
 
 export function loadOptionalCatalog(kitRoot) {
@@ -36,7 +41,7 @@ export function loadOptionalCatalog(kitRoot) {
   }
   for (const [id, component] of Object.entries(catalog.components)) {
     if (!referenced.has(id)) fail(`unreferenced component: ${id}`);
-    if (!ID.test(id) || !component || !['skills', 'plugin'].includes(component.type) || component.path !== `optional/${id}` || !safePath(component.skillsPath) || !Array.isArray(component.skills)) fail(`invalid component ${id}`);
+    if (!ID.test(id) || !component || !['skills', 'plugin'].includes(component.type) || ![`optional/${id}`, `optional/${component.type === 'plugin' ? 'plugins' : 'skills'}/${id}`].includes(component.path) || !safePath(component.skillsPath) || !Array.isArray(component.skills)) fail(`invalid component ${id}`);
     for (const name of component.skills) {
       if (!ID.test(name) || names.has(name)) fail(`invalid or duplicate skill: ${name}`);
       names.add(name);

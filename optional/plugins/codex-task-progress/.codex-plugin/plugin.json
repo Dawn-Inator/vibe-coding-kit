@@ -18,11 +18,11 @@
     "capabilities": ["Read", "Write"],
     "defaultPrompt": ["$codex-task-progress:task-progress"],
     "composerIcon": "./assets/icon.png",
-    "websiteURL": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress"
+    "websiteURL": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/plugins/codex-task-progress"
   },
-  "repository": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
+  "repository": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/plugins/codex-task-progress",
   "license": "MIT",
   "scripts": "./runtime/",
-  "homepage": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
+  "homepage": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/plugins/codex-task-progress",
   "keywords": ["codex", "goal", "progress", "checklist"]
 }

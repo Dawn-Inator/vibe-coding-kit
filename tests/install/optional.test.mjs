@@ -211,7 +211,7 @@ test('legacy animated-presentations selection survives enabling Aliyun without s
   config.skills.skills['agent-orchestration-guardrails'] = { mode: 'exclude', rationale: 'User-owned exclusion stays intact.' };
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
   const legacySkill = join(fixture.project, '.vibe-coding/skills/animated-presentations');
-  cpSync(join(fixture.source, 'optional/presentations/skills/animated-presentations'), legacySkill, { recursive: true });
+  cpSync(join(fixture.source, 'optional/skills/presentations/skills/animated-presentations'), legacySkill, { recursive: true });
   const localSkill = join(fixture.project, '.vibe-coding/skills/manual-local/SKILL.md');
   mkdirSync(join(localSkill, '..'), { recursive: true });
   writeFileSync(localSkill, '---\nname: manual-local\ndescription: User-owned local skill.\n---\nKeep this source.\n');

@@ -182,3 +182,19 @@ test('catalog installer path traversal is rejected before plugin detection runs'
   assert.match(result.message, /installer script path/);
   assert.equal(calls, 0);
 });
+
+test('Task Progress installer fallback follows the component path in both layouts', async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  for (const componentPath of ['optional/codex-task-progress', 'optional/plugins/codex-task-progress']) {
+    const script = join(f.kitRoot, componentPath, 'scripts', 'install-from-kit.mjs');
+    mkdirSync(join(script, '..'), { recursive: true }); writeFileSync(script, '');
+    const calls = [];
+    const runner = async (command, args) => {
+      calls.push([command, args]);
+      return command === 'codex' ? response(0, JSON.stringify({ installed: [] })) : response(1, JSON.stringify({ status: 'setup-required', reason: 'restart' }));
+    };
+    const result = await installOptionalComponent({ ...f, component: { ...f.component, path: componentPath }, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+    assert.equal(result.status, 'setup-required');
+    assert.equal(calls.find(([command]) => command === 'node')[1][0], script);
+  }
+});

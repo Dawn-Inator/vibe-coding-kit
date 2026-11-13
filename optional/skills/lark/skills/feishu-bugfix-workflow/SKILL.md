@@ -69,7 +69,7 @@ repair it.
 
 ## Implement Active Bugs
 
-Read [`bugfix-regression-tests`](../../../../skills/bugfix-regression-tests/SKILL.md) before coding. Every active
+Read [`bugfix-regression-tests`](../../../../../skills/bugfix-regression-tests/SKILL.md) before coding. Every active
 ID must get both automated layers (local regression + class-level guard), not only rows reported
 as repeatedly fixed.
 

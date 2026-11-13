@@ -100,7 +100,7 @@ test('catalog provides platform, detection, and installation metadata for the op
     assert.ok(existsSync(join(root, component.installation.entry)), `${id} installation entry exists`);
     assert.equal(typeof installOptionalComponent, 'function', `${id} installation export exists`);
   }
-  assert.equal(catalog.components['codex-task-progress'].installation.script, 'optional/codex-task-progress/scripts/install-from-kit.mjs');
+  assert.equal(catalog.components['codex-task-progress'].installation.script, 'optional/plugins/codex-task-progress/scripts/install-from-kit.mjs');
   assert.ok(existsSync(join(root, catalog.components['codex-task-progress'].installation.script)));
   for (const id of ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']) {
     assert.equal(catalog.components[id].installation.script, undefined, `${id} uses the runtime without a plugin installer script`);
