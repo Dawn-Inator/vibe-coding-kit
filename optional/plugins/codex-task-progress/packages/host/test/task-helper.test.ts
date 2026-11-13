@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1709,5 +1709,295 @@ test("stopped Helper during CDP ownership check returns continue without runtime
     assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("observed CDP startup retries after the listener becomes ready without restarting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    let ready = false;
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, pid) => {
+        if (!ready) throw new Error("listener not ready");
+        return startupOwnership(pid, command);
+      },
+    });
+    const event = { ...startupEvent(command), event: "codex.didLaunch" as const };
+    assert.equal(
+      (await setup.instance.handle(event, true)).code,
+      "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE",
+    );
+    ready = true;
+    assert.equal(
+      (await setup.instance.retryObservedStartup(event, () => true)).code,
+      "STARTUP_EVENT_EXISTING_CDP",
+    );
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 1 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("observed startup retry rejects cancellation and changed process identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    let start = startupStartedAt;
+    const event = { ...startupEvent(command), event: "codex.didLaunch" as const };
+    // Simulate a listener that becomes unavailable during the initial observation.
+    const unavailable = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command, start),
+      verifyExistingOwnership: async () => {
+        throw new Error("not ready");
+      },
+    });
+    assert.equal(
+      (await unavailable.instance.handle(event, true)).code,
+      "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE",
+    );
+    assert.equal(
+      (await unavailable.instance.retryObservedStartup(event, () => false)).code,
+      "STARTUP_EVENT_RELEASED",
+    );
+    start = "2026-11-13T12:00:01.000Z";
+    assert.equal(
+      (await unavailable.instance.retryObservedStartup(event, () => true)).code,
+      "STARTUP_EVENT_PROCESS_MISMATCH",
+    );
+    assert.deepEqual(unavailable.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function waitForStartupTest(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!(await predicate()) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(await predicate(), "timed out waiting for startup recovery");
+}
+
+async function startupHelperFixture(options: {
+  readonly verify: (pid: number, command: string) => Promise<ReturnType<typeof startupOwnership>>;
+  readonly delays?: readonly number[];
+  readonly visibleDelays?: readonly number[];
+  readonly recoverTargets?: () => Promise<readonly { targetId: string; threadId: string | null }[]>;
+}) {
+  const root = await mkdtemp("/tmp/ctph-startup-wiring-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+  let handler: ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>) | undefined;
+  let reconnects = 0;
+  const setup = startupController(paths.root, {
+    inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+    verifyExistingOwnership: async (_app, pid) => options.verify(pid, command),
+  });
+  const listener = {
+    start(value: typeof handler) {
+      handler = value;
+    },
+    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
+    isPending: () => true,
+    waitUntilReady: async () => true,
+    stop: async () => undefined,
+  };
+  const sink = {
+    clear: async () => undefined,
+    clearTarget: async () => undefined,
+    publish: async () => undefined,
+    publishTarget: async () => undefined,
+    hasTarget: () => true,
+    setTargetThread: async () => undefined,
+    reconnect: async () => {
+      reconnects += 1;
+      return undefined;
+    },
+    recoverVisibleTargets: options.recoverTargets ?? (async () => []),
+  };
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: options.visibleDelays ?? [],
+    startupReattachDelaysMs: options.delays ?? [1, 1],
+    startupListener: listener as never,
+    startupHandoff: setup.instance,
+    viewModelSink: sink,
+  });
+  try {
+    await helper.start();
+    const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+    await client.request({
+      method: "task.request",
+      params: {
+        action: "initialize",
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_initialize",
+          identity: {
+            threadId: "startup-chat",
+            sessionId: "startup-chat",
+            turnId: "turn-1",
+            callId: "startup-init",
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+        input: {
+          requestId: "startup-init",
+          expectedRevision: 0,
+          title: "Recover",
+          reason: "Requested",
+          objectives: [{ id: "C1", title: "Build" }],
+        },
+      },
+    });
+    assert.ok(handler);
+    const onStartup = handler;
+    return {
+      root,
+      paths,
+      helper,
+      setup,
+      command,
+      reconnects: () => reconnects,
+      fire: (pid = 4242) => onStartup({ ...startupEvent(command, pid), event: "codex.didLaunch" }),
+      close: async () => {
+        await helper.stop();
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+test("Helper retries delayed CDP and reconnects visible targets", async () => {
+  let attempts = 0;
+  let targetReads = 0;
+  const fixture = await startupHelperFixture({
+    verify: async (pid, command) => {
+      attempts += 1;
+      if (attempts < 2) throw new Error("not listening yet");
+      return startupOwnership(pid, command);
+    },
+    visibleDelays: [1, 1],
+    recoverTargets: async () => {
+      targetReads += 1;
+      // Startup and handoff both initially see no renderer; the scheduled retry finds it.
+      return targetReads < 3 ? [] : [{ targetId: "window", threadId: "startup-chat" }];
+    },
+  });
+  try {
+    assert.equal((await fixture.fire()).code, "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
+    await waitForStartupTest(() => fixture.reconnects() === 1 && targetReads >= 3);
+    assert.equal(attempts, 2);
+    assert.deepEqual(fixture.setup.counts(), {
+      signals: 0,
+      launches: 0,
+      allocations: 0,
+      writes: 1,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("Helper bounds unavailable CDP retries without a restart", async () => {
+  let attempts = 0;
+  const fixture = await startupHelperFixture({
+    verify: async () => {
+      attempts += 1;
+      throw new Error("not ready");
+    },
+  });
+  try {
+    await fixture.fire();
+    await waitForStartupTest(() => attempts === 3);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(attempts, 3);
+    assert.equal(fixture.reconnects(), 0);
+    assert.deepEqual(fixture.setup.counts(), {
+      signals: 0,
+      launches: 0,
+      allocations: 0,
+      writes: 0,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("Helper stop and newer observations cancel pending CDP reattachment", async () => {
+  const inspected: number[] = [];
+  const fixture = await startupHelperFixture({
+    delays: [60],
+    verify: async (pid) => {
+      inspected.push(pid);
+      throw new Error("not ready");
+    },
+  });
+  try {
+    await fixture.fire(4242);
+    await fixture.fire(4243);
+    await waitForStartupTest(() => inspected.length === 3);
+    assert.deepEqual(inspected, [4242, 4243, 4243]);
+    await fixture.fire(4244);
+    await fixture.helper.stop();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.deepEqual(inspected, [4242, 4243, 4243, 4244]);
+    assert.deepEqual(fixture.setup.counts(), {
+      signals: 0,
+      launches: 0,
+      allocations: 0,
+      writes: 0,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("multi-target handoff retries a transient visible-thread restore failure", async () => {
+  let targetReads = 0;
+  let stateBlocker = "";
+  const fixture = await startupHelperFixture({
+    verify: async (pid, command) => startupOwnership(pid, command),
+    visibleDelays: [1, 1],
+    recoverTargets: async () => {
+      targetReads += 1;
+      if (targetReads === 1) return [];
+      if (targetReads === 3) await rm(stateBlocker);
+      return [{ targetId: "window", threadId: "transient-chat" }];
+    },
+  });
+  try {
+    await mkdir(fixture.paths.stateRoot, { recursive: true });
+    stateBlocker = join(
+      fixture.paths.stateRoot,
+      createHash("sha256").update("transient-chat").digest("hex"),
+    );
+    // A file at the session-directory path makes the first restore fail with a store I/O error.
+    await writeFile(stateBlocker, "temporary");
+    assert.equal((await fixture.fire()).code, "STARTUP_EVENT_EXISTING_CDP");
+    await waitForStartupTest(() => targetReads >= 3);
+    await waitForStartupTest(
+      async () => (await stat(stateBlocker).catch(() => undefined))?.isDirectory() === true,
+    );
+    await waitForStartupTest(() => fixture.reconnects() === 1);
+    assert.deepEqual(fixture.setup.counts(), {
+      signals: 0,
+      launches: 0,
+      allocations: 0,
+      writes: 1,
+    });
+  } finally {
+    await fixture.close();
   }
 });

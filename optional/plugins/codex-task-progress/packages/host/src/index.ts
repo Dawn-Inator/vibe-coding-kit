@@ -208,6 +208,7 @@ export interface GoalProgressHelperOptions {
   readonly visibleThreadRecoveryDelaysMs?: readonly number[];
   readonly startupListener?: GoalProgressStartupListener;
   readonly startupHandoff?: MacosStartupHandoffController;
+  readonly startupReattachDelaysMs?: readonly number[];
   readonly prepareStartupListener?: () => Promise<PreparedGoalProgressStartupListener>;
   readonly updateStateStore?: GoalProgressUpdateStateStore;
   readonly updateOperationStore?: GoalProgressUpdateOperationStore;
@@ -355,6 +356,9 @@ export class GoalProgressHelper {
     | undefined;
   #startupListener: GoalProgressStartupListener | undefined;
   #startupHandoff: MacosStartupHandoffController | undefined;
+  readonly #startupReattachDelaysMs: readonly number[];
+  #startupReattachTimer: ReturnType<typeof setTimeout> | undefined;
+  #startupEventSequence = 0;
   readonly #goalUsage = new Map<string, GoalUsageSnapshot>();
   readonly #preparingObjectives = new Map<string, string>();
   readonly #visibleThreadOrderByTarget = new Map<string, VisibleThreadOrder>();
@@ -454,6 +458,9 @@ export class GoalProgressHelper {
     this.#prepareStartupListener = options.prepareStartupListener;
     this.#startupListener = options.startupListener;
     this.#startupHandoff = options.startupHandoff;
+    this.#startupReattachDelaysMs = options.startupReattachDelaysMs ?? [
+      100, 500, 1_000, 2_000, 5_000,
+    ];
   }
 
   async #log(input: GoalProgressLogInput): Promise<void> {
@@ -484,6 +491,9 @@ export class GoalProgressHelper {
 
   async #handleStartupEvent(event: MacosCodexStartupEvent): Promise<MacosCodexStartupResponse> {
     const startedAt = Date.now();
+    const sequence = ++this.#startupEventSequence;
+    if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
+    this.#startupReattachTimer = undefined;
     await this.#log({
       level: "info",
       event: "startup.event",
@@ -508,6 +518,9 @@ export class GoalProgressHelper {
             isStopped: () => this.#server === undefined,
           },
         );
+        if (response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE") {
+          this.#scheduleStartupReattach(event, sequence, 0);
+        }
         if (
           response.code === "STARTUP_HANDOFF_COMPLETE" ||
           response.code === "STARTUP_EVENT_EXISTING_CDP"
@@ -551,6 +564,30 @@ export class GoalProgressHelper {
     return response;
   }
 
+  #scheduleStartupReattach(event: MacosCodexStartupEvent, sequence: number, attempt: number): void {
+    const delay = this.#startupReattachDelaysMs[attempt];
+    if (delay === undefined || !this.#server || sequence !== this.#startupEventSequence) return;
+    this.#startupReattachTimer = setTimeout(() => {
+      this.#startupReattachTimer = undefined;
+      const isCurrent = () => this.#server !== undefined && sequence === this.#startupEventSequence;
+      if (!isCurrent() || !this.#startupHandoff) return;
+      void this.#startupHandoff
+        .retryObservedStartup(event, isCurrent)
+        .then(async (response) => {
+          if (!isCurrent()) return;
+          if (response.code === "STARTUP_EVENT_EXISTING_CDP") {
+            await this.#recoverAfterStartupHandoff(response).catch(() =>
+              this.#scheduleVisibleThreadRecovery(0),
+            );
+          } else if (response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE") {
+            this.#scheduleStartupReattach(event, sequence, attempt + 1);
+          }
+        })
+        .catch(() => undefined);
+    }, delay);
+    this.#startupReattachTimer.unref?.();
+  }
+
   async #recoverAfterStartupHandoff(response: MacosCodexStartupResponse): Promise<void> {
     if (this.#visibleThreadRecoveryTimer) {
       clearTimeout(this.#visibleThreadRecoveryTimer);
@@ -561,13 +598,16 @@ export class GoalProgressHelper {
     await this.#reconcileUpdateState();
     if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
       const targets = await this.#viewModelPublisher.reconnectTargets();
+      let retry = targets.length === 0;
       for (const target of targets) {
         await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
         if (!target.threadId) {
           continue;
         }
-        await this.#restoreVisibleThread(target.threadId).catch(() => "retry");
+        if ((await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry")
+          retry = true;
       }
+      if (retry) this.#scheduleVisibleThreadRecovery(0);
       return;
     }
     const visibleThreadId = await this.#viewModelPublisher.reconnect();
@@ -2695,6 +2735,9 @@ export class GoalProgressHelper {
       this.#visibleThreadRecoveryTimer = undefined;
     }
     await this.#updateCoordinator.stop();
+    this.#startupEventSequence += 1;
+    if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
+    this.#startupReattachTimer = undefined;
     await this.#startupListener?.stop().catch(() => undefined);
     if (this.#startupListener) {
       await this.#log({

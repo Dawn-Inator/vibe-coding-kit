@@ -46,7 +46,7 @@ const StartupActivationSchema = z
 export const MacosCodexStartupEventSchema = z
   .object({
     schemaVersion: z.literal(1),
-    event: z.literal("codex.willLaunch"),
+    event: z.enum(["codex.willLaunch", "codex.didLaunch"]),
     pid: z.number().int().positive(),
     bundleId: z.string().trim().min(1).max(256),
     appPath: z.string().trim().min(1).max(4096),
@@ -273,6 +273,7 @@ export class MacosStartupHandoffController {
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #outcomes = new Map<string, MacosCodexStartupResponse>();
   readonly #reusedMainProcesses = new Map<number, string>();
+  readonly #retryIdentities = new Map<string, string>();
   #operationSequence = 0;
   #runtimeWriteTail: Promise<void> = Promise.resolve();
 
@@ -549,16 +550,38 @@ export class MacosStartupHandoffController {
     }
   }
 
+  async retryObservedStartup(
+    event: MacosCodexStartupEvent,
+    isCurrent: () => boolean,
+  ): Promise<MacosCodexStartupResponse> {
+    return this.#handle(event, true, { isPending: isCurrent, isStopped: () => !isCurrent() }, true);
+  }
+
   async handle(
     eventInput: MacosCodexStartupEvent,
     recoverableProgress: boolean,
     context: MacosStartupHandoffContext = { isPending: () => true },
   ): Promise<MacosCodexStartupResponse> {
+    return this.#handle(eventInput, recoverableProgress, context, false);
+  }
+
+  async #handle(
+    eventInput: MacosCodexStartupEvent,
+    recoverableProgress: boolean,
+    context: MacosStartupHandoffContext,
+    retry: boolean,
+  ): Promise<MacosCodexStartupResponse> {
     const event = MacosCodexStartupEventSchema.parse(eventInput);
     const key = `${event.pid}:${event.launchedAt}:${event.executablePath}`;
     const duplicate = this.#outcomes.get(key);
-    if (duplicate) {
+    if (duplicate && !retry) {
       return duplicate;
+    }
+    if (
+      retry &&
+      (duplicate?.code !== "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE" || !context.isPending())
+    ) {
+      return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
     }
     const operationSequence = ++this.#operationSequence;
     const isSuperseded = () => operationSequence !== this.#operationSequence;
@@ -576,6 +599,21 @@ export class MacosStartupHandoffController {
     }
 
     const original = await this.#inspectTargetProcess(event.pid);
+    const identity = this.#processIdentity(original);
+    if (retry && this.#retryIdentities.get(key) !== identity) {
+      return this.#remember(
+        key,
+        eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
+      );
+    }
+    if (!retry) {
+      this.#retryIdentities.set(key, identity);
+      while (this.#retryIdentities.size > STARTUP_EVENT_DEDUP_LIMIT) {
+        const oldest = this.#retryIdentities.keys().next().value;
+        if (oldest === undefined) break;
+        this.#retryIdentities.delete(oldest);
+      }
+    }
     const processStartedAt = Date.parse(original.startedAt);
     const eventLaunchedAt = Date.parse(event.launchedAt);
     const clockSkewMs = processStartedAt - eventLaunchedAt;
@@ -597,6 +635,9 @@ export class MacosStartupHandoffController {
       return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_HELPER_LAUNCH"));
     }
     const alreadyCdp = commandHasCdp(original.command);
+    if (retry && !alreadyCdp) {
+      return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
+    }
     if (!alreadyCdp && original.command !== event.executablePath) {
       return this.#remember(key, {
         ...eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
@@ -781,7 +822,6 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
   readonly #options: CreateMacosStartupListenerOptions;
   readonly #spawnProcess: typeof spawn;
   readonly #restartDelaysMs: readonly number[];
-  readonly #signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   #child: ChildProcessWithoutNullStreams | undefined;
   #handler: ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>) | undefined;
   #restartTimer: ReturnType<typeof setTimeout> | undefined;
@@ -796,11 +836,6 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
     this.#options = options;
     this.#spawnProcess = options.spawnProcess ?? spawn;
     this.#restartDelaysMs = options.restartDelaysMs ?? STARTUP_LISTENER_RESTART_DELAYS_MS;
-    this.#signalProcess =
-      options.signalProcess ??
-      ((pid, signal) => {
-        process.kill(pid, signal);
-      });
   }
 
   start(handler: (event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>): void {
@@ -862,11 +897,6 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
     if (!this.#clearPending(pid)) {
       return false;
     }
-    try {
-      this.#signalProcess(pid, "SIGCONT");
-    } catch {
-      // The process may already have exited during a completed handoff.
-    }
     return true;
   }
 
@@ -881,13 +911,11 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
   }
 
   #writeResponse(child: ChildProcessWithoutNullStreams, response: MacosCodexStartupResponse): void {
-    const normalized =
-      response.action === "continue" ? { ...response, action: "complete" as const } : response;
     if (response.action === "continue") {
       this.#releasePending(response.pid);
     }
     try {
-      child.stdin.write(`${JSON.stringify(normalized)}\n`, (error) => {
+      child.stdin.write(`${JSON.stringify(response)}\n`, (error) => {
         if (error) {
           this.#invalidateChild(child);
           return;

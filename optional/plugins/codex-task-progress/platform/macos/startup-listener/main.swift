@@ -4,7 +4,7 @@ import Foundation
 
 private struct StartupEvent: Encodable {
     let schemaVersion = 1
-    let event = "codex.willLaunch"
+    let event = "codex.didLaunch"
     let pid: Int32
     let bundleId: String
     let appPath: String
@@ -42,12 +42,9 @@ private final class CodexStartupListener: NSObject {
         super.init()
     }
 
-    private func continuePendingProcess() {
+    private func clearPendingProcess() {
         safetyTimeout?.cancel()
         safetyTimeout = nil
-        if let pendingPid {
-            _ = kill(pendingPid, SIGCONT)
-        }
         pendingPid = nil
     }
 
@@ -58,11 +55,8 @@ private final class CodexStartupListener: NSObject {
             return
         }
         guard response.action == "continue" || response.action == "complete" else {
-            continuePendingProcess()
+            clearPendingProcess()
             return
-        }
-        if response.action == "continue" {
-            _ = kill(response.pid, SIGCONT)
         }
         safetyTimeout?.cancel()
         safetyTimeout = nil
@@ -88,7 +82,7 @@ private final class CodexStartupListener: NSObject {
                     return
                 }
                 if data.isEmpty {
-                    self.continuePendingProcess()
+                    self.clearPendingProcess()
                     exit(0)
                 }
                 self.consumeInput(data)
@@ -104,7 +98,7 @@ private final class CodexStartupListener: NSObject {
                 queue: .main
             )
             source.setEventHandler { [weak self] in
-                self?.continuePendingProcess()
+                self?.clearPendingProcess()
                 exit(0)
             }
             source.resume()
@@ -123,7 +117,7 @@ private final class CodexStartupListener: NSObject {
         }
     }
 
-    private func handleWillLaunch(_ application: NSRunningApplication) {
+    private func handleDidLaunch(_ application: NSRunningApplication) {
         guard pendingPid == nil,
               application.bundleIdentifier == bundleId,
               application.bundleURL?.path == appPath,
@@ -132,9 +126,6 @@ private final class CodexStartupListener: NSObject {
         }
 
         let pid = application.processIdentifier
-        guard kill(pid, SIGSTOP) == 0 else {
-            return
-        }
         pendingPid = pid
         let launchedAt = formatter.string(from: application.launchDate ?? Date())
         let event = StartupEvent(
@@ -146,12 +137,12 @@ private final class CodexStartupListener: NSObject {
             deadlineAtMs: Int64(Date().timeIntervalSince1970 * 1_000) + 20_000
         )
         guard send(event) else {
-            continuePendingProcess()
+            clearPendingProcess()
             return
         }
 
         let timeout = DispatchWorkItem { [weak self] in
-            self?.continuePendingProcess()
+            self?.clearPendingProcess()
         }
         safetyTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
@@ -161,7 +152,7 @@ private final class CodexStartupListener: NSObject {
         configureInput()
         configureSignals()
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.willLaunchApplicationNotification,
+            forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
@@ -170,7 +161,7 @@ private final class CodexStartupListener: NSObject {
             ] as? NSRunningApplication else {
                 return
             }
-            self?.handleWillLaunch(application)
+            self?.handleDidLaunch(application)
         }
         guard send(StartupReady(pid: getpid())) else {
             exit(1)
