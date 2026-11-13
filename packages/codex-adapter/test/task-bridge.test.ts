@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
+import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
 import { GOAL_PROGRESS_PAGE_HOST_VERSION } from "../src/page-host.js";
-import { GoalProgressRendererBridge } from "../src/renderer-bridge.js";
+import {
+  GoalProgressRendererBridge,
+  TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS,
+} from "../src/renderer-bridge.js";
 import { createGoalProgressRendererBundle } from "../src/renderer-bundle.js";
 
 test("task binding forwards only the live visible chat and resolves replies in the originating context", async () => {
@@ -105,6 +110,150 @@ test("task binding forwards only the live visible chat and resolves replies in t
     });
     await bridge.waitForIdle();
     assert.equal(received.length, 1);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("task page wrapper waits through the IPC deadline, then cleans timed-out requests", async () => {
+  const listeners = new Map<string, (params: unknown) => void>();
+  const source = "/* synthetic browser bundle */";
+  const bundle = createGoalProgressRendererBundle(source, {
+    schemaVersion: 1,
+    releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
+    pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION,
+    file: "goal-progress.js",
+    bytes: Buffer.byteLength(source),
+    sha256: createHash("sha256").update(source).digest("hex"),
+  });
+  let now = 0;
+  let nextTimerId = 0;
+  const timers = new Map<number, { dueAt: number; callback: () => void }>();
+  const receivedBindings: unknown[] = [];
+  const page: Record<string, unknown> = {
+    setTimeout(callback: () => void, delay: number) {
+      const id = ++nextTimerId;
+      timers.set(id, { dueAt: now + delay, callback });
+      return id;
+    },
+    clearTimeout(id: number) {
+      timers.delete(id);
+    },
+  };
+  const advance = (duration: number) => {
+    const endAt = now + duration;
+    for (;;) {
+      const next = [...timers.entries()]
+        .filter(([, timer]) => timer.dueAt <= endAt)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      now = timer.dueAt;
+      timers.delete(id);
+      timer.callback();
+    }
+    now = endAt;
+  };
+  const visibleThread = "chat-a";
+  const bridge = new GoalProgressRendererBridge({
+    bundle,
+    platform: "macos",
+    appVersion: "test",
+    sender: {
+      onEvent(method, listener) {
+        listeners.set(method, listener);
+        return () => listeners.delete(method);
+      },
+      async send(method, params) {
+        const p = (params ?? {}) as { name?: string; expression?: string };
+        if (method === "Page.addScriptToEvaluateOnNewDocument") return { identifier: "script-1" };
+        if (method === "Runtime.addBinding" && p.name?.startsWith("__CODEX_TASK_PROGRESS_")) {
+          Object.defineProperty(page, p.name, {
+            configurable: true,
+            value: (payload: string) => {
+              receivedBindings.push(JSON.parse(payload));
+            },
+          });
+        }
+        if (method === "Runtime.evaluate") {
+          const expression = p.expression ?? "";
+          if (expression.endsWith("(document).threadId"))
+            return { result: { value: visibleThread } };
+          if (expression.includes("globalThis.__codexTaskProgressRequest =")) {
+            runInNewContext(expression, page);
+          } else if (expression.includes("__codexTaskProgressResolve?.(")) {
+            runInNewContext(expression, page);
+          } else if (expression === "globalThis.__CODEX_GOAL_PROGRESS__") {
+            return { result: { type: "object", objectId: "host" } };
+          }
+          return { result: { value: true } };
+        }
+        if (method === "Runtime.callFunctionOn")
+          return {
+            result: {
+              value: { action: "unmounted", reason: "ok", hostCount: 0 },
+            },
+          };
+        return {};
+      },
+    },
+    async onTaskRequest(request) {
+      return { threadId: request.threadId };
+    },
+  });
+  try {
+    await bridge.clear();
+    const request = (
+      page as unknown as {
+        __codexTaskProgressRequest: (input: {
+          method: "get";
+          threadId: string;
+        }) => Promise<unknown>;
+      }
+    ).__codexTaskProgressRequest;
+
+    const first = request({ method: "get", threadId: "chat-a" });
+    assert.equal(receivedBindings.length, 1);
+    assert.equal(
+      [...timers.values()][0]?.dueAt,
+      now + TASK_PROGRESS_REQUEST_TIMEOUT_MS + TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS,
+    );
+    advance(12_000);
+    const firstId = (receivedBindings[0] as { id: string }).id;
+    runInNewContext(
+      `globalThis.__codexTaskProgressResolve(${JSON.stringify(firstId)}, { ok: true }, null)`,
+      page,
+    );
+    assert.equal(JSON.stringify(await first), JSON.stringify({ ok: true }));
+    assert.equal(timers.size, 0, "a successful response clears its outer timer");
+
+    const timedOut = request({ method: "get", threadId: "chat-a" });
+    const timedOutId = (receivedBindings[1] as { id: string }).id;
+    const rejected = assert.rejects(timedOut, /Task panel connection timed out/);
+    assert.equal(
+      [...timers.values()][0]?.dueAt,
+      now + TASK_PROGRESS_REQUEST_TIMEOUT_MS + TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS,
+    );
+    advance(TASK_PROGRESS_REQUEST_TIMEOUT_MS + TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS);
+    await rejected;
+    assert.equal(timers.size, 0, "timeout removes its pending timer");
+
+    const next = request({ method: "get", threadId: "chat-a" });
+    const nextId = (receivedBindings[2] as { id: string }).id;
+    runInNewContext(
+      `globalThis.__codexTaskProgressResolve(${JSON.stringify(timedOutId)}, { stale: true }, null)`,
+      page,
+    );
+    runInNewContext(
+      `globalThis.__codexTaskProgressResolve(${JSON.stringify(nextId)}, { fresh: true }, null)`,
+      page,
+    );
+    assert.equal(
+      JSON.stringify(await next),
+      JSON.stringify({ fresh: true }),
+      "a late reply cannot settle the next request",
+    );
+    assert.equal(timers.size, 0);
   } finally {
     await bridge.close();
   }

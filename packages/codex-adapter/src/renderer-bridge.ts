@@ -18,6 +18,7 @@ import {
   GoalProgressUpdateStateSchema,
   type GoalProgressViewModel,
 } from "../../contracts/src/index.js";
+import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
 import { serializeGoalProgressLocaleCatalog } from "../../renderer/src/locale.js";
 import type { CodexHostPlatform } from "./anchor-adapter.js";
 import {
@@ -36,6 +37,12 @@ import {
   refreshGoalProgressVisibleThreadWatcher,
 } from "./cdp.js";
 import type { GoalProgressRendererBundle } from "./renderer-bundle.js";
+
+// The bridge verifies visibility before dispatch and sends the reply afterward;
+// both CDP steps can consume their own IPC budget.
+export const TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS = 10_000;
+const TASK_PROGRESS_RENDERER_TIMEOUT_MS =
+  TASK_PROGRESS_REQUEST_TIMEOUT_MS + TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS;
 
 export interface TaskPageRequest {
   method: "get" | "history" | "heartbeat-history" | "bind-heartbeat";
@@ -570,7 +577,7 @@ export class GoalProgressRendererBridge {
       };
       globalThis.__codexTaskProgressRequest = request => new Promise((resolve, reject) => {
         const id = String(++sequence);
-        const timer = setTimeout(() => { pending.delete(id); reject(new Error('Task panel connection timed out')); }, 12000);
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error('Task panel connection timed out')); }, ${TASK_PROGRESS_RENDERER_TIMEOUT_MS});
         pending.set(id, {resolve, reject, timer}); binding(JSON.stringify({id, request}));
       });
     })()`,

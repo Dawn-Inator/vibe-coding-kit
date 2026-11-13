@@ -15,9 +15,10 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,getFailureThrownCount:0,delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
+  if(request.method==='get' && window.fixture.getFailureNext) { const message=window.fixture.getFailureNext; window.fixture.getFailureNext=null; if(window.fixture.holdNextGetFailure) { window.fixture.holdNextGetFailure=false; await new Promise(resolve => { window.fixture.releaseHeldGetFailure=resolve; }); window.fixture.releaseHeldGetFailure=null; } window.fixture.getFailureThrownCount++; throw new Error(message); }
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
@@ -288,6 +289,99 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.doesNotMatch(await header.innerText(), /0\/0|尚未建立任务/);
         await header.getByText(/尚未建立任务/).waitFor();
         assert.match(await header.innerText(), /已登记清单 0\/0/);
+        await context.close();
+      },
+    );
+    await t.test(
+      "page host automatically recovers after initial and later transient get failures",
+      async () => {
+        const { context, page, panel } = await open(
+          "?initialGetFailure=temporary%20initial%20bridge%20failure",
+        );
+        const summary = panel.locator(".summary");
+        await summary.getByText(/清单暂不可用/).waitFor();
+        assert.match(await summary.innerText(), /清单暂不可用/);
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+        }, task);
+        await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
+        );
+        assert.doesNotMatch(await summary.innerText(), /清单暂不可用/);
+
+        await page.evaluate(() => {
+          window.fixture.getFailureNext = "later poll failure";
+        });
+        await summary.getByText(/清单暂不可用/).waitFor();
+        assert.match(await summary.innerText(), /实现普通任务面板/);
+        assert.match(await summary.innerText(), /清单暂不可用/);
+        await summary.getByText(/实现普通任务面板/).waitFor();
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
+        );
+        assert.doesNotMatch(await summary.innerText(), /清单暂不可用/);
+        assert.match(await summary.innerText(), /实现普通任务面板/);
+        assert.ok(
+          (await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          )) >= 4,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "late failed get from a previous thread cannot poison the selected thread",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
+        );
+        await page.evaluate(() => {
+          window.fixture.getFailureNext = "late thread-a get failure";
+          window.fixture.holdNextGetFailure = true;
+          void window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await page.waitForFunction(
+          () => typeof window.fixture.releaseHeldGetFailure === "function",
+        );
+        const heldGetCount = await page.evaluate(
+          () => window.fixture.calls.filter((call) => call.method === "get").length,
+        );
+        await page.evaluate(() => void window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          ),
+          heldGetCount,
+          "an in-flight get is not overlapped by a second refresh",
+        );
+        await page.evaluate(() => {
+          document
+            .querySelector("[data-app-action-sidebar-thread-row]")
+            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.task = null;
+        });
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().threadId === "thread-b",
+        );
+        await page.evaluate(() => window.fixture.releaseHeldGetFailure());
+        await page.waitForFunction(() => window.fixture.getFailureThrownCount === 1);
+        await page.evaluate(
+          () =>
+            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+        );
+        const state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
+        assert.equal(state.threadId, "thread-b");
+        assert.notEqual(state.status, "error");
+        assert.equal(state.lastError, null);
+        assert.equal(await panel.evaluate((element) => element.connectionError), null);
+        await page.waitForFunction(
+          () =>
+            window.__CODEX_TASK_PROGRESS__.diagnostics().threadId === "thread-b" &&
+            window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
+        );
+        assert.equal(await panel.evaluate((element) => element.connectionError), null);
         await context.close();
       },
     );

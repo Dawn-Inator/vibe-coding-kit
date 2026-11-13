@@ -217,6 +217,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     if (!window.__codexTaskProgressRequest) return;
     busy = true;
     const threadId = diagnostic.threadId;
+    const expectedGeneration = generation;
     try {
       const result = await request({ method: "get", threadId });
       backendExecution = result.execution;
@@ -236,7 +237,12 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       await element.updateComplete;
       layout();
     } catch (error) {
-      if (!destroyed && diagnostic.threadId === threadId) {
+      if (
+        !destroyed &&
+        generation === expectedGeneration &&
+        diagnostic.threadId === threadId &&
+        readCurrentCodexPage(document).threadId === threadId
+      ) {
         diagnostic.status = "error";
         diagnostic.lastError = error instanceof Error ? error.message : String(error);
         element.connectionError = diagnostic.lastError;
