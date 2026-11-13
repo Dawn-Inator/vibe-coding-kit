@@ -695,10 +695,8 @@ export class HeartbeatService {
       if (!source) return null;
       this.#observeFile(threadId, source);
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source });
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source, maxBytes: MAX_BYTES });
       const info = await stat(source);
-      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
-        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
       const text = pair.fullText;
       const inspect = await this.#inspector(root, config);
       const pairInspector = pairApi.inspectHeartbeatLedgerPair;
@@ -822,9 +820,11 @@ export class HeartbeatService {
       if (!within(root, sourcePath) || sourcePath !== view.sourcePath)
         throw new Error("Bound heartbeat source changed outside its verified project path.");
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: sourcePath });
-      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
-        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const pair = pairApi.readHeartbeatLedgerPair({
+        root,
+        path: sourcePath,
+        maxBytes: MAX_BYTES,
+      });
       const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
         return empty(
@@ -902,7 +902,11 @@ export class HeartbeatService {
         return failure("Project heartbeat source has no verified content hash.");
       const config = await this.#config(root);
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: canonicalSource });
+      const pair = pairApi.readHeartbeatLedgerPair({
+        root,
+        path: canonicalSource,
+        maxBytes: MAX_BYTES,
+      });
       const historyPath = pair.isLegacy ? pair.headPath : pair.historyPath;
       if (pair.contentHash !== view.contentHash)
         return failure(
@@ -998,9 +1002,11 @@ export class HeartbeatService {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: view.sourcePath });
-      if (Buffer.byteLength(pair.fullText) > MAX_BYTES)
-        throw new Error("Heartbeat ledger exceeds 8 MiB read limit.");
+      const pair = pairApi.readHeartbeatLedgerPair({
+        root,
+        path: view.sourcePath,
+        maxBytes: MAX_BYTES,
+      });
       const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
         return {

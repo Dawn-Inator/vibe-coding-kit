@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -181,6 +190,15 @@ test("project history pages reuse the selected pair, fail closed on changes, and
     assert.equal(older.sourcePath, canonicalSource);
     assert.equal(older.total, 2);
     assert.match(String(older.wakes[0]?.heading), /2026-11-11T09:00:00Z wake/);
+
+    const originalHistory = await readFile(pair.historyPath);
+    await truncate(pair.historyPath, 8 * 1024 * 1024 + 1);
+    const oversized = await service.projectHistory(f.project, { limit: 1 });
+    assert.equal(oversized.sourcePath, canonicalSource);
+    assert.equal(oversized.total, 0);
+    assert.deepEqual(oversized.wakes, []);
+    assert.match(oversized.error ?? "", /limit|size|exceed|bytes/i);
+    await writeFile(pair.historyPath, originalHistory);
 
     appendHeartbeatWake({
       root: canonicalRoot,
