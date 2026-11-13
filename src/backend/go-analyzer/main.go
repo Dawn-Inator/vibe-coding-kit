@@ -321,6 +321,7 @@ func run(root, configPath string) error {
 			continue
 		}
 		slot := strings.TrimSuffix(filepath.Base(p.name), ".go")
+		slot = strings.TrimSuffix(slot, "_test")
 		allowedDB := slot == "operate" || slot == "query" || slot == "projection"
 		readonly := slot == "query" || slot == "projection"
 		trueShadowed := false

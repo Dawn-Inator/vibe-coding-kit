@@ -69,6 +69,17 @@ func ShadowTrue(db DB, ctx Context, true bool) {
   assert.deepEqual(findings.map(x => x.line), expected);
 });
 
+test('only named test slots allow database calls and read slots still reject writes', t => {
+  const f = fixture(t);
+  f.put('internal/domains/orders/operate_test.go', 'package orders\nfunc OperateTest(db DB) { db.Exec("DELETE FROM x") }\n');
+  f.put('internal/domains/orders/query_test.go', 'package orders\nfunc QueryTest(db DB) { db.Query("SELECT 1"); db.Exec("DELETE FROM x") }\n');
+  f.put('internal/domains/orders/projection_test.go', 'package orders\nfunc ProjectionTest(db DB) { db.Query("SELECT 1"); db.Query("UPDATE x SET y=1") }\n');
+  f.put('internal/domains/orders/other_test.go', 'package orders\nfunc OtherTest(db DB) { db.Query("SELECT 1") }\n');
+  const findings = f.run().findings;
+  assert.deepEqual(findings.filter(x => x.rule === 'sql-slot').map(x => x.path), ['internal/domains/orders/other_test.go']);
+  assert.deepEqual(findings.filter(x => x.rule === 'readonly-write').map(x => x.path), ['internal/domains/orders/projection_test.go', 'internal/domains/orders/query_test.go']);
+});
+
 test('package-level true shadow in another file prevents proving read-only options', t => {
   const f = fixture(t);
   f.put('internal/domains/orders/other.go', 'package orders\nvar true = false\n');
