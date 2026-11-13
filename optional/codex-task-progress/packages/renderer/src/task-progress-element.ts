@@ -101,6 +101,7 @@ export interface TaskPanelExecution {
   activeFlags?: readonly string[];
 }
 export interface TaskPanelResponse {
+  enabled?: boolean;
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
   taskSource?: {

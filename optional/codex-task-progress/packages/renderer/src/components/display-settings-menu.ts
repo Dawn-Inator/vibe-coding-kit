@@ -49,6 +49,8 @@ function updateMenuStatus(state: GoalProgressUpdateState, messages: GoalProgress
     return messages.checkingUpdates;
   }
   if (state.phase === "check-failed") {
+    if (state.lastErrorCode === "GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED")
+      return "Manual Kit update required";
     return messages.checkFailed;
   }
   if (state.phase === "restart-required" && state.latestVersion) {

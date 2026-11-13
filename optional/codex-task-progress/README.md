@@ -18,13 +18,13 @@ To build a self-contained macOS release, obtain Node v24.19.0 darwin-arm64 from 
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is `dist/release/macos-arm64`; see [installation instructions](INSTALL-FOR-AI.md). First version uses manual rebuild/install updates from this private repository. No credentials are embedded in the plugin.
+The release is `dist/release/macos-arm64`; see [installation instructions](INSTALL-FOR-AI.md). Updates are manual: rebuild and install from the Kit checkout. No automatic release channel is configured. No credentials are embedded in the plugin.
 
 ## Heartbeats
 
 The panel displays the current project's Heartbeat automatically when available, including its source path, status, audit details and read-only access. It does not ask the user to select a ledger. Project Heartbeat display is separate from chat task authority: only a structured Kit record related to the current task may become `taskSource` and replace the chat checklist. An unrelated project ledger remains a project view and does not overwrite local task progress. If an existing ordinary task history is valid, no source is bound, and the current candidate scan reports zero associations, an incomplete discovery scan does not suppress that local checklist. A new chat without task events stays pending until discovery is complete; an existing binding, including a stale one, does not trigger fallback, and multiple associated candidates stay pending. The Heartbeat summary stays concise, with full diagnostics in bounded, collapsible details. When a related task source is active, History reads that bound task's recorded ledger wakes through the Kit reader; migrated pairs report the physical head or history source for each wake, while a legacy single-file ledger points to that original file. Reading never initiates a cutover, creates a second timeline or writes back to the ledger. The project Heartbeat card may display a different source from the task's bound ledger.
 
-It reads the Kit's canonical `inspectHeartbeatLedger`, project source, audit cadence and task projection APIs from the pinned Kit. Missing required Kit helpers fail visibly instead of falling back to plugin-owned parsing or policy. Current certification, audit success and historical readability are distinct. An unavailable project source shows an honest empty/error state; a stale related task source blocks writes to parallel local task history. File watching invalidates a 30-second read cache. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
+It reads the Kit checkout’s canonical `inspectHeartbeatLedger`, project source, audit cadence and task projection APIs from the same Kit checkout. Missing required Kit helpers fail visibly instead of falling back to plugin-owned parsing or policy. Current certification, audit success and historical readability are distinct. An unavailable project source shows an honest empty/error state; a stale related task source blocks writes to parallel local task history. File watching invalidates a 30-second read cache. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
 
 Optional project `.codex-task-progress.json`:
 
@@ -38,7 +38,7 @@ An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred
 
 `task_progress_get`, `task_progress_initialize`, `task_progress_update`, `task_progress_rescope`, `task_progress_history`, `task_progress_heartbeat_history`, `task_progress_bind_heartbeat`. Identity is derived from trusted Codex metadata/signed Hook context; callers do not supply a thread ID. Local writes require `expectedRevision`, stable `requestId`, and a reason. A related read-only Kit task source rejects initialize/update/rescope with `TASK_SOURCE_READ_ONLY`; history reports source metadata and no fabricated local events. `task_progress_bind_heartbeat` remains available for compatibility and recovery of existing bindings, but is not part of normal project source selection. Conflicting revisions fail, exact retries are idempotent, and reusing a request ID with a different payload fails.
 
-History is newest-first, paginated with an opaque revision cursor. The pinned Kit stores task events and source associations in each chat's durable Markdown `taskhistory.md`; `heartbeat.md` is a readable current-state projection. Cancelling or removing scope retains the old entries and evidence in history. The panel verifies the visible thread again before delivering asynchronous results.
+History is newest-first, paginated with an opaque revision cursor. The same Kit checkout stores task events and source associations in each chat's durable Markdown `taskhistory.md`; `heartbeat.md` is a readable current-state projection. Cancelling or removing scope retains the old entries and evidence in history. The panel verifies the visible thread again before delivering asynchronous results.
 
 ## Compatibility and removal
 
@@ -61,9 +61,7 @@ The header counts **registered checklist items**, not total task scope. Current 
 The trusted Codex chat working directory determines the task workspace; neither the Helper process directory nor
 the shell's last `cd` is used. The shared Kit `resolveTaskProgressStorage({cwd})` contract defines
 `<cwd>/.workspace/codex-task-progress` for durable project task records and
-`<cwd>/.tmp/codex-task-progress` for reconstructable caches. The plugin pins Kit as a Git package dependency and
-adapts its canonical schemas, task store, source relations, heartbeat-pair API and workspace router; it does not
-maintain a copied Kit runtime.
+`<cwd>/.tmp/codex-task-progress` for reconstructable caches. The plugin uses the same checkout’s canonical schemas, task store, source relations, heartbeat-pair API and workspace router. Release builds bundle the Kit source from the recorded Git HEAD for a self-contained runtime; the checkout remains authoritative.
 
 Ordinary task history is stored per thread at `tasks/v3/<thread-sha256>/taskhistory.md`; `heartbeat.md` is a
 readable projection of the latest task state, not an event log. The Markdown history holds structured task events,
@@ -114,3 +112,5 @@ workspace is unavailable or unwritable, the plugin reports an error rather than 
 
 The installed executable, local socket, Helper logs, native Goal legacy state and UI preferences remain in
 application support. They are separate from project task history and project Heartbeat records.
+
+Task Progress can be disabled per trusted project with `.vibe-coding/project.config.json` containing `"optional": { "task-progress": false }`. Existing task and association history is retained; projects without the setting keep their prior behavior.

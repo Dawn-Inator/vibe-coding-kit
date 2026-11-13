@@ -2,6 +2,7 @@ import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { kitRevision, kitRoot } from "./kit_root.mjs";
 import { bundleKitTaskGuidance } from "./kit_task_guidance.mjs";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,6 +63,8 @@ export async function buildPluginPackage(options = {}) {
     await rm(bundleOutput, { recursive: true, force: true });
     await build({
       absWorkingDir: sourceRoot,
+      alias: { "vibe-coding-kit": kitRoot },
+      nodePaths: [resolve(sourceRoot, "node_modules")],
       bundle: true,
       chunkNames: "chunks/[name]-[hash]",
       entryNames: "[name]",
@@ -90,7 +93,7 @@ export async function buildPluginPackage(options = {}) {
     }
     await copyFromRoot("bin");
     await bundleKitTaskGuidance(outputRoot, {
-      revision: rootPackage.dependencies["vibe-coding-kit"].split("#").at(-1),
+      revision: kitRevision(),
     });
     const sourceRuntimeRoot = resolve(outputRoot, "runtime/source");
     await rm(sourceRuntimeRoot, { recursive: true, force: true });
@@ -103,6 +106,7 @@ export async function buildPluginPackage(options = {}) {
         dereference: false,
       });
     }
+    await cp(resolve(kitRoot, "src"), resolve(sourceRuntimeRoot, "kit/src"), { recursive: true });
     await mkdir(resolve(outputRoot, "dist"), { recursive: true });
     await cp(bundleOutput, resolve(outputRoot, "dist/plugin"), {
       recursive: true,

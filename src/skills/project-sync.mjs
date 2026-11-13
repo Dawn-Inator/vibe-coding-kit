@@ -22,7 +22,7 @@ export function syncProjectSkills({ projectRoot, kitRoot, checkOnly = false }) {
   const root = resolve(projectRoot);
   const kit = resolve(kitRoot);
   const projectConfig = readProjectConfig(root);
-  const composition = composeSources({ projectRoot: root, kitRoot: kit, skillsConfig: projectConfig.skills });
+  const composition = composeSources({ projectRoot: root, kitRoot: kit, skillsConfig: projectConfig.skills, projectConfig });
   overrideSkillPacks(composition.packs);
   const scratch = mkdtempSync(join(tmpdir(), 'vibe-coding-kit-skills-'));
   try {

@@ -1,6 +1,6 @@
 # Install the locally built Task Progress release
 
-This private derivative must be built from this repository. Do not download an upstream Goal Progress release. Preserve MIT attribution. Never restart Codex without the user's explicit approval.
+Build this component from `optional/codex-task-progress` in the Kit checkout. There is no configured automatic release update channel; update by rebuilding and installing from the trusted Kit checkout. Do not download an upstream Goal Progress release. Preserve MIT attribution. Never restart Codex without the user's explicit approval.
 
 1. On Darwin arm64, run `corepack pnpm install --frozen-lockfile`, `corepack pnpm verify:public`, `corepack pnpm test`, and `corepack pnpm test:ui`.
 2. Build with the pinned Node v24.19.0 binary as described in README (`GOAL_PROGRESS_NODE_BINARY=... corepack pnpm build:release:macos`).

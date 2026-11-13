@@ -35,8 +35,10 @@ asked for the bug fixed, and "fixed" implicitly means "and it won't just come ba
    block that field, not pass it silently.
 4. If the intake is an exact row from an external bug-tracking document (a wiki page, a spreadsheet, a
    project-management board), also read whatever project-specific workflow skill/doc governs safe
-   read/write access to that tracker, if you have one — this starter kit ships one worked example,
-   [`feishu-bugfix-workflow`](../feishu-bugfix-workflow/SKILL.md), for a Feishu Wiki/Base-sourced intake.
+   read/write access to that tracker, if you have one. For a Feishu Wiki/Base-sourced intake, if the
+   project has enabled the optional Lark pack, open the `lark` skill's generated pack index and read its
+   `feishu-bugfix-workflow` child skill. If that optional pack is not enabled, use the project's own
+   tracker workflow when available; the generic regression-test rules here still apply.
 
 Related entry points that must not skip this skill: any test-routing convention you use to decide "what
 should I test and where" (a "which tests to run" skill/doc), any plan-authoring convention, and any other

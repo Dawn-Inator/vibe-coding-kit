@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  checkGoalProgressUpdateManifest,
   cleanupOrphanedGoalProgressUpdateDownloads,
   compareGoalProgressVersions,
   GOAL_PROGRESS_MACOS_UPDATE_ASSET,
@@ -13,10 +12,8 @@ import {
   type GoalProgressUpdateOperationStore,
   type GoalProgressUpdateStateStore,
   MacosGoalProgressUpdateOperationStore,
-  openMacosGoalProgressRelease,
   type PreparedGoalProgressUpdate,
   type PrepareGoalProgressUpdateOptions,
-  prepareGoalProgressUpdate,
   readCodexCdpRuntimeState,
   submitUpdateInstallHandoff,
   submitUpdateRestartHandoff,
@@ -74,13 +71,17 @@ export interface GoalProgressUpdateCoordinatorOptions {
   readonly operationId?: () => string;
 }
 
-function initialUpdateState(currentVersion: string, now: Date): GoalProgressUpdateState {
+function initialUpdateState(
+  currentVersion: string,
+  now: Date,
+  hasUpdateChannel: boolean,
+): GoalProgressUpdateState {
   return GoalProgressUpdateStateSchema.parse({
     schemaVersion: 1,
     stateRevision: 1,
     currentVersion,
     latestVersion: null,
-    phase: "up-to-date",
+    phase: hasUpdateChannel ? "up-to-date" : "check-failed",
     checkedAt: null,
     lastSeenUpdateVersion: null,
     promptDismissedForVersion: null,
@@ -88,7 +89,7 @@ function initialUpdateState(currentVersion: string, now: Date): GoalProgressUpda
     totalBytes: null,
     downloadPercent: null,
     restartRequired: false,
-    lastErrorCode: null,
+    lastErrorCode: hasUpdateChannel ? null : "GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED",
     nextStep: "check",
     updatedAt: now.toISOString(),
   });
@@ -124,6 +125,7 @@ export class GoalProgressUpdateCoordinator {
   readonly #currentVersion: string;
   readonly #deliveryMode: GoalProgressUpdateDeliveryMode;
   readonly #now: () => Date;
+  readonly #hasUpdateChannel: boolean;
   readonly #openRelease: (version: string) => Promise<void>;
   readonly #checkForUpdate: () => Promise<GoalProgressUpdateManifest>;
   readonly #prepareUpdate: (
@@ -174,9 +176,15 @@ export class GoalProgressUpdateCoordinator {
     );
     this.#deliveryMode = options.deliveryMode ?? "prebuilt-release";
     this.#now = options.now ?? (() => new Date());
-    this.#openRelease = options.openRelease ?? openMacosGoalProgressRelease;
-    this.#checkForUpdate = options.checkForUpdate ?? (() => checkGoalProgressUpdateManifest());
-    this.#prepareUpdate = options.prepareUpdate ?? prepareGoalProgressUpdate;
+    // Kit currently publishes no component release channel. An injected channel is
+    // explicit; default operation must never query or install from a guessed URL.
+    const unavailable = async (): Promise<never> => {
+      throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
+    };
+    this.#hasUpdateChannel = options.checkForUpdate !== undefined;
+    this.#openRelease = options.openRelease ?? unavailable;
+    this.#checkForUpdate = options.checkForUpdate ?? unavailable;
+    this.#prepareUpdate = options.prepareUpdate ?? unavailable;
     this.#submitInstallWorker = options.submitInstallWorker ?? submitUpdateInstallHandoff;
     this.#submitRestartWorker = options.submitRestartWorker ?? submitUpdateRestartHandoff;
     this.#readCurrentLaunchId =
@@ -509,6 +517,7 @@ export class GoalProgressUpdateCoordinator {
   }
 
   async beginAutomaticCheck(): Promise<GoalProgressUpdateIntentResult | null> {
+    if (!this.#hasUpdateChannel) return null;
     let result: GoalProgressUpdateIntentResult | null = null;
     await this.#enqueue(async () => {
       if (this.#checkScheduled) {
@@ -1077,7 +1086,7 @@ export class GoalProgressUpdateCoordinator {
     const stored = await this.#store.read();
     if (stored === null) {
       this.#state = await this.#store.write({
-        ...initialUpdateState(this.#currentVersion, this.#now()),
+        ...initialUpdateState(this.#currentVersion, this.#now(), this.#hasUpdateChannel),
         ...(this.#deliveryMode === "plugin-marketplace"
           ? { deliveryMode: this.#deliveryMode }
           : {}),
@@ -1085,6 +1094,20 @@ export class GoalProgressUpdateCoordinator {
       return this.#state;
     }
     this.#state = stored;
+    if (!this.#hasUpdateChannel && !updateActivePhases.has(stored.phase)) {
+      if (
+        stored.phase === "check-failed" &&
+        stored.lastErrorCode === "GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED"
+      )
+        return stored;
+      return this.#writeDirect(stored, {
+        phase: "check-failed",
+        latestVersion: null,
+        checkedAt: null,
+        lastErrorCode: "GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED",
+        nextStep: "check",
+      });
+    }
     if (this.#deliveryMode === "plugin-marketplace" && stored.deliveryMode !== this.#deliveryMode) {
       // Discard legacy/placeholder check results when switching delivery modes.
       return this.#writeDirect(stored, {

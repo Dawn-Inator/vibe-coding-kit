@@ -44,6 +44,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   let generation = 0;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let backendExecution: TaskPanelExecution | undefined;
+  let projectEnabled = false;
   let floatPosition: { x: number; y: number } | null = null;
   let diagnostic: TaskPageHostDiagnostics = {
     version: 1,
@@ -101,6 +102,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       releaseReservation();
       element.resetThread(page.threadId);
       backendExecution = undefined;
+      projectEnabled = false;
       diagnostic = {
         ...diagnostic,
         threadId: page.threadId,
@@ -138,7 +140,8 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     if (reservation && (element.floating || reservation.target !== layoutRoot))
       releaseReservation();
     const rect = page.composer?.getBoundingClientRect();
-    const visible = !!rect && rect.width > 0 && !!layoutRoot && !page.rejectionReason;
+    const visible =
+      projectEnabled && !!rect && rect.width > 0 && !!layoutRoot && !page.rejectionReason;
     diagnostic.visible = visible;
     element.style.display = visible ? "block" : "none";
     if (!rect || !visible || !layoutRoot) {
@@ -220,6 +223,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     const expectedGeneration = generation;
     try {
       const result = await request({ method: "get", threadId });
+      projectEnabled = result.enabled !== false;
       backendExecution = result.execution;
       element.data = {
         ...result,

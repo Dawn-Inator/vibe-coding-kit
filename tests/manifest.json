@@ -75,5 +75,9 @@
   "tasks/task-source-relations.test.mjs",
   "tasks/workspace-storage.test.mjs",
   "tasks/heartbeat-task-source.test.mjs",
-  "tasks/project-heartbeat.test.mjs"
+  "tasks/project-heartbeat.test.mjs",
+  "optional/catalog.test.mjs",
+  "optional/content.test.mjs",
+  "optional/runtime.test.mjs",
+  "install/optional.test.mjs"
 ]

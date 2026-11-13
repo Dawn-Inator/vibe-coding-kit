@@ -1,11 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { kitRoot as checkoutKitRoot } from "./kit_root.mjs";
 
 /** Package a generated view of the pinned Kit guidance; the Kit remains its sole source. */
 export async function bundleKitTaskGuidance(outputRoot, options = {}) {
-  const kitRoot =
-    options.kitRoot ?? dirname(fileURLToPath(import.meta.resolve("vibe-coding-kit/package.json")));
+  const kitRoot = options.kitRoot ?? checkoutKitRoot;
   const revision = options.revision;
   if (typeof revision !== "string" || !/^[a-f0-9]{40}$/u.test(revision)) {
     throw new Error("Kit task guidance requires an exact pinned Kit commit");

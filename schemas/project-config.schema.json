@@ -3,39 +3,130 @@
   "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/project-config.schema.json",
   "title": "Vibe Coding Kit project configuration",
   "type": "object",
-  "required": ["schemaVersion", "kit", "adapter", "identity"],
+  "required": [
+    "schemaVersion",
+    "kit",
+    "adapter",
+    "identity"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": {
+      "const": 1
+    },
     "kit": {
       "type": "object",
-      "required": ["path", "url"],
+      "required": [
+        "path",
+        "url"
+      ],
       "properties": {
-        "path": { "const": ".vibe-coding/kit" },
-        "url": { "type": "string", "minLength": 1 }
+        "path": {
+          "const": ".vibe-coding/kit"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
-    "adapter": { "type": "string", "minLength": 1 },
+    "adapter": {
+      "type": "string",
+      "minLength": 1
+    },
     "identity": {
       "type": "object",
-      "required": ["name", "email"],
+      "required": [
+        "name",
+        "email"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "email": { "type": "string", "minLength": 1 }
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "email": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "secrets": {
       "oneOf": [
-        { "type": "object", "required": ["method", "repository", "localPath"], "properties": { "method": { "const": "github" }, "repository": { "type": "string", "minLength": 1 }, "localPath": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
-        { "type": "object", "required": ["method", "status"], "properties": { "method": { "const": "vault" }, "status": { "const": "not-provisioned" } }, "additionalProperties": false }
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "repository",
+            "localPath"
+          ],
+          "properties": {
+            "method": {
+              "const": "github"
+            },
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "localPath": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "status"
+          ],
+          "properties": {
+            "method": {
+              "const": "vault"
+            },
+            "status": {
+              "const": "not-provisioned"
+            }
+          },
+          "additionalProperties": false
+        }
       ]
     },
-    "worktrees": { "type": "object" },
-    "skills": { "type": "object" },
-    "knowledge": { "type": "object" },
-    "layout": { "type": "object" },
-    "contracts": { "type": "object" }
+    "worktrees": {
+      "type": "object"
+    },
+    "skills": {
+      "type": "object"
+    },
+    "knowledge": {
+      "type": "object"
+    },
+    "layout": {
+      "type": "object"
+    },
+    "contracts": {
+      "type": "object"
+    },
+    "optional": {
+      "type": "object",
+      "properties": {
+        "aliyun": {
+          "type": "boolean"
+        },
+        "lark": {
+          "type": "boolean"
+        },
+        "non-code": {
+          "type": "boolean"
+        },
+        "task-progress": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": true
 }

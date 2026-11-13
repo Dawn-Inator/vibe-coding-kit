@@ -42,6 +42,8 @@ const helperBundlePath = resolve(outputRoot, "bin/goal-progress.cjs");
 const cliEntryPath = resolve(sourceRoot, "platform/macos/src/cli.ts");
 await build({
   absWorkingDir: sourceRoot,
+  alias: { "vibe-coding-kit": resolve(sourceRoot, "kit") },
+  nodePaths: [resolve(runtimeRoot, "node_modules")],
   bundle: true,
   format: "cjs",
   legalComments: "none",

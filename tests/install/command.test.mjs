@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { basename, join } from 'node:path';
+import { basename, delimiter, join } from 'node:path';
 import { fakeGhEnvironment } from '../support/fake-gh.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -42,10 +42,20 @@ function requireExplicitFixtureIdentity(fixture) {
   }
 }
 
+function optionalProbeEnv(fixture, env = process.env) {
+  const home = join(fixture.root, 'isolated-home');
+  const bin = join(fixture.root, 'optional-probe-bin');
+  mkdirSync(bin, { recursive: true });
+  const codex = join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+  if (process.platform === 'win32') writeFileSync(codex, '@echo off\necho {"installed":[]}\n');
+  else writeFileSync(codex, '#!/bin/sh\nprintf \'{"installed":[]}\\n\'\n', { mode: 0o755 });
+  return { ...env, HOME: home, USERPROFILE: home, PATH: `${bin}${delimiter}${env.PATH || ''}` };
+}
+
 function run(fixture, more = [], projectRoot = fixture.project) {
   return spawnSync(process.execPath, [cliPath, 'install', '--project-root', projectRoot,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
-    '--identity-email', 'install@example.invalid', '--secrets', 'vault', ...more], { cwd: fixture.project, encoding: 'utf8', env: process.env });
+    '--identity-email', 'install@example.invalid', '--secrets', 'vault', ...more], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture) });
 }
 
 function snapshotFiles(root, { excludedPaths = new Set() } = {}) {
@@ -312,14 +322,19 @@ test('installer accepts Windows case and available 8.3 aliases for the same proj
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
 });
 
-test('fresh install requires an explicit secret-storage choice without a terminal', () => {
+test('fresh noninteractive install defaults secret storage off without creating or asking for credentials', () => {
   const fixture = consumerProject();
   const result = spawnSync(process.execPath, [cliPath, 'install', '--project-root', fixture.project,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
-    '--identity-email', 'install@example.invalid'], { cwd: fixture.project, encoding: 'utf8' });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /--secrets github or --secrets vault/);
-  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
+    '--identity-email', 'install@example.invalid'], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture) });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+  assert.equal(config.secrets, undefined);
+  assert.equal(config.optional.aliyun, false);
+  assert.equal(config.optional.lark, false);
+  assert.equal(config.optional['non-code'], false);
+  assert.equal(config.optional['task-progress'], false);
+  assert.equal(existsSync(join(fixture.project, '.gitmodules')), true);
 });
 
 test('install creates and records the private secrets repository without placing it inside the project', () => {
@@ -327,7 +342,7 @@ test('install creates and records the private secrets repository without placing
   const log = join(fixture.project, '..', 'gh-calls');
   const args = [cliPath, 'install', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github'];
-  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { log, cloneGit: true }) };
+  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { log, cloneGit: true, env: optionalProbeEnv(fixture) }) };
   const dry = spawnSync(process.execPath, [...args, '--check'], options);
   assert.equal(dry.status, 1);
   assert.match(dry.stdout, /would create private/);
@@ -351,7 +366,7 @@ test('install creates and records the private secrets repository without placing
 
 test('failed repository clone reports exact recovery and init verifies the repaired private clone', () => {
   const fixture = consumerProject();
-  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { failClone: true }) };
+  const options = { cwd: fixture.project, encoding: 'utf8', env: fakeGhEnvironment(join(fixture.project, '..'), { failClone: true, env: optionalProbeEnv(fixture) }) };
   const args = [cliPath, 'install', '--project-root', fixture.project, '--url', pathToFileURL(fixture.source).href,
     '--identity-name', 'Install User', '--identity-email', 'install@example.invalid', '--secrets', 'github'];
   const failed = spawnSync(process.execPath, args, options);

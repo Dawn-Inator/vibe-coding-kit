@@ -7,10 +7,10 @@ Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, pr
 在一个已提交且工作区干净的 Git 项目根目录，用 Node.js 20+、Git 和 npm 执行下面命令。请将身份参数替换为项目真实的提交名称和邮箱：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
-这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
+这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。新项目默认关闭可选类别，已检测到的 Codex Task Progress 安装会作为复用默认值；例如可附加 `--optional task-progress=on`。安装不会因可选组件配置登录账号、创建仓库或云资源。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
 
 ## Repository and consumer path
 
@@ -21,6 +21,7 @@ The runtime under `src/` is called directly from the pinned checkout. Consumers 
 ## Contents
 
 - [`skills/`](skills/) contains the current reusable skills (backend, frontend, data, workflow and agent-orchestration). Projects select and extend them according to their own needs.
+- [`optional/`](optional/) contains opt-in component groups and their catalog; see the [optional components guide](optional/README.md).
 - 域名与对象存储规范：[`domain-boundary`](skills/domain-boundary/SKILL.md) 提供 `api` / `dev-api` 等命名模板；[`object-storage-layout`](skills/object-storage-layout/SKILL.md) 提供分桶、环境隔离与对象目录规则。
 - [`tutorial/`](tutorial/) explains the methods and tradeoffs behind the skills. Tutorial examples are illustrative, not mandatory project policy.
 - [`guidance/environment-and-secrets.md`](guidance/environment-and-secrets.md) provides an adoptable baseline for configuration naming, precedence, and secrets.

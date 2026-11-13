@@ -13,19 +13,16 @@ importers:
         version: 1.37.0
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
-        version: 1.31.0(zod@4.4.3)
+        version: 1.31.0(zod@4.6.7)
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
       lit:
         specifier: 3.3.3
         version: 3.3.3
-      vibe-coding-kit:
-        specifier: git+https://github.com/Dawn-Inator/vibe-coding-kit.git#31c647ec63e462bc367a48932c01736a35e2e795
-        version: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/31c647ec63e462bc367a48932c01736a35e2e795
       zod:
-        specifier: 4.4.3
-        version: 4.4.3
+        specifier: 4.6.7
+        version: 4.6.7
 
 packages:
 
@@ -565,12 +562,6 @@ packages:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
 
-  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/31c647ec63e462bc367a48932c01736a35e2e795:
-    resolution: {gitHosted: true, integrity: sha512-QX+W4UjSzuHyAKq/Ab/hkhfgzVDslm9A07bpDHHSudnCSgOXutCRKqPWl7C5SLJcTLKBJszvQJzxSoSPJ/DHQg==, tarball: https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/31c647ec63e462bc367a48932c01736a35e2e795}
-    version: 0.1.0
-    engines: {node: '>=20'}
-    hasBin: true
-
   which@2.0.2:
     resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
     engines: {node: '>= 8'}
@@ -584,8 +575,8 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -679,7 +670,7 @@ snapshots:
 
   '@lucide/icons@1.37.0': {}
 
-  '@modelcontextprotocol/sdk@1.31.0(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.31.0(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.13)
       ajv: 8.20.0
@@ -696,8 +687,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -1109,16 +1100,14 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vibe-coding-kit@https://codeload.github.com/Dawn-Inator/vibe-coding-kit/tar.gz/31c647ec63e462bc367a48932c01736a35e2e795: {}
-
   which@2.0.2:
     dependencies:
       isexe: 2.0.0
 
   wrappy@1.0.2: {}
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
-  zod@4.4.3: {}
+  zod@4.6.7: {}

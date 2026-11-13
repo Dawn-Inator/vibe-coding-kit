@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { StrictSemverSchema } from "../../../packages/contracts/src/index.js";
 
-export const GOAL_PROGRESS_RELEASE_URL_PREFIX =
-  "https://github.com/Dawn-Inator/codex-task-progress/releases/tag/v";
+export const GOAL_PROGRESS_RELEASE_URL_PREFIX = "";
 
 export type MacosReleaseOpener = (url: string) => Promise<void>;
 
 export function goalProgressReleaseUrl(version: string): string {
-  return `${GOAL_PROGRESS_RELEASE_URL_PREFIX}${StrictSemverSchema.parse(version)}`;
+  StrictSemverSchema.parse(version);
+  throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
 }
 
 export async function openMacosGoalProgressRelease(version: string): Promise<void> {

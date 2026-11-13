@@ -22,6 +22,116 @@ import {
 } from "../../tasks/src/index.js";
 import { GoalProgressHelper } from "../src/index.js";
 
+test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
+  const root = await mkdtemp("/tmp/ctph-optional-");
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".vibe-coding"));
+  await writeFile(
+    join(root, ".vibe-coding", "project.config.json"),
+    JSON.stringify({ optional: { "task-progress": false } }),
+  );
+  const otherRoot = await mkdtemp("/tmp/ctph-optional-other-");
+  await mkdir(join(otherRoot, ".git"));
+  const testRuntime = runtime(root);
+  testRuntime.readThreadIdentity = async (threadId) =>
+    identity(threadId, threadId === "other-chat" ? otherRoot : root);
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let callNumber = 0;
+  const request = (
+    action: "get" | "initialize" | "update" | "history",
+    threadId = "disabled-chat",
+  ) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        auth: {
+          kind: "codex-request",
+          toolName:
+            action === "get"
+              ? "task_progress_get"
+              : action === "initialize"
+                ? "task_progress_initialize"
+                : action === "update"
+                  ? "task_progress_update"
+                  : "task_progress_history",
+          identity: {
+            threadId,
+            sessionId: threadId,
+            turnId: "turn-1",
+            callId: `call-${++callNumber}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+        input:
+          action === "initialize"
+            ? {
+                requestId: "disabled-init",
+                expectedRevision: 0,
+                title: "Must not persist",
+                reason: "Disabled project",
+                objectives: [{ id: "I1", title: "No storage" }],
+              }
+            : {},
+      },
+    });
+  try {
+    await helper.start();
+    const disabled = (await request("get")).result as {
+      enabled: boolean;
+      task: TaskState | null;
+      heartbeat: unknown;
+    };
+    assert.deepEqual(disabled, { enabled: false, task: null, heartbeat: null });
+    await assert.rejects(request("initialize"), hasCode("TASK_PROGRESS_DISABLED"));
+    await assert.rejects(access(join(root, ".workspace", "codex-task-progress")), {
+      code: "ENOENT",
+    });
+    // The preference belongs to the project root; an unrelated project remains fully usable.
+    const auth = {
+      kind: "codex-request" as const,
+      toolName: "task_progress_initialize",
+      identity: {
+        threadId: "other-chat",
+        sessionId: "other-chat",
+        turnId: "turn-1",
+        callId: `call-${++callNumber}`,
+        model: "test",
+        threadSource: "user" as const,
+        cwd: otherRoot,
+      },
+    } as const;
+    const ordinary = await client.request({
+      method: "task.request",
+      params: {
+        action: "initialize",
+        auth,
+        input: {
+          requestId: "other-init",
+          expectedRevision: 0,
+          title: "Enabled project",
+          reason: "Preference absent",
+          objectives: [{ id: "O1", title: "Persists" }],
+        },
+      },
+    });
+    assert.equal((ordinary.result as TaskMutationResult).state.title, "Enabled project");
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(otherRoot, { recursive: true, force: true });
+  }
+});
+
 function identity(threadId: string, cwd: string): CodexThreadIdentity {
   return {
     id: threadId,

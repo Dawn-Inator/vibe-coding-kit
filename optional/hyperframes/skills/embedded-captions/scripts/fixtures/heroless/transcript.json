@@ -1,0 +1,42 @@
+{
+  "text": "quiet captions continue without a hero",
+  "language_code": "en",
+  "words": [
+    {
+      "text": "quiet",
+      "start": 0.5,
+      "end": 1.1,
+      "type": "word"
+    },
+    {
+      "text": "captions",
+      "start": 1.3,
+      "end": 1.9,
+      "type": "word"
+    },
+    {
+      "text": "continue",
+      "start": 2.1,
+      "end": 2.7,
+      "type": "word"
+    },
+    {
+      "text": "without",
+      "start": 2.9,
+      "end": 3.5,
+      "type": "word"
+    },
+    {
+      "text": "a",
+      "start": 3.7,
+      "end": 4.3,
+      "type": "word"
+    },
+    {
+      "text": "hero",
+      "start": 4.5,
+      "end": 5.1,
+      "type": "word"
+    }
+  ]
+}

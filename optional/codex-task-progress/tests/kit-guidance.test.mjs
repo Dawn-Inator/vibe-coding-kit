@@ -48,3 +48,13 @@ test("packaging refuses missing shared guidance and unpinned Kit versions", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("packaging locates the enclosing Kit checkout by default", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kit-guidance-default-"));
+  try {
+    const destination = await bundleKitTaskGuidance(root, { revision: "c".repeat(40) });
+    assert.match(await readFile(destination, "utf8"), /vibe-coding-kit@c{40}/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

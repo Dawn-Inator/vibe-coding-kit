@@ -2,7 +2,7 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { arch, platform, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { checkKit, getKitRegistration, inspectKit, prepareKit } from './src/dependencies/submodule.mjs';
 import { syncProjectSkills } from './src/skills/project-sync.mjs';
@@ -12,6 +12,9 @@ import { isPathWithin, samePathIdentity } from './src/lib/path-identity.mjs';
 import { sanitizedGitEnv } from './src/git-environment.mjs';
 import { planSecrets, createSecretRepository, verifySecretRepository } from './src/secrets-setup.mjs';
 import { createInterface } from 'node:readline/promises';
+import { loadOptionalCatalog, resolveOptionalSelection } from './src/optional/catalog.mjs';
+import { OPTIONAL_GROUPS, validateOptionalPreferences } from './src/optional/preferences.mjs';
+import { inspectOptionalComponent, installOptionalComponent } from './src/optional/runtime.mjs';
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://github.com/Dawn-Inator/vibe-coding-kit.git';
@@ -24,6 +27,7 @@ function parseArgs(argv) {
   const [command = 'help', ...rest] = argv;
   const options = { command, positional: [] };
   options.skill = [];
+  options.optional = [];
   if (command === 'worktree' || command === 'worktrees') {
     options.forwarded = [];
     for (let index = 0; index < rest.length; index += 1) {
@@ -54,12 +58,16 @@ function parseArgs(argv) {
     if (!value.startsWith('--')) { options.positional.push(value); continue; }
     if (value === '--check') { options.check = true; continue; }
     if (value === '--offline') { options.offline = true; continue; }
-    const [key, inline] = value.slice(2).split('=', 2);
+    const optionText = value.slice(2);
+    const equalsAt = optionText.indexOf('=');
+    const key = equalsAt < 0 ? optionText : optionText.slice(0, equalsAt);
+    const inline = equalsAt < 0 ? undefined : optionText.slice(equalsAt + 1);
     const next = inline ?? rest[index + 1];
     if (inline === undefined) index += 1;
     if (!next || next.startsWith('--')) throw new Error(`Option --${key} requires a value`);
     const normalized = key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     if (normalized === 'skill') options.skill.push(next);
+    else if (normalized === 'optional') options.optional.push(next);
     else options[normalized] = next;
   }
   return options;
@@ -73,10 +81,11 @@ function git(root, args, { allowFailure = false, env = process.env } = {}) {
 }
 
 async function install(root, options) {
-  const allowed = new Set(['command', 'positional', 'skill', 'projectRoot', 'url', 'ref', 'identityName', 'identityEmail', 'mirrorPolicy', 'check', 'secrets']);
+  const allowed = new Set(['command', 'positional', 'skill', 'optional', 'projectRoot', 'url', 'ref', 'identityName', 'identityEmail', 'mirrorPolicy', 'check', 'secrets']);
   const unsupported = Object.keys(options).filter((key) => !allowed.has(key));
   if (unsupported.length) throw new Error(`Unsupported install option(s): ${unsupported.map((key) => `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`).join(', ')}`);
   if (options.positional.length) throw new Error(`Unexpected install argument(s): ${options.positional.join(' ')}`);
+  const optionalOverrides = parseOptionalOverrides(options.optional);
   const url = options.url || DEFAULT_URL;
   const mirrorPolicy = options.mirrorPolicy || 'local';
   if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
@@ -103,6 +112,14 @@ async function install(root, options) {
         throw new Error(`Project is pinned to ${ready.commit}, while --ref '${options.ref}' resolves locally to ${requestedCommit}; install does not upgrade registered kits. Use the project's explicit kit update workflow to change the pin.`);
       }
     }
+    if (options.check) {
+      if (options.optional.length) await configureOptional(rootReal, resolve(rootReal, KIT_PATH), optionalOverrides, { interactive: false, checkOnly: true });
+      const skills = syncProjectSkills({ projectRoot: rootReal, kitRoot: resolve(rootReal, KIT_PATH), checkOnly: true });
+      if (!skills.ok) throw new Error(`Kit is initialized but skill projections need repair: ${skills.problems.join('; ')}. Run the project's skills:sync command.`);
+      console.log(`Kit ${ready.commit} is ready; check performed without changing configuration or starting optional setup.`);
+      return;
+    }
+    if (options.optional.length) await configureOptional(rootReal, resolve(rootReal, KIT_PATH), optionalOverrides, { interactive: false });
     const skills = syncProjectSkills({ projectRoot: rootReal, kitRoot: resolve(rootReal, KIT_PATH), checkOnly: true });
     if (!skills.ok) throw new Error(`Kit is initialized but skill projections need repair: ${skills.problems.join('; ')}. Run the project's skills:sync command.`);
     console.log(`Kit ${ready.commit} is ready; existing configuration and local files were preserved.`);
@@ -113,23 +130,27 @@ async function install(root, options) {
   assertSafeInstallTargets(rootReal);
   assertProjectionTargetsAvailable(rootReal);
   assertNoSymlinkPaths(rootReal, ['.gitignore', 'package.json', '.vibe-coding/skills', 'engineering/automation/vibe-coding'].map((path) => resolve(rootReal, path)));
-  if (!options.secrets) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Select secret storage with --secrets github or --secrets vault');
-    const prompt = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const answer = (await prompt.question('Secret storage: 1) private GitHub repository (quick setup)  2) Vault (more setup) [1/2]: ')).trim();
-      options.secrets = answer === '1' ? 'github' : answer === '2' ? 'vault' : '';
-      if (!options.secrets) throw new Error('Select 1 or 2');
-    } finally { prompt.close(); }
-  }
   // Validate all init options and conflicts before the first repository mutation.
-  const secrets = planSecrets(rootReal, options.secrets);
-  const plan = plannedInitFiles(rootReal, { ...options, url, mirrorPolicy, secretsPlan: secrets });
+  const secrets = options.secrets ? planSecrets(rootReal, options.secrets) : undefined;
+  const optional = Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false]));
+  const currentConfig = projectConfig(rootReal);
+  const detected = options.check ? new Map() : await inspectPluginComponents(REPO_ROOT, process.env);
+  applyInstalledPluginDefaults(REPO_ROOT, optional, detected, currentConfig.optional, optionalOverrides);
+  Object.assign(optional, optionalOverrides);
+  if (!options.optional.length && process.stdin.isTTY && process.stdout.isTTY && !options.check) {
+    const asked = await askOptionalCategories(REPO_ROOT, optional, detected, currentConfig.optional);
+    Object.assign(optional, asked);
+  }
+  const selectionPlan = resolveOptionalSelection({ kitRoot: REPO_ROOT, projectRoot: rootReal, projectConfig: {}, overrides: optional, fresh: true });
+  const optionalStatuses = options.check ? new Map() : await preflightOptionalComponents(REPO_ROOT, selectionPlan.components, process.env, detected);
+  if (!options.check) assertOptionalPreflight(selectionPlan.components, optionalStatuses);
+  const plan = plannedInitFiles(rootReal, { ...options, url, mirrorPolicy, secretsPlan: secrets, optionalSelection: optional });
   assertNoSymlinkPaths(rootReal, [...plan.entries.map(({ path }) => path), resolve(rootReal, '.gitmodules')]);
   if (plan.conflicts.length) throw new Error(`Install preflight found conflicts: ${plan.conflicts.join(', ')}`);
   validateSkillPlan(rootReal, plan.config, plan.entries);
   if (options.check) {
-    console.log(`Secrets choice: ${secrets.method}${secrets.repository ? `; would create private ${secrets.repository} and clone to ${secrets.localPath}` : '; Vault setup remains project-owned'}.`);
+    if (secrets) console.log(`Secrets choice: ${secrets.method}${secrets.repository ? `; would create private ${secrets.repository} and clone to ${secrets.localPath}` : '; Vault setup remains project-owned'}.`);
+    printOptionalSummary(optional, selectionPlan);
     console.log(`Would register ${url} at ${KIT_PATH}, initialize the selected kit revision, and create ${plan.writes.length} project file(s). Remote state was not checked.`);
     process.exitCode = 1;
     return;
@@ -174,23 +195,27 @@ async function install(root, options) {
   const targetCli = resolve(rootReal, KIT_PATH, 'cli.mjs');
   if (!existsSync(targetCli)) throw new Error(`Kit submodule is registered at ${KIT_PATH}${resolvedRef ? ` (${resolvedRef})` : ''}, but that revision has no cli.mjs to run init. Registration remains; inspect the pin and use a supported kit revision.`);
   const help = spawnSync(process.execPath, [targetCli, 'help'], { cwd: rootReal, encoding: 'utf8' });
-  if (help.error || help.status !== 0 || !help.stdout.includes('--secrets github|vault')) throw new Error(`Selected kit revision does not support the required secret-storage choice; kit registration remains. Choose a compatible revision before configuring secrets.`);
-  if (secrets.method === 'github') {
+  if (help.error || help.status !== 0 || !help.stdout.includes('--identity-name')) throw new Error(`Selected kit revision does not support the required init options; kit registration remains. Choose a compatible revision before configuring project configuration.`);
+  if (secrets?.method === 'github') {
     try { createSecretRepository(rootReal, secrets); } catch (error) {
       throw new Error(`${error.message} To recover, inspect GitHub ${secrets.repository} and sibling ${secrets.localPath}; create a private repository only if absent, verify its ownership and privacy, clone it to that sibling path, then run init with these arguments: ${JSON.stringify(['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy, '--secrets', 'github', '--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath, ...options.skill.flatMap((skill) => ['--skill', skill])])}. Pass each JSON string as one argument.`);
     }
     console.log(`Created private secret repository ${secrets.repository} and cloned it to ${secrets.localPath}; it will be preserved if later setup fails.`);
   }
   const initArgs = ['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy];
-  initArgs.push('--secrets', secrets.method);
-  if (secrets.method === 'github') initArgs.push('--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath);
+  if (secrets?.method) initArgs.push('--secrets', secrets.method);
+  if (secrets?.method === 'github') initArgs.push('--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath);
   for (const skill of options.skill) initArgs.push('--skill', skill);
+  for (const [group, enabled] of Object.entries(optional)) initArgs.push('--optional', `${group}=${enabled ? 'on' : 'off'}`);
   const initialized = spawnSync(process.execPath, [targetCli, ...initArgs], { cwd: rootReal, stdio: 'inherit', env: sanitizedGitEnv(process.env) });
   if (initialized.error) throw initialized.error;
-  if (initialized.status !== 0) throw new Error(`Kit submodule is registered${resolvedRef ? ` at ${resolvedRef}` : ''}, but project initialization failed. Existing files were preserved. Recovery arguments (pass each JSON string as one argument): ${JSON.stringify(initArgs)}; inspect and repair the reported conflict before retrying.`);
+  if (initialized.status !== 0) throw new Error(`Kit submodule is registered${resolvedRef ? ` at ${resolvedRef}` : ''}, but project initialization did not complete. Registration and some setup may remain; no rollback was attempted. Inspect the project config, generated projections, and reported setup failure before retrying. Recovery arguments (pass each JSON string as one argument): ${JSON.stringify(initArgs)}.`);
+  const readyKit = resolve(rootReal, KIT_PATH);
+  const selected = resolveOptionalSelection({ kitRoot: readyKit, projectRoot: rootReal, projectConfig: JSON.parse(readFileSync(resolve(rootReal, '.vibe-coding/project.config.json'), 'utf8')), fresh: true });
+  printOptionalSummary(optional, selected);
 }
 
-function validateSkillPlan(projectRoot, config, entries = []) {
+function validateSkillPlan(projectRoot, config, entries = [], kitRoot = REPO_ROOT) {
   const scratch = mkdtempSync(resolve(tmpdir(), 'vibe-coding-kit-install-preflight-'));
   try {
     const localSkills = resolve(projectRoot, '.vibe-coding/skills');
@@ -209,7 +234,7 @@ function validateSkillPlan(projectRoot, config, entries = []) {
         writeFileSync(target, `---\nname: ${name}\n---\n\nAdd project-specific guidance here.\n`);
       }
     }
-    composeSources({ projectRoot: scratch, kitRoot: REPO_ROOT, skillsConfig: config.skills });
+    composeSources({ projectRoot: scratch, kitRoot, skillsConfig: config.skills, projectConfig: config });
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -278,12 +303,185 @@ function projectRoot(options) {
   return resolve(options.projectRoot || process.cwd());
 }
 
+function parseOptionalOverrides(values = []) {
+  const result = {};
+  for (const value of values) {
+    const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)=(on|off)$/.exec(value);
+    if (!match || !OPTIONAL_GROUPS.includes(match[1])) throw new Error(`Invalid --optional '${value}'; use aliyun|lark|non-code|task-progress=on|off`);
+    if (Object.hasOwn(result, match[1])) throw new Error(`Optional category ${match[1]} was selected more than once`);
+    result[match[1]] = match[2] === 'on';
+  }
+  return result;
+}
+
+function projectConfig(root) {
+  const path = resolve(root, '.vibe-coding/project.config.json');
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('project config must be an object');
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function inspectPluginComponents(kitRoot, env) {
+  const catalog = loadOptionalCatalog(kitRoot);
+  const detected = new Map();
+  if (!catalog) return detected;
+  for (const [id, component] of Object.entries(catalog.components)) {
+    if (component.type !== 'plugin') continue;
+    detected.set(id, await inspectOptionalComponent({ kitRoot, component: { id, ...component }, platform: platform(), arch: arch(), env }));
+  }
+  return detected;
+}
+
+function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPreferences = {}, overrides = {}) {
+  const catalog = loadOptionalCatalog(kitRoot);
+  if (!catalog) return;
+  for (const [group, descriptor] of Object.entries(catalog.groups)) {
+    for (const id of descriptor.components) {
+      const component = catalog.components[id];
+      if (component.type !== 'plugin') continue;
+      const status = detected.get(id);
+      if (status?.status === 'error') {
+        console.log(`${group}: plugin detection failed (${status.message || 'inspection failed'}); it will not be offered or reused.`);
+        if (overrides[group] === true || (overrides[group] !== false && savedPreferences?.[group] === true)) {
+          throw new Error(`Could not detect selected optional plugin ${id}: ${status.message || 'inspection failed'}. Plugin setup was not started.`);
+        }
+        preferences[group] = false;
+        continue;
+      }
+      if (status?.status === 'unsupported') {
+        preferences[group] = false;
+        console.log(`${group}: unavailable (${status.message || 'unsupported platform'})`);
+        continue;
+      }
+      if (status?.status === 'installed' && savedPreferences?.[group] !== false && overrides[group] !== false) preferences[group] = true;
+    }
+  }
+}
+
+async function askOptionalCategories(kitRoot, current, detected = new Map(), savedPreferences = {}) {
+  const catalog = loadOptionalCatalog(kitRoot);
+  if (!catalog) return Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false]));
+  const hidden = new Set();
+  for (const [group, descriptor] of Object.entries(catalog.groups)) {
+    const pluginIds = descriptor.components.filter((id) => catalog.components[id].type === 'plugin');
+    for (const id of pluginIds) {
+      const status = detected.get(id);
+      if (status?.status === 'unsupported') hidden.add(group);
+      if (status?.status === 'error') hidden.add(group);
+      if (status?.status === 'installed') {
+        hidden.add(group);
+        if (savedPreferences?.[group] !== false) current[group] = true;
+      }
+    }
+  }
+  const available = OPTIONAL_GROUPS.filter((group) => !hidden.has(group));
+  if (!available.length) return { ...current };
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Optional category selection needs a terminal; pass --optional <group>=on|off or run optional configure with explicit flags');
+  const defaults = available.filter((group) => current[group] === true);
+  const questions = available.map((group) => `${group}: ${catalog.groups[group].question}`).join('\n');
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await prompt.question(`Optional categories to enable [${defaults.join(',') || 'none'}]:\n${questions}\nEnter comma-separated category IDs, or none (Enter keeps defaults): `)).trim();
+    if (!answer) return { ...current, ...Object.fromEntries(available.map((group) => [group, defaults.includes(group)])) };
+    const chosen = answer.toLowerCase() === 'none' ? [] : answer.split(',').map((item) => item.trim()).filter(Boolean);
+    for (const group of chosen) {
+      if (!available.includes(group)) throw new Error(`Optional category ${group} is unavailable or already installed and was not offered`);
+    }
+    return { ...current, ...Object.fromEntries(available.map((group) => [group, chosen.includes(group)])) };
+  } finally { prompt.close(); }
+}
+
+async function preflightOptionalComponents(kitRoot, components, env, knownStatuses = new Map()) {
+  const statuses = new Map(knownStatuses);
+  for (const component of components) {
+    if (statuses.has(component.id)) continue;
+    statuses.set(component.id, await inspectOptionalComponent({ kitRoot, component, platform: platform(), arch: arch(), env }));
+  }
+  return statuses;
+}
+
+function assertOptionalPreflight(components, statuses) {
+  for (const component of components) {
+    const status = statuses.get(component.id);
+    if (status?.status === 'error') throw new Error(`Could not inspect optional ${component.id}: ${status.message || 'inspection failed'}. No project files were changed.`);
+    if (status?.status === 'unsupported') throw new Error(`Optional ${component.id} is unsupported (${status.message || 'unsupported platform'}); remove the selection before continuing. No project files were changed.`);
+  }
+}
+
+async function installOptionalComponents(kitRoot, components, env, statuses) {
+  for (const component of components) {
+    const inspected = statuses?.get(component.id);
+    if (inspected?.status === 'installed') {
+      console.log(`Optional ${component.id}: already installed; reused.`);
+      continue;
+    }
+    if (inspected?.status === 'unsupported') {
+      throw new Error(`Optional ${component.id} is unsupported (${inspected.message || 'unsupported platform'}). Optional setup was not completed; core setup is preserved.`);
+    }
+    if (inspected?.status === 'error') throw new Error(`Optional ${component.id} could not be inspected: ${inspected.message || 'inspection failed'}. Optional setup was not completed; core setup is preserved.`);
+    const result = await installOptionalComponent({ kitRoot, component, env });
+    if (result.status !== 'installed') throw new Error(`Optional ${component.id} setup is incomplete (${result.status}): ${result.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
+    console.log(`Optional ${component.id}: ready.`);
+  }
+}
+
+function printOptionalSummary(preferences, selection) {
+  console.log('Optional categories:');
+  for (const group of OPTIONAL_GROUPS) console.log(`  ${group}: ${preferences[group] ? 'on' : 'off'}`);
+  if (selection.components.length) console.log(`Selected components: ${selection.components.map(({ id }) => id).join(', ')}`);
+}
+
+async function configureOptional(root, kitRoot, overrides, { interactive = false, checkOnly = false } = {}) {
+  const config = projectConfig(root);
+  const currentSelection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config });
+  let next = { ...currentSelection.selection, ...overrides };
+  const detected = checkOnly ? new Map() : await inspectPluginComponents(kitRoot, process.env);
+  if (!checkOnly) applyInstalledPluginDefaults(kitRoot, next, detected, config.optional, overrides);
+  if (interactive && !checkOnly && Object.keys(overrides).length === 0) {
+    next = await askOptionalCategories(kitRoot, next, detected, config.optional);
+  }
+  validateOptionalPreferences(next);
+  const selection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config, overrides: next });
+  if (checkOnly) {
+    validateSkillPlan(root, { ...config, optional: next }, [], kitRoot);
+    printOptionalSummary(next, selection);
+    console.log('Optional configuration check is read-only; no setup was started.');
+    return;
+  }
+  const statuses = await preflightOptionalComponents(kitRoot, selection.components, process.env, detected);
+  assertOptionalPreflight(selection.components, statuses);
+  validateSkillPlan(root, { ...config, optional: next }, [], kitRoot);
+  const configPath = resolve(root, '.vibe-coding/project.config.json');
+  assertNoSymlinkPaths(root, [configPath]);
+  const serialized = `${JSON.stringify({ ...config, optional: next }, null, 2)}\n`;
+  if (existsSync(configPath)) writeFileSync(configPath, serialized);
+  else throw new Error(`Project is not initialized: missing ${configPath}`);
+  const synced = syncProjectSkills({ projectRoot: root, kitRoot });
+  if (!synced.ok) throw new Error(`Optional preferences were saved, but generated skill projections need repair: ${synced.problems.join('; ')}`);
+  await installOptionalComponents(kitRoot, selection.components, process.env, statuses);
+  printOptionalSummary(next, selection);
+}
+
 function plannedInitFiles(root, options) {
   const configPath = resolve(root, '.vibe-coding/project.config.json');
   const configTemplate = JSON.parse(readFileSync(resolve(REPO_ROOT, 'templates/project.config.json'), 'utf8'));
   configTemplate.kit.url = options.url || DEFAULT_URL;
   configTemplate.identity.name = options.identityName || '';
   configTemplate.identity.email = options.identityEmail || '';
+  const existingConfig = projectConfig(root);
+  const existingOptional = existingConfig.optional;
+  const optionalOverrides = parseOptionalOverrides(options.optional || []);
+  if (options.optionalSelection) {
+    configTemplate.optional = options.optionalSelection;
+  } else if (!existsSync(configPath) || existingOptional !== undefined || Object.keys(optionalOverrides).length) {
+    configTemplate.optional = { ...(existingOptional || {}), ...optionalOverrides };
+    if (!existsSync(configPath)) configTemplate.optional = { ...Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false])), ...configTemplate.optional };
+  } else delete configTemplate.optional;
   if (options.secretsPlan) configTemplate.secrets = options.secretsPlan;
   else if (options.secrets === 'vault') configTemplate.secrets = { method: 'vault', status: 'not-provisioned' };
   else if (options.secrets === 'github' && options.secretsRepository && options.secretsLocalPath) configTemplate.secrets = { method: 'github', repository: options.secretsRepository, localPath: options.secretsLocalPath };
@@ -439,7 +637,7 @@ function requireReaddirSync(path) {
   return readdirSync(path, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
-function init(root, options) {
+async function init(root, options) {
   if (options.secrets === 'github') verifySecretRepository(root, { repository: options.secretsRepository, localPath: options.secretsLocalPath });
   const registration = getKitRegistration({ projectRoot: root });
   if (registration.name !== 'vibe-coding-kit') throw new Error(`Expected .gitmodules submodule name vibe-coding-kit, found ${registration.name}`);
@@ -448,6 +646,9 @@ function init(root, options) {
     throw new Error(`Registered kit URL ${registration.url} differs from requested URL ${expectedUrl}; pass --url to select the registered source explicitly`);
   }
   const plan = plannedInitFiles(root, options);
+  const selected = resolveOptionalSelection({ kitRoot: REPO_ROOT, projectRoot: root, projectConfig: plan.config, overrides: options.optional?.length ? parseOptionalOverrides(options.optional) : {}, fresh: !existsSync(resolve(root, '.vibe-coding/project.config.json')) });
+  const optionalStatuses = options.check ? new Map() : await preflightOptionalComponents(REPO_ROOT, selected.components, process.env);
+  if (!options.check) assertOptionalPreflight(selected.components, optionalStatuses);
   if (!existsSync(resolve(root, '.vibe-coding/project.config.json'))) assertProjectionTargetsAvailable(root);
   assertNoSymlinkPaths(root, plan.entries.map(({ path }) => path));
   validateSkillPlan(root, plan.config, plan.entries);
@@ -471,6 +672,8 @@ function init(root, options) {
   prepareKit({ projectRoot: root });
   mkdirSync(resolve(root, '.vibe-coding/skills'), { recursive: true });
   syncProjectSkills({ projectRoot: root, kitRoot: resolve(root, '.vibe-coding/kit') });
+  await installOptionalComponents(resolve(root, '.vibe-coding/kit'), selected.components, process.env, optionalStatuses);
+  printOptionalSummary(plan.config.optional, selected);
   console.log('Initialization complete. No package.json or business dependencies were created.');
 }
 
@@ -490,7 +693,20 @@ async function main() {
       process.exitCode = result.status ?? 1;
       return;
     }
-    case 'init': init(root, options); return;
+    case 'init': await init(root, options); return;
+    case 'optional': {
+      const action = options.positional[0];
+      if (action !== 'configure') throw new Error('Usage: cli.mjs optional configure --project-root <path> [--optional <group>=on|off]');
+      const allowed = new Set(['command', 'positional', 'skill', 'optional', 'projectRoot', 'check']);
+      const unsupported = Object.keys(options).filter((key) => !allowed.has(key));
+      if (unsupported.length) throw new Error(`Unsupported optional option(s): ${unsupported.map((key) => `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`).join(', ')}`);
+      if (options.positional.length !== 1) throw new Error('Usage: cli.mjs optional configure --project-root <path> [--optional <group>=on|off]');
+      const kitState = checkKit({ projectRoot: root });
+      if (!kitState.applicable) throw new Error('Optional configuration requires a registered .vibe-coding/kit submodule');
+      const overrides = parseOptionalOverrides(options.optional);
+      await configureOptional(root, resolve(root, KIT_PATH), overrides, { interactive: Object.keys(overrides).length === 0, checkOnly: options.check });
+      return;
+    }
     case 'check': {
       const result = checkKit({ projectRoot: root });
       console.log(result.applicable ? `Kit ${result.commit} is ready.` : 'No vibe-coding-kit submodule is registered.');
@@ -539,7 +755,7 @@ async function main() {
       return;
     }
     case 'help':
-      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--mirror-policy local|tracked] --secrets github|vault [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|worktree|backend-check> --project-root <path> [options]\nBackend: --config <project-relative JSON path>');
+      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check> --project-root <path> [options]\nOptional groups: aliyun, lark, non-code, task-progress. Backend: --config <project-relative JSON path>');
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }

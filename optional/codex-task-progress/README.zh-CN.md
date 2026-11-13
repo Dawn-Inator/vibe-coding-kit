@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的独立私有改造，保留原始 Git 历史、作者归属和 MIT 许可证。
+基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
 0.4.4 在聊天顶部常驻任务面板并预留布局空间，避免覆盖正文，支持展开子任务、查看完成证据、浮动布局和分页历史。总进度按有效必做清单项计算，新增任务可以使进度回退；没有清单时显示空闲状态。模型通过 task_progress_* 工具维护记录，无需创建原生 Goal。
 

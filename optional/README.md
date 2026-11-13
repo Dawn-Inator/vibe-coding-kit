@@ -1,0 +1,37 @@
+# Optional Components
+
+Optional components extend the Kit for projects that need them. Their registry is [`catalog.json`](catalog.json); the Kit installer reads that catalog to resolve the categories below. New installs leave the first three categories off by default. Project settings live in `.vibe-coding/project.config.json` under `optional` and do not override project-specific policies.
+
+Choose categories during a new interactive install, or pass repeated flags in scripted installs:
+
+```sh
+vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' \
+  --optional aliyun=off --optional lark=on --optional non-code=off --optional task-progress=on
+```
+
+For an initialized project, set a category explicitly with:
+
+```sh
+node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional lark=on
+```
+
+Only selected components are projected or installed. Enabling a component does not log in to an account, provision a repository or cloud resource, or create project-specific policy. Missing or unsupported component setup is reported as such. Disabling a category removes only Kit-generated mirrors and routes; project-owned files, history, credentials, and custom skill content remain under project ownership. Existing explicit preferences are retained. For legacy projects without `optional` preferences, Kit detects already-selected optional skill sources; a detected Task Progress installation is reused unless explicitly disabled. File conflicts are preserved and reported for review.
+
+For a registered project, ordinary `install` checks the pinned Kit and current projections. Passing `--optional <group>=on|off` explicitly updates the category preferences and selected projections. Add `--check` to preview the proposed preferences without writing config or installing the components. `optional configure --check --optional <group>=on|off` provides the same read-only preview for an initialized project.
+
+## Categories
+
+| Category | Components | Use |
+| --- | --- | --- |
+| `aliyun` | `aliyun-skill-discovery` | Discover applicable Alibaba Cloud skills for a project. |
+| `lark` | `lark` | Use the Lark skill entry point and its documented operations. |
+| `non-code` | `hyperframes`, `presentations` | Add the HyperFrames video workflow and presentation authoring guidance. |
+| `task-progress` | `codex-task-progress` | Add Codex chat task progress and its optional project Heartbeat view. |
+
+The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. When the plugin is already installed, Kit reuses it without upgrading it or restarting Codex. When it is selected and supported but missing, Kit invokes the component installer at `optional/codex-task-progress/scripts/install-from-kit.mjs` from the pinned Kit checkout. That installer builds and installs from the component embedded in Kit; it does not depend on cloning another repository. The plugin package is built with its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path.
+
+The Task Progress component retains its upstream license and attribution notices. Its source is maintained here with the Kit; projects should follow the component's own setup and compatibility instructions in [`codex-task-progress/README.md`](codex-task-progress/README.md). The plugin does not silently restart Codex; distinguish installer health checks from confirmation that the panel is visible in the UI.
+
+## Project-specific boundaries
+
+These components are reusable sources, not a declaration of project policy. In particular, selecting Alibaba Cloud discovery or Lark does not copy LingoFly account, region, project, incident, or tracker conventions into another project. Projects decide their own credentials, authorization, account setup, and operating procedures.

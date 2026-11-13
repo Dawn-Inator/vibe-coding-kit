@@ -15,24 +15,14 @@
     "developerName": "Dawn-Inator (based on Ezra-Y Goal Progress)",
     "category": "Productivity",
     "logo": "./assets/codex-goal-progress-plugin-logo.png",
-    "capabilities": [
-      "Read",
-      "Write"
-    ],
-    "defaultPrompt": [
-      "$codex-task-progress:task-progress"
-    ],
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["$codex-task-progress:task-progress"],
     "composerIcon": "./assets/icon.png",
-    "websiteURL": "https://github.com/Dawn-Inator/codex-task-progress"
+    "websiteURL": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress"
   },
-  "repository": "https://github.com/Dawn-Inator/codex-task-progress",
+  "repository": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
   "license": "MIT",
   "scripts": "./runtime/",
-  "homepage": "https://github.com/Dawn-Inator/codex-task-progress",
-  "keywords": [
-    "codex",
-    "goal",
-    "progress",
-    "checklist"
-  ]
+  "homepage": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
+  "keywords": ["codex", "goal", "progress", "checklist"]
 }

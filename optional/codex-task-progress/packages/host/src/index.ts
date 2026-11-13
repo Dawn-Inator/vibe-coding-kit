@@ -1,11 +1,12 @@
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
 import {
-  checkGoalProgressUpdateManifest,
   type GoalProgressUpdateManifest,
   type GoalProgressUpdateOperation,
   type GoalProgressUpdateOperationStore,
@@ -182,8 +183,7 @@ export function usesSourcePluginRuntime(
 }
 
 export async function sourcePluginUpdateManifest(): Promise<GoalProgressUpdateManifest> {
-  // Query the published release, rather than reporting our own version as a remote result.
-  return checkGoalProgressUpdateManifest();
+  throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
 }
 
 export interface PreparedGoalProgressStartupListener {
@@ -410,8 +410,7 @@ export class GoalProgressHelper {
     });
     this.#viewModelPublisher = new ViewModelPublisher(options.viewModelSink);
     const sourcePluginRuntime = options.sourcePluginRuntime ?? usesSourcePluginRuntime();
-    const checkForUpdate =
-      options.checkForUpdate ?? (sourcePluginRuntime ? sourcePluginUpdateManifest : undefined);
+    const checkForUpdate = options.checkForUpdate;
     this.#updateCoordinator = new GoalProgressUpdateCoordinator({
       store: options.updateStateStore ?? new MacosGoalProgressUpdateStateStore(this.paths),
       paths: this.paths,
@@ -2367,6 +2366,33 @@ export class GoalProgressHelper {
       cwd = identity.cwd;
       nativeStatus = identity.status;
       input = request.params;
+    }
+    // Use the same nearest-Git-boundary rule as heartbeat discovery, before storage is opened.
+    const initial = resolve(cwd);
+    let project = initial;
+    while (true) {
+      if (
+        await stat(resolve(project, ".git")).then(
+          () => true,
+          () => false,
+        )
+      )
+        break;
+      const parent = dirname(project);
+      if (parent === project || project === homedir()) {
+        project = initial;
+        break;
+      }
+      project = parent;
+    }
+    project = await realpath(project);
+    if (readOptionalGroupPreference(project, "task-progress") === false) {
+      if (!["get", "history", "heartbeat-history"].includes(action))
+        throw new GoalProgressIpcHandlerError(
+          "TASK_PROGRESS_DISABLED",
+          "Task progress is disabled for this project",
+        );
+      return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
     }
     const workspace = await this.#workspaceStorage.forThread(threadId, cwd);
     const { taskStore, heartbeat: heartbeatService } = workspace;

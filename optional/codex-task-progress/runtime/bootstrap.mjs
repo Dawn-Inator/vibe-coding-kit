@@ -336,6 +336,12 @@ function copyBuildInputs(stagingRoot) {
       recursive: true,
     });
   }
+  const kitSource = resolve(repositoryRoot, "../../src");
+  if (!existsSync(resolve(kitSource, "tasks/task-contract.mjs"))) {
+    throw new Error("GOAL_PROGRESS_KIT_SOURCE_MISSING");
+  }
+  mkdirSync(resolve(destinationSource, "kit"), { recursive: true, mode: 0o700 });
+  cpSync(kitSource, resolve(destinationSource, "kit/src"), { recursive: true });
 }
 
 async function buildRuntime() {

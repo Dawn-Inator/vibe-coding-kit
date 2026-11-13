@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "groups": {
+    "aliyun": {
+      "question": "是否使用阿里云？",
+      "components": [
+        "aliyun-skill-discovery"
+      ]
+    },
+    "lark": {
+      "question": "是否使用飞书？",
+      "components": [
+        "lark"
+      ]
+    },
+    "non-code": {
+      "question": "是否需要非代码能力，例如演示文稿、视频制作？",
+      "components": [
+        "hyperframes",
+        "presentations"
+      ]
+    },
+    "task-progress": {
+      "question": "是否安装任务进度插件？",
+      "components": [
+        "codex-task-progress"
+      ]
+    }
+  },
+  "components": {
+    "aliyun-skill-discovery": {
+      "type": "skills",
+      "path": "optional/aliyun-skill-discovery",
+      "skillsPath": "skills",
+      "skills": [
+        "alibabacloud-find-skills"
+      ],
+      "provenance": {
+        "sourceUrl": "https://github.com/aliyun/alibabacloud-aiops-skills",
+        "sourcePath": "skills/developertools/solutions/alibabacloud-find-skills",
+        "upstreamSkillSha256": "a9729c756e7b1ebaef66d406c017ef77ccb75ff08d6536ae740d1702ead929dc",
+        "stagedTreeSha256": "40af5ac3de7d1f4023ce5c95b81e2fca81e309a89de8eb025e79f35b17ef98f7",
+        "license": "not-stated-in-imported-files",
+        "notes": "Removed the LingoFly provenance comment from SKILL.md; upstream source/hash are retained here. No license assertion."
+      },
+      "requirements": [
+        {
+          "command": "curl --version",
+          "description": "curl is required to call the Alibaba Cloud AgentExplorer HTTP API."
+        }
+      ]
+    },
+    "lark": {
+      "type": "skills",
+      "path": "optional/lark",
+      "skillsPath": "skills",
+      "skills": [
+        "feishu-bugfix-workflow",
+        "lark",
+        "lark-approval",
+        "lark-apps",
+        "lark-attendance",
+        "lark-base",
+        "lark-calendar",
+        "lark-cli-install",
+        "lark-contact",
+        "lark-doc",
+        "lark-drive",
+        "lark-event",
+        "lark-im",
+        "lark-mail",
+        "lark-markdown",
+        "lark-minutes",
+        "lark-note",
+        "lark-okr",
+        "lark-openapi-explorer",
+        "lark-shared",
+        "lark-sheets",
+        "lark-skill-maker",
+        "lark-slides",
+        "lark-task",
+        "lark-vc",
+        "lark-vc-agent",
+        "lark-whiteboard",
+        "lark-wiki",
+        "lark-workflow-meeting-summary",
+        "lark-workflow-standup-report"
+      ],
+      "pack": {
+        "entry": "lark",
+        "memberPrefix": "lark-"
+      },
+      "provenance": {
+        "sourceUrl": "https://open.feishu.cn/",
+        "sourceReference": "Official Lark skill set installed from open.feishu.cn; no immutable upstream revision was recorded in source metadata.",
+        "externalReferenceUrls": [
+          "https://github.com/larksuite/cli/blob/v1.0.98/events/im/message_receive.go"
+        ],
+        "stagedTreeSha256": "b7c8b333aac407e97cb394c722888147c656181c56525fc81d069fd73f652b3b",
+        "license": "not-stated-in-imported-files",
+        "notes": "The lark entry is authored for this optional pack; the lark-cli-install managed-repository instructions were generalized; broken intra-pack links were repaired and the event source link was pinned to its official upstream file. feishu-bugfix-workflow is Kit-authored and remains generic. No license assertion."
+      },
+      "requirements": [
+        {
+          "command": "lark-cli --version",
+          "description": "Lark CLI is required by the Lark skills."
+        }
+      ]
+    },
+    "hyperframes": {
+      "type": "skills",
+      "path": "optional/hyperframes",
+      "skillsPath": "skills",
+      "skills": [
+        "embedded-captions",
+        "faceless-explainer",
+        "figma",
+        "general-video",
+        "hyperframes",
+        "hyperframes-animation",
+        "hyperframes-audio",
+        "hyperframes-cli",
+        "hyperframes-core",
+        "hyperframes-creative",
+        "hyperframes-keyframes",
+        "hyperframes-registry",
+        "hyperframes-studio",
+        "media-use",
+        "motion-graphics",
+        "music-to-video",
+        "pr-to-video",
+        "product-launch-video",
+        "remotion-to-hyperframes",
+        "slideshow",
+        "talking-head-recut"
+      ],
+      "pack": {
+        "entry": "hyperframes",
+        "memberPrefix": "hyperframes-"
+      },
+      "provenance": {
+        "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/v0.8.149",
+        "sourceRevision": "bf881bf79d68cc78b52624f6431644ac152b2723",
+        "sourceTag": "v0.8.149",
+        "license": "Apache-2.0",
+        "stagedTreeSha256": "22c1852cb4dcfc855a7581d12fdd4daed23d74ade6cb6a86852462ed92e1defe"
+      },
+      "requirements": [
+        {
+          "command": "node --version",
+          "description": "Node.js runtime requirement for HyperFrames CLI.",
+          "minimumVersion": "22"
+        },
+        {
+          "command": "npx hyperframes@0.8.149 --version",
+          "description": "HyperFrames CLI matching the imported skill set.",
+          "minimumVersion": "0.8.149"
+        },
+        {
+          "command": "ffmpeg -version",
+          "description": "FFmpeg is required for local video rendering."
+        }
+      ]
+    },
+    "presentations": {
+      "type": "skills",
+      "path": "optional/presentations",
+      "skillsPath": "skills",
+      "skills": [
+        "animated-presentations"
+      ],
+      "provenance": {
+        "sourceUrls": [
+          "https://github.com/zarazhangrui/frontend-slides",
+          "https://github.com/iart-ai/web-animation-skills"
+        ],
+        "stagedTreeSha256": "4f3af151ef3f69853ea758618aae3597608074532a0b98067178f869c3aa22ea",
+        "license": "not-stated-in-imported-files",
+        "notes": "Kit-authored synthesis referencing these upstream projects; no license assertion. This skill covers browser-based HTML presentations."
+      },
+      "requirements": []
+    },
+    "codex-task-progress": {
+      "type": "plugin",
+      "path": "optional/codex-task-progress",
+      "skillsPath": "skills",
+      "skills": [],
+      "nativePluginSkill": true,
+      "provenance": {
+        "sourceUrl": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/codex-task-progress",
+        "sourceRevision": "0.4.4",
+        "license": "MIT",
+        "notes": "Optional Codex plugin; native plugin skills are loaded through the plugin manifest."
+      },
+      "requirements": []
+    }
+  }
+}

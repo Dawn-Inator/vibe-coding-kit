@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { resolveOptionalSelection } from '../optional/catalog.mjs';
 
 const MODES = new Set(['adopt', 'extend', 'replace', 'local', 'exclude']);
 const PLATFORM_BEGIN = {
@@ -164,7 +165,7 @@ function configEntries(skillsConfig) {
 }
 
 /** Resolve a project config against the public kit and project-local source. */
-export function composeSources({ projectRoot, kitRoot, skillsConfig }) {
+export function composeSources({ projectRoot, kitRoot, skillsConfig, projectConfig = {} }) {
   if (!projectRoot || !kitRoot) fail('projectRoot and kitRoot are required');
   const commonRoot = join(kitRoot, 'skills');
   const localRoot = join(projectRoot, '.vibe-coding', 'skills');
@@ -179,11 +180,16 @@ export function composeSources({ projectRoot, kitRoot, skillsConfig }) {
   };
   const commonNames = listSkillNames(commonRoot);
   const localNames = listSkillNames(localRoot);
+  const optional = resolveOptionalSelection({ kitRoot, projectRoot, projectConfig: { ...projectConfig, skills: skillsConfig } });
+  for (const name of optional.skills.keys()) commonNames.add(name);
+  const rootFor = (name) => optional.skills.get(name)?.root ?? commonRoot;
   for (const name of localNames) {
-    if (commonNames.has(name) && !configured.has(name)) fail(`${name}: common/local name collision requires an explicit skillsConfig.skills entry`);
+    if (optional.disabledSkills.has(name)) continue;
+    if (commonNames.has(name) && !configured.has(name) && !(optional.legacy && optional.skills.has(name))) fail(`${name}: common/local name collision requires an explicit skillsConfig.skills entry`);
   }
   const results = new Map();
   for (const [name, definition] of configured) {
+    if (optional.disabledSkills.has(name)) continue;
     if (!definition || typeof definition !== 'object' || !MODES.has(definition.mode)) fail(`${name}: config needs an explicit mode`);
     if (definition.mode === 'exclude') {
       if (!commonNames.has(name) || !definition.rationale) fail(`${name}: exclude requires a common skill and an explicit rationale`);
@@ -192,37 +198,49 @@ export function composeSources({ projectRoot, kitRoot, skillsConfig }) {
     if (definition.mode === 'replace' && (!definition.rationale || definition.replaces !== name)) {
       fail(`${name}: replacement requires rationale and replaces: '${name}'`);
     }
-    if (definition.mode === 'local' && commonNames.has(name)) fail(`${name}: a common skill exists; use replace with rationale or adopt/extend`);
+    if (definition.mode === 'local' && commonNames.has(name) && !(optional.legacy && optional.skills.has(name))) fail(`${name}: a common skill exists; use replace with rationale or adopt/extend`);
     if (definition.mode === 'adopt' && !commonNames.has(name)) fail(`${name}: adopt requires a common skill`);
-    results.set(name, composeSkill({ name, commonRoot, localRoot, ...definition }));
+    results.set(name, composeSkill({ name, commonRoot: rootFor(name), localRoot, ...definition }));
   }
   for (const name of commonNames) {
-    if (!configured.has(name)) fail(`${name}: common skill requires an explicit adopt/extend/replace/exclude decision`);
+    if (!configured.has(name)) {
+      if (optional.skills.has(name)) {
+        const mode = optional.legacy && localNames.has(name) ? 'local' : 'adopt';
+        results.set(name, composeSkill({ name, commonRoot: rootFor(name), localRoot, mode }));
+      } else fail(`${name}: common skill requires an explicit adopt/extend/replace/exclude decision`);
+    }
   }
   for (const name of localNames) {
-    if (!commonNames.has(name) && !configured.has(name)) {
+    if (!optional.disabledSkills.has(name) && !commonNames.has(name) && !configured.has(name)) {
       results.set(name, composeSkill({ name, commonRoot, localRoot, mode: 'local' }));
     }
   }
   return Object.freeze({
     skills: results,
     aliases: Object.freeze({ ...(skillsConfig.aliases ?? {}) }),
-    packs: Object.freeze([...(skillsConfig.packs ?? [])]),
+    packs: Object.freeze(optional.legacy ? [...(skillsConfig.packs ?? [])] : [...(skillsConfig.packs ?? []).filter((pack) => !optional.packs.some((item) => item.id === pack.id) && !optional.disabledSkills.has(pack.entry)), ...optional.packs]),
     provenance: Object.freeze({ kitRoot, localRoot }),
   });
 }
 
 /** Resolve an executable/reference asset from canonical sources, never from a generated mirror. */
-export function resolveSkillSourcePath({ projectRoot, kitRoot, skillsConfig, name, path }) {
+export function resolveSkillSourcePath({ projectRoot, kitRoot, skillsConfig, projectConfig, name, path }) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name ?? '')) fail(`invalid skill name: ${name}`);
   if (typeof path !== 'string' || !path || isAbsolute(path) || path.split(/[\\/]+/).includes('..')) {
     fail(`${name}: source path must be a safe relative path`);
   }
+  if (!projectConfig) {
+    const text = readOptional(join(projectRoot, '.vibe-coding', 'project.config.json'));
+    projectConfig = text === null ? {} : JSON.parse(text);
+  }
+  const optional = resolveOptionalSelection({ kitRoot, projectRoot, projectConfig: { ...projectConfig, skills: skillsConfig } });
+  if (optional.disabledSkills.has(name)) fail(`${name}: optional group is disabled`);
   const definition = skillsConfig?.skills?.[name];
   const localPath = join(projectRoot, '.vibe-coding', 'skills', name, path);
-  const commonPath = join(kitRoot, 'skills', name, path);
+  const commonPath = join(optional.skills.get(name)?.root ?? join(kitRoot, 'skills'), name, path);
   if (!definition) {
     if (existsFile(localPath)) return localPath;
+    if (existsFile(commonPath) && optional.skills.has(name)) return commonPath;
     if (existsFile(commonPath)) fail(`${name}: public skill needs an explicit project.config.json decision`);
     fail(`${name}/${path}: no canonical source file`);
   }

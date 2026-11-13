@@ -17,7 +17,7 @@ Kit 不需要发布到 npm registry，也没有额外运行时依赖。通过 Gi
 在项目根目录运行，并将身份替换为项目真实值：
 
 ```sh
-npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
 `ai@example.org` 仅表示参数格式，必须换成真实、可用的项目提交邮箱。首次接入要求仓库干净；命令运行后会新增 submodule 和生成文件，检查输出并按项目流程提交这些变更。
@@ -25,7 +25,7 @@ npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install -
 也可以从已有 Kit checkout 调用同一入口：
 
 ```sh
-node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github
+node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
 如需固定经审阅的 tag 或 commit，可加 `--ref <tag-or-commit>`。默认使用 Kit 的远端默认版本；要让多个消费者得到相同内容，应显式固定并审阅版本。
@@ -33,7 +33,7 @@ node /path/to/vibe-coding-kit/cli.mjs install --project-root /path/to/project --
 若需复现同一套安装入口与 Kit 运行时版本，可分别固定从 GitHub 取得 CLI 的 commit 和写入 submodule 的 commit：
 
 ```sh
-npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --secrets github --ref '<approved-kit-sha>'
+npx --yes --package='github:Dawn-Inator/vibe-coding-kit#<approved-cli-sha>' vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --ref '<approved-kit-sha>'
 ```
 
 把两个 SHA 都替换为已审阅的完整 commit，并使用项目真实身份。若两者来自同一 Kit 版本，可填写相同 SHA。
@@ -86,9 +86,11 @@ node .vibe-coding/kit/cli.mjs help
 
 ## 密钥管理选择
 
-全新安装时选择 `--secrets github`（快速方案）或 `--secrets vault`；终端交互安装未传参数时会询问，非交互安装必须显式传入。`github` 默认使用主仓库的 GitHub owner 和仓库名，创建私有 `<项目名>-secret-key` 仓库并克隆到主项目的同级目录；主项目没有 GitHub origin 时使用当前 `gh` 身份和目录名。需要已登录的 GitHub CLI 和相应组织权限。仓库文件可供获授权用户直接查看，不强制加密。权限需由项目维护者单独配置。安装会自动启用 `secret-repository-access` 技能，供 AI 按项目配置定位并读取所需密钥。
+密钥管理是独立的显式选择，不是安装前置条件。需要 GitHub 私有密钥仓库时传 `--secrets github`；需要记录 Vault 方案时传 `--secrets vault`。省略 `--secrets` 不会询问、创建秘密仓库、配置 Vault 或启用密钥访问 skill。已有安装命令和配置中的显式 secrets 选择继续兼容；重复安装不会改写已有密钥配置。
 
-`vault` 仅记录选择，**不会自动部署或配置 Vault**；安装会自动启用 `vault-secret-access` 技能，待项目完成 Vault 接入后按项目命令获取密钥。两种方式的运行时接入、访问控制和恢复由项目完成，详见[密钥规范](guidance/environment-and-secrets.md#choose-one-secret-authority)。`--check` 不创建远端仓库；若 GitHub 创建成功但后续安装失败，仓库会保留，检查并手动修复后再继续，不自动删除或接管同名仓库。重复安装不会改变已有配置。
+`github` 默认使用主仓库的 GitHub owner 和仓库名，创建私有 `<项目名>-secret-key` 仓库并克隆到主项目的同级目录；主项目没有 GitHub origin 时使用当前 `gh` 身份和目录名。需要已登录的 GitHub CLI 和相应组织权限。仓库文件可供获授权用户直接查看，不强制加密。权限需由项目维护者单独配置。选中后会启用 `secret-repository-access` 技能，供 AI 按项目配置定位并读取所需密钥。
+
+`vault` 仅记录选择，**不会自动部署或配置 Vault**；选中后会启用 `vault-secret-access` 技能，待项目完成 Vault 接入后按项目命令获取密钥。两种方式的运行时接入、访问控制和恢复由项目完成，详见[密钥规范](guidance/environment-and-secrets.md#choose-one-secret-authority)。`--check` 不创建远端仓库；若 GitHub 创建成功但后续安装失败，仓库会保留，检查并手动修复后再继续，不自动删除或接管同名仓库。重复安装不会改变已有配置。
 
 ## 选择和适配 skills
 
@@ -103,6 +105,28 @@ node .vibe-coding/kit/cli.mjs help
 公开 skill 支持 `adopt`、`extend`、`replace:<原因>`、`exclude:<原因>`；`local` 用于项目专属 skill。`extend` 会创建项目自有的 `EXTENSION.md` 起始文件；`replace` 要求已有项目自有的 `SKILL.md` 并提供原因。默认将未显式选择的公开 skill 复制为本地快照，并配置为 `replace`；显式 `adopt` 和 `extend` 则继续使用 Kit 中的共享源文件。安装后可在项目自己的 `.vibe-coding/project.config.json` 调整选择。
 
 项目拥有默认快照；修改 `.vibe-coding/skills/` 后运行 `node .vibe-coding/kit/cli.mjs skills sync --project-root .` 更新镜像。Kit 升级不会覆盖或自动更新本地快照；需要时应手动审阅并合并上游修改。skill 不会替项目定义门禁或发布策略。
+
+## 选择可选组件
+
+可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记，类别是 `aliyun`、`lark`、`non-code` 和 `task-progress`。新项目默认关闭前三类。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会识别并复用现有插件，不升级，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
+
+```sh
+npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --optional lark=on --optional non-code=off
+```
+
+选择组件只接入已随 Kit 提供的技能或插件；它不会隐式登录账号、创建远端仓库、配置云账号或建立业务资源。未选择的类别不会安装或生成对应工具入口。受支持的平台缺少 Codex Task Progress 时，Kit 会在用户选择后调用内置安装器，并如实报告安装是否完成。
+
+首次交互安装会把已检测到的 Task Progress 安装作为复用默认值，除非已有设置或本次选择明确关闭它。其他类别新项目默认关闭。非交互安装可用重复 `--optional <group>=on|off` 指定选择；类别偏好写入项目配置。
+
+已初始化项目可显式调整类别；未指定的类别沿用配置：
+
+```sh
+node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional task-progress=on
+```
+
+类别偏好保存在项目自有 `.vibe-coding/project.config.json` 的 `optional` 对象中。老项目未声明该对象时，Kit 从已经选用或存在的可选 skill 源识别 legacy 选择，并识别可复用的已安装插件；新项目默认值不会覆盖这些现状。禁用类别只清理由 Kit 生成的投影和入口，项目自有文件、历史、凭据与自定义 skill 内容应由项目自行保管。路径冲突会保留现有内容并报告，需人工处理后再配置。
+
+各组件的内容、前置条件和边界见[可选组件指南](optional/README.md)。
 
 ## 轻量适配生命周期检查
 
@@ -132,7 +156,7 @@ export function verifyProjectCandidate(context) {
 
 ## 既有项目、检查与日常准备
 
-成熟项目先评估自身配置、脚本和 adapter。`install --check` 是只读预检：有待创建的注册项或文件、或发现冲突时以非零状态退出；它不会替你解决冲突。首次 `install` 要求干净仓库。文件冲突会在写入前报告并保留已有文件；但 submodule 注册或检出失败可能发生在仓库已变更之后。遇到失败先检查 `.gitmodules`、gitlink 和工作区状态，再按报错处理；不要假设重跑 `install` 会重新初始化。对已注册项目，`install` 只检查现状，不会重建文件或升级 Kit。`prepare` 只准备已固定版本，也不会补做 `init`。
+成熟项目先评估自身配置、脚本和 adapter。`install --check` 是只读预检：有待创建的注册项或文件、或发现冲突时以非零状态退出；它不会替你解决冲突。若传入 `--optional`，检查会展示拟采用的类别设置，但不写配置、不生成投影，也不启动可选组件安装。首次 `install` 要求干净仓库。文件冲突会在写入前报告并保留已有文件；但 submodule 注册或检出失败可能发生在仓库已变更之后。遇到失败先检查 `.gitmodules`、gitlink 和工作区状态，再按报错处理；不要假设重跑 `install` 会重新初始化。对已注册项目，不带 `--optional` 的 `install` 只检查 Kit 与 skill 投影现状，不会重建文件或升级 Kit；显式传入 `--optional` 会应用类别设置、同步对应投影，并对选中的可选组件执行安装或复用。也可用 `optional configure --check --optional <group>=on|off` 只读预览已初始化项目的类别调整。`prepare` 只准备已固定版本，也不会补做 `init`。
 
 首次 `install` 或对尚未初始化 Kit 的项目首次运行 `init`，会保护已有项目指令与 skill 投影：发现 `AGENTS.md`、`CLAUDE.md` 文件，或 `.agents/skills/`、`.claude/skills/` 目标路径已存在（包括空目录）时，会在初始化写入前拒绝并保留这些内容。已有治理规范或既有 bootstrap/adapter bridge 由项目自行维护；Kit 不会自动搬迁、合并或覆盖它们，也无需删除既有规范来强装。先人工比较来源并决定是否迁移，再选择项目自己的接入方式。
 

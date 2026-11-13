@@ -5,10 +5,8 @@ import {
 
 export const GOAL_PROGRESS_UPDATE_MANIFEST_MAX_BYTES = 16 * 1024;
 export const GOAL_PROGRESS_MACOS_UPDATE_ASSET = "codex-task-progress-macos-arm64.zip";
-export const GOAL_PROGRESS_UPDATE_MANIFEST_URL =
-  "https://github.com/Dawn-Inator/codex-task-progress/releases/latest/download/update-manifest.json";
-const GOAL_PROGRESS_RELEASE_DOWNLOAD_PREFIX =
-  "https://github.com/Dawn-Inator/codex-task-progress/releases/download";
+// Kit has no published component asset channel. Configure one explicitly before enabling updates.
+export const GOAL_PROGRESS_UPDATE_MANIFEST_URL = "";
 
 export interface GoalProgressUpdateManifest {
   readonly schemaVersion: 1;
@@ -60,9 +58,5 @@ export function goalProgressVersionedUpdateUrls(version: string): {
   if (!isGoalProgressUpdateVersion(version)) {
     throw new Error("GOAL_PROGRESS_UPDATE_MANIFEST_INVALID");
   }
-  const base = `${GOAL_PROGRESS_RELEASE_DOWNLOAD_PREFIX}/v${version}`;
-  return {
-    zip: `${base}/${GOAL_PROGRESS_MACOS_UPDATE_ASSET}`,
-    sha256Sums: `${base}/SHA256SUMS`,
-  };
+  throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
 }

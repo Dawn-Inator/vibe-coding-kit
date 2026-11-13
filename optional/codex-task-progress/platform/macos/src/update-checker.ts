@@ -71,6 +71,8 @@ async function readBoundedBody(response: Response): Promise<Uint8Array> {
 export async function checkGoalProgressUpdateManifest(
   options: CheckGoalProgressUpdateOptions = {},
 ): Promise<GoalProgressUpdateManifest> {
+  if (!GOAL_PROGRESS_UPDATE_MANIFEST_URL)
+    throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const controller = new AbortController();
   const timeout = setTimeout(

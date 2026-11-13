@@ -30,6 +30,7 @@ import {
   renderUninstallGoalProgressCommand,
 } from "../platform/macos/src/release.js";
 import { generateThirdPartyNotices } from "./generate_third_party_notices.js";
+import { kitRoot } from "./kit_root.mjs";
 
 const require = createRequire(import.meta.url);
 const { inject } = require("postject") as {
@@ -245,6 +246,8 @@ async function main(): Promise<void> {
   const cliEntryPath = resolve(root, "platform/macos/src/cli.ts");
   await build({
     absWorkingDir: root,
+    alias: { "vibe-coding-kit": kitRoot },
+    nodePaths: [resolve(root, "node_modules")],
     bundle: true,
     format: "cjs",
     legalComments: "none",
