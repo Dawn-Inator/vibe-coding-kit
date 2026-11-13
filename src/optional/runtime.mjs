@@ -63,6 +63,26 @@ function componentDirectory(kitRoot, component) {
   return path;
 }
 
+function supportsDeclaredPlatform(component, platform, arch) {
+  if (component?.platforms === undefined) return true;
+  if (!Array.isArray(component.platforms) || !component.platforms.every((value) => typeof value === 'string')) {
+    throw new Error('invalid optional component platforms metadata');
+  }
+  return component.platforms.includes('*') || component.platforms.includes(platform) || component.platforms.includes(`${platform}-${arch}`);
+}
+
+function componentInstallerPath(kitRoot, component) {
+  const script = component.installation?.script ?? `optional/${component.id}/scripts/install-from-kit.mjs`;
+  if (typeof script !== 'string' || !script || isAbsolute(script) || script.includes('\\') || script.split('/').some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('invalid optional component installer script path');
+  }
+  const root = resolve(kitRoot);
+  const path = resolve(root, script);
+  if (!inside(root, path)) throw new Error('optional component installer escapes kit root');
+  if (existsSync(path) && !inside(realpathSync(root), realpathSync(path))) throw new Error('optional component installer escapes kit root');
+  return path;
+}
+
 function result(status, message, details = {}) {
   return { status, ...(message ? { message } : {}), ...details };
 }
@@ -208,8 +228,10 @@ export async function inspectOptionalComponent(options) {
   try {
     const { kitRoot, component } = options ?? {};
     if (!kitRoot) throw new Error('kitRoot is required');
+    const platform = options.platform ?? process.platform, arch = options.arch ?? process.arch;
+    if (!supportsDeclaredPlatform(component, platform, arch)) return result('unsupported', `This component does not support ${platform}-${arch}.`);
     const directory = componentDirectory(kitRoot, component);
-    const context = contextFor(options, component, directory);
+    const context = contextFor({ ...options, platform, arch }, component, directory);
     return component.id === 'codex-task-progress'
       ? await inspectTaskProgress(context)
       : await inspectRegularComponent(component, context);
@@ -267,10 +289,10 @@ function npxArgs(args, mode) {
 
 async function installTaskProgress(component, context) {
   if (context.platform !== 'darwin' || context.arch !== 'arm64') return result('unsupported', 'Codex Task Progress installation supports macOS arm64 only.');
+  const helper = componentInstallerPath(context.kitRoot, component);
   const existing = await inspectTaskProgress(context);
   if (existing.status === 'installed') return existing;
   if (existing.status === 'error') return existing;
-  const helper = join(componentDirectory(context.kitRoot, component), 'scripts', 'install-from-kit.mjs');
   if (!existsSync(helper) || !statSync(helper).isFile()) return result('setup-required', 'The bundled Codex Task Progress installer is unavailable in this Kit checkout.');
   const installed = await context.runner('node', [helper], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 10 * 60_000 });
   if (!installed || !Number.isInteger(installed.code)) return result('error', 'Codex Task Progress installer returned an invalid runner response.');
@@ -290,8 +312,10 @@ export async function installOptionalComponent(options) {
   try {
     const { kitRoot, component } = options ?? {};
     if (!kitRoot) throw new Error('kitRoot is required');
+    const platform = options.platform ?? process.platform, arch = options.arch ?? process.arch;
+    if (!supportsDeclaredPlatform(component, platform, arch)) return result('unsupported', `This component does not support ${platform}-${arch}.`);
     const directory = componentDirectory(kitRoot, component);
-    const context = contextFor({ ...options, kitRoot }, component, directory);
+    const context = contextFor({ ...options, kitRoot, platform, arch }, component, directory);
     if (component.id === 'codex-task-progress') return await installTaskProgress(component, context);
     if (component.id === 'lark') return await installLark(component, context);
     if (component.id === 'hyperframes') return await installHyperframes(component, context);

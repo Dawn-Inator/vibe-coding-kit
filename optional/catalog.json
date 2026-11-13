@@ -48,7 +48,18 @@
           "command": "curl --version",
           "description": "curl is required to call the Alibaba Cloud AgentExplorer HTTP API."
         }
-      ]
+      ],
+      "platforms": [
+        "*"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent"
+      }
     },
     "lark": {
       "type": "skills",
@@ -105,7 +116,18 @@
           "command": "lark-cli --version",
           "description": "Lark CLI is required by the Lark skills."
         }
-      ]
+      ],
+      "platforms": [
+        "*"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent"
+      }
     },
     "hyperframes": {
       "type": "skills",
@@ -160,7 +182,18 @@
           "command": "ffmpeg -version",
           "description": "FFmpeg is required for local video rendering."
         }
-      ]
+      ],
+      "platforms": [
+        "*"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent"
+      }
     },
     "presentations": {
       "type": "skills",
@@ -178,7 +211,18 @@
         "license": "not-stated-in-imported-files",
         "notes": "Kit-authored synthesis referencing these upstream projects; no license assertion. This skill covers browser-based HTML presentations."
       },
-      "requirements": []
+      "requirements": [],
+      "platforms": [
+        "*"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent"
+      }
     },
     "codex-task-progress": {
       "type": "plugin",
@@ -192,7 +236,19 @@
         "license": "MIT",
         "notes": "Optional Codex plugin; native plugin skills are loaded through the plugin manifest."
       },
-      "requirements": []
+      "requirements": [],
+      "platforms": [
+        "darwin-arm64"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent",
+        "script": "optional/codex-task-progress/scripts/install-from-kit.mjs"
+      }
     }
   }
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { inspectOptionalComponent, installOptionalComponent } from '../../src/optional/runtime.mjs';
 
@@ -15,6 +16,12 @@ function fixture(t, id = 'lark') {
 
 function response(code, stdout = '', stderr = '') { return { code, stdout, stderr }; }
 
+const realKitRoot = fileURLToPath(new URL('../..', import.meta.url));
+function realComponent(id) {
+  const catalog = JSON.parse(readFileSync(new URL('../../optional/catalog.json', import.meta.url), 'utf8'));
+  return { id, ...catalog.components[id] };
+}
+
 test('installed lark-cli is detected and reused without installation', async (t) => {
   const f = fixture(t), calls = [];
   const runner = async (command, args, options) => { calls.push({ command, args, options }); return response(0, 'lark-cli v1.2.3\n'); };
@@ -24,10 +31,10 @@ test('installed lark-cli is detected and reused without installation', async (t)
 });
 
 test('unsupported platform returns without probing or installing', async (t) => {
-  const f = fixture(t, 'codex-task-progress'); let calls = 0;
+  const component = realComponent('codex-task-progress'); let calls = 0;
   const runner = async () => { calls += 1; return response(0); };
-  assert.equal((await inspectOptionalComponent({ ...f, platform: 'linux', arch: 'x64', runner })).status, 'unsupported');
-  assert.equal((await installOptionalComponent({ ...f, platform: 'linux', arch: 'x64', runner })).status, 'unsupported');
+  assert.equal((await inspectOptionalComponent({ kitRoot: realKitRoot, component, platform: 'darwin', arch: 'x64', runner })).status, 'unsupported');
+  assert.equal((await installOptionalComponent({ kitRoot: realKitRoot, component, platform: 'linux', arch: 'arm64', runner })).status, 'unsupported');
   assert.equal(calls, 0);
 });
 
@@ -135,19 +142,20 @@ test('registered Task Progress plugin is reused at any version', async (t) => {
 });
 
 test('Task Progress installer restart-required JSON becomes setup-required without restarting Codex', async (t) => {
-  const f = fixture(t, 'codex-task-progress');
-  mkdirSync(join(f.kitRoot, 'optional', f.component.id, 'scripts'), { recursive: true });
-  writeFileSync(join(f.kitRoot, 'optional', f.component.id, 'scripts', 'install-from-kit.mjs'), 'fixture');
-  const calls = [];
+  const component = realComponent('codex-task-progress'), calls = [];
+  const home = mkdtempSync(join(tmpdir(), 'kit-optional-plugin-home-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   const runner = async (command, args) => {
     calls.push([command, args]);
     if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
     if (command === 'node') return response(1, JSON.stringify({ status: 'setup-required', reason: 'Installation is pending a Codex restart.' }));
     return response(1);
   };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  const result = await installOptionalComponent({ kitRoot: realKitRoot, component, env: { HOME: home }, platform: 'darwin', arch: 'arm64', runner });
   assert.equal(result.status, 'setup-required');
   assert.match(result.message, /Installation is pending a Codex restart/);
+  assert.equal(calls[1][0], 'node');
+  assert.equal(calls[1][1][0], join(realKitRoot, component.installation.script));
   assert.equal(calls.some(([command, args]) => command === 'codex' && args.join(' ').includes('restart')), false);
 });
 
@@ -155,5 +163,22 @@ test('component path traversal is rejected before runner invocation', async (t) 
   const f = fixture(t); let calls = 0;
   const runner = async () => { calls += 1; return response(0); };
   assert.equal((await inspectOptionalComponent({ ...f, component: { ...f.component, path: '../escape' }, runner })).status, 'error');
+  assert.equal(calls, 0);
+});
+
+test('catalog installer path traversal is rejected before plugin detection runs', async () => {
+  const component = realComponent('codex-task-progress');
+  component.installation.script = '../../outside.mjs';
+  let calls = 0;
+  const result = await installOptionalComponent({
+    kitRoot: realKitRoot,
+    component,
+    env: { HOME: '/tmp/optional-runtime-test-home' },
+    platform: 'darwin',
+    arch: 'arm64',
+    runner: async () => { calls += 1; return response(0); },
+  });
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /installer script path/);
   assert.equal(calls, 0);
 });

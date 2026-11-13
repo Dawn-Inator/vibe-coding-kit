@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
+import { inspectOptionalComponent, installOptionalComponent } from '../../src/optional/runtime.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const optionalRoot = join(root, 'optional');
@@ -85,6 +86,24 @@ test('catalog memberships point at complete staged content and retain factual pr
     const component = catalog.components[id];
     assert.match(component.provenance.stagedTreeSha256, /^[a-f0-9]{64}$/);
     assert.equal(component.provenance.stagedTreeSha256, treeHash(join(root, component.path)), `${id} provenance hash`);
+  }
+});
+
+test('catalog provides platform, detection, and installation metadata for the optional installer', () => {
+  for (const [id, component] of Object.entries(catalog.components)) {
+    assert.deepEqual(component.platforms, id === 'codex-task-progress' ? ['darwin-arm64'] : ['*'], `${id} supported platforms`);
+    assert.deepEqual(component.detection, { entry: 'src/optional/runtime.mjs', export: 'inspectOptionalComponent' });
+    assert.ok(existsSync(join(root, component.detection.entry)), `${id} detection entry exists`);
+    assert.equal(typeof inspectOptionalComponent, 'function', `${id} detection export exists`);
+    assert.equal(component.installation.entry, 'src/optional/runtime.mjs');
+    assert.equal(component.installation.export, 'installOptionalComponent');
+    assert.ok(existsSync(join(root, component.installation.entry)), `${id} installation entry exists`);
+    assert.equal(typeof installOptionalComponent, 'function', `${id} installation export exists`);
+  }
+  assert.equal(catalog.components['codex-task-progress'].installation.script, 'optional/codex-task-progress/scripts/install-from-kit.mjs');
+  assert.ok(existsSync(join(root, catalog.components['codex-task-progress'].installation.script)));
+  for (const id of ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']) {
+    assert.equal(catalog.components[id].installation.script, undefined, `${id} uses the runtime without a plugin installer script`);
   }
 });
 
