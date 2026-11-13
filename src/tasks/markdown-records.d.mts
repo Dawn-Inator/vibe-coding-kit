@@ -1,3 +1,8 @@
+/** Return the identity of a strictly validated managed record, or null if absent. */
+export function inspectMarkdownRecordsIdentity(
+ path: string,
+ options: { kind: string },
+): Promise<string | null>;
 export function readMarkdownRecords(
 	path: string,
 	options: { kind: string; identity: string },

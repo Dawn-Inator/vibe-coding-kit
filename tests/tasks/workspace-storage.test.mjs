@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { createTaskProgressSchemas } from '../../src/tasks/task-contract.mjs';
 import { TaskStore, TaskStoreError, taskMarkdownPaths } from '../../src/tasks/task-store.mjs';
 import { WorkspaceTaskStorage } from '../../src/tasks/workspace-storage.mjs';
+import { writeMarkdownRecords } from '../../src/tasks/markdown-records.mjs';
 
 const schemas = createTaskProgressSchemas(z);
 const roots = [];
@@ -149,4 +150,73 @@ test('concurrent same-thread resolution is idempotent and validates resolver roo
   assert.strictEqual(a, b);
   const invalid = manager(app, async () => ({ source: 'untrusted', contract: { schemaVersion: 2, mode: 'workspace', cwd, workspaceRoot: cwd, storageRoot: app, cacheRoot: app } }));
   await assert.rejects(invalid.forThread('other', cwd), hasCode('TASK_STORAGE_CONTRACT_INVALID'));
+});
+
+test('recovery detects completed ordinary history and legacy events without writing', async () => {
+  const { root, app } = await setup();
+  const store = new TaskStore(app, { schemas });
+  await initialize(store, 'completed');
+  await store.update('completed', { requestId: 'done', expectedRevision: 1, reason: 'Finished', changes: [{ targetId: 'A', status: 'completed', evidence: [{ summary: 'Verified', verification: 'verified' }] }] });
+  const paths = store.paths('completed');
+  const before = await readFile(paths.history, 'utf8');
+  const heartbeat = await readFile(paths.heartbeat, 'utf8');
+  assert.equal(await manager(app).hasRecoverableTasks(), true);
+  assert.equal(await readFile(paths.history, 'utf8'), before);
+  assert.equal(await readFile(paths.heartbeat, 'utf8'), heartbeat);
+  await assert.rejects(stat(resolve(root, 'project/.workspace')), { code: 'ENOENT' });
+  const events = (await store.load('completed', { persist: false })).events;
+  await rm(paths.history); await rm(paths.heartbeat);
+  await writeFile(paths.legacyEvents, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
+  assert.equal(await manager(app).hasRecoverableTasks(), true);
+  await assert.rejects(stat(paths.history), { code: 'ENOENT' });
+  await assert.rejects(stat(paths.heartbeat), { code: 'ENOENT' });
+});
+
+test('recovery follows valid routes and legacy indexes, rejecting corrupt and unrelated paths', async () => {
+  const { cwd, next, app } = await setup();
+  const router = manager(app);
+  assert.equal(await router.hasRecoverableTasks(), false);
+  const context = await router.forThread('routed', cwd);
+  assert.equal(await router.hasRecoverableTasks(), false);
+  await context.ensureWritable();
+  await initialize(context.taskStore, 'routed');
+  assert.equal(await manager(app).hasRecoverableTasks(), true);
+  const routePath = resolve(app, 'task-routing/taskhistory.md');
+  const route = await readFile(routePath, 'utf8');
+  await writeFile(routePath, route.replace(context.storage.root, resolve(next, '.workspace/codex-task-progress')));
+  assert.equal(await manager(app).hasRecoverableTasks(), false);
+  await writeFile(routePath, 'corrupt');
+  const indexPath = resolve(app, 'workspace-storage-index.json');
+  const entry = { threadId: 'routed', cwd: context.storage.cwd, root: context.storage.root };
+  await writeFile(indexPath, JSON.stringify({ schemaVersion: 1, entries: { [digest('routed')]: entry } }));
+  const indexBefore = await readFile(indexPath, 'utf8');
+  assert.equal(await manager(app).hasRecoverableTasks(), true);
+  assert.equal(await readFile(indexPath, 'utf8'), indexBefore);
+  entry.root = resolve(next, '.workspace/codex-task-progress');
+  await writeFile(indexPath, JSON.stringify({ schemaVersion: 1, entries: { [digest('routed')]: entry } }));
+  assert.equal(await manager(app).hasRecoverableTasks(), false);
+});
+
+
+test('recovery accepts a source association but rejects corrupt task records', async () => {
+  const { app } = await setup();
+  const paths = taskMarkdownPaths(app, 'source-only');
+  await mkdir(paths.directory, { recursive: true });
+  await writeMarkdownRecords(paths.history, { kind: 'task-progress', identity: 'source-only', records: [{ type: 'source-binding', binding: { path: '/trusted/source', origin: 'explicit' } }] });
+  assert.equal(await manager(app).hasRecoverableTasks(), true);
+  await writeMarkdownRecords(paths.history, { kind: 'task-progress', identity: 'source-only', records: [{ type: 'source-binding', binding: { path: 'relative', origin: 'explicit' } }] });
+  assert.equal(await manager(app).hasRecoverableTasks(), false);
+});
+
+
+test('recovery rejects mismatched app directory hashes and duplicate managed payloads', async () => {
+  const { app } = await setup();
+  const paths = taskMarkdownPaths(app, 'directory-id');
+  await mkdir(paths.directory, { recursive: true });
+  await writeMarkdownRecords(paths.history, { kind: 'task-progress', identity: 'different-id', records: [{ type: 'source-binding', binding: { path: '/source', origin: 'explicit' } }] });
+  assert.equal(await manager(app).hasRecoverableTasks(), false);
+  await writeMarkdownRecords(paths.history, { kind: 'task-progress', identity: 'directory-id', records: [{ type: 'source-binding', binding: { path: '/source', origin: 'explicit' } }] });
+  const valid = await readFile(paths.history, 'utf8');
+  await writeFile(paths.history, `${valid}\n${valid}`);
+  assert.equal(await manager(app).hasRecoverableTasks(), false);
 });

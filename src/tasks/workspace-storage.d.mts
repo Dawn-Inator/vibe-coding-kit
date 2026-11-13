@@ -31,6 +31,7 @@ export interface WorkspaceTaskStorageContext {
 /** Kit-owned workspace route and import/migration adapter. */
 export class WorkspaceTaskStorage {
 	constructor(legacyAppRoot: string, options: WorkspaceTaskStorageOptions);
+	hasRecoverableTasks(): Promise<boolean>;
 	forThread(threadId: string, cwd: string): Promise<WorkspaceTaskStorageContext>;
 	close(): void;
 }

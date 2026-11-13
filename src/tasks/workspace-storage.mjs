@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { atomicCreateFile, ensurePrivateDirectory } from './task-io.mjs';
-import { readMarkdownRecords, withMarkdownLock, writeMarkdownRecords } from './markdown-records.mjs';
+import { inspectMarkdownRecordsIdentity, readMarkdownRecords, withMarkdownLock, writeMarkdownRecords } from './markdown-records.mjs';
 import { TaskStore, TaskStoreError, taskMarkdownPaths } from './task-store.mjs';
 import { resolveTaskProgressStorage } from '../contracts/task-progress-storage.mjs';
 
@@ -94,6 +94,73 @@ export class WorkspaceTaskStorage {
       root: resolve(canonicalCwd, '.workspace/codex-task-progress'),
       source: 'legacy-index',
     };
+  }
+
+  // Observe only known task directories. Never resolve a chat context here: doing so
+  // acquires a lock and can migrate records or create project directories.
+  async #hasTask(root, threadId) {
+    try {
+      const paths = taskMarkdownPaths(root, threadId);
+      const canonicalRoot = await realpath(root);
+      if (await realpath(paths.directory) !== resolve(canonicalRoot, 'tasks/v3', digest(threadId))) return false;
+      for (const path of [paths.history, paths.heartbeat, paths.legacyEvents]) {
+        try { if (await realpath(path) !== resolve(canonicalRoot, 'tasks/v3', digest(threadId), basename(path))) return false; }
+        catch (error) { if (!missing(error)) return false; }
+      }
+      const loaded = await new TaskStore(root, { schemas: this.#schemas }).load(threadId, { persist: false });
+      return loaded.events.length > 0 || loaded.records.some((r) => r.type === 'source-binding' && r.binding !== null);
+    } catch { return false; }
+  }
+
+  async #legacyThreadIds() {
+    const base = resolve(this.#legacyRoot, 'tasks/v3');
+    let entries;
+    try { entries = await readdir(base, { withFileTypes: true }); } catch { return []; }
+    const ids = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
+      const dir = resolve(base, entry.name);
+      try {
+        // The authoritative parser and TaskStore validate the candidate below. This
+        // preliminary read only discovers the identity hidden by the directory hash.
+        const idFromMarkdown = await inspectMarkdownRecordsIdentity(resolve(dir, 'taskhistory.md'), { kind: 'task-progress' });
+        let id = idFromMarkdown;
+        if (id === null) {
+          const legacy = await optionalText(resolve(dir, 'events.jsonl'));
+          if (legacy) id = JSON.parse(legacy.split('\n')[0])?.threadId;
+        }
+        if (typeof id === 'string' && id.trim() && id.length <= 512 && digest(id) === entry.name) ids.push(id);
+      } catch { /* Corrupt or incomplete candidates are not evidence. */ }
+    }
+    return ids;
+  }
+
+  /** Read-only recovery eligibility for ordinary task and source-association history. */
+  async hasRecoverableTasks() {
+    if (this.#closed) throw new TaskStoreError('TASK_STORAGE_CLOSED', 'Workspace storage is closed');
+    for (const id of await this.#legacyThreadIds()) if (await this.#hasTask(this.#legacyRoot, id)) return true;
+    let routes;
+    try { routes = await this.#routes(); } catch { routes = new Map(); }
+    for (const route of routes.values()) {
+      try {
+        if (await realpath(route.cwd) !== route.cwd || await realpath(route.root) !== route.root) continue;
+        if (await this.#hasTask(route.root, route.threadId)) return true;
+      } catch { /* Missing or untrusted workspace is not evidence. */ }
+    }
+    try {
+      const text = await optionalText(resolve(this.#legacyRoot, 'workspace-storage-index.json'));
+      if (text === null) return false;
+      const index = JSON.parse(text);
+      if (index?.schemaVersion !== 1 || !index.entries || typeof index.entries !== 'object' || Array.isArray(index.entries)) return false;
+      for (const [key, entry] of Object.entries(index.entries)) {
+        if (typeof entry?.threadId !== 'string' || !entry.threadId.trim() || entry.threadId.length > 512 || digest(entry.threadId) !== key) continue;
+        try {
+          const route = await this.#legacyRoute(entry.threadId);
+          if (route && await realpath(route.root) === route.root && await this.#hasTask(route.root, route.threadId)) return true;
+        } catch { /* Invalid index entries cannot supply evidence. */ }
+      }
+    } catch { /* Missing or corrupt index is not evidence. */ }
+    return false;
   }
 
   async #saveRoute(route) {

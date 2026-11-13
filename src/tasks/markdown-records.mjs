@@ -13,12 +13,12 @@ export async function withMarkdownLock(key, work) {
 		if (queues.get(key) === result) queues.delete(key);
 	}
 }
-export async function readMarkdownRecords(path, { kind, identity }) {
+async function readManagedRecords(path, kind) {
 	let text;
 	try {
 		text = await readFile(path, "utf8");
 	} catch (error) {
-		if (error?.code === "ENOENT") return { exists: false, records: [] };
+		if (error?.code === "ENOENT") return null;
 		throw error;
 	}
 	const matches = [
@@ -36,7 +36,7 @@ export async function readMarkdownRecords(path, { kind, identity }) {
 		!payload ||
 		payload.schemaVersion !== 1 ||
 		payload.kind !== kind ||
-		payload.identity !== identity ||
+		(typeof payload.identity !== "string" || !payload.identity.trim()) ||
 		!Array.isArray(payload.records) ||
 		Object.keys(payload).some(
 			(k) => !["schemaVersion", "kind", "identity", "records"].includes(k),
@@ -45,6 +45,17 @@ export async function readMarkdownRecords(path, { kind, identity }) {
 		throw new Error(
 			`Invalid Markdown records identity, kind or version: ${path}`,
 		);
+	return payload;
+}
+/** Inspect the identity of a strictly validated managed record, without writing. */
+export async function inspectMarkdownRecordsIdentity(path, { kind }) {
+	return (await readManagedRecords(path, kind))?.identity ?? null;
+}
+export async function readMarkdownRecords(path, { kind, identity }) {
+	const payload = await readManagedRecords(path, kind);
+	if (!payload) return { exists: false, records: [] };
+	if (payload.identity !== identity)
+		throw new Error(`Invalid Markdown records identity, kind or version: ${path}`);
 	return { exists: true, records: payload.records };
 }
 export async function writeMarkdownRecords(path, { kind, identity, records }) {
