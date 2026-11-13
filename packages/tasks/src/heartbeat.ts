@@ -450,7 +450,11 @@ export class HeartbeatService {
       });
       const source = report.source;
       const sourcePair = source
-        ? (await loadPairFilesApi()).readHeartbeatLedgerPair({ root, path: source.path })
+        ? (await loadPairFilesApi()).readHeartbeatLedgerPair({
+            root,
+            path: source.path,
+            maxBytes: MAX_BYTES,
+          })
         : null;
       const inventoryItems = source?.inventory.items ?? [];
       const discovery = report.discovery;
