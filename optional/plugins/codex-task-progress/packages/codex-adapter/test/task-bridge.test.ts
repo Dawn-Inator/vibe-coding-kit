@@ -1,15 +1,150 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
+import rendererBundlePolicy from "../../contracts/src/renderer-bundle-policy.json" with {
+  type: "json",
+};
 import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
 import { GOAL_PROGRESS_PAGE_HOST_VERSION } from "../src/page-host.js";
 import {
   GoalProgressRendererBridge,
   TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS,
 } from "../src/renderer-bridge.js";
-import { createGoalProgressRendererBundle } from "../src/renderer-bundle.js";
+import {
+  createGoalProgressRendererBundle,
+  GOAL_PROGRESS_RENDERER_BUNDLE_MAX_BYTES,
+} from "../src/renderer-bundle.js";
+
+test("production renderer artifact obeys the shared size policy and runtime integrity checks", async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const artifact = await readFile(resolve(root, "dist/renderer/goal-progress.js"));
+  const manifest = JSON.parse(
+    await readFile(resolve(root, "dist/renderer/goal-progress.manifest.json"), "utf8"),
+  );
+  assert.equal(
+    GOAL_PROGRESS_RENDERER_BUNDLE_MAX_BYTES,
+    rendererBundlePolicy.rendererBundleMaxBytes,
+  );
+  assert.ok(artifact.byteLength <= rendererBundlePolicy.rendererBundleMaxBytes);
+  const source = Buffer.from(artifact).toString("utf8");
+  const bundle = createGoalProgressRendererBundle(source, manifest);
+  assert.equal(bundle.source, source);
+  assert.equal(bundle.manifest.bytes, artifact.byteLength);
+  assert.equal(manifest.releaseVersion, GOAL_PROGRESS_RELEASE_VERSION);
+  assert.equal(manifest.pageHostVersion, GOAL_PROGRESS_PAGE_HOST_VERSION);
+
+  assert.throws(
+    () => createGoalProgressRendererBundle(source, { ...manifest, bytes: manifest.bytes + 1 }),
+    /GOAL_PROGRESS_RENDERER_BUNDLE_BYTES_MISMATCH/u,
+  );
+  assert.throws(
+    () => createGoalProgressRendererBundle(source, { ...manifest, sha256: "0".repeat(64) }),
+    /GOAL_PROGRESS_RENDERER_BUNDLE_SHA256_MISMATCH/u,
+  );
+  const capacitySource = "x".repeat(rendererBundlePolicy.rendererBundleMaxBytes);
+  const capacityManifest = {
+    ...manifest,
+    bytes: Buffer.byteLength(capacitySource),
+    sha256: createHash("sha256").update(capacitySource).digest("hex"),
+  };
+  assert.equal(
+    createGoalProgressRendererBundle(capacitySource, capacityManifest).manifest.bytes,
+    rendererBundlePolicy.rendererBundleMaxBytes,
+  );
+  const oversizedSource = "x".repeat(rendererBundlePolicy.rendererBundleMaxBytes + 1);
+  assert.throws(() =>
+    createGoalProgressRendererBundle(oversizedSource, {
+      ...manifest,
+      bytes: Buffer.byteLength(oversizedSource),
+      sha256: createHash("sha256").update(oversizedSource).digest("hex"),
+    }),
+  );
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "renderer-bundle-limit-"));
+  try {
+    const sourceRoot = fixtureRoot;
+    const contractsRoot = join(sourceRoot, "packages/contracts/src");
+    const adapterRoot = join(sourceRoot, "packages/codex-adapter/src");
+    await mkdir(contractsRoot, { recursive: true });
+    await mkdir(adapterRoot, { recursive: true });
+    await writeFile(
+      join(contractsRoot, "renderer-bundle-policy.json"),
+      JSON.stringify(rendererBundlePolicy),
+    );
+    await writeFile(
+      join(contractsRoot, "page-host-version.json"),
+      JSON.stringify({ pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION }),
+    );
+    await writeFile(
+      join(adapterRoot, "browser-entry.ts"),
+      `globalThis.fixture = "${"x".repeat(rendererBundlePolicy.rendererBundleMaxBytes + 4096)}";\n`,
+    );
+
+    const runtimeOutput = join(fixtureRoot, "runtime-output");
+    await mkdir(runtimeOutput, { recursive: true });
+    await writeFile(join(runtimeOutput, "sentinel.txt"), "preserve runtime output");
+    const runtimeBuild = spawnSync(
+      process.execPath,
+      [
+        resolve(root, "runtime/build-runtime.mjs"),
+        "--source",
+        sourceRoot,
+        "--output",
+        runtimeOutput,
+      ],
+      { cwd: fixtureRoot, encoding: "utf8" },
+    );
+    assert.notEqual(runtimeBuild.status, 0);
+    assert.match(
+      `${runtimeBuild.stdout}\n${runtimeBuild.stderr}`,
+      /GOAL_PROGRESS_RENDERER_BUNDLE_SIZE_INVALID/u,
+    );
+    assert.deepEqual(await readdir(runtimeOutput), ["sentinel.txt"]);
+    assert.equal(
+      await readFile(join(runtimeOutput, "sentinel.txt"), "utf8"),
+      "preserve runtime output",
+    );
+
+    const prebuiltScripts = join(fixtureRoot, "scripts");
+    await mkdir(prebuiltScripts, { recursive: true });
+    await writeFile(
+      join(fixtureRoot, "package.json"),
+      await readFile(resolve(root, "package.json")),
+    );
+    await writeFile(
+      join(prebuiltScripts, "build_renderer_bundle.mjs"),
+      await readFile(resolve(root, "scripts/build_renderer_bundle.mjs")),
+    );
+    await symlink(resolve(root, "node_modules"), join(fixtureRoot, "node_modules"), "dir");
+    const prebuiltOutput = join(fixtureRoot, "dist/renderer");
+    await mkdir(prebuiltOutput, { recursive: true });
+    await writeFile(join(prebuiltOutput, "sentinel.txt"), "preserve prebuilt output");
+    const prebuiltBuild = spawnSync(
+      process.execPath,
+      [join(prebuiltScripts, "build_renderer_bundle.mjs")],
+      { cwd: fixtureRoot, encoding: "utf8" },
+    );
+    assert.notEqual(prebuiltBuild.status, 0);
+    assert.match(
+      `${prebuiltBuild.stdout}\n${prebuiltBuild.stderr}`,
+      /GOAL_PROGRESS_RENDERER_BUNDLE_SIZE_INVALID/u,
+    );
+    assert.deepEqual(await readdir(prebuiltOutput), ["sentinel.txt"]);
+    assert.equal(
+      await readFile(join(prebuiltOutput, "sentinel.txt"), "utf8"),
+      "preserve prebuilt output",
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
 
 test("task binding forwards only the live visible chat and resolves replies in the originating context", async () => {
   const listeners = new Map<string, (params: unknown) => void>();

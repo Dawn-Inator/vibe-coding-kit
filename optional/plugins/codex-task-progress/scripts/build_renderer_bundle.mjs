@@ -12,14 +12,19 @@ const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "ut
 const pageHostVersionManifest = JSON.parse(
   await readFile(resolve(root, "packages/contracts/src/page-host-version.json"), "utf8"),
 );
+const rendererBundlePolicy = JSON.parse(
+  await readFile(resolve(root, "packages/contracts/src/renderer-bundle-policy.json"), "utf8"),
+);
+const maxBundleBytes = rendererBundlePolicy.rendererBundleMaxBytes;
+if (!Number.isSafeInteger(maxBundleBytes) || maxBundleBytes < 1) {
+  throw new Error("GOAL_PROGRESS_RENDERER_BUNDLE_POLICY_INVALID");
+}
 const pageHostVersion = pageHostVersionManifest.pageHostVersion;
 if (!Number.isSafeInteger(pageHostVersion) || pageHostVersion < 1) {
   throw new Error("GOAL_PROGRESS_PAGE_HOST_VERSION_INVALID");
 }
 
-await rm(outputDirectory, { recursive: true, force: true });
-await mkdir(outputDirectory, { recursive: true });
-await build({
+const result = await build({
   absWorkingDir: root,
   bundle: true,
   charset: "utf8",
@@ -30,9 +35,16 @@ await build({
   outfile: bundlePath,
   platform: "browser",
   target: "chrome120",
+  write: false,
 });
 
-const bundle = await readFile(bundlePath);
+const bundle = result.outputFiles[0]?.contents;
+if (!bundle || bundle.byteLength === 0 || bundle.byteLength > maxBundleBytes) {
+  throw new Error(`GOAL_PROGRESS_RENDERER_BUNDLE_SIZE_INVALID: ${bundle?.byteLength ?? 0}`);
+}
+await rm(outputDirectory, { recursive: true, force: true });
+await mkdir(outputDirectory, { recursive: true });
+await writeFile(bundlePath, bundle);
 const manifest = {
   schemaVersion: 1,
   releaseVersion: packageJson.version,

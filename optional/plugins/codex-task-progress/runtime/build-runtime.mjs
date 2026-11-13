@@ -27,9 +27,34 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(releaseVer
 const pageHostVersionDocument = JSON.parse(
   await readFile(resolve(sourceRoot, "packages/contracts/src/page-host-version.json"), "utf8"),
 );
+const rendererBundlePolicy = JSON.parse(
+  await readFile(resolve(sourceRoot, "packages/contracts/src/renderer-bundle-policy.json"), "utf8"),
+);
+const maxRendererBundleBytes = rendererBundlePolicy.rendererBundleMaxBytes;
+if (!Number.isSafeInteger(maxRendererBundleBytes) || maxRendererBundleBytes < 1) {
+  throw new Error("GOAL_PROGRESS_RENDERER_BUNDLE_POLICY_INVALID");
+}
 const pageHostVersion = pageHostVersionDocument.pageHostVersion;
 if (!Number.isSafeInteger(pageHostVersion) || pageHostVersion < 1) {
   throw new Error("GOAL_PROGRESS_SOURCE_BUILD_PAGE_HOST_VERSION_INVALID");
+}
+
+const rendererBuild = await build({
+  absWorkingDir: sourceRoot,
+  bundle: true,
+  charset: "utf8",
+  entryPoints: ["packages/codex-adapter/src/browser-entry.ts"],
+  format: "iife",
+  legalComments: "none",
+  minify: true,
+  outfile: resolve(outputRoot, "renderer/goal-progress.js"),
+  platform: "browser",
+  target: "chrome120",
+  write: false,
+});
+const renderer = rendererBuild.outputFiles[0]?.contents;
+if (!renderer || renderer.byteLength === 0 || renderer.byteLength > maxRendererBundleBytes) {
+  throw new Error(`GOAL_PROGRESS_RENDERER_BUNDLE_SIZE_INVALID: ${renderer?.byteLength ?? 0}`);
 }
 
 await rm(outputRoot, { recursive: true, force: true });
@@ -68,19 +93,7 @@ await build({
 });
 
 const rendererPath = resolve(outputRoot, "renderer/goal-progress.js");
-await build({
-  absWorkingDir: sourceRoot,
-  bundle: true,
-  charset: "utf8",
-  entryPoints: ["packages/codex-adapter/src/browser-entry.ts"],
-  format: "iife",
-  legalComments: "none",
-  minify: true,
-  outfile: rendererPath,
-  platform: "browser",
-  target: "chrome120",
-});
-const renderer = await readFile(rendererPath);
+await writeFile(rendererPath, renderer);
 const rendererManifest = {
   schemaVersion: 1,
   releaseVersion,

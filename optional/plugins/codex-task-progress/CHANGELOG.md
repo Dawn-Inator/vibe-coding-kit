@@ -1,3 +1,9 @@
+# Task Progress 0.5.2
+
+- Share the renderer bundle size budget between runtime validation and both build paths.
+- Reject an oversized production bundle during build and test real generated artifacts through the runtime validator.
+- Restore mounting of the capsule bundle, which exceeded the previous 200,000-byte runtime limit.
+
 # Task Progress 0.5.1
 
 - Recognize ordinary task and source-association history through Kit's read-only recovery API, including completed and legacy records.
