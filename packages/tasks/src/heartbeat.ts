@@ -879,65 +879,69 @@ export class HeartbeatService {
     const limit = options.limit ?? 5;
     if (!Number.isInteger(limit) || limit < 1 || limit > 10)
       throw new Error("Heartbeat history limit must be 1–10.");
-    const root = await this.#project(cwd);
-    const config = await this.#config(root);
-    const { readProjectHeartbeat } = await loadProjectHeartbeatApi();
-    const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
-    const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
-    const cadence = config.heartbeat?.cadenceMinutes;
-    const report = await readProjectHeartbeat({
-      root,
-      ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
-      now: this.#now(),
-      ...(maxFiles === undefined ? {} : { maxFiles }),
-      ...(maxDepth === undefined ? {} : { maxDepth }),
-      ...(typeof cadence === "number" && Number.isFinite(cadence) && cadence > 0
-        ? { intervalMinutes: cadence }
-        : {}),
+    const sourcePath = view.sourcePath;
+    const failure = (
+      error: string,
+      contentHash = view.contentHash,
+      historyPath = view.historyPath,
+    ): HeartbeatHistoryPage => ({
+      wakes: [],
+      nextCursor: null,
+      total: 0,
+      sourcePath,
+      ...(historyPath ? { historyPath } : {}),
+      ...(contentHash ? { contentHash } : {}),
+      error: shortened(error, 2_000),
     });
-    const source = report.source;
-    if (!source || source.path !== view.sourcePath)
-      return { wakes: [], nextCursor: null, total: 0, sourcePath: view.sourcePath };
-    const pairApi = await loadPairFilesApi();
-    const pair = pairApi.readHeartbeatLedgerPair({ root, path: source.path });
-    if (pair.contentHash !== source.contentHash)
-      return {
-        wakes: [],
-        nextCursor: null,
-        total: 0,
-        sourcePath: source.path,
-        historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
-        contentHash: pair.contentHash,
-        error:
+    try {
+      const root = await this.#project(cwd);
+      const canonicalSource = await realpath(sourcePath);
+      if (!within(root, canonicalSource) || canonicalSource !== sourcePath)
+        return failure("Project heartbeat source changed outside its verified project path.");
+      if (!view.contentHash)
+        return failure("Project heartbeat source has no verified content hash.");
+      const config = await this.#config(root);
+      const pairApi = await loadPairFilesApi();
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: canonicalSource });
+      const historyPath = pair.isLegacy ? pair.headPath : pair.historyPath;
+      if (pair.contentHash !== view.contentHash)
+        return failure(
           "Heartbeat ledger changed while reading history; refresh before using its audit history.",
+          pair.contentHash,
+          historyPath,
+        );
+      const inspect = await this.#inspector(root, config);
+      const history = pairApi.inspectHeartbeatLedgerPair(pair, {
+        mode: "history",
+        latest: false,
+        ledgerPath: canonicalSource,
+        now: this.#now(),
+        inspect,
+      });
+      if (history.mode !== "history")
+        throw new Error("Kit heartbeat inspector did not return a History report.");
+      const wakesAll = history.wakes;
+      const end = before === null ? wakesAll.length : Math.min(before, wakesAll.length);
+      const records = wakesAll.slice(Math.max(0, end - limit), end).reverse();
+      const wakes: Record<string, unknown>[] = [];
+      for (const record of records) {
+        const compact = compactWake(transportWake(record));
+        if (wakes.length && Buffer.byteLength(JSON.stringify([...wakes, compact])) > PANEL_BYTES)
+          break;
+        wakes.push(compact);
+      }
+      const remaining = end - wakes.length;
+      return {
+        wakes,
+        nextCursor: remaining > 0 ? String(remaining) : null,
+        total: history.wakeCount,
+        sourcePath: canonicalSource,
+        historyPath,
+        contentHash: pair.contentHash,
       };
-    const inspect = await this.#inspector(root, config);
-    const history = pairApi.inspectHeartbeatLedgerPair(pair, {
-      mode: "history",
-      latest: false,
-      ledgerPath: source.path,
-      now: this.#now(),
-      inspect,
-    });
-    const wakesAll = history.wakes;
-    const end = before === null ? wakesAll.length : Math.min(before, wakesAll.length);
-    const records = wakesAll.slice(Math.max(0, end - limit), end).reverse();
-    const wakes: Record<string, unknown>[] = [];
-    for (const record of records) {
-      const compact = compactWake({ ...record });
-      if (wakes.length && Buffer.byteLength(JSON.stringify([...wakes, compact])) > PANEL_BYTES)
-        break;
-      wakes.push(compact);
+    } catch (error) {
+      return failure(String(error));
     }
-    const remaining = end - wakes.length;
-    return {
-      wakes,
-      nextCursor: remaining > 0 ? String(remaining) : null,
-      total: history.wakeCount,
-      sourcePath: source.path,
-      historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
-      contentHash: pair.contentHash,
-    };
   }
 
   /** Returns the canonical Kit projection only for a fresh, successfully read source ledger. */

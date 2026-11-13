@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  appendHeartbeatWake,
+  migrateHeartbeatLedgerPair,
+  readHeartbeatLedgerPair,
+} from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
 import { HeartbeatService } from "./heartbeat.js";
 
 const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
@@ -105,6 +110,101 @@ test("project heartbeat view is independent of chat associations and isolated by
       code: "ENOENT",
     });
   } finally {
+    await f.close();
+  }
+});
+
+test("project history pages reuse the selected pair, fail closed on changes, and reject escaped paths", async () => {
+  const f = await fixture();
+  const inspectorPath = resolve(f.root, "pair-history-inspector.mjs");
+  const service = new HeartbeatService(resolve(f.root, "pair-history-data"), {
+    kitPath: inspectorPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
+  });
+  const source = resolve(f.project, "heartbeat.md");
+  const original = [
+    "# Supervision",
+    "thread: project-chat",
+    "## 2026-11-11T09:00:00Z wake (10-row ledger)",
+    "contract: heartbeat/v2",
+    "## Items",
+    "| id | source | item | status | evidence |",
+    "| --- | --- | --- | --- | --- |",
+    "| H1 | request | Original project source | pending | - |",
+    "## 2026-11-11T10:00:00Z wake (10-row ledger)",
+    "contract: heartbeat/v2",
+    "",
+  ].join("\n");
+  const competitor = original
+    .replaceAll("project-chat", "different-chat")
+    .replace("2026-11-11T09:00:00Z", "2026-11-11T12:00:00Z")
+    .replace("2026-11-11T10:00:00Z", "2026-11-11T12:00:00Z");
+  const historyInspector = `export function inspectHeartbeatLedger(text,{mode}) {
+    const lines=text.split('\\n');
+    const headings=lines.filter(line=>/^#{1,6}\\s+\\d{4}-\\d\\d-\\d\\dT.* wake \\(/i.test(line));
+    const selected=mode==='history'?headings:headings.slice(-1);
+    const wakes=selected.map(heading=>({heading:heading.trim(),timeMs:Date.parse(heading.match(/\\d{4}-\\d\\d-\\d\\dT[^ ]+/)?.[0]||''),line:lines.indexOf(heading)+1,rows:[]}));
+    const items=lines.flatMap((line,index)=>{if(!/^\\| H/.test(line))return [];const cells=line.slice(1,-1).split('|').map(cell=>cell.trim());return [{id:cells[0],source:cells[1],item:cells[2],status:cells[3],evidence:cells[4],line:index+1}];});
+    return {mode,certifiesCurrent:mode==='current',passed:true,wakeCount:wakes.length,itemCount:items.length,wakes,items,findings:[]};
+  }`;
+  try {
+    await writeFile(inspectorPath, historyInspector);
+    await writeFile(source, original);
+    const canonicalRoot = await realpath(f.project);
+    const canonicalSource = await realpath(source);
+    const legacyPair = readHeartbeatLedgerPair({ root: canonicalRoot, path: canonicalSource });
+    const pair = migrateHeartbeatLedgerPair({
+      root: canonicalRoot,
+      path: canonicalSource,
+      legacyWritersQuiescent: true,
+      expectedContentHash: legacyPair.contentHash,
+    });
+    const originalPair = readHeartbeatLedgerPair({ root: canonicalRoot, path: canonicalSource });
+    const view = await service.projectView(f.project);
+    assert.equal(view.status, "ready");
+    assert.equal(view.sourcePath, canonicalSource);
+    assert.equal(view.historyPath, pair.historyPath);
+
+    await writeFile(resolve(f.project, "heartbeat-later.md"), competitor);
+    const newest = await service.projectHistory(f.project, { limit: 1 });
+    assert.equal(newest.sourcePath, canonicalSource);
+    assert.equal(newest.historyPath, pair.historyPath);
+    assert.equal(newest.contentHash, originalPair.contentHash);
+    assert.equal(newest.total, 2);
+    assert.match(String(newest.wakes[0]?.heading), /2026-11-11T10:00:00Z wake/);
+    assert.ok(newest.nextCursor);
+    const older = await service.projectHistory(f.project, {
+      cursor: newest.nextCursor,
+      limit: 1,
+    });
+    assert.equal(older.sourcePath, canonicalSource);
+    assert.equal(older.total, 2);
+    assert.match(String(older.wakes[0]?.heading), /2026-11-11T09:00:00Z wake/);
+
+    appendHeartbeatWake({
+      root: canonicalRoot,
+      path: canonicalSource,
+      legacyWritersQuiescent: true,
+      expectedContentHash: originalPair.contentHash,
+      wakeText: "## 2026-11-11T11:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n",
+    });
+    const changed = await service.projectHistory(f.project, { limit: 1 });
+    assert.equal(changed.sourcePath, canonicalSource);
+    assert.equal(changed.total, 0);
+    assert.deepEqual(changed.wakes, []);
+    assert.match(changed.error ?? "", /changed while reading history/);
+
+    const outside = resolve(f.root, "outside-heartbeat.md");
+    await writeFile(outside, original);
+    await rm(source);
+    await symlink(outside, source, "file");
+    const escaped = await service.projectHistory(f.project, { limit: 1 });
+    assert.equal(escaped.sourcePath, canonicalSource);
+    assert.deepEqual(escaped.wakes, []);
+    assert.match(escaped.error ?? "", /outside its verified project path/);
+  } finally {
+    service.close();
     await f.close();
   }
 });
