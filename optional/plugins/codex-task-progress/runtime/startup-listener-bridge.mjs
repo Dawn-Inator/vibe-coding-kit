@@ -1,14 +1,29 @@
+export function forwardStartupListenerLine(line, bridge, writeLine) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (
+    (event?.event === "codex.willLaunch" || event?.event === "codex.didLaunch") &&
+    Number.isSafeInteger(event.pid)
+  ) {
+    bridge.acceptLaunch(event.pid);
+  }
+  writeLine(`${line}\n`);
+  return true;
+}
+
 export class StartupListenerBridge {
   #pendingPid = null;
   #pendingConnection = null;
   #queuedResponse = null;
   #pendingTimer = null;
-  #continueProcess;
   #setTimer;
   #clearTimer;
 
   constructor(options = {}) {
-    this.#continueProcess = options.continueProcess ?? (() => undefined);
     this.#setTimer = options.setTimer ?? setTimeout;
     this.#clearTimer = options.clearTimer ?? clearTimeout;
   }
@@ -53,9 +68,7 @@ export class StartupListenerBridge {
   }
 
   release() {
-    if (Number.isSafeInteger(this.#pendingPid) && this.#pendingPid > 1) {
-      this.#continueProcess(this.#pendingPid);
-    }
+    // Expiring the IPC observation must never signal or otherwise control the app.
     this.#reset(true);
   }
 

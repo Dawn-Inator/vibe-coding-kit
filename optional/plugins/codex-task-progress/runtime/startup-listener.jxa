@@ -1,9 +1,5 @@
 ObjC.import("AppKit");
 ObjC.import("Foundation");
-ObjC.bindFunction("kill", ["int", ["int", "int"]]);
-
-const SIGSTOP = 17;
-const SIGCONT = 19;
 
 function stringValue(value) {
   return value ? ObjC.unwrap(value) : "";
@@ -12,6 +8,16 @@ function stringValue(value) {
 function writeLine(value) {
   const data = $(JSON.stringify(value) + "\n").dataUsingEncoding($.NSUTF8StringEncoding);
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
+}
+
+function observeApplicationLaunches(center, handler) {
+  // JXA null becomes NSNull (a specific sender); $() is Objective-C nil (any sender).
+  return center.addObserverForNameObjectQueueUsingBlock(
+    $.NSWorkspaceDidLaunchApplicationNotification,
+    $(),
+    $.NSOperationQueue.mainQueue,
+    handler,
+  );
 }
 
 function requestResponse(socketPath) {
@@ -39,17 +45,6 @@ function requestResponse(socketPath) {
   }
 }
 
-function observeApplicationLaunches(center, handler) {
-  // JXA null becomes NSNull (a specific sender); $() is Objective-C nil (any sender).
-  // Pass the JS callback directly so the bridge gives it the notification argument.
-  return center.addObserverForNameObjectQueueUsingBlock(
-    $.NSWorkspaceWillLaunchApplicationNotification,
-    $(),
-    $.NSOperationQueue.mainQueue,
-    handler,
-  );
-}
-
 function run(argv) {
   if (!Array.isArray(argv) || argv.length !== 4) {
     throw new Error("usage: startup-listener.jxa <bundle-id> <app-path> <executable-path> <socket-path>");
@@ -72,7 +67,7 @@ function run(argv) {
       return;
     }
     const pid = Number(application.processIdentifier);
-    if (!Number.isSafeInteger(pid) || pid <= 1 || Number($.kill(pid, SIGSTOP)) !== 0) {
+    if (!Number.isSafeInteger(pid) || pid <= 1) {
       return;
     }
     pendingPid = pid;
@@ -81,7 +76,7 @@ function run(argv) {
       : new Date().toISOString();
     writeLine({
       schemaVersion: 1,
-      event: "codex.willLaunch",
+      event: "codex.didLaunch",
       pid,
       bundleId,
       appPath,
@@ -90,17 +85,8 @@ function run(argv) {
       deadlineAtMs: Date.now() + 20_000,
     });
 
-    const response = requestResponse(socketPath);
-    if (
-      !response ||
-      response.schemaVersion !== 1 ||
-      response.pid !== pid ||
-      (response.action !== "continue" && response.action !== "complete")
-    ) {
-      $.kill(pid, SIGCONT);
-    } else if (response.action === "continue") {
-      $.kill(pid, SIGCONT);
-    }
+    // The helper response remains an IPC acknowledgement only; it never controls the app.
+    requestResponse(socketPath);
     pendingPid = null;
   };
 

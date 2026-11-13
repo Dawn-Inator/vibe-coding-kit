@@ -79,5 +79,6 @@
   "optional/catalog.test.mjs",
   "optional/content.test.mjs",
   "optional/runtime.test.mjs",
+  "optional/task-progress-startup.test.mjs",
   "install/optional.test.mjs"
 ]

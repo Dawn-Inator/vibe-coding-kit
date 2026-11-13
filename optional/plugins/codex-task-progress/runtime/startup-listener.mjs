@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { StartupListenerBridge } from "./startup-listener-bridge.mjs";
+import { forwardStartupListenerLine, StartupListenerBridge } from "./startup-listener-bridge.mjs";
 
 const [bundleId, appPath, executablePath] = process.argv.slice(2);
 if (!bundleId || !appPath || !executablePath) {
@@ -43,15 +43,7 @@ await rm(socketPath, { force: true });
 
 let shuttingDown = false;
 
-const bridge = new StartupListenerBridge({
-  continueProcess(pid) {
-    try {
-      process.kill(pid, "SIGCONT");
-    } catch {
-      // The intercepted process may already have exited.
-    }
-  },
-});
+const bridge = new StartupListenerBridge();
 
 const server = net.createServer((connection) => {
   bridge.acceptConnection(connection);
@@ -86,16 +78,7 @@ child.stderr.on("data", (chunk) => process.stderr.write(chunk));
 
 const childLines = readline.createInterface({ input: child.stdout });
 childLines.on("line", (line) => {
-  let event;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (event?.event === "codex.willLaunch" && Number.isSafeInteger(event.pid)) {
-    bridge.acceptLaunch(event.pid);
-  }
-  process.stdout.write(`${line}\n`);
+  forwardStartupListenerLine(line, bridge, (forwardedLine) => process.stdout.write(forwardedLine));
 });
 
 const parentLines = readline.createInterface({ input: process.stdin });
