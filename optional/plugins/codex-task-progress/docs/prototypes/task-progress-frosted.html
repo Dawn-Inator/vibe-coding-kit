@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Task Progress · 轻磨砂交互原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #eeefeb; --app: #fafbf8; --sidebar: #f1f2ee;
+      --surface: rgba(255, 255, 253, .88); --raised: #fff;
+      --text: #303a34; --muted: #5f6d62; --quiet: #657066;
+      --line: rgba(48, 65, 50, .10); --strong-line: rgba(48, 65, 50, .16);
+      --hover: rgba(57, 86, 67, .045); --tint: #edf5ef;
+      --accent: #357353; --accent-bright: #77ac8c; --track: #e5eae3;
+      --amber: #85612e; --amber-tint: #f6f0e4;
+      --shadow: 0 18px 55px -18px rgba(36, 54, 39, .20), 0 4px 12px -5px rgba(36, 54, 39, .08);
+      --capsule-shadow: 0 4px 14px -5px rgba(41, 61, 47, .13), inset 0 1px 0 rgba(255, 255, 255, .9);
+      --white-line: rgba(255,255,255,.8);
+      --ease: cubic-bezier(.16, 1, .3, 1);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-synthesis: none; -webkit-font-smoothing: antialiased;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --canvas: #171c19; --app: #222824; --sidebar: #1c221e;
+      --surface: rgba(42, 50, 44, .94); --raised: #2b332d;
+      --text: #e0e8df; --muted: #a4afa0; --quiet: #95a38f;
+      --line: rgba(213,232,208,.09); --strong-line: rgba(213,232,208,.17);
+      --hover: rgba(199,227,196,.045); --tint: #2a3c31;
+      --accent: #9bc5a6; --accent-bright: #8fbba0; --track: #3a453b;
+      --amber: #d5b47e; --amber-tint: #3e372a;
+      --shadow: 0 22px 60px -15px rgba(0,0,0,.40), 0 4px 14px rgba(0,0,0,.10);
+      --capsule-shadow: 0 4px 16px -5px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.04);
+      --white-line: rgba(255,255,255,.04);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--text); }
+    button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    button:disabled { cursor: default; }
+    [hidden] { display: none !important; }
+    svg { display: block; flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+    .preview { width: min(1320px, calc(100% - 72px)); margin: 35px auto 24px; }
+    .preview-bar { display: flex; align-items: center; gap: 14px; margin: 0 3px 23px; }
+    .preview-mark { color: var(--accent); display: grid; place-items: center; width: 35px; height: 35px; border: 1px solid var(--strong-line); border-radius: 12px; }
+    .preview-name { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -.1px; }
+    .preview-caption { display: block; color: var(--muted); margin-top: 5px; font-size: 10px; letter-spacing: .6px; }
+    .preview-actions { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+    .demo-tag { font-size: 10px; color: var(--muted); border: 1px solid var(--strong-line); border-radius: 99px; padding: 5px 9px; white-space: nowrap; }
+    .theme-switch { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--strong-line); border-radius: 99px; }
+    .theme-switch button { display: grid; place-items: center; border: 0; background: none; width: 28px; height: 28px; color: var(--muted); border-radius: 50%; }
+    .theme-switch button[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: 0 1px 4px #0000000b; }
+    .theme-switch svg { width: 15px; height: 15px; }
+    .app { border: 1px solid var(--strong-line); border-radius: 18px; background: var(--app); box-shadow: 0 20px 70px -42px #15281950; overflow: hidden; }
+    .window-bar { height: 39px; display: flex; align-items: center; gap: 6px; padding: 0 17px; border-bottom: 1px solid var(--line); background: var(--sidebar); }
+    .window-dot { height: 8px; width: 8px; border-radius: 50%; border: 1px solid var(--strong-line); }
+    .window-name { margin: 0 auto; padding-right: 30px; font-size: 10px; color: var(--muted); }
+    .workspace { display: grid; grid-template-columns: 192px minmax(0, 1fr); min-height: 744px; }
+    .sidebar { background: var(--sidebar); padding: 24px 14px 16px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 28px; }
+    .brand { display: flex; align-items: center; gap: 9px; padding-left: 8px; font-size: 15px; font-weight: 650; letter-spacing: -.4px; }
+    .brand svg { width: 21px; height: 21px; }
+    .nav-items { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 9px; border-radius: 7px; }
+    .nav-item svg { width: 15px; height: 15px; }
+    .side-label { padding: 1px 9px 10px; font-size: 10px; color: var(--quiet); }
+    .project-item { font-size: 11px; padding: 8px 9px; display: flex; align-items: center; gap: 8px; }
+    .project-item svg { width: 14px; height: 14px; }
+    .selected-chat { padding: 10px 10px 10px 28px; font-size: 11px; background: var(--hover); border-radius: 7px; }
+    .other-chat { color: var(--quiet); font-size: 11px; padding: 11px 10px 5px 28px; }
+    .sidebar-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 9px; color: var(--muted); font-size: 10px; }
+    .avatar { display: grid; place-items: center; width: 25px; height: 25px; background: var(--hover); border: 1px solid var(--line); border-radius: 50%; font-size: 10px; color: var(--text); }
+    .chat { position: relative; min-width: 0; }
+    .chat-header { display: flex; align-items: center; gap: 9px; padding: 22px 27px; color: var(--muted); font-size: 11px; }
+    .chat-header .slash { color: var(--quiet); padding: 0 2px; }
+    .chat-header strong { font-weight: 500; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .header-branch { margin-left: auto; display: flex; gap: 5px; align-items: center; font-size: 10px; }
+    .header-branch svg { width: 12px; height: 12px; }
+    .stage { position: relative; padding: 20px 24px 0; }
+    .dock { position: relative; width: min(464px, 100%); margin: 0 auto; z-index: 10; }
+    .dock-controls { display: flex; align-items: center; gap: 8px; width: 100%; }
+    .capsule, .orb { position: relative; background: var(--surface); border: 1px solid var(--strong-line); box-shadow: var(--capsule-shadow); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+    .capsule { height: 44px; border-radius: 99px; display: flex; align-items: center; gap: 11px; padding: 0 15px; min-width: 0; flex: 1; text-align: left; }
+    .capsule:hover, .orb:hover { background: var(--raised); }
+    .capsule[aria-expanded="true"], .orb[aria-expanded="true"] { border-color: color-mix(in srgb, var(--accent) 46%, transparent); }
+    .capsule:active, .orb:active { transform: scale(.98); }
+    .capsule-icon { width: 18px; height: 18px; color: var(--accent); }
+    .capsule-copy { flex: 1; min-width: 0; }
+    .capsule-title { display: block; font-size: 11px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; }
+    .capsule-state { color: var(--muted); font-size: 9px; display: flex; gap: 5px; align-items: center; line-height: 1.5; }
+    .status-dot { display: inline-block; flex: none; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+    .capsule-value { display: flex; align-items: baseline; gap: 1px; font-size: 19px; letter-spacing: -1px; font-weight: 500; color: var(--accent); }
+    .capsule-value small { font-size: 10px; letter-spacing: 0; margin-left: 1px; }
+    .capsule-chevron { width: 12px; height: 12px; color: var(--muted); transition: transform 200ms var(--ease); }
+    .capsule[aria-expanded="true"] .capsule-chevron { transform: rotate(180deg); }
+    .edge-progress { position: absolute; inset: -1px; width: calc(100% + 2px); height: 44px; overflow: visible; pointer-events: none; stroke-width: 3; }
+    .edge-track { stroke: var(--track); }
+    .edge-fill { stroke: var(--accent-bright); }
+    .orb-wrap { position: relative; flex: none; }
+    .orb { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--muted); padding: 0; }
+    .orb[aria-expanded="true"] { color: var(--accent); background: var(--tint); }
+    .orb svg { width: 17px; height: 17px; }
+    .heartbeat-mark { position: absolute; width: 5px; height: 5px; background: var(--accent); border: 1.5px solid var(--raised); border-radius: 50%; right: 8px; top: 8px; }
+    .tooltip { position: absolute; top: calc(100% + 9px); left: 50%; transform: translateX(-50%); font-size: 10px; padding: 5px 8px; border-radius: 6px; color: var(--text); background: var(--raised); border: 1px solid var(--line); box-shadow: var(--capsule-shadow); white-space: nowrap; opacity: 0; pointer-events: none; }
+    .orb-wrap:hover .orb[aria-expanded="false"] + .tooltip, .orb:focus-visible + .tooltip { opacity: 1; }
+    .dock-hint { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 15px 0 0; color: var(--quiet); font-size: 10px; letter-spacing: .2px; }
+    .dock-hint svg { width: 11px; height: 11px; }
+    .has-panel .dock-hint { visibility: hidden; }
+    .popover { position: absolute; top: 55px; left: 0; width: 100%; max-height: var(--panel-height, 496px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--strong-line); border-radius: 20px; box-shadow: var(--shadow), inset 0 1px 0 var(--white-line); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); overflow: hidden; transform-origin: top center; }
+    .popover.is-compact { position: fixed; top: 12px; left: var(--compact-left); width: var(--compact-width); max-height: calc(100dvh - 24px); }
+    .popover.is-entering { animation: enter 210ms var(--ease) both; }
+    .popover.is-leaving { animation: leave 130ms ease-in both; pointer-events: none; }
+    @keyframes enter { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes leave { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-4px); } }
+    .view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+    .panel-head { flex: none; padding: 20px 21px 15px; }
+    .panel-kicker { display: flex; align-items: center; gap: 7px; font-size: 9px; letter-spacing: .8px; color: var(--muted); margin-bottom: 9px; }
+    .panel-kicker svg { width: 12px; height: 12px; }
+    .panel-kicker .demo-label { font-size: 8px; margin-left: auto; color: var(--quiet); letter-spacing: 0; }
+    .panel-heading-row { display: flex; align-items: center; gap: 8px; }
+    .panel-title { margin: 0; font-size: 17px; line-height: 1.4; letter-spacing: -.45px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+    .panel-title:focus { outline: none; }
+    .close { flex: none; margin-left: auto; width: 24px; height: 24px; border: 0; background: transparent; border-radius: 50%; color: var(--quiet); display: grid; place-items: center; padding: 0; }
+    .close:hover { background: var(--hover); color: var(--text); }
+    .close svg { width: 14px; height: 14px; }
+    .panel-subtitle { margin: 7px 0 0; font-size: 11px; line-height: 1.65; color: var(--muted); }
+    .total-line { display: flex; align-items: center; gap: 8px; margin-top: 15px; font-size: 10px; color: var(--muted); }
+    .total-line strong { color: var(--text); font-weight: 500; }
+    .total-line .current-status { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--accent); }
+    .overall-track { height: 3px; background: var(--track); border-radius: 4px; margin-top: 9px; overflow: hidden; }
+    .overall-fill { height: 100%; background: var(--accent-bright); transform-origin: left; transform: scaleX(var(--progress)); }
+    .panel-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--strong-line) transparent; }
+    .modules { padding: 1px 10px 9px; }
+    .module { border-top: 1px solid var(--line); }
+    .module:first-child { border-top: 0; }
+    .module:has(.module-button[aria-expanded="true"]) { background: var(--hover); border-radius: 11px; border-color: transparent; }
+    .module-button { display: flex; align-items: center; gap: 12px; border: 0; border-radius: 10px; background: transparent; width: 100%; padding: 13px 11px; text-align: left; }
+    .module-button:hover { background: var(--hover); }
+    .module-button:focus-visible { outline-offset: -2px; }
+    .module-icon { display: grid; place-items: center; flex: none; width: 31px; height: 31px; border: 1px solid var(--line); background: var(--hover); color: var(--muted); border-radius: 10px; font-size: 10px; }
+    .module-icon.is-completed { color: var(--accent); background: var(--tint); border-color: transparent; }
+    .module-icon.is-active { color: var(--accent); background: var(--tint); border-color: transparent; }
+    .module-icon svg { width: 15px; height: 15px; }
+    .module-content { min-width: 0; flex: 1; }
+    .module-name-row { display: flex; align-items: baseline; gap: 7px; }
+    .module-name { font-size: 12px; font-weight: 550; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .module-percent { margin-left: auto; flex: none; font-size: 10px; color: var(--muted); }
+    .module-track { height: 3px; background: var(--track); border-radius: 5px; overflow: hidden; margin-top: 7px; }
+    .module-fill { height: 100%; background: var(--accent-bright); transform: scaleX(var(--progress)); transform-origin: left; }
+    .module-meta { display: flex; gap: 8px; align-items: center; font-size: 9px; color: var(--muted); margin-top: 6px; }
+    .module-meta .module-status { margin-left: auto; }
+    .module-arrow { width: 12px; height: 12px; color: var(--quiet); transition: transform 180ms var(--ease); }
+    .module-button[aria-expanded="true"] .module-arrow { transform: rotate(90deg); }
+    .nodes { padding: 0 14px 8px 23px; }
+    .nodes:not([hidden]) { animation: node-enter 180ms var(--ease); }
+    @keyframes node-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+    .node { position: relative; padding: 10px 0 10px 29px; }
+    .node:not(:last-child)::before { content: ""; position: absolute; left: 7px; top: 26px; bottom: -8px; width: 1px; background: var(--line); }
+    .node-state { position: absolute; left: 0; top: 12px; display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid var(--strong-line); border-radius: 50%; background: var(--app); color: var(--quiet); }
+    .node-state svg { width: 10px; height: 10px; stroke-width: 1.8; }
+    .node-state.completed { border-color: transparent; color: var(--accent); background: var(--tint); }
+    .node-state.active { color: var(--accent); border-color: var(--accent); }
+    .node-state.active::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+    .node-state.blocked { color: var(--amber); border-color: transparent; background: var(--amber-tint); }
+    .node-top { display: flex; align-items: baseline; gap: 10px; }
+    .node-name { font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+    .node-status { font-size: 8px; margin-left: auto; white-space: nowrap; color: var(--muted); }
+    .node-status.blocked { color: var(--amber); }
+    .node-description { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+    .evidence { display: flex; align-items: flex-start; gap: 5px; margin-top: 5px; color: var(--quiet); font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+    .evidence svg { width: 11px; height: 11px; margin-top: 2px; color: var(--accent); }
+    .evidence span { min-width: 0; }
+    .panel-foot { flex: none; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 6px; padding: 11px 20px; font-size: 9px; color: var(--muted); }
+    .panel-foot svg { width: 11px; height: 11px; color: var(--accent); }
+    .panel-foot .key-hint { margin-left: auto; white-space: nowrap; font-size: 8px; color: var(--quiet); }
+    kbd { font-family: inherit; font-size: 8px; border: 1px solid var(--strong-line); border-bottom-width: 2px; border-radius: 3px; padding: 1px 3px; }
+    .history-date { margin: 0; padding: 3px 21px 12px; color: var(--quiet); font-size: 9px; letter-spacing: .3px; }
+    .timeline { padding: 0 21px 8px; }
+    .event { position: relative; padding: 2px 0 22px 27px; }
+    .event:not(:last-child)::before { content: ""; position: absolute; left: 5px; top: 15px; bottom: 0; width: 1px; background: var(--line); }
+    .event-dot { position: absolute; left: 1px; top: 6px; width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--strong-line); background: var(--app); }
+    .event:first-child .event-dot { border-color: var(--accent); background: var(--tint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }
+    .event-head { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 500; }
+    .event-time { margin-left: auto; font-size: 9px; color: var(--quiet); font-weight: 400; }
+    .event p { margin: 6px 0 0; font-size: 10px; color: var(--muted); line-height: 1.7; }
+    .event-change { display: inline-flex; align-items: center; gap: 7px; color: var(--accent); background: var(--tint); border-radius: 5px; padding: 4px 7px; margin-top: 8px; font-size: 9px; }
+    .event-change svg { width: 10px; height: 10px; }
+    .heartbeat-body { padding: 0 21px 18px; }
+    .audit-summary { border: 1px solid var(--line); background: var(--hover); border-radius: 13px; padding: 15px; display: flex; align-items: center; gap: 12px; }
+    .audit-symbol { width: 37px; height: 37px; display: grid; place-items: center; flex: none; border-radius: 50%; background: var(--tint); color: var(--accent); }
+    .audit-symbol svg { width: 20px; height: 20px; }
+    .audit-summary strong { font-size: 12px; font-weight: 550; }
+    .audit-summary p { margin: 5px 0 0; font-size: 9px; color: var(--muted); line-height: 1.6; }
+    .audit-time { margin: 18px 0; display: grid; grid-template-columns: 1fr 1fr; }
+    .audit-time > div + div { border-left: 1px solid var(--line); padding-left: 19px; }
+    .audit-time dt { color: var(--muted); font-size: 9px; margin-bottom: 8px; }
+    .audit-time dd { margin: 0; font-size: 21px; letter-spacing: -1px; font-weight: 450; }
+    .audit-time dd span { font-size: 9px; color: var(--quiet); letter-spacing: 0; margin-left: 4px; }
+    .audit-checks { border-top: 1px solid var(--line); padding-top: 5px; }
+    .audit-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; font-size: 10px; }
+    .audit-row svg { width: 13px; height: 13px; color: var(--accent); }
+    .audit-row span:last-child { margin-left: auto; color: var(--muted); font-size: 9px; }
+    .audit-row.attention svg, .audit-row.attention span:last-child { color: var(--amber); }
+    .audit-note { color: var(--muted); font-size: 9px; line-height: 1.8; margin: 12px 0 0; }
+    .conversation { width: min(590px, 100%); margin: 100px auto 200px; padding: 0 28px; }
+    .user-message { background: var(--sidebar); border: 1px solid var(--line); border-radius: 16px 16px 5px 16px; padding: 15px 18px; margin: 0 0 35px 83px; font-size: 12px; line-height: 1.9; }
+    .assistant-heading { display: flex; align-items: center; gap: 9px; font-size: 10px; color: var(--muted); margin-bottom: 14px; }
+    .assistant-heading svg { width: 17px; height: 17px; color: var(--text); }
+    .assistant-message { padding-left: 26px; }
+    .assistant-message h1 { font-size: 21px; letter-spacing: -.8px; font-weight: 550; margin: 0 0 15px; }
+    .assistant-message p { font-size: 12px; line-height: 1.9; margin: 0; color: var(--muted); }
+    .message-modules { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 19px; }
+    .message-modules span { font-size: 9px; padding: 5px 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); }
+    .message-modules span:first-child { background: var(--tint); color: var(--accent); border-color: transparent; }
+    .composer-wrap { position: absolute; bottom: 21px; left: 28px; right: 28px; }
+    .composer { width: min(650px, 100%); margin: auto; border: 1px solid var(--strong-line); background: var(--surface); box-shadow: 0 4px 10px -7px #10271920; border-radius: 19px; padding: 16px 16px 11px; }
+    .composer-placeholder { font-size: 11px; color: var(--quiet); margin-bottom: 23px; }
+    .composer-tools { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 9px; }
+    .composer-tools svg { width: 14px; height: 14px; }
+    .send { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--text); color: var(--app); margin-left: auto; }
+    .composer-caption { margin: 9px auto 0; text-align: center; font-size: 8px; color: var(--quiet); }
+    .preview-footer { display: flex; align-items: center; gap: 8px; padding: 17px 3px 0; font-size: 10px; color: var(--muted); }
+    .preview-footer .footer-right { margin-left: auto; color: var(--quiet); font-size: 9px; }
+    .preview-footer svg { width: 12px; height: 12px; color: var(--accent); }
+    :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { animation: none !important; transition: none !important; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+    @media (prefers-reduced-transparency: reduce) { .capsule, .orb, .popover { background: var(--raised); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+    @supports not (backdrop-filter: blur(1px)) { .capsule, .orb, .popover { background: var(--raised); } }
+    @media (max-width: 1000px) { .preview { width: calc(100% - 40px); margin-top: 25px; } .workspace { grid-template-columns: 162px minmax(0, 1fr); } .chat-header { padding-inline: 20px; } .header-branch { display: none; } .conversation { padding-inline: 20px; } }
+    @media (max-width: 760px) { .sidebar { display: none; } .workspace { display: block; min-height: 720px; } .chat { min-height: 720px; } .preview { width: calc(100% - 24px); margin-top: 20px; } .preview-caption { font-size: 9px; } .preview-bar { gap: 10px; margin-bottom: 17px; } .preview-actions { gap: 9px; } .preview-footer .footer-right { display: none; } }
+    @media (max-width: 450px) { .preview { width: calc(100% - 16px); margin-top: 12px; } .preview-mark { width: 30px; height: 30px; border-radius: 10px; } .preview-name { font-size: 11px; } .preview-caption { font-size: 8px; letter-spacing: 0; } .preview-actions .demo-tag { display: none; } .app { border-radius: 13px; } .stage { padding-inline: 12px; padding-top: 14px; } .chat-header { padding: 18px 14px; gap: 5px; font-size: 10px; } .chat-header > span:first-child { max-width: 105px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .capsule { gap: 8px; padding-inline: 11px; } .capsule-title { font-size: 10px; } .capsule-state { font-size: 8px; } .capsule-value { font-size: 17px; } .capsule-icon { width: 15px; height: 15px; } .capsule-chevron { display: none; } .dock-controls { gap: 6px; } .panel-head { padding: 17px 16px 14px; } .panel-title { font-size: 15px; } .module-button { padding-inline: 7px; gap: 9px; } .modules { padding-inline: 8px; } .module-icon { width: 28px; height: 28px; border-radius: 9px; } .module-name { font-size: 10px; } .panel-foot { padding-inline: 16px; font-size: 8px; } .panel-foot .key-hint { display: none; } .conversation { margin-top: 85px; padding-inline: 17px; } .user-message { margin-left: 34px; font-size: 11px; } .assistant-message h1 { font-size: 18px; } .assistant-message p { font-size: 11px; } .composer-wrap { left: 14px; right: 14px; } .heartbeat-body, .timeline { padding-inline: 16px; } .history-date { padding-inline: 16px; } }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 5 7 7-7 7"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-history" viewBox="0 0 24 24"><path d="M3.5 10a8.5 8.5 0 1 1 1.8 7.4M3 4v6h6M12 7v5l3 2"/></symbol>
+      <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01"/><path d="m10.3 3.8-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0Z"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5M14 4l-4 16"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h7l2 3h9v11H3V7Z"/></symbol>
+      <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 7v10M6 13h5a7 7 0 0 0 7-6"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-5 5 5-5 5 5"/></symbol>
+      <symbol id="i-cursor" viewBox="0 0 24 24"><path d="m5 3 14 9-7 1-3 7-4-17Z"/></symbol>
+    </defs>
+  </svg>
+  <div class="preview">
+    <header class="preview-bar">
+      <div class="preview-mark"><svg aria-hidden="true"><use href="#i-layers"/></svg></div>
+      <div><p class="preview-name">Task Progress</p><span class="preview-caption">轻磨砂 · 交互原型 / 01</span></div>
+      <div class="preview-actions">
+        <span class="demo-tag">模拟数据</span>
+        <div class="theme-switch" role="group" aria-label="预览主题">
+          <button type="button" data-theme-choice="light" aria-label="浅色预览" aria-pressed="true" title="浅色预览"><svg aria-hidden="true"><use href="#i-sun"/></svg></button>
+          <button type="button" data-theme-choice="dark" aria-label="深色预览" aria-pressed="false" title="深色预览"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+        </div>
+      </div>
+    </header>
+    <div class="app">
+      <div class="window-bar" aria-hidden="true"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span class="window-name">vibe-coding-kit</span></div>
+      <div class="workspace">
+        <aside class="sidebar" aria-label="模拟聊天侧栏">
+          <div class="brand"><svg aria-hidden="true"><use href="#i-code"/></svg>Codex</div>
+          <div class="nav-items"><div class="nav-item"><svg aria-hidden="true"><use href="#i-plus"/></svg>新聊天</div><div class="nav-item"><svg aria-hidden="true"><use href="#i-history"/></svg>最近的聊天</div></div>
+          <div><div class="side-label">项目</div><div class="project-item"><svg aria-hidden="true"><use href="#i-folder"/></svg>vibe-coding-kit</div><div class="selected-chat">进度插件视觉升级</div><div class="other-chat">统一任务与心跳记录</div><div class="other-chat">整理模块边界</div></div>
+          <div class="sidebar-foot"><div class="avatar">D</div>Dawn<span style="margin-left:auto">本地工作区</span></div>
+        </aside>
+        <main class="chat">
+          <div class="chat-header"><span>vibe-coding-kit</span><span class="slash">/</span><strong>进度插件视觉升级</strong><span class="header-branch"><svg aria-hidden="true"><use href="#i-branch"/></svg>main</span></div>
+          <div class="stage">
+            <div class="dock" id="dock">
+              <div class="dock-controls">
+                <button type="button" class="capsule" id="task-trigger" data-view="tasks" aria-expanded="false" aria-controls="progress-popover">
+                  <svg class="capsule-icon" aria-hidden="true"><use href="#i-layers"/></svg>
+                  <span class="capsule-copy"><span class="capsule-title" id="capsule-title">进度插件视觉升级</span><span class="capsule-state"><span class="status-dot"></span>进行中<span aria-hidden="true">·</span><span id="capsule-count">13 / 24 节点</span></span></span>
+                  <span class="capsule-value mono"><span id="capsule-percent">54</span><small>%</small></span>
+                  <svg class="capsule-chevron" aria-hidden="true"><use href="#i-down"/></svg>
+                  <svg class="edge-progress" aria-hidden="true" viewBox="0 0 368 44" preserveAspectRatio="none"><path class="edge-track" pathLength="100"/><path class="edge-fill" pathLength="100"/></svg>
+                </button>
+                <div class="orb-wrap"><button type="button" class="orb" id="history-trigger" data-view="history" aria-label="历史" aria-expanded="false" aria-controls="progress-popover"><svg aria-hidden="true"><use href="#i-history"/></svg></button><span class="tooltip" aria-hidden="true">历史</span></div>
+                <div class="orb-wrap"><button type="button" class="orb" id="heartbeat-trigger" data-view="heartbeat" aria-label="心跳" aria-expanded="false" aria-controls="progress-popover"><svg aria-hidden="true"><use href="#i-pulse"/></svg><span class="heartbeat-mark" aria-hidden="true"></span></button><span class="tooltip" aria-hidden="true">心跳</span></div>
+              </div>
+              <p class="dock-hint"><svg aria-hidden="true"><use href="#i-cursor"/></svg>点击进度胶囊，查看每一步</p>
+              <section class="popover" id="progress-popover" role="region" aria-labelledby="tasks-title" hidden inert>
+                <div class="view" data-panel="tasks">
+                  <header class="panel-head">
+                    <div class="panel-kicker"><svg aria-hidden="true"><use href="#i-layers"/></svg>当前任务<span class="demo-label">模拟数据</span></div>
+                    <div class="panel-heading-row"><h2 class="panel-title" id="tasks-title" tabindex="-1">进度插件视觉升级</h2><button class="close" type="button" aria-label="关闭子任务面板"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
+                    <p class="panel-subtitle">总任务 → 子模块 → 节点，每一步都有据可循。</p>
+                    <div class="total-line"><span><strong id="total-count">13 / 24</strong> 节点完成</span><span class="current-status"><span class="status-dot"></span>进行中</span></div>
+                    <div class="overall-track" id="overall-progress" role="progressbar" aria-label="总任务完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="54"><div class="overall-fill"></div></div>
+                  </header>
+                  <div class="panel-scroll modules" id="module-list"></div>
+                  <footer class="panel-foot"><svg aria-hidden="true"><use href="#i-layers"/></svg>4 个子任务 · 点击模块展开节点<span class="key-hint"><kbd>esc</kbd> 收起</span></footer>
+                </div>
+                <div class="view" data-panel="history" hidden>
+                  <header class="panel-head"><div class="panel-kicker"><svg aria-hidden="true"><use href="#i-history"/></svg>任务历史<span class="demo-label">模拟数据</span></div><div class="panel-heading-row"><h2 class="panel-title" id="history-title" tabindex="-1">每一步，都有迹可循</h2><button class="close" type="button" aria-label="关闭历史面板"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><p class="panel-subtitle">记录范围调整、节点完成与进度变化。</p></header>
+                  <div class="panel-scroll"><p class="history-date">2026 年 11 月 13 日 · 今天</p><div class="timeline">
+                    <article class="event"><span class="event-dot"></span><div class="event-head">任务层级与展开 · 节点完成<time class="event-time mono">15:42</time></div><p>完成模块完成数与总任务进度的汇总设计。</p><div class="event-change mono">12 / 24<svg aria-hidden="true"><use href="#i-arrow"/></svg>13 / 24 · 54%</div></article>
+                    <article class="event"><span class="event-dot"></span><div class="event-head">历史与心跳 · 节点完成<time class="event-time mono">15:31</time></div><p>心跳摘要采用巡检记录语义，状态入口保持静态。</p></article>
+                    <article class="event"><span class="event-dot"></span><div class="event-head">视觉结构 · 模块完成<time class="event-time mono">15:18</time></div><p>胶囊、下缘进度与两个圆形入口完成设计。</p><div class="event-change"><svg aria-hidden="true"><use href="#i-check"/></svg>6 / 6 节点完成</div></article>
+                    <article class="event"><span class="event-dot"></span><div class="event-head">建立任务结构<time class="event-time mono">14:50</time></div><p>登记 4 个子模块、24 个执行节点，以有效节点汇总进度。</p></article>
+                  </div></div>
+                  <footer class="panel-foot"><svg aria-hidden="true"><use href="#i-history"/></svg>展示 4 条示例事件<span class="key-hint"><kbd>esc</kbd> 收起</span></footer>
+                </div>
+                <div class="view" data-panel="heartbeat" hidden>
+                  <header class="panel-head"><div class="panel-kicker"><svg aria-hidden="true"><use href="#i-pulse"/></svg>项目心跳<span class="demo-label">模拟数据</span></div><div class="panel-heading-row"><h2 class="panel-title" id="heartbeat-title" tabindex="-1">最近一次巡检</h2><button class="close" type="button" aria-label="关闭心跳面板"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><p class="panel-subtitle">查看已记录的结果，以及需要关注的事项。</p></header>
+                  <div class="panel-scroll heartbeat-body">
+                    <div class="audit-summary"><div class="audit-symbol"><svg aria-hidden="true"><use href="#i-pulse"/></svg></div><div><strong>巡检记录已更新</strong><p>vibe-coding-kit · 有 1 个节点需要关注</p></div></div>
+                    <dl class="audit-time"><div><dt>最近巡检 · 今天</dt><dd class="mono">15:40</dd></div><div><dt>下次计划 · 今天</dt><dd class="mono">16:00<span>示例</span></dd></div></dl>
+                    <div class="audit-checks"><div class="audit-row"><svg aria-hidden="true"><use href="#i-check"/></svg><span>任务记录可读取</span><span>正常</span></div><div class="audit-row"><svg aria-hidden="true"><use href="#i-check"/></svg><span>模块与节点关联</span><span class="mono">24 / 24</span></div><div class="audit-row attention"><svg aria-hidden="true"><use href="#i-alert"/></svg><span>等待视觉验收</span><span>1 个阻塞</span></div></div>
+                    <p class="audit-note">心跳展示已记录的巡检结果。计划时间是示例记录，不代表当前正在执行巡检。</p>
+                  </div>
+                  <footer class="panel-foot"><svg aria-hidden="true"><use href="#i-shield"/></svg>只读展示 · 与任务执行状态独立<span class="key-hint"><kbd>esc</kbd> 收起</span></footer>
+                </div>
+              </section>
+            </div>
+          </div>
+          <div class="conversation">
+            <p class="user-message">把任务进度做得更清楚一些。<br>总任务下面是子模块，再往下是执行节点。</p>
+            <div class="assistant-heading"><svg aria-hidden="true"><use href="#i-code"/></svg>Codex</div>
+            <div class="assistant-message"><h1>先梳理结构，再逐步推进。</h1><p>任务已拆分成 4 个子模块。可以从上方胶囊查看进度，<br>展开模块后，继续查看每个节点的状态与说明。</p><div class="message-modules"><span>视觉结构</span><span>任务层级与展开</span><span>历史与心跳</span><span>兼容与打磨</span></div></div>
+          </div>
+          <div class="composer-wrap" aria-hidden="true"><div class="composer"><div class="composer-placeholder">继续讨论，或调整设计细节…</div><div class="composer-tools"><svg><use href="#i-plus"/></svg><span>本地工作区</span><span>⌘</span><span class="send"><svg><use href="#i-up"/></svg></span></div></div><p class="composer-caption">模拟聊天场景 · 不发送消息</p></div>
+        </main>
+      </div>
+    </div>
+    <footer class="preview-footer"><svg aria-hidden="true"><use href="#i-cursor"/></svg>试试：展开任务、查看节点，或点击右侧历史与心跳。<span class="footer-right">独立 HTML · 所有记录均为模拟数据</span></footer>
+  </div>
+  <div class="sr-only" id="announcement" aria-live="polite"></div>
+  <script>
+    (() => {
+      'use strict';
+      const icon = (name, cls = '') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+      const escape = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+      const node = (title, status, description, evidence = '') => ({ title, status, description, evidence });
+      const modules = [
+        { id: 'visual', title: '视觉结构', items: [
+          node('主胶囊形态', 'completed', '44px 圆弧胶囊，统一内外圆角与留白。', '已验证 · 胶囊高度与内容对齐（示例）'),
+          node('下缘弧形进度', 'completed', '沿胶囊下缘绘制连续的 3px 进度线。', '已验证 · 进度线跟随容器尺寸（示例）'),
+          node('历史与心跳圆钮', 'completed', '两个独立的 40px 圆形入口。'),
+          node('磨砂与层次', 'completed', '轻磨砂底、细边框与柔和阴影。'),
+          node('图标与字阶', 'completed', '使用统一线宽，明确主要与次要信息。'),
+          node('浅色与深色', 'completed', '为两种主题分别设置表面与语义颜色。')
+        ]},
+        { id: 'hierarchy', title: '任务层级与展开', items: [
+          node('定义三级任务关系', 'completed', '总任务包含子模块，子模块包含执行节点。', '已验证 · 三级结构与节点归属一致（示例）'),
+          node('展示子模块进度', 'completed', '名称、完成数量与进度条采用统一对齐。'),
+          node('节点状态与说明', 'completed', '分别展示已完成、进行中、待开始与阻塞状态。', '已验证 · 节点说明和证据可以阅读（示例）'),
+          node('汇总节点完成数量', 'completed', '按有效节点计数，不平均各模块百分比。', '已验证 · 13 / 24 = 54%（示例）'),
+          node('优化展开与收起反馈', 'active', '使用短暂的淡入与位移，让层级变化更清楚。', '模型报告 · 正在对照展开与关闭状态（示例）'),
+          node('等待视觉验收', 'blocked', '需要确认模块展开后的密度与节点说明的可读性。', '待确认 · 当前为设计稿示例状态'),
+          node('补充空任务呈现', 'pending', '无任务数据时展示明确的空状态。'),
+          node('整理验收说明与长证据引用的显示方式', 'pending', '长标题与长引用应保持可读，不撑开弹层。')
+        ]},
+        { id: 'activity', title: '历史与心跳', items: [
+          node('独立圆形入口', 'completed', '历史与心跳按点击打开，保持默认界面简洁。'),
+          node('历史时间线', 'completed', '展示范围变化、节点完成与进度更新。'),
+          node('心跳记录摘要', 'completed', '展示最近巡检与记录状态，不暗示实时执行。', '已验证 · 使用只读巡检记录文案（示例）'),
+          node('完善面板互斥切换', 'active', '同一时间只展示任务、历史、心跳中的一个面板。'),
+          node('历史无记录状态', 'pending', '无历史记录时提供清晰说明。'),
+          node('心跳过期提示', 'pending', '以记录时间和状态表达过期情况。')
+        ]},
+        { id: 'polish', title: '兼容与打磨', items: [
+          node('窄窗口排版', 'pending', '在窄窗口下保持圆钮尺寸与内容可读。'),
+          node('键盘与焦点', 'pending', '支持 Tab、Enter、Space 与 Esc，关闭后返回入口。'),
+          node('减少动效', 'pending', '系统偏好减少动效时，停用位移与缩放。'),
+          node('长标题与证据路径', 'pending', '检查长内容的省略、换行与内部滚动。', '示例引用 · /workspace/project/delivery/acceptance/very-long-module-name/task-progress-visual-acceptance.md')
+        ]}
+      ];
+      const labels = { completed: '已完成', active: '进行中', blocked: '已阻塞', pending: '待开始', cancelled: '已取消' };
+      const effective = module => module.items.filter(item => item.status !== 'cancelled');
+      const counts = module => ({ done: effective(module).filter(item => item.status === 'completed').length, total: effective(module).length });
+      const leaves = modules.flatMap(effective);
+      const done = leaves.filter(item => item.status === 'completed').length;
+      const percent = leaves.length ? Math.round(done / leaves.length * 100) : 0;
+      const params = new URLSearchParams(location.search);
+      const root = document.documentElement;
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+      let explicitTheme = ['light', 'dark'].includes(params.get('theme')) ? params.get('theme') : null;
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        document.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme)));
+      }
+      setTheme(explicitTheme || (media.matches ? 'dark' : 'light'));
+      media.addEventListener('change', event => { if (!explicitTheme) setTheme(event.matches ? 'dark' : 'light'); });
+      document.querySelectorAll('[data-theme-choice]').forEach(button => button.addEventListener('click', () => { explicitTheme = button.dataset.themeChoice; setTheme(explicitTheme); }));
+      if (params.get('motion') === 'reduce') root.dataset.motion = 'reduce';
+      const title = params.get('title') === 'long' ? '统一任务、子模块与节点进度，以及跨工作区历史记录和心跳状态的完整视觉升级' : '进度插件视觉升级';
+      document.getElementById('capsule-title').textContent = title;
+      document.getElementById('tasks-title').textContent = title;
+      document.getElementById('task-trigger').title = title;
+      document.getElementById('task-trigger').setAttribute('aria-label', `${title}，进行中，已完成 ${done} / ${leaves.length} 节点，${percent}%，查看子任务`);
+      document.getElementById('capsule-count').textContent = `${done} / ${leaves.length} 节点`;
+      document.getElementById('capsule-percent').textContent = percent;
+      document.getElementById('total-count').textContent = `${done} / ${leaves.length}`;
+      document.getElementById('overall-progress').setAttribute('aria-valuenow', percent);
+      document.getElementById('overall-progress').setAttribute('aria-valuetext', `已完成 ${done} / ${leaves.length} 节点`);
+      root.style.setProperty('--progress', done / leaves.length);
+      const list = document.getElementById('module-list');
+      list.innerHTML = modules.map((module, index) => {
+        const count = counts(module);
+        const status = count.done === count.total ? 'completed' : module.items.some(item => item.status === 'active') ? 'active' : 'pending';
+        const pct = Math.round(count.done / count.total * 100);
+        return `<div class="module" data-module="${module.id}">
+          <button type="button" class="module-button" id="module-${module.id}" aria-expanded="false" aria-controls="nodes-${module.id}" aria-label="${escape(module.title)}，${labels[status]}，已完成 ${count.done} / ${count.total} 节点，${pct}%">
+            <span class="module-icon is-${status}">${status === 'completed' ? icon('check') : `<span class="mono">0${index + 1}</span>`}</span>
+            <span class="module-content"><span class="module-name-row"><span class="module-name">${escape(module.title)}</span><span class="module-percent mono">${pct}%</span></span><span class="module-track" style="display:block"><span class="module-fill" style="display:block;--progress:${count.done / count.total}"></span></span><span class="module-meta"><span class="mono">${count.done} / ${count.total}</span><span>节点完成</span><span class="module-status">${labels[status]}</span></span></span>${icon('chevron', 'module-arrow')}
+          </button><div class="nodes" id="nodes-${module.id}" role="group" aria-labelledby="module-${module.id}" hidden>${module.items.map(item => `<article class="node"><span class="node-state ${item.status}" aria-hidden="true">${item.status === 'completed' ? icon('check') : item.status === 'blocked' ? '!' : ''}</span><div class="node-top"><span class="node-name">${escape(item.title)}</span><span class="node-status ${item.status}">${labels[item.status]}</span></div><p class="node-description">${escape(item.description)}</p>${item.evidence ? `<div class="evidence">${icon(item.status === 'completed' ? 'shield' : 'layers')}<span>${escape(item.evidence)}</span></div>` : ''}</article>`).join('')}</div></div>`;
+      }).join('');
+      function toggleModule(button, expanded) {
+        const next = expanded ?? button.getAttribute('aria-expanded') !== 'true';
+        document.querySelectorAll('.module-button').forEach(other => {
+          const isOpen = other === button && next;
+          other.setAttribute('aria-expanded', String(isOpen));
+          document.getElementById(other.getAttribute('aria-controls')).hidden = !isOpen;
+        });
+        if (next) {
+          const row = button.getBoundingClientRect();
+          const viewport = list.getBoundingClientRect();
+          if (row.top < viewport.top || row.bottom > viewport.bottom) list.scrollTop += row.top - viewport.top;
+        }
+      }
+      list.addEventListener('click', event => { const button = event.target.closest('.module-button'); if (button) toggleModule(button); });
+      const dock = document.getElementById('dock');
+      const popover = document.getElementById('progress-popover');
+      const triggers = [...document.querySelectorAll('[data-view]')];
+      let current = null;
+      let closeTimer;
+      const panelTitle = view => document.getElementById(`${view}-title`);
+      function positionPanel() {
+        const dockRect = dock.getBoundingClientRect();
+        const popoverTop = dockRect.top + 55;
+        const composerTop = document.querySelector('.composer-wrap').getBoundingClientRect().top;
+        const available = Math.min(innerHeight - 18, composerTop - 12) - popoverTop;
+        const compact = available < 250;
+        popover.classList.toggle('is-compact', compact);
+        const width = Math.min(464, innerWidth - 24);
+        dock.style.setProperty('--compact-width', `${width}px`);
+        dock.style.setProperty('--compact-left', `${Math.min(Math.max(12, dockRect.left), innerWidth - width - 12)}px`);
+        dock.style.setProperty('--panel-height', `${Math.max(0, Math.min(496, available))}px`);
+      }
+      function closePanel(restoreFocus = true, immediate = false) {
+        if (!current) return;
+        clearTimeout(closeTimer);
+        const previous = triggers.find(button => button.dataset.view === current);
+        current = null;
+        triggers.forEach(button => button.setAttribute('aria-expanded', 'false'));
+        dock.classList.remove('has-panel');
+        popover.inert = true;
+        popover.classList.remove('is-entering');
+        if (restoreFocus) previous.focus({ preventScroll: true });
+        if (immediate || root.dataset.motion === 'reduce' || matchMedia('(prefers-reduced-motion: reduce)').matches) { popover.hidden = true; return; }
+        popover.classList.add('is-leaving');
+        closeTimer = setTimeout(() => { popover.hidden = true; popover.classList.remove('is-leaving'); }, 130);
+      }
+      function showPanel(view, focus = true, animate = true) {
+        clearTimeout(closeTimer);
+        popover.classList.remove('is-entering', 'is-leaving');
+        current = view;
+        triggers.forEach(button => button.setAttribute('aria-expanded', String(button.dataset.view === view)));
+        document.querySelectorAll('[data-panel]').forEach(panel => { panel.hidden = panel.dataset.panel !== view; });
+        popover.setAttribute('aria-labelledby', `${view}-title`);
+        popover.hidden = false;
+        popover.inert = false;
+        dock.classList.add('has-panel');
+        positionPanel();
+        if (animate) { void popover.offsetWidth; popover.classList.add('is-entering'); }
+        if (focus) panelTitle(view).focus({ preventScroll: true });
+        document.getElementById('announcement').textContent = `${{ tasks: '子任务', history: '历史', heartbeat: '心跳' }[view]}面板已展开，当前为模拟数据。`;
+      }
+      triggers.forEach(button => button.addEventListener('click', () => current === button.dataset.view ? closePanel() : showPanel(button.dataset.view)));
+      document.querySelectorAll('.close').forEach(button => button.addEventListener('click', () => closePanel()));
+      document.addEventListener('click', event => {
+        if (current && !dock.contains(event.target)) {
+          const focusable = event.target.closest('button, a[href], input, select, textarea, [tabindex]');
+          closePanel(!focusable);
+        }
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && current) {
+          event.preventDefault();
+          const activeModule = list.querySelector('.module-button[aria-expanded="true"]');
+          if (current === 'tasks' && activeModule && list.contains(document.activeElement)) { toggleModule(activeModule, false); activeModule.focus({ preventScroll: true }); }
+          else closePanel();
+        }
+      });
+      document.addEventListener('focusin', event => { if (current && !dock.contains(event.target)) closePanel(false); });
+      function drawEdge() {
+        const width = document.getElementById('task-trigger').getBoundingClientRect().width;
+        const svg = document.querySelector('.edge-progress');
+        svg.setAttribute('viewBox', `0 0 ${width} 44`);
+        const path = `M 1.5 22 A 20.5 20.5 0 0 0 22 42.5 H ${width - 22} A 20.5 20.5 0 0 0 ${width - 1.5} 22`;
+        svg.querySelectorAll('path').forEach(item => item.setAttribute('d', path));
+        svg.querySelector('.edge-fill').setAttribute('stroke-dasharray', `${percent} 100`);
+      }
+      new ResizeObserver(() => { drawEdge(); positionPanel(); }).observe(dock);
+      addEventListener('resize', positionPanel);
+      addEventListener('scroll', positionPanel, { passive: true });
+      drawEdge();
+      const initial = params.get('state');
+      if (['open', 'detail', 'history', 'heartbeat'].includes(initial)) {
+        showPanel(['open', 'detail'].includes(initial) ? 'tasks' : initial, false, false);
+        if (initial === 'detail') toggleModule(document.getElementById('module-hierarchy'), true);
+      }
+      window.__ready = true;
+    })();
+  </script>
+</body>
+</html>
