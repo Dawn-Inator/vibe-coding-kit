@@ -34,6 +34,7 @@ function optionalConsumer() {
   commit(fixture.source, 'seed runnable kit with optional catalog');
   git(fixture.project, ['submodule', 'deinit', '-f', '--', '.vibe-coding/kit']);
   git(fixture.project, ['rm', '-f', '.vibe-coding/kit']);
+  git(fixture.project, ['rm', '-f', '.vibe-coding/project.config.json']);
   git(fixture.project, ['config', '-f', '.gitmodules', '--remove-section', 'submodule.vibe-coding-kit'], { allowFailure: true });
   rmSync(join(fixture.project, '.gitmodules'), { force: true });
   rmSync(join(fixture.project, '.vibe-coding/kit'), { recursive: true, force: true });
