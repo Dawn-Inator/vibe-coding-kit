@@ -71,6 +71,8 @@ export function readHeartbeatLedgerPair(options: {
 	root: string;
 	path: string;
 	migrate?: false;
+	/** Maximum combined bytes of head and history; the backup is also bounded. */
+	maxBytes?: number;
 }): HeartbeatLedgerPair;
 export function inspectHeartbeatLedgerPair(
 	pair: HeartbeatLedgerPair,

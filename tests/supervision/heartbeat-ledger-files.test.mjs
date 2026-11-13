@@ -802,3 +802,61 @@ test("all references in one finding map independently across files and unlocated
 	assert.ok(multi.message.includes(pair.headPath));
 	assert.deepEqual(plain, { rule: "plain", message: "no location" });
 });
+
+test("bounded legacy reads honor exact byte limits and reject oversized input before parsing", () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md");
+	const contents = `${wake("2026-01-01T10:00Z")}\n汉字\n`;
+	writeFileSync(path, contents);
+	const size = Buffer.byteLength(contents);
+	const bounded = readHeartbeatLedgerPair({ root: dir, path, maxBytes: size });
+	assert.equal(bounded.headText, contents);
+	assert.equal(bounded.isLegacy, true);
+	assert.throws(
+		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: size - 1 }),
+		/exceeds.*byte read limit/i,
+	);
+	for (const maxBytes of [
+		0,
+		-1,
+		1.5,
+		NaN,
+		Infinity,
+		Number.MAX_SAFE_INTEGER + 1,
+		"100",
+	])
+		assert.throws(
+			() => readHeartbeatLedgerPair({ root: dir, path, maxBytes }),
+			/positive safe integer/i,
+		);
+});
+
+test("bounded paired reads enforce combined size, including grown companion before parsing", () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(
+		path,
+		`${wake("2026-01-01T10:00Z")}\n${wake("2026-01-01T11:00Z")}`,
+	);
+	const ordinary = migrate({ root: dir, path }),
+		paths = heartbeatLedgerPairPaths(path);
+	const head = readFileSync(path, "utf8"),
+		history = readFileSync(paths.historyPath, "utf8");
+	const size = Buffer.byteLength(head) + Buffer.byteLength(history);
+	const bounded = readHeartbeatLedgerPair({ root: dir, path, maxBytes: size });
+	assert.deepEqual(bounded, ordinary);
+	assert.throws(
+		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: size - 1 }),
+		/exceeds.*byte read limit/i,
+	);
+	// A grown, no longer valid history must hit the bound before integrity parsing.
+	writeFileSync(paths.historyPath, `${history}${"x".repeat(1024)}`);
+	assert.throws(
+		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: size }),
+		/exceeds.*byte read limit/i,
+	);
+	assert.throws(
+		() => readHeartbeatLedgerPair({ root: dir, path }),
+		/integrity/i,
+	);
+});

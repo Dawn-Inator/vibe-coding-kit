@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import {
 	closeSync,
+	constants,
 	existsSync,
+	fstatSync,
 	openSync,
 	readFileSync,
+	readSync,
 	realpathSync,
 	statSync,
 	unlinkSync,
@@ -179,10 +182,82 @@ function canonicalHead(raw, paths) {
 function historyText(body, head, backup, paths, previousHead) {
 	return `<!-- heartbeat-history:v3 source=${encodeURIComponent(paths.headPath)} body=${sha(body)} base=${sha(head)} bytes=${Buffer.byteLength(head)} backup=${sha(backup)} previous=${sha(previousHead)} planned=${Buffer.from(head, "utf8").toString("base64")} -->\n${body}`;
 }
-function verifiedHistory(paths) {
+// Open both files before reading so a combined limit is enforced without
+// materializing either oversized file. The read loop also catches growth after fstat.
+function boundedPairInputs(paths, maxBytes) {
+	const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+	const descriptors = [];
+	const openRegular = (path, optional = false) => {
+		let fd;
+		try {
+			fd = openSync(path, flags);
+		} catch (error) {
+			if (optional && error?.code === "ENOENT") return null;
+			throw error;
+		}
+		descriptors.push(fd);
+		const info = fstatSync(fd);
+		if (!info.isFile())
+			throw new Error("Heartbeat source must be a regular file");
+		return { fd, info };
+	};
+	const readBounded = (file, limit) => {
+		if (file.info.size > limit)
+			throw new Error(`Heartbeat pair exceeds the ${maxBytes} byte read limit`);
+		const chunks = [];
+		let total = 0;
+		for (;;) {
+			const size = Math.min(65536, limit - total + 1);
+			const chunk = Buffer.allocUnsafe(size);
+			const count = readSync(file.fd, chunk, 0, size, null);
+			if (!count) break;
+			total += count;
+			if (total > limit)
+				throw new Error(
+					`Heartbeat pair exceeds the ${maxBytes} byte read limit`,
+				);
+			chunks.push(chunk.subarray(0, count));
+		}
+		return {
+			text: Buffer.concat(chunks, total).toString("utf8"),
+			bytes: total,
+		};
+	};
+	try {
+		const head = openRegular(paths.headPath);
+		const history = openRegular(paths.historyPath, true);
+		if (head.info.size + (history?.info.size ?? 0) > maxBytes)
+			throw new Error(`Heartbeat pair exceeds the ${maxBytes} byte read limit`);
+		const headData = readBounded(head, maxBytes);
+		const historyData = history
+			? readBounded(history, maxBytes - headData.bytes)
+			: null;
+		let backupText;
+		if (history) {
+			const backup = openRegular(paths.legacyBackupPath, true);
+			if (!backup)
+				throw new Error(
+					"Heartbeat pair is incomplete: immutable backup missing",
+				);
+			backupText = readBounded(backup, maxBytes).text;
+		}
+		return {
+			headText: headData.text,
+			historyText: historyData?.text,
+			backupText,
+			modifiedAt: new Date(
+				Math.max(head.info.mtimeMs, history?.info.mtimeMs ?? 0),
+			).toISOString(),
+		};
+	} finally {
+		for (const fd of descriptors) closeSync(fd);
+	}
+}
+function verifiedHistory(paths, bounded) {
 	if (!existsSync(paths.historyPath))
 		throw new Error("Heartbeat history companion missing");
-	const history = readFileSync(paths.historyPath, "utf8"),
+	const history =
+			bounded?.historyText ?? readFileSync(paths.historyPath, "utf8"),
 		match = HISTORY.exec(history);
 	if (!match || decodeURIComponent(match[1]) !== paths.headPath)
 		throw new Error(
@@ -190,7 +265,8 @@ function verifiedHistory(paths) {
 		);
 	if (!existsSync(paths.legacyBackupPath))
 		throw new Error("Heartbeat pair is incomplete: immutable backup missing");
-	const backup = readFileSync(paths.legacyBackupPath, "utf8"),
+	const backup =
+			bounded?.backupText ?? readFileSync(paths.legacyBackupPath, "utf8"),
 		body = history.slice(match[0].length);
 	const plannedBuffer = Buffer.from(match[7], "base64"),
 		planned = plannedBuffer.toString("utf8");
@@ -212,10 +288,14 @@ function verifiedHistory(paths) {
 	return { history, match, body, planned };
 }
 
-function readPair(paths) {
-	const headText = readFileSync(paths.headPath, "utf8");
+function readPair(paths, maxBytes) {
+	const bounded =
+		maxBytes === undefined ? undefined : boundedPairInputs(paths, maxBytes);
+	const headText = bounded?.headText ?? readFileSync(paths.headPath, "utf8");
 	const headMatch = HEAD.exec(headText);
-	if (!existsSync(paths.historyPath)) {
+	if (
+		bounded ? bounded.historyText === undefined : !existsSync(paths.historyPath)
+	) {
 		if (headMatch || /^<!-- heartbeat-head:v\d+\b/.test(headText))
 			throw new Error(
 				"Canonical heartbeat head references a missing history companion",
@@ -225,7 +305,9 @@ function readPair(paths) {
 			historyText: "",
 			fullText: headText,
 			contentHash: sha(`${headText}\0`),
-			modifiedAt: new Date(statSync(paths.headPath).mtimeMs).toISOString(),
+			modifiedAt:
+				bounded?.modifiedAt ??
+				new Date(statSync(paths.headPath).mtimeMs).toISOString(),
 			headPath: paths.headPath,
 			historyPath: paths.historyPath,
 			isLegacy: true,
@@ -236,7 +318,7 @@ function readPair(paths) {
 			})),
 		};
 	}
-	const { history, match, body } = verifiedHistory(paths);
+	const { history, match, body } = verifiedHistory(paths, bounded);
 	if (!headMatch)
 		throw new Error("Heartbeat pair is incomplete: head reference missing");
 	if (
@@ -274,20 +356,27 @@ function readPair(paths) {
 		historyText: history,
 		fullText,
 		contentHash: sha(`${headText}\0${history}`),
-		modifiedAt: new Date(
-			Math.max(
-				statSync(paths.headPath).mtimeMs,
-				statSync(paths.historyPath).mtimeMs,
-			),
-		).toISOString(),
+		modifiedAt:
+			bounded?.modifiedAt ??
+			new Date(
+				Math.max(
+					statSync(paths.headPath).mtimeMs,
+					statSync(paths.historyPath).mtimeMs,
+				),
+			).toISOString(),
 		headPath: paths.headPath,
 		historyPath: paths.historyPath,
 		isLegacy: false,
 		wakes: [...archive, ...appended],
 	};
 }
-export function readHeartbeatLedgerPair({ root, path }) {
-	return readPair(safePaths(root, path));
+export function readHeartbeatLedgerPair({ root, path, maxBytes }) {
+	if (
+		maxBytes !== undefined &&
+		(!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+	)
+		throw new TypeError("maxBytes must be a positive safe integer");
+	return readPair(safePaths(root, path), maxBytes);
 }
 
 // Audit one coherent view: the live head supplies the inventory and all non-wake
