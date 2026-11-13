@@ -24,6 +24,7 @@ import {
   GoalProgressIpcClientError,
   type GoalProgressIpcRequestInput,
   goalProgressIpcRequestBytes,
+  TASK_PROGRESS_REQUEST_TIMEOUT_MS,
 } from "../../ipc/src/index.js";
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
 import {
@@ -778,7 +779,9 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
           } satisfies GoalProgressIpcRequestInput;
           const oversized = await rejectOversizedRequest(client, request, identity);
           if (oversized) return oversized;
-          const response = await client.request(request);
+          const response = await client.request(request, {
+            timeoutMs: TASK_PROGRESS_REQUEST_TIMEOUT_MS,
+          });
           return {
             content: [
               {

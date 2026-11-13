@@ -12,6 +12,7 @@ import {
 
 export const GOAL_PROGRESS_IPC_PROTOCOL_VERSION = 4 as const;
 export const GOAL_PROGRESS_IPC_MAX_MESSAGE_BYTES = 1_048_576;
+export const TASK_PROGRESS_REQUEST_TIMEOUT_MS = 30_000;
 export const GoalProgressRendererTargetIdSchema = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u);

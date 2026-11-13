@@ -1,5 +1,4 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { z } from "zod";
 import {
   GOAL_PROGRESS_RELEASE_VERSION,
@@ -24,6 +23,8 @@ export * from "./view-client.js";
 
 const APP_SERVER_REQUEST_TIMEOUT_MS = 10_000;
 const APP_SERVER_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const APP_SERVER_MAX_TIMED_OUT_REQUESTS = 256;
+const APP_SERVER_MAX_RETAINED_HISTORY_ITEMS = 256;
 
 const RequestIdSchema = z.union([z.string(), z.number()]);
 
@@ -140,6 +141,7 @@ export interface CodexAppServerClientOptions {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly requestTimeoutMs?: number;
+  readonly outputMode?: "bounded" | "stream";
   readonly onNotification?: (notification: AppServerNotificationSummary) => void;
 }
 
@@ -151,6 +153,13 @@ export interface AppServerNotificationSummary {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function appendBounded<T>(items: T[], item: T): void {
+  if (items.length === APP_SERVER_MAX_RETAINED_HISTORY_ITEMS) {
+    items.shift();
+  }
+  items.push(item);
 }
 
 function threadCatalogEntry(
@@ -171,7 +180,10 @@ function threadCatalogEntry(
 export class CodexAppServerClient implements ThreadCatalog {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #pending = new Map<string | number, PendingRequest>();
+  readonly #timedOutIds = new Set<string | number>();
+  readonly #timedOutIdOrder: (string | number)[] = [];
   readonly #requestTimeoutMs: number;
+  readonly #outputMode: "bounded" | "stream";
   readonly #requestMethods: string[] = [];
   readonly #notifications: AppServerNotificationSummary[] = [];
   readonly #tokenUsageNotifications: ThreadTokenUsageUpdatedNotification[] = [];
@@ -180,6 +192,8 @@ export class CodexAppServerClient implements ThreadCatalog {
   #resolveClosed!: () => void;
   #nextRequestId = 1;
   #outputBytes = 0;
+  #frame = "";
+  #frameBytes = 0;
   #stderr = "";
   #failed: Error | undefined;
   #closing = false;
@@ -187,6 +201,7 @@ export class CodexAppServerClient implements ThreadCatalog {
 
   private constructor(options: CodexAppServerClientOptions) {
     this.#requestTimeoutMs = options.requestTimeoutMs ?? APP_SERVER_REQUEST_TIMEOUT_MS;
+    this.#outputMode = options.outputMode ?? "bounded";
     this.#onNotification = options.onNotification;
     this.#closed = new Promise((resolveClosed) => {
       this.#resolveClosed = resolveClosed;
@@ -199,15 +214,7 @@ export class CodexAppServerClient implements ThreadCatalog {
 
     this.#child.stdout.setEncoding("utf8");
     this.#child.stderr.setEncoding("utf8");
-    const lines = createInterface({ input: this.#child.stdout });
-    lines.on("line", (line) => {
-      this.#outputBytes += Buffer.byteLength(line) + 1;
-      if (this.#outputBytes > APP_SERVER_MAX_OUTPUT_BYTES) {
-        this.#fail(new Error("GOAL_PROGRESS_APP_SERVER_OUTPUT_LIMIT"));
-        return;
-      }
-      this.#handleLine(line);
-    });
+    this.#child.stdout.on("data", (chunk: string) => this.#consumeOutput(chunk));
     this.#child.stderr.on("data", (chunk: string) => {
       this.#stderr = `${this.#stderr}${chunk}`.slice(-8_000);
     });
@@ -215,6 +222,7 @@ export class CodexAppServerClient implements ThreadCatalog {
       this.#fail(error);
     });
     this.#child.on("close", (code) => {
+      this.#clearTimedOutIds();
       if (!this.#closing && !this.#failed) {
         this.#fail(
           new Error(`GOAL_PROGRESS_APP_SERVER_EXITED: code=${String(code)} stderr=${this.#stderr}`),
@@ -319,6 +327,7 @@ export class CodexAppServerClient implements ThreadCatalog {
   }
 
   async close(): Promise<void> {
+    this.#clearTimedOutIds();
     if (this.#child.exitCode !== null) {
       await this.#closed;
       return;
@@ -360,11 +369,12 @@ export class CodexAppServerClient implements ThreadCatalog {
     }
     const id = this.#nextRequestId;
     this.#nextRequestId += 1;
-    this.#requestMethods.push(method);
+    appendBounded(this.#requestMethods, method);
 
     const response = new Promise<unknown>((resolveResponse, rejectResponse) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
+        this.#rememberTimedOutId(id);
         rejectResponse(new Error(`GOAL_PROGRESS_APP_SERVER_TIMEOUT: ${method}`));
       }, this.#requestTimeoutMs);
       this.#pending.set(id, {
@@ -394,6 +404,68 @@ export class CodexAppServerClient implements ThreadCatalog {
     this.#child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
+  #consumeOutput(chunk: string): void {
+    let cursor = 0;
+    while (cursor < chunk.length) {
+      const newline = chunk.indexOf("\n", cursor);
+      const end = newline < 0 ? chunk.length : newline;
+      const segment = chunk.slice(cursor, end);
+      const segmentBytes = Buffer.byteLength(segment);
+      if (this.#frameBytes + segmentBytes + (newline < 0 ? 0 : 1) > APP_SERVER_MAX_OUTPUT_BYTES) {
+        this.#fail(new Error("GOAL_PROGRESS_APP_SERVER_OUTPUT_LIMIT"));
+        return;
+      }
+      this.#frame += segment;
+      this.#frameBytes += segmentBytes;
+      if (newline < 0) {
+        return;
+      }
+      this.#frameBytes += 1;
+      const line = this.#frame.endsWith("\r") ? this.#frame.slice(0, -1) : this.#frame;
+      this.#frame = "";
+      this.#frameBytes = 0;
+      if (this.#outputMode === "bounded") {
+        this.#outputBytes += Buffer.byteLength(line) + 1;
+        if (this.#outputBytes > APP_SERVER_MAX_OUTPUT_BYTES) {
+          this.#fail(new Error("GOAL_PROGRESS_APP_SERVER_OUTPUT_LIMIT"));
+          return;
+        }
+      }
+      this.#handleLine(line);
+      if (this.#failed) {
+        return;
+      }
+      cursor = end + 1;
+    }
+  }
+
+  #rememberTimedOutId(id: string | number): void {
+    this.#timedOutIds.add(id);
+    this.#timedOutIdOrder.push(id);
+    while (this.#timedOutIdOrder.length > APP_SERVER_MAX_TIMED_OUT_REQUESTS) {
+      const expiredId = this.#timedOutIdOrder.shift();
+      if (expiredId !== undefined) {
+        this.#timedOutIds.delete(expiredId);
+      }
+    }
+  }
+
+  #consumeTimedOutId(id: string | number): boolean {
+    if (!this.#timedOutIds.delete(id)) {
+      return false;
+    }
+    const index = this.#timedOutIdOrder.indexOf(id);
+    if (index >= 0) {
+      this.#timedOutIdOrder.splice(index, 1);
+    }
+    return true;
+  }
+
+  #clearTimedOutIds(): void {
+    this.#timedOutIds.clear();
+    this.#timedOutIdOrder.length = 0;
+  }
+
   #handleLine(line: string): void {
     let value: unknown;
     try {
@@ -404,9 +476,13 @@ export class CodexAppServerClient implements ThreadCatalog {
     }
 
     const response = RpcResponseSchema.safeParse(value);
-    if (response.success && this.#pending.has(response.data.id)) {
+    if (response.success) {
       const pending = this.#pending.get(response.data.id);
       if (!pending) {
+        if (this.#consumeTimedOutId(response.data.id)) {
+          return;
+        }
+        this.#fail(new Error("GOAL_PROGRESS_APP_SERVER_UNEXPECTED_MESSAGE"));
         return;
       }
       clearTimeout(pending.timeout);
@@ -462,14 +538,14 @@ export class CodexAppServerClient implements ThreadCatalog {
           return;
         }
         tokenUsage = parsedTokenUsage.data;
-        this.#tokenUsageNotifications.push(tokenUsage);
+        appendBounded(this.#tokenUsageNotifications, tokenUsage);
       }
       const summary: AppServerNotificationSummary = {
         method: notification.data.method,
         ...(threadId === undefined ? {} : { threadId }),
         ...(tokenUsage === undefined ? {} : { tokenUsage }),
       };
-      this.#notifications.push(summary);
+      appendBounded(this.#notifications, summary);
       this.#onNotification?.(summary);
       return;
     }
@@ -487,6 +563,7 @@ export class CodexAppServerClient implements ThreadCatalog {
       pending.reject(error);
     }
     this.#pending.clear();
+    this.#clearTimedOutIds();
     this.#child.kill("SIGTERM");
   }
 }

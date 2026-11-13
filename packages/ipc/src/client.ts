@@ -54,6 +54,10 @@ export interface GoalProgressIpcClientOptions {
   readonly timeoutMs?: number;
 }
 
+export interface GoalProgressIpcRequestOptions {
+  readonly timeoutMs?: number;
+}
+
 async function connectSocket(path: string, timeoutMs: number): Promise<Socket> {
   return new Promise((resolveSocket, rejectSocket) => {
     const socket = createConnection(path);
@@ -253,14 +257,24 @@ export class GoalProgressIpcClient {
     this.#timeoutMs = options.timeoutMs ?? 5_000;
   }
 
-  async request(request: GoalProgressIpcRequestInput): Promise<GoalProgressIpcSuccessResponse> {
+  async request(
+    request: GoalProgressIpcRequestInput,
+    options: GoalProgressIpcRequestOptions = {},
+  ): Promise<GoalProgressIpcSuccessResponse> {
+    const timeoutMs = options.timeoutMs ?? this.#timeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new GoalProgressIpcClientError(
+        "IPC_TIMEOUT_INVALID",
+        "Goal Progress IPC request timeout must be a positive safe integer",
+      );
+    }
     if (goalProgressIpcRequestBytes(request) > GOAL_PROGRESS_IPC_MAX_MESSAGE_BYTES) {
       throw new GoalProgressIpcClientError(
         "IPC_MESSAGE_TOO_LARGE",
         "Goal Progress Helper request exceeded the size limit",
       );
     }
-    const deadlineMs = Date.now() + this.#timeoutMs;
+    const deadlineMs = Date.now() + timeoutMs;
     const remainingTimeout = (): number => {
       const remaining = deadlineMs - Date.now();
       if (remaining <= 0) {

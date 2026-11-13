@@ -441,6 +441,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
         ? await this.#options.command()
         : this.#options.command;
     return CodexAppServerClient.connect({
+      outputMode: "stream",
       onNotification: (notification) => this.#onNotification(notification),
       ...(command === undefined ? {} : { command }),
       ...(this.#options.args === undefined ? {} : { args: this.#options.args }),

@@ -8,7 +8,7 @@ import {
   GoalProgressViewModelSchema,
   migrateGoalProgressUiPreference,
 } from "../../contracts/src/index.js";
-import { GoalProgressIpcClient } from "../../ipc/src/index.js";
+import { GoalProgressIpcClient, TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
 
 export interface GoalProgressViewState {
   readonly viewModel: GoalProgressViewModel;
@@ -75,15 +75,18 @@ export class GoalProgressCdpViewClient {
   }
 
   async taskRequest(request: import("./renderer-bridge.js").TaskPageRequest): Promise<unknown> {
-    const response = await this.#client.request({
-      method: "task.view",
-      params: {
-        threadId: request.threadId,
-        action: request.method,
-        ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
-        ...(request.path === undefined ? {} : { path: request.path }),
+    const response = await this.#client.request(
+      {
+        method: "task.view",
+        params: {
+          threadId: request.threadId,
+          action: request.method,
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          ...(request.path === undefined ? {} : { path: request.path }),
+        },
       },
-    });
+      { timeoutMs: TASK_PROGRESS_REQUEST_TIMEOUT_MS },
+    );
     return response.result;
   }
 

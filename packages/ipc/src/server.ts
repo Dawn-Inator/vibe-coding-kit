@@ -9,6 +9,7 @@ import {
   type GoalProgressIpcRequest,
   GoalProgressIpcRequestSchema,
   type GoalProgressIpcResponse,
+  TASK_PROGRESS_REQUEST_TIMEOUT_MS,
 } from "./protocol.js";
 
 const GOAL_PROGRESS_IPC_IDLE_TIMEOUT_MS = 10_000;
@@ -347,6 +348,11 @@ export class GoalProgressIpcServer {
               );
               return;
             }
+            const isTaskRequest =
+              request.method === "task.request" || request.method === "task.view";
+            if (isTaskRequest) {
+              socket.setTimeout(TASK_PROGRESS_REQUEST_TIMEOUT_MS, () => socket.destroy());
+            }
             try {
               if (!connectionContext) {
                 throw new GoalProgressIpcHandlerError(
@@ -417,6 +423,10 @@ export class GoalProgressIpcServer {
                       ),
                     ),
               );
+            } finally {
+              if (isTaskRequest && !socket.destroyed) {
+                socket.setTimeout(GOAL_PROGRESS_IPC_IDLE_TIMEOUT_MS, () => socket.destroy());
+              }
             }
           })
           .catch(() => {
