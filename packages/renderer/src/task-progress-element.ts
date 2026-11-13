@@ -199,6 +199,7 @@ export class TaskProgressElement extends LitElement {
     .path-value { overflow-wrap: anywhere; word-break: break-word; }
     .diagnostic { margin: 6px 0; overflow-wrap: anywhere; }
     .diagnostic-text { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; user-select: text; padding: 7px; border: 1px solid var(--ctp-border, #ddd); border-radius: 6px; background: var(--ctp-hover, #8888880a); font: .82em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     .grip { cursor: move; touch-action: none; user-select: none; color: var(--ctp-muted, #707070); }
     details { margin-top: 7px; } summary { cursor: pointer; }
     @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
@@ -696,6 +697,7 @@ export class TaskProgressElement extends LitElement {
       return this.connectionError
         ? this.t("Checklist unavailable", "清单暂不可用")
         : this.t("Reading checklist…", "正在读取清单…");
+    if (this.connectionError) return this.t("Checklist unavailable", "清单暂不可用");
     const progress = this.data.task?.progress;
     const sourceStatus = this.data.taskSource?.status;
     if (
@@ -711,7 +713,6 @@ export class TaskProgressElement extends LitElement {
             : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
       return label;
     }
-    if (this.connectionError) return this.t("Checklist unavailable", "清单暂不可用");
     const counts = `${this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
     const source =
       this.data.task?.source?.kind === "kit-heartbeat"
@@ -767,7 +768,7 @@ export class TaskProgressElement extends LitElement {
       (!checklistComplete || this.data.execution?.state === "idle");
     const countedPercent = progress?.percent ?? 0;
     const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
-    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div>${
+    return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}><div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}<button class="main" aria-expanded=${this.expanded} @click=${this.toggleExpanded}><span class="title">${this.expanded ? "▾" : "▸"} ${title}</span><span class="muted">${this.checklistLabel()} · <span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${this.executionLabel(checklistComplete)}</span></span>${showProgressBar ? html`<div class="track" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><div class="fill" style=${`width:${Math.max(0, Math.min(100, countedPercent))}%`}></div></div>` : nothing}</button><button title=${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")} aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? "↙" : "↗"}</button></div><div class="sr-status" role="status" aria-live="polite" aria-atomic="true">${this.connectionError ? this.t("Checklist unavailable", "清单暂不可用") : ""}</div>${
       this.expanded
         ? html`<div class="body"><nav role="tablist"><button role="tab" aria-selected=${this.tab === "tasks"} @click=${() => {
             this.tab = "tasks";

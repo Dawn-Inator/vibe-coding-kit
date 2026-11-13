@@ -15,7 +15,7 @@ main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 
 <aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
 <main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true" data-codex-composer></div></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[]};
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   if(request.method === 'bind-heartbeat') {
@@ -23,6 +23,7 @@ window.__codexTaskProgressRequest = async function(request) {
   }
   const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,execution:window.fixture.execution,...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
+  if(request.method==='heartbeat-history' && window.fixture.heartbeatHistoryFailureNext) { const message=window.fixture.heartbeatHistoryFailureNext; window.fixture.heartbeatHistoryFailureNext=null; throw new Error(message); }
   if(request.method==='history' && window.fixture.delayNextHistory) { const delay=window.fixture.delayNextHistory; window.fixture.delayNextHistory=0; await new Promise(resolve => setTimeout(resolve,delay)); }
   if(window.fixture.delay && request.threadId === 'thread-a') await new Promise(resolve => setTimeout(resolve,window.fixture.delay));
   return result;
@@ -405,11 +406,14 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
         });
         await panel.getByText(/只读 Kit 心跳来源/).waitFor();
-        await panel.getByRole("button", { name: /Heartbeat ledger task/ }).click();
-        await panel
-          .locator("details.heartbeat summary")
-          .filter({ hasText: "只读 Kit 任务来源" })
-          .click();
+        const mainButton = panel.locator(".summary .main");
+        if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
+        assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
+        const sourceDetails = panel
+          .locator("details.heartbeat")
+          .filter({ hasText: "只读 Kit 任务来源" });
+        if ((await sourceDetails.getAttribute("open")) === null)
+          await sourceDetails.locator("summary").click();
         await panel.getByText(/P1: missing child C1/).waitFor();
         await panel.getByText(/P1: done · C1: blocked/).waitFor();
         await context.close();
@@ -459,9 +463,6 @@ test("ordinary chat task panel browser flows", async (t) => {
           .locator(".summary")
           .getByText(/心跳任务来源已过期/)
           .waitFor();
-        await panel.evaluate((element, error) => {
-          element.connectionError = error;
-        }, longError);
         const summary = panel.locator(".summary");
         assert.ok((await summary.innerText()).length < 180);
         assert.doesNotMatch(
@@ -501,6 +502,29 @@ test("ordinary chat task panel browser flows", async (t) => {
         await mkdir(".playwright-img", { recursive: true });
         await panel.screenshot({ path: ".playwright-img/task-source-error-bounded.png" });
 
+        await page.evaluate(
+          ({ longError, projectHeartbeat }) => {
+            window.fixture.heartbeat = {
+              ...projectHeartbeat,
+              status: "ready",
+              sourcePath: "/workspace/project/heartbeat.md",
+            };
+            window.fixture.heartbeatHistoryFailureNext = longError;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { longError, projectHeartbeat: heartbeat },
+        );
+        await scroll.locator("summary").filter({ hasText: "心跳历史" }).click();
+        const liveStatus = panel.locator('[role="status"][aria-live="polite"]');
+        await liveStatus.filter({ hasText: "清单暂不可用" }).waitFor();
+        assert.equal(await liveStatus.count(), 1);
+        assert.equal(await liveStatus.getAttribute("aria-atomic"), "true");
+        assert.equal(await liveStatus.textContent(), "清单暂不可用");
+        assert.match(await summary.innerText(), /清单暂不可用/);
+        assert.doesNotMatch(
+          await summary.innerText(),
+          /I9: missing linked item|very-long-unbroken/,
+        );
         const connectionDetails = scroll
           .locator("details.diagnostic summary")
           .filter({ hasText: "连接错误详情" });
@@ -510,9 +534,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           .filter({ hasText: "连接错误详情" });
         assert.equal(
           await connectionDiagnostic.locator(".diagnostic-text").textContent(),
-          longError,
+          String(new Error(longError)),
         );
-
+        await mainButton.click();
+        assert.equal(await mainButton.getAttribute("aria-expanded"), "false");
+        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
+        assert.equal(await liveStatus.count(), 1);
+        assert.equal(await liveStatus.textContent(), "清单暂不可用");
+        assert.doesNotMatch(await liveStatus.textContent(), /I9: missing linked item/);
+        await panel.evaluate((element) => {
+          element.connectionError = null;
+        });
+        if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
+        assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
         await page.evaluate(
           ({ longError, projectHeartbeat }) => {
             window.fixture.heartbeat = {
@@ -653,7 +687,7 @@ test("ordinary chat task panel browser flows", async (t) => {
             .filter({ hasText: "历史记录不可用" })
             .locator(".diagnostic-text")
             .textContent(),
-          "temporary history failure",
+          String(new Error("temporary history failure")),
         );
         assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
         await page.waitForTimeout(150);
