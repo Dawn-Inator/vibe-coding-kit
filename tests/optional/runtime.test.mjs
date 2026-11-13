@@ -41,6 +41,24 @@ test('probe errors and malformed output are errors rather than missing', async (
   assert.equal((await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner: failed })).status, 'error');
 });
 
+test('valid doctor JSON confirms installed plugin even when doctor exits nonzero', async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  const helper = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', 'current', 'bin', 'goal-progress');
+  mkdirSync(join(helper, '..'), { recursive: true });
+  writeFileSync(helper, 'fixture');
+  let calls = 0;
+  const runner = async () => {
+    calls += 1;
+    return response(1, JSON.stringify({ ok: false, details: { pluginInstalled: true }, diagnostics: ['unhealthy sidecar'] }));
+  };
+  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'installed');
+  assert.equal(result.source, 'stable-install');
+  assert.match(result.message, /plugin remains installed/);
+  assert.equal(result.diagnostic.details.pluginInstalled, true);
+  assert.equal(calls, 1);
+});
+
 test('missing lark-cli uses the documented package, then reprobes before success', async (t) => {
   const f = fixture(t), calls = [];
   let installed = false;

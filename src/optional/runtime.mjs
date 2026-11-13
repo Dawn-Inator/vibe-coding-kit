@@ -135,14 +135,15 @@ async function inspectTaskProgress(context) {
     const stat = statSync(stableHelper);
     if (!stat.isFile()) throw new Error('installed goal-progress helper is not a regular file');
     const doctor = await run(context.runner, stableHelper, ['doctor', '--json'], dirname(stableHelper), context.env);
-    if (doctor.code !== 0) throw new Error(`goal-progress doctor failed (exit ${doctor.code})`);
     let document;
     try { document = JSON.parse(doctor.stdout); } catch { throw new Error('goal-progress doctor returned invalid JSON'); }
-    if (document?.ok === true || document?.status === 'DOCTOR_OK' || document?.code === 'DOCTOR_OK' || document?.details?.pluginInstalled === true) {
-      return result('installed', document?.details?.pluginInstalled === true && document?.ok === false
+    if (document?.details?.pluginInstalled === true) {
+      return result('installed', document?.ok === false || doctor.code !== 0
         ? 'The registered plugin remains installed; doctor reports a separate issue.' : undefined,
       { component: 'codex-task-progress', source: 'stable-install', ...(document?.details?.pluginInstalled === true ? { diagnostic: document } : {}) });
     }
+    if (doctor.code !== 0) throw new Error(`goal-progress doctor failed (exit ${doctor.code})`);
+    if (document?.ok === true || document?.status === 'DOCTOR_OK' || document?.code === 'DOCTOR_OK') return result('installed', undefined, { component: 'codex-task-progress', source: 'stable-install' });
     if (document?.ok === false || document?.status || document?.code) return result('error', 'The existing Codex Task Progress installation needs attention; run its doctor command and follow the reported repair step.');
     throw new Error('goal-progress doctor result is unrecognized');
   }
