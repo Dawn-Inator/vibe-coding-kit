@@ -215,10 +215,15 @@ export function composeSources({ projectRoot, kitRoot, skillsConfig, projectConf
       results.set(name, composeSkill({ name, commonRoot, localRoot, mode: 'local' }));
     }
   }
+  const selectedPacks = optional.legacy || Object.hasOwn(skillsConfig, 'packs') ? (skillsConfig.packs ?? []) : optional.packs;
+  const intentionallyAbsent = (name) => optional.disabledSkills.has(name) || configured.get(name)?.mode === 'exclude';
+  const packs = selectedPacks.filter((pack) => !intentionallyAbsent(pack.entry)).map((pack) => ({
+    ...pack, members: pack.members.filter((name) => !intentionallyAbsent(name)),
+  }));
   return Object.freeze({
     skills: results,
     aliases: Object.freeze({ ...(skillsConfig.aliases ?? {}) }),
-    packs: Object.freeze(optional.legacy ? [...(skillsConfig.packs ?? [])] : [...(skillsConfig.packs ?? []).filter((pack) => !optional.packs.some((item) => item.id === pack.id) && !optional.disabledSkills.has(pack.entry)), ...optional.packs]),
+    packs: Object.freeze(packs),
     provenance: Object.freeze({ kitRoot, localRoot }),
   });
 }

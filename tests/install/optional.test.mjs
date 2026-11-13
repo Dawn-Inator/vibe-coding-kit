@@ -49,6 +49,11 @@ function install(fixture, options = [], env = process.env) {
     '--identity-email', 'install@example.invalid', ...options], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture, env) });
 }
 
+function configure(fixture, category, env = process.env) {
+  return spawnSync(process.execPath, [cliPath, 'optional', 'configure', '--project-root', fixture.project,
+    '--optional', category], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture, env) });
+}
+
 test('installer accepts the full inline optional assignment and stores category preferences', () => {
   const fixture = optionalConsumer();
   const result = install(fixture, ['--optional=aliyun=on', '--optional', 'task-progress=off']);
@@ -56,10 +61,51 @@ test('installer accepts the full inline optional assignment and stores category 
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
   assert.deepEqual(config.optional, { aliyun: true, lark: false, 'non-code': false, 'task-progress': false });
   assert.match(result.stdout, /Optional categories:/);
+  const optionalMirror = join(fixture.project, '.agents/skills/alibabacloud-find-skills/SKILL.md');
+  assert.equal(existsSync(optionalMirror), true);
+  const localSkill = join(fixture.project, '.vibe-coding/skills/manual-local/SKILL.md');
+  mkdirSync(join(localSkill, '..'), { recursive: true });
+  writeFileSync(localSkill, '---\nname: manual-local\ndescription: User-owned local skill.\n---\nKeep this source.\n');
+  const durableFile = join(fixture.project, 'private-notes/credential-sentinel.txt');
+  mkdirSync(join(durableFile, '..'), { recursive: true });
+  writeFileSync(durableFile, 'keep me\n');
+
+  const disabled = configure(fixture, 'aliyun=off');
+  assert.equal(disabled.status, 0, disabled.stderr || disabled.stdout);
+  assert.equal(existsSync(optionalMirror), false);
+  assert.equal(readFileSync(localSkill, 'utf8').includes('Keep this source.'), true);
+  assert.equal(readFileSync(durableFile, 'utf8'), 'keep me\n');
+  assert.equal(existsSync(join(fixture.project, '.agents/skills/agent-orchestration-guardrails/SKILL.md')), true);
+
+  const enabled = configure(fixture, 'aliyun=on');
+  assert.equal(enabled.status, 0, enabled.stderr || enabled.stdout);
+  assert.equal(existsSync(optionalMirror), true);
 
   const changed = install(fixture, ['--optional=aliyun=off']);
   assert.equal(changed.status, 0, changed.stderr || changed.stdout);
   assert.equal(JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8')).optional.aliyun, false);
+  assert.equal(existsSync(optionalMirror), false);
+  assert.equal(readFileSync(localSkill, 'utf8').includes('Keep this source.'), true);
+  assert.equal(readFileSync(durableFile, 'utf8'), 'keep me\n');
+});
+
+test('fresh init accepts optional adopt/extend/exclude decisions from enabled categories', () => {
+  const fixture = optionalConsumer();
+  const fakeTools = join(fixture.root, 'optional-tools');
+  mkdirSync(fakeTools);
+  writeFileSync(join(fakeTools, 'lark-cli'), '#!/bin/sh\nprintf "lark-cli 1.0.0\\n"\n', { mode: 0o755 });
+  const result = install(fixture, [
+    '--optional=lark=on',
+    '--skill', 'lark=extend',
+    '--skill', 'lark-doc=exclude:User chose a smaller Lark skill set.',
+  ], { ...process.env, PATH: `${fakeTools}${delimiter}${process.env.PATH}` });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+  assert.equal(config.skills.skills.lark.mode, 'extend');
+  assert.equal(config.skills.skills['lark-doc'].mode, 'exclude');
+  assert.equal(existsSync(join(fixture.project, '.vibe-coding/skills/lark/EXTENSION.md')), true);
+  assert.equal(existsSync(join(fixture.project, '.agents/skills/lark/SKILL.md')), true);
+  assert.equal(existsSync(join(fixture.project, '.agents/skills/lark-doc/SKILL.md')), false);
 });
 
 test('invalid optional assignments fail before registering files and the submodule', () => {
@@ -126,6 +172,13 @@ test('fresh install reuses an already installed task progress plugin while confi
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
   assert.equal(config.optional['task-progress'], true);
   assert.match(result.stdout, /codex-task-progress: already installed; reused/);
+
+  const configPath = join(fixture.project, '.vibe-coding/project.config.json');
+  config.optional = { aliyun: false };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const partialConfig = configure(fixture, 'aliyun=on', { ...process.env, HOME: fakeHome });
+  assert.equal(partialConfig.status, 0, partialConfig.stderr || partialConfig.stdout);
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).optional['task-progress'], false);
 });
 
 test('task progress detection errors do not block other categories but selected setup fails clearly', {
@@ -146,4 +199,38 @@ test('task progress detection errors do not block other categories but selected 
   const selected = install(fixture, ['--optional=task-progress=on'], env);
   assert.notEqual(selected.status, 0);
   assert.match(selected.stderr, /Could not detect selected optional plugin codex-task-progress/);
+});
+
+test('legacy animated-presentations selection survives enabling Aliyun without selecting HyperFrames', () => {
+  const fixture = optionalConsumer();
+  const installed = install(fixture);
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  const configPath = join(fixture.project, '.vibe-coding/project.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  delete config.optional;
+  config.skills.skills['agent-orchestration-guardrails'] = { mode: 'exclude', rationale: 'User-owned exclusion stays intact.' };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const legacySkill = join(fixture.project, '.vibe-coding/skills/animated-presentations');
+  cpSync(join(fixture.source, 'optional/presentations/skills/animated-presentations'), legacySkill, { recursive: true });
+  const localSkill = join(fixture.project, '.vibe-coding/skills/manual-local/SKILL.md');
+  mkdirSync(join(localSkill, '..'), { recursive: true });
+  writeFileSync(localSkill, '---\nname: manual-local\ndescription: User-owned local skill.\n---\nKeep this source.\n');
+
+  const probeBin = join(fixture.root, 'no-hyperframes-probe');
+  const npxLog = join(fixture.root, 'unexpected-npx-call');
+  mkdirSync(probeBin);
+  writeFileSync(join(probeBin, 'curl'), '#!/bin/sh\nprintf "curl 8.0.0\\n"\n', { mode: 0o755 });
+  writeFileSync(join(probeBin, 'npx'), `#!/bin/sh\nprintf called >> '${npxLog}'\nexit 127\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${probeBin}${delimiter}${process.env.PATH}` };
+  const result = configure(fixture, 'aliyun=on', env);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(existsSync(npxLog), false, 'HyperFrames toolchain was not probed or installed');
+  const after = JSON.parse(readFileSync(configPath, 'utf8'));
+  assert.equal(after.optional.aliyun, true);
+  assert.equal(after.optional['non-code'], true);
+  assert.equal(after.skills.skills['agent-orchestration-guardrails'].mode, 'exclude');
+  assert.equal(after.skills.skills['agent-orchestration-guardrails'].rationale, 'User-owned exclusion stays intact.');
+  assert.match(readFileSync(localSkill, 'utf8'), /Keep this source/);
+  assert.equal(existsSync(join(fixture.project, '.agents/skills/animated-presentations/SKILL.md')), true);
+  assert.equal(existsSync(join(fixture.project, '.agents/skills/hyperframes/SKILL.md')), false);
 });

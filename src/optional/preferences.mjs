@@ -20,5 +20,5 @@ export function readOptionalGroupPreference(projectRoot, group) {
   const config = JSON.parse(text);
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('project config must be an object');
   validateOptionalPreferences(config.optional);
-  return config.optional?.[group];
+  return config.optional === undefined ? undefined : (config.optional[group] ?? false);
 }

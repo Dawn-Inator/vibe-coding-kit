@@ -70,7 +70,14 @@ export function resolveOptionalSelection({ kitRoot, projectRoot, projectConfig =
       continue;
     }
     for (const component of entries) {
-      const activeNames = explicit === undefined && legacy ? component.skills.filter((name) => legacyNames.has(name)) : component.skills;
+      const candidates = explicit === undefined && legacy ? component.skills.filter((name) => legacyNames.has(name)) : component.skills;
+      const activeNames = candidates.filter((name) => {
+        const definition = projectConfig.skills?.skills?.[name];
+        if (definition?.mode !== 'exclude') return true;
+        if (!definition.rationale) fail(`${name}: exclude requires an explicit rationale`);
+        disabledSkills.add(name);
+        return false;
+      });
       if (!activeNames.length && component.type === 'skills') continue;
       const componentRoot = resolve(kitRoot, component.path);
       assertRealInside(kitRoot, componentRoot);
@@ -83,7 +90,7 @@ export function resolveOptionalSelection({ kitRoot, projectRoot, projectConfig =
         skills.set(name, { root, componentId: component.id });
       }
       components.push(component);
-      if (!legacy && component.pack && activeNames.length === component.skills.length) packs.push({ id: component.id, entry: component.pack.entry, members: component.skills.filter((name) => name !== component.pack.entry), memberPrefix: component.pack.memberPrefix ?? null });
+      if (!legacy && component.pack && activeNames.includes(component.pack.entry)) packs.push({ id: component.id, entry: component.pack.entry, members: activeNames.filter((name) => name !== component.pack.entry), memberPrefix: component.pack.memberPrefix ?? null });
     }
   }
   return { selection, components, skills, packs, disabledSkills, legacy };

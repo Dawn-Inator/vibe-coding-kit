@@ -124,7 +124,7 @@ npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install -
 node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional task-progress=on
 ```
 
-类别偏好保存在项目自有 `.vibe-coding/project.config.json` 的 `optional` 对象中。老项目未声明该对象时，Kit 从已经选用或存在的可选 skill 源识别 legacy 选择，并识别可复用的已安装插件；新项目默认值不会覆盖这些现状。禁用类别只清理由 Kit 生成的投影和入口，项目自有文件、历史、凭据与自定义 skill 内容应由项目自行保管。路径冲突会保留现有内容并报告，需人工处理后再配置。
+类别偏好保存在项目自有 `.vibe-coding/project.config.json` 的 `optional` 对象中。老项目未声明该对象时，Kit 从已经选用或存在的可选 skill 源识别 legacy 选择，并识别可复用的已安装插件；新项目默认值不会覆盖这些现状。首次保存偏好会保留已有 skill 决策与 pack 布局：例如原来只选了 `animated-presentations`，配置 `aliyun=on` 会保留它，但不会自动展开整个 `non-code` 类别；之后显式设置 `non-code=on` 才启用该类别的完整 skill 集。用户的 exclude 和 local/replace 决策会继续保留；只有 Kit 迁移时生成的 exclude 理由会在显式启用对应类别时清除。禁用类别只清理由 Kit 生成的投影和入口，项目自有文件、历史、凭据与自定义 skill 内容应由项目自行保管。路径冲突会保留现有内容并报告，需人工处理后再配置。
 
 各组件的内容、前置条件和边界见[可选组件指南](optional/README.md)。
 

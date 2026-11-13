@@ -66,6 +66,13 @@ test('catalog rejects unsafe IDs and missing selected sources', (t) => {
 test('preference reader is synchronous and rejects malformed configuration', (t) => {
   const f = fixture(t), path = join(f.projectRoot, '.vibe-coding', 'project.config.json');
   assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), undefined);
+  writeFileSync(path, JSON.stringify({ skills: {} }));
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), undefined);
+  writeFileSync(path, JSON.stringify({ optional: { lark: true } }));
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), true);
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), false);
+  writeFileSync(path, JSON.stringify({ optional: {} }));
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), false);
   writeFileSync(path, JSON.stringify({ optional: { lark: false } }));
   assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), false);
   writeFileSync(path, JSON.stringify({ optional: { lark: 'false' } }));
@@ -173,4 +180,66 @@ test('selected optional skill detects undeclared customization collisions withou
   writeFileSync(source, contents);
   assert.throws(() => composeSources({ ...f, projectConfig: { optional: { 'non-code': true } } }), /collision/);
   assert.equal(readFileSync(source, 'utf8'), contents);
+});
+
+test('first configuration preserves an untouched legacy animated skill and later explicit enable expands it', async (t) => {
+  const { planOptionalConfiguration, GENERATED_EXCLUDE_RATIONALE } = await import('../../src/optional/configuration.mjs');
+  const f = realProject(t);
+  const localDir = join(f.projectRoot, '.vibe-coding', 'skills', 'animated-presentations');
+  mkdirSync(localDir, { recursive: true });
+  const local = '---\nname: animated-presentations\ndescription: legacy\n---\ncustom local body\n';
+  writeFileSync(join(localDir, 'SKILL.md'), local);
+  const legacy = { skills: { skills: { ...f.skillsConfig.skills, 'animated-presentations': { mode: 'local' } }, packs: [] } };
+  const nextSelection = { aliyun: true, lark: false, 'non-code': true, 'task-progress': false };
+  const config = planOptionalConfiguration({ ...f, projectConfig: legacy, nextSelection, explicitGroups: ['aliyun'] });
+  assert.equal(config.skills.skills['animated-presentations'].mode, 'replace');
+  assert.equal(config.skills.skills.hyperframes.rationale, GENERATED_EXCLUDE_RATIONALE);
+  assert.deepEqual(config.skills.packs, []);
+  const result = composeSources({ ...f, skillsConfig: config.skills, projectConfig: config });
+  assert.equal(result.skills.get('animated-presentations').content, local);
+  assert.equal(result.skills.has('hyperframes'), false);
+  const selected = resolveOptionalSelection({ ...f, projectConfig: config });
+  assert.equal(selected.selection['non-code'], true);
+  assert.equal(selected.components.some((component) => component.id === 'hyperframes'), false);
+  assert.equal(selected.components.some((component) => component.id === 'presentations'), true);
+  assert.equal(result.skills.has('alibabacloud-find-skills'), true);
+  const expanded = planOptionalConfiguration({ ...f, projectConfig: config, nextSelection, explicitGroups: ['non-code'] });
+  assert.equal(expanded.skills.skills.hyperframes, undefined);
+  assert.equal(expanded.skills.skills['animated-presentations'].mode, 'replace');
+  assert.ok(expanded.skills.packs.some((pack) => pack.id === 'hyperframes'));
+  assert.equal(composeSources({ ...f, skillsConfig: expanded.skills, projectConfig: expanded }).skills.has('hyperframes'), true);
+});
+
+test('explicit packs remain authoritative and drop excluded or disabled skills from projections', (t) => {
+  const f = realProject(t);
+  const config = { optional: { lark: true }, skills: { skills: { ...f.skillsConfig.skills, 'lark-doc': { mode: 'exclude', rationale: 'user choice' } }, packs: [{ id: 'custom', entry: 'lark', members: ['lark-doc', 'lark-drive'], memberPrefix: null }] } };
+  const result = composeSources({ ...f, projectConfig: config, skillsConfig: config.skills });
+  assert.deepEqual(result.packs, [{ id: 'custom', entry: 'lark', members: ['lark-drive'], memberPrefix: null }]);
+  config.optional.lark = false;
+  assert.deepEqual(composeSources({ ...f, projectConfig: config, skillsConfig: config.skills }).packs, []);
+});
+
+
+test('default catalog packs include only active skills and require an active entry', (t) => {
+  const f = realProject(t);
+  const config = { optional: { lark: true }, skills: { skills: { ...f.skillsConfig.skills, 'lark-doc': { mode: 'exclude', rationale: 'user' } } } };
+  let selected = resolveOptionalSelection({ ...f, projectConfig: config });
+  assert.equal(selected.packs.find((pack) => pack.id === 'lark').members.includes('lark-doc'), false);
+  config.skills.skills.lark = { mode: 'exclude', rationale: 'user' };
+  selected = resolveOptionalSelection({ ...f, projectConfig: config });
+  assert.equal(selected.packs.some((pack) => pack.id === 'lark'), false);
+});
+
+
+test('custom pack unknown entries and members remain visible to fail-closed validation', async (t) => {
+  const { validateSkillPacks } = await import('../../src/skills/skill-packs.mjs');
+  const f = realProject(t);
+  const config = { optional: { lark: true }, skills: { skills: f.skillsConfig.skills, packs: [
+    { id: 'custom', entry: 'lark', members: ['missing-member'], memberPrefix: null },
+    { id: 'missing', entry: 'missing-entry', members: [], memberPrefix: null },
+  ] } };
+  const result = composeSources({ ...f, projectConfig: config, skillsConfig: config.skills });
+  const errors = validateSkillPacks([...result.skills.keys()], result.packs).join('\n');
+  assert.match(errors, /missing-member/);
+  assert.match(errors, /missing-entry/);
 });

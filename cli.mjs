@@ -13,6 +13,7 @@ import { sanitizedGitEnv } from './src/git-environment.mjs';
 import { planSecrets, createSecretRepository, verifySecretRepository } from './src/secrets-setup.mjs';
 import { createInterface } from 'node:readline/promises';
 import { loadOptionalCatalog, resolveOptionalSelection } from './src/optional/catalog.mjs';
+import { planOptionalConfiguration } from './src/optional/configuration.mjs';
 import { OPTIONAL_GROUPS, validateOptionalPreferences } from './src/optional/preferences.mjs';
 import { inspectOptionalComponent, installOptionalComponent } from './src/optional/runtime.mjs';
 
@@ -121,8 +122,10 @@ async function install(root, options) {
     }
     if (options.optional.length) await configureOptional(rootReal, resolve(rootReal, KIT_PATH), optionalOverrides, { interactive: false });
     const skills = syncProjectSkills({ projectRoot: rootReal, kitRoot: resolve(rootReal, KIT_PATH), checkOnly: true });
-    if (!skills.ok) throw new Error(`Kit is initialized but skill projections need repair: ${skills.problems.join('; ')}. Run the project's skills:sync command.`);
-    console.log(`Kit ${ready.commit} is ready; existing configuration and local files were preserved.`);
+    if (!skills.ok) throw new Error(`Kit is initialized but skill projections need repair: ${(skills.problems || []).join('; ')}. Run the project's skills:sync command.`);
+    console.log(options.optional.length
+      ? `Kit ${ready.commit} is ready; requested optional configuration was applied.`
+      : `Kit ${ready.commit} is ready; existing configuration and local files were preserved.`);
     return;
   }
   if (!options.identityName?.trim() || !options.identityEmail?.trim()) throw new Error('fresh install requires --identity-name and --identity-email');
@@ -333,11 +336,14 @@ async function inspectPluginComponents(kitRoot, env) {
   for (const [id, component] of Object.entries(catalog.components)) {
     if (component.type !== 'plugin') continue;
     detected.set(id, await inspectOptionalComponent({ kitRoot, component: { id, ...component }, platform: platform(), arch: arch(), env }));
+    if (!['installed', 'missing', 'unsupported', 'error'].includes(detected.get(id)?.status)) {
+      detected.set(id, { status: 'error', message: `invalid inspection result for ${id}` });
+    }
   }
   return detected;
 }
 
-function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPreferences = {}, overrides = {}) {
+function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPreferences, overrides = {}) {
   const catalog = loadOptionalCatalog(kitRoot);
   if (!catalog) return;
   for (const [group, descriptor] of Object.entries(catalog.groups)) {
@@ -358,7 +364,8 @@ function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPrefe
         console.log(`${group}: unavailable (${status.message || 'unsupported platform'})`);
         continue;
       }
-      if (status?.status === 'installed' && savedPreferences?.[group] !== false && overrides[group] !== false) preferences[group] = true;
+      const mayDefaultInstalled = savedPreferences === undefined || savedPreferences[group] === true;
+      if (status?.status === 'installed' && mayDefaultInstalled && overrides[group] !== false) preferences[group] = true;
     }
   }
 }
@@ -366,20 +373,13 @@ function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPrefe
 async function askOptionalCategories(kitRoot, current, detected = new Map(), savedPreferences = {}) {
   const catalog = loadOptionalCatalog(kitRoot);
   if (!catalog) return Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false]));
-  const hidden = new Set();
+  const available = optionalWizardGroups(catalog, detected);
   for (const [group, descriptor] of Object.entries(catalog.groups)) {
-    const pluginIds = descriptor.components.filter((id) => catalog.components[id].type === 'plugin');
-    for (const id of pluginIds) {
-      const status = detected.get(id);
-      if (status?.status === 'unsupported') hidden.add(group);
-      if (status?.status === 'error') hidden.add(group);
-      if (status?.status === 'installed') {
-        hidden.add(group);
-        if (savedPreferences?.[group] !== false) current[group] = true;
-      }
+    for (const id of descriptor.components.filter((componentId) => catalog.components[componentId].type === 'plugin')) {
+        const mayDefaultInstalled = savedPreferences === undefined || savedPreferences[group] === true;
+        if (detected.get(id)?.status === 'installed' && mayDefaultInstalled) current[group] = true;
     }
   }
-  const available = OPTIONAL_GROUPS.filter((group) => !hidden.has(group));
   if (!available.length) return { ...current };
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Optional category selection needs a terminal; pass --optional <group>=on|off or run optional configure with explicit flags');
   const defaults = available.filter((group) => current[group] === true);
@@ -396,11 +396,24 @@ async function askOptionalCategories(kitRoot, current, detected = new Map(), sav
   } finally { prompt.close(); }
 }
 
+function optionalWizardGroups(catalog, detected) {
+  const hidden = new Set();
+  for (const [group, descriptor] of Object.entries(catalog.groups)) {
+    for (const id of descriptor.components.filter((componentId) => catalog.components[componentId].type === 'plugin')) {
+      if (['installed', 'unsupported', 'error'].includes(detected.get(id)?.status)) hidden.add(group);
+    }
+  }
+  return OPTIONAL_GROUPS.filter((group) => !hidden.has(group));
+}
+
 async function preflightOptionalComponents(kitRoot, components, env, knownStatuses = new Map()) {
   const statuses = new Map(knownStatuses);
   for (const component of components) {
     if (statuses.has(component.id)) continue;
     statuses.set(component.id, await inspectOptionalComponent({ kitRoot, component, platform: platform(), arch: arch(), env }));
+    if (!['installed', 'missing', 'unsupported', 'error'].includes(statuses.get(component.id)?.status)) {
+      statuses.set(component.id, { status: 'error', message: `invalid inspection result for ${component.id}` });
+    }
   }
   return statuses;
 }
@@ -425,15 +438,20 @@ async function installOptionalComponents(kitRoot, components, env, statuses) {
     }
     if (inspected?.status === 'error') throw new Error(`Optional ${component.id} could not be inspected: ${inspected.message || 'inspection failed'}. Optional setup was not completed; core setup is preserved.`);
     const result = await installOptionalComponent({ kitRoot, component, env });
-    if (result.status !== 'installed') throw new Error(`Optional ${component.id} setup is incomplete (${result.status}): ${result.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
+    if (!result || result.status !== 'installed') {
+      const status = result?.status || 'invalid-result';
+      throw new Error(`Optional ${component.id} setup is incomplete (${status}): ${result?.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
+    }
     console.log(`Optional ${component.id}: ready.`);
   }
 }
 
 function printOptionalSummary(preferences, selection) {
-  const displayed = preferences ?? selection.selection;
   console.log('Optional categories:');
-  for (const group of OPTIONAL_GROUPS) console.log(`  ${group}: ${displayed[group] ? 'on' : 'off'}`);
+  for (const group of OPTIONAL_GROUPS) {
+    const enabled = preferences?.[group] ?? selection.selection[group];
+    console.log(`  ${group}: ${enabled ? 'on' : 'off'}`);
+  }
   if (selection.components.length) console.log(`Selected components: ${selection.components.map(({ id }) => id).join(', ')}`);
 }
 
@@ -441,31 +459,52 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
   const config = projectConfig(root);
   const currentSelection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config });
   let next = { ...currentSelection.selection, ...overrides };
+  const explicitGroups = new Set(Object.keys(overrides));
   const detected = checkOnly ? new Map() : await inspectPluginComponents(kitRoot, process.env);
   if (!checkOnly) applyInstalledPluginDefaults(kitRoot, next, detected, config.optional, overrides);
+  if (!checkOnly) {
+    const catalog = loadOptionalCatalog(kitRoot);
+    if (catalog) {
+      for (const [group, descriptor] of Object.entries(catalog.groups)) {
+        const installedPlugin = descriptor.components.some((id) => catalog.components[id].type === 'plugin' && detected.get(id)?.status === 'installed');
+        if (installedPlugin && config.optional?.[group] === undefined && overrides[group] !== false && next[group]) explicitGroups.add(group);
+      }
+    }
+  }
   if (interactive && !checkOnly && Object.keys(overrides).length === 0) {
+    const catalog = loadOptionalCatalog(kitRoot);
+    const offered = catalog ? optionalWizardGroups(catalog, detected) : [];
     next = await askOptionalCategories(kitRoot, next, detected, config.optional);
+    for (const group of offered) explicitGroups.add(group);
   }
   validateOptionalPreferences(next);
-  const selection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config, overrides: next });
+  const nextProjectConfig = planOptionalConfiguration({ kitRoot, projectRoot: root, projectConfig: config, nextSelection: next, explicitGroups: [...explicitGroups] });
+  const selection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: nextProjectConfig });
   if (checkOnly) {
-    validateSkillPlan(root, { ...config, optional: next }, [], kitRoot);
-    printOptionalSummary(next, selection);
+    validateSkillPlan(root, nextProjectConfig, [], kitRoot);
+    printOptionalSummary(nextProjectConfig.optional, selection);
     console.log('Optional configuration check is read-only; no setup was started.');
     return;
   }
   const statuses = await preflightOptionalComponents(kitRoot, selection.components, process.env, detected);
   assertOptionalPreflight(selection.components, statuses);
-  validateSkillPlan(root, { ...config, optional: next }, [], kitRoot);
+  validateSkillPlan(root, nextProjectConfig, [], kitRoot);
   const configPath = resolve(root, '.vibe-coding/project.config.json');
   assertNoSymlinkPaths(root, [configPath]);
-  const serialized = `${JSON.stringify({ ...config, optional: next }, null, 2)}\n`;
+  const serialized = `${JSON.stringify(nextProjectConfig, null, 2)}\n`;
   if (existsSync(configPath)) writeFileSync(configPath, serialized);
   else throw new Error(`Project is not initialized: missing ${configPath}`);
-  const synced = syncProjectSkills({ projectRoot: root, kitRoot });
-  if (!synced.ok) throw new Error(`Optional preferences were saved, but generated skill projections need repair: ${synced.problems.join('; ')}`);
+  let synced;
+  try { synced = syncProjectSkills({ projectRoot: root, kitRoot }); }
+  catch (error) {
+    throw new Error(`Optional preferences were saved, but generated skill projections did not finish synchronizing. Some mirrors may be partial; local sources and other project files were preserved. Repair with the project's skills:sync command. ${error.message}`);
+  }
+  if (!synced || !Number.isInteger(synced.written)) {
+    throw new Error('Optional preferences were saved, but the skill synchronization result was invalid. Generated mirrors may be partial; verify them with the project skills:check command.');
+  }
+  console.log(`Synchronized ${synced.written} generated skill projection file(s).`);
   await installOptionalComponents(kitRoot, selection.components, process.env, statuses);
-  printOptionalSummary(next, selection);
+  printOptionalSummary(nextProjectConfig.optional, selection);
 }
 
 function plannedInitFiles(root, options) {
@@ -477,11 +516,12 @@ function plannedInitFiles(root, options) {
   const existingConfig = projectConfig(root);
   const existingOptional = existingConfig.optional;
   const optionalOverrides = parseOptionalOverrides(options.optional || []);
+  const freshProject = !existsSync(configPath);
   if (options.optionalSelection) {
     configTemplate.optional = options.optionalSelection;
-  } else if (!existsSync(configPath) || existingOptional !== undefined || Object.keys(optionalOverrides).length) {
+  } else if (freshProject || existingOptional !== undefined || Object.keys(optionalOverrides).length) {
     configTemplate.optional = { ...(existingOptional || {}), ...optionalOverrides };
-    if (!existsSync(configPath)) configTemplate.optional = { ...Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false])), ...configTemplate.optional };
+    if (freshProject) configTemplate.optional = { ...Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false])), ...configTemplate.optional };
   } else delete configTemplate.optional;
   if (options.secretsPlan) configTemplate.secrets = options.secretsPlan;
   else if (options.secrets === 'vault') configTemplate.secrets = { method: 'vault', status: 'not-provisioned' };
@@ -491,23 +531,44 @@ function plannedInitFiles(root, options) {
   if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
   configTemplate.skills = { ...configTemplate.skills, mirrorPolicy, skills: {} };
   const selected = new Map();
-  const snapshots = [];
+  const snapshots = new Map();
   const optionalSkills = [];
   {
     const commonSkills = resolve(REPO_ROOT, 'skills');
-    const commonNames = (awaitlessReaddir(commonSkills));
+    const commonNames = awaitlessReaddir(commonSkills);
     const localRoot = resolve(root, '.vibe-coding/skills');
     const localNames = existsSync(localRoot) ? awaitlessReaddir(localRoot) : [];
+    const optionalProjectConfig = { ...existingConfig };
+    if (configTemplate.optional !== undefined) optionalProjectConfig.optional = configTemplate.optional;
+    const optionalSelection = resolveOptionalSelection({
+      kitRoot: REPO_ROOT,
+      projectRoot: root,
+      projectConfig: optionalProjectConfig,
+      overrides: options.optionalSelection ? {} : optionalOverrides,
+      fresh: freshProject,
+    });
+    const optionalCatalog = loadOptionalCatalog(REPO_ROOT);
+    const optionalSourceRoots = optionalSelection.skills;
+    const optionalNames = new Set(Object.values(optionalCatalog?.components ?? {}).flatMap((component) => component.skills));
+    const optionalGroups = new Map();
+    for (const [group, descriptor] of Object.entries(optionalCatalog?.groups ?? {})) {
+      for (const id of descriptor.components) for (const name of optionalCatalog.components[id].skills) optionalGroups.set(name, group);
+    }
+    const knownNames = new Set([...commonNames, ...optionalSourceRoots.keys()]);
     for (const specification of options.skill) {
       const match = /^([a-z0-9]+(?:-[a-z0-9]+)*):?(?:=)?(adopt|extend|replace|local|exclude)?(?::(.+))?$/.exec(specification);
       if (!match) throw new Error(`Invalid --skill '${specification}'; use name=adopt, name=extend, name=replace:rationale, or name=exclude:rationale`);
       const [, name, mode = 'adopt', rationale] = match;
       if (selected.has(name)) throw new Error(`Skill ${name} was selected more than once`);
-      if (!commonNames.includes(name) && mode !== 'local') throw new Error(`Unknown public skill: ${name}`);
+      if (optionalNames.has(name) && !optionalSourceRoots.has(name) && mode !== 'exclude') {
+        throw new Error(`Optional skill ${name} belongs to the disabled ${optionalGroups.get(name)} category; enable it with --optional ${optionalGroups.get(name)}=on before selecting this mode`);
+      }
+      if (!knownNames.has(name) && mode !== 'local' && !(optionalNames.has(name) && mode === 'exclude')) throw new Error(`Unknown public skill: ${name}`);
       const decision = { mode };
       if (mode === 'replace') { decision.rationale = rationale; decision.replaces = name; }
       if (mode === 'exclude') decision.rationale = rationale;
       selected.set(name, decision);
+      if (mode === 'replace' && !existsSync(configPath) && optionalSourceRoots.has(name)) snapshots.set(name, optionalSourceRoots.get(name).root);
     }
     // Secret access is an installer-selected project-owned skill, not a new
     // public skill that would force a decision on existing kit consumers.
@@ -524,7 +585,11 @@ function plannedInitFiles(root, options) {
       if (selected.has(name)) continue;
       if (localNames.includes(name) && !existsSync(configPath)) continue;
       selected.set(name, { mode: 'replace', rationale: 'Project-owned snapshot initialized from the kit.', replaces: name });
-      if (!existsSync(configPath)) snapshots.push(name);
+      if (!existsSync(configPath)) snapshots.set(name, commonSkills);
+    }
+    for (const name of optionalSourceRoots.keys()) {
+      if (selected.has(name)) continue;
+      selected.set(name, { mode: 'adopt' });
     }
     configTemplate.skills.skills = Object.fromEntries(selected);
   }
@@ -549,7 +614,7 @@ function plannedInitFiles(root, options) {
       else if (entry.isFile()) entries.push({ path: targetPath, content: readFileSync(sourcePath), mode: lstatSync(sourcePath).mode & 0o777, skillSnapshot: snapshotPath });
     }
   };
-  for (const name of snapshots) addSnapshot(resolve(REPO_ROOT, 'skills', name), resolve(root, '.vibe-coding/skills', name), name);
+  for (const [name, sourceRoot] of snapshots) addSnapshot(resolve(sourceRoot, name), resolve(root, '.vibe-coding/skills', name), name);
   for (const name of optionalSkills) addSnapshot(resolve(REPO_ROOT, 'templates/optional-skills', name), resolve(root, '.vibe-coding/skills', name), name);
   const gitignorePath = resolve(root, '.gitignore');
   const currentGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
