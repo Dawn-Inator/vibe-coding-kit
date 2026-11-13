@@ -25,6 +25,7 @@ const APP_SERVER_REQUEST_TIMEOUT_MS = 10_000;
 const APP_SERVER_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const APP_SERVER_MAX_TIMED_OUT_REQUESTS = 256;
 const APP_SERVER_MAX_RETAINED_HISTORY_ITEMS = 256;
+const APP_SERVER_MAX_RETAINED_HISTORY_BYTES = 256 * 1024;
 
 const RequestIdSchema = z.union([z.string(), z.number()]);
 
@@ -162,6 +163,29 @@ function appendBounded<T>(items: T[], item: T): void {
   items.push(item);
 }
 
+function appendBoundedHistory<T>(
+  items: T[],
+  itemByteCosts: number[],
+  currentBytes: number,
+  item: T,
+): number {
+  const serialized = JSON.stringify(item) ?? "null";
+  const itemBytes = Buffer.byteLength(serialized) + 2;
+  if (itemBytes > APP_SERVER_MAX_RETAINED_HISTORY_BYTES) {
+    return currentBytes;
+  }
+  while (
+    items.length >= APP_SERVER_MAX_RETAINED_HISTORY_ITEMS ||
+    currentBytes + itemBytes > APP_SERVER_MAX_RETAINED_HISTORY_BYTES
+  ) {
+    items.shift();
+    currentBytes -= itemByteCosts.shift() ?? 0;
+  }
+  items.push(item);
+  itemByteCosts.push(itemBytes);
+  return currentBytes + itemBytes;
+}
+
 function threadCatalogEntry(
   item: z.infer<typeof ThreadListItemSchema>,
 ): ThreadCatalogEntry | undefined {
@@ -186,12 +210,16 @@ export class CodexAppServerClient implements ThreadCatalog {
   readonly #outputMode: "bounded" | "stream";
   readonly #requestMethods: string[] = [];
   readonly #notifications: AppServerNotificationSummary[] = [];
+  readonly #notificationByteCosts: number[] = [];
   readonly #tokenUsageNotifications: ThreadTokenUsageUpdatedNotification[] = [];
+  readonly #tokenUsageNotificationByteCosts: number[] = [];
   readonly #closed: Promise<void>;
   readonly #onNotification: ((notification: AppServerNotificationSummary) => void) | undefined;
   #resolveClosed!: () => void;
   #nextRequestId = 1;
   #outputBytes = 0;
+  #notificationHistoryBytes = 0;
+  #tokenUsageNotificationHistoryBytes = 0;
   #frame = "";
   #frameBytes = 0;
   #stderr = "";
@@ -538,14 +566,24 @@ export class CodexAppServerClient implements ThreadCatalog {
           return;
         }
         tokenUsage = parsedTokenUsage.data;
-        appendBounded(this.#tokenUsageNotifications, tokenUsage);
+        this.#tokenUsageNotificationHistoryBytes = appendBoundedHistory(
+          this.#tokenUsageNotifications,
+          this.#tokenUsageNotificationByteCosts,
+          this.#tokenUsageNotificationHistoryBytes,
+          tokenUsage,
+        );
       }
       const summary: AppServerNotificationSummary = {
         method: notification.data.method,
         ...(threadId === undefined ? {} : { threadId }),
         ...(tokenUsage === undefined ? {} : { tokenUsage }),
       };
-      appendBounded(this.#notifications, summary);
+      this.#notificationHistoryBytes = appendBoundedHistory(
+        this.#notifications,
+        this.#notificationByteCosts,
+        this.#notificationHistoryBytes,
+        summary,
+      );
       this.#onNotification?.(summary);
       return;
     }

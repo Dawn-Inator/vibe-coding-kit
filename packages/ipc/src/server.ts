@@ -351,7 +351,7 @@ export class GoalProgressIpcServer {
             const isTaskRequest =
               request.method === "task.request" || request.method === "task.view";
             if (isTaskRequest) {
-              socket.setTimeout(TASK_PROGRESS_REQUEST_TIMEOUT_MS, () => socket.destroy());
+              socket.setTimeout(TASK_PROGRESS_REQUEST_TIMEOUT_MS);
             }
             try {
               if (!connectionContext) {
@@ -425,7 +425,7 @@ export class GoalProgressIpcServer {
               );
             } finally {
               if (isTaskRequest && !socket.destroyed) {
-                socket.setTimeout(GOAL_PROGRESS_IPC_IDLE_TIMEOUT_MS, () => socket.destroy());
+                socket.setTimeout(GOAL_PROGRESS_IPC_IDLE_TIMEOUT_MS);
               }
             }
           })

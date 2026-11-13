@@ -79,6 +79,54 @@ test("stream mode keeps retained notification history bounded", async () => {
   }
 });
 
+test("large notification fields obey history byte budgets while callbacks keep full values", async () => {
+  const script = responderScript(`
+    const total = { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 2 };
+    for (let index = 0; index < 8; index += 1) {
+      const suffix = String(index);
+      const method = "m".repeat(48_000) + suffix;
+      const threadId = "t".repeat(48_000) + suffix;
+      process.stdout.write(JSON.stringify({ method, params: { threadId } }) + "\\n");
+    }
+    for (let index = 0; index < 8; index += 1) {
+      const suffix = String(index);
+      const threadId = "T".repeat(40_000) + suffix;
+      const turnId = "u".repeat(40_000) + suffix;
+      process.stdout.write(JSON.stringify({
+        method: "thread/tokenUsage/updated",
+        params: { threadId, turnId, tokenUsage: { total, last: total } },
+      }) + "\\n");
+    }
+    input.on("line", (line) => {
+      const request = JSON.parse(line);
+      if (request.method === "thread/turns/list") {
+        process.stdout.write(JSON.stringify({ id: request.id, result: { data: [] } }) + "\\n");
+      }
+    });
+  `);
+  const callbacks: { method: string; threadId?: string }[] = [];
+  const client = await CodexAppServerClient.connect({
+    command: process.execPath,
+    args: ["-e", script],
+    outputMode: "stream",
+    onNotification: (notification) => callbacks.push(notification),
+  });
+  try {
+    assert.deepEqual(await client.listTurnIds("thread-a"), []);
+    assert.ok(Buffer.byteLength(JSON.stringify(client.notifications)) <= 256 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(client.tokenUsageNotifications)) <= 256 * 1024);
+    assert.equal(callbacks.length, 16);
+    const largeMethodCallback = callbacks.find((notification) =>
+      notification.method.startsWith("m"),
+    );
+    assert.equal(largeMethodCallback?.method.length, 48_001);
+    assert.equal(largeMethodCallback?.threadId?.length, 48_001);
+    assert.equal(client.tokenUsageNotifications.at(-1)?.threadId.length, 40_001);
+  } finally {
+    await client.close();
+  }
+});
+
 test("stream mode rejects an oversized complete frame", async () => {
   const script = responderScript(`
     process.stdout.write(JSON.stringify({ method: "test/notice", params: { payload: "x".repeat(${MAX_OUTPUT_BYTES}) } }) + "\\n");

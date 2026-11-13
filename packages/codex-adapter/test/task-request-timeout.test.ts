@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { Socket } from "node:net";
+import { createConnection, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { GoalProgressIpcRequestOptions } from "../../ipc/src/client.js";
 import {
+  GOAL_PROGRESS_IPC_PROTOCOL_VERSION,
   GoalProgressIpcClient,
   GoalProgressIpcServer,
   TASK_PROGRESS_REQUEST_TIMEOUT_MS,
@@ -92,6 +93,107 @@ test("the server extends only active task handlers and restores its idle timeout
     assert.equal(timeoutRequests.at(-1), 10_000);
   } finally {
     Socket.prototype.setTimeout = originalSetTimeout;
+    await helper.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("repeated task requests on one socket reuse the single idle timeout listener", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "task-timeout-listeners-"));
+  const timeoutCalls: { timeout: number; callbackProvided: boolean; listenerCount: number }[] = [];
+  const originalSetTimeout = Socket.prototype.setTimeout;
+  const helper = new GoalProgressIpcServer(join(directory, "helper.sock"), async (request) => {
+    if (request.method === "ping") {
+      await new Promise((resolve) => setTimeout(resolve, 65));
+    }
+    return { revision: 1, result: { method: request.method } };
+  });
+  await helper.start();
+  Socket.prototype.setTimeout = function (
+    this: Socket,
+    timeout: number,
+    callback?: () => void,
+  ): Socket {
+    const scaledTimeout = timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS ? 180 : 20;
+    originalSetTimeout.call(this, scaledTimeout, callback);
+    timeoutCalls.push({
+      timeout,
+      callbackProvided: callback !== undefined,
+      listenerCount: this.listenerCount("timeout"),
+    });
+    return this;
+  };
+
+  const socket = createConnection(join(directory, "helper.sock"));
+  let buffer = "";
+  const receivedLines: string[] = [];
+  const responseWaiters: ((line: string) => void)[] = [];
+  let closed = false;
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      const waiter = responseWaiters.shift();
+      if (waiter) waiter(line);
+      else receivedLines.push(line);
+      newline = buffer.indexOf("\n");
+    }
+  });
+  socket.on("close", () => {
+    closed = true;
+  });
+  const send = async (request: Record<string, unknown>) => {
+    await new Promise<void>((resolve, reject) => {
+      socket.write(`${JSON.stringify(request)}\n`, (error) => (error ? reject(error) : resolve()));
+    });
+  };
+  const readResponse = async () => {
+    const queued = receivedLines.shift();
+    if (queued) return JSON.parse(queued) as { result: unknown };
+    if (closed) throw new Error("IPC_SOCKET_CLOSED");
+    return new Promise<{ result: unknown }>((resolve, reject) => {
+      responseWaiters.push((line) => resolve(JSON.parse(line) as { result: unknown }));
+      socket.once("close", () => reject(new Error("IPC_SOCKET_CLOSED")));
+    });
+  };
+  const envelope = (requestId: string, method: string, params: Record<string, unknown>) => ({
+    protocolVersion: GOAL_PROGRESS_IPC_PROTOCOL_VERSION,
+    requestId,
+    method,
+    params,
+  });
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    await send(envelope("hello", "hello", { clientKind: "cdp", clientVersion: "test" }));
+    await readResponse();
+    for (const requestId of ["task-1", "task-2"]) {
+      await send(envelope(requestId, "task.view", { threadId: "thread-1", action: "get" }));
+      assert.deepEqual((await readResponse()).result, { method: "task.view" });
+    }
+
+    assert.deepEqual(
+      timeoutCalls.map((call) => call.timeout),
+      [10_000, TASK_PROGRESS_REQUEST_TIMEOUT_MS, 10_000, TASK_PROGRESS_REQUEST_TIMEOUT_MS, 10_000],
+    );
+    assert.deepEqual(
+      timeoutCalls.map((call) => call.callbackProvided),
+      [true, false, false, false, false],
+    );
+    assert.ok(timeoutCalls.every((call) => call.listenerCount === 1));
+
+    const socketClosed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await send(envelope("legacy-ping", "ping", {}));
+    await socketClosed;
+    assert.equal(timeoutCalls.at(-1)?.timeout, 10_000);
+  } finally {
+    Socket.prototype.setTimeout = originalSetTimeout;
+    socket.destroy();
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
   }
