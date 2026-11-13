@@ -146,14 +146,17 @@ test("ordinary chat task panel browser flows", async (t) => {
         await page.goto(`${url}?disabled=true`);
         const panel = page.locator("codex-task-panel");
         await panel.waitFor({ state: "attached" });
-        await page.waitForFunction(() =>
-          window.fixture.calls.some((call) => call.method === "get"),
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
         );
         assert.equal(await panel.isVisible(), false);
-        await page.evaluate(() => {
-          window.fixture.task = task;
+        await page.evaluate((value) => {
+          window.fixture.task = value;
           return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
+        }, task);
+        await page.waitForFunction(
+          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
+        );
         assert.equal(await panel.isVisible(), false);
         assert.equal(await panel.getByText("实现普通任务面板", { exact: false }).count(), 0);
         await context.close();

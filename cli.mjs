@@ -431,8 +431,9 @@ async function installOptionalComponents(kitRoot, components, env, statuses) {
 }
 
 function printOptionalSummary(preferences, selection) {
+  const displayed = preferences ?? selection.selection;
   console.log('Optional categories:');
-  for (const group of OPTIONAL_GROUPS) console.log(`  ${group}: ${preferences[group] ? 'on' : 'off'}`);
+  for (const group of OPTIONAL_GROUPS) console.log(`  ${group}: ${displayed[group] ? 'on' : 'off'}`);
   if (selection.components.length) console.log(`Selected components: ${selection.components.map(({ id }) => id).join(', ')}`);
 }
 

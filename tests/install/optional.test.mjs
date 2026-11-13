@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import test, { after } from 'node:test';
@@ -84,14 +84,28 @@ test('existing install check previews optional overrides without saving them', (
   assert.equal(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'), before);
 });
 
+test('legacy init keeps an absent optional field absent and completes its summary', () => {
+  const fixture = optionalConsumer();
+  const installed = install(fixture);
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  const configPath = join(fixture.project, '.vibe-coding/project.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  delete config.optional;
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const initialized = spawnSync(process.execPath, [cliPath, 'init', '--project-root', fixture.project,
+    '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
+    '--identity-email', 'install@example.invalid'], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture) });
+  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
+  assert.match(initialized.stdout, /Optional categories:/);
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).optional, undefined);
+});
+
 test('optional setup-required exits nonzero and reports partial setup without discarding core initialization', { skip: process.platform === 'win32' }, () => {
   const fixture = optionalConsumer();
-  const restrictedPath = join(fixture.root, 'restricted-path');
-  mkdirSync(restrictedPath);
-  const gitPath = process.env.PATH.split(':').map((base) => join(base, 'git')).find((path) => existsSync(path));
-  assert.ok(gitPath, 'test host must provide git');
-  symlinkSync(realpathSync(gitPath), join(restrictedPath, 'git'));
-  const result = install(fixture, ['--optional=lark=on'], { ...process.env, PATH: restrictedPath });
+  const noOptionalTools = join(fixture.root, 'no-optional-tools');
+  mkdirSync(noOptionalTools);
+  for (const name of ['npm', 'lark-cli']) writeFileSync(join(noOptionalTools, name), '#!/bin/sh\nexit 127\n', { mode: 0o755 });
+  const result = install(fixture, ['--optional=lark=on'], { ...process.env, PATH: `${noOptionalTools}${delimiter}${process.env.PATH}` });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Optional lark setup is incomplete \(setup-required\)/);
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), true);
