@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import {
   migrateHeartbeatLedgerPair,
@@ -31,6 +33,7 @@ import {
   type MacosCodexStartupEvent,
   type MacosCodexStartupResponse,
   MacosStartupHandoffController,
+  MacosStartupListenerSupervisor,
 } from "../src/startup-listener.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
@@ -1774,10 +1777,11 @@ test("observed startup retry rejects cancellation and changed process identity",
 
 async function waitForStartupTest(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 2_000;
-  while (!(await predicate()) && Date.now() < deadline) {
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  assert.ok(await predicate(), "timed out waiting for startup recovery");
+  assert.fail("timed out waiting for startup recovery");
 }
 
 async function startupHelperFixture(options: {
@@ -1816,7 +1820,8 @@ async function startupHelperFixture(options: {
       reconnects += 1;
       return undefined;
     },
-    recoverVisibleTargets: options.recoverTargets ?? (async () => []),
+    recoverVisibleTargets: async () =>
+      reconnects === 0 ? [] : ((await options.recoverTargets?.()) ?? []),
   };
   const helper = new GoalProgressHelper({
     paths,
@@ -1892,12 +1897,12 @@ test("Helper retries delayed CDP and reconnects visible targets", async () => {
     recoverTargets: async () => {
       targetReads += 1;
       // Startup and handoff both initially see no renderer; the scheduled retry finds it.
-      return targetReads < 3 ? [] : [{ targetId: "window", threadId: "startup-chat" }];
+      return targetReads < 2 ? [] : [{ targetId: "window", threadId: "startup-chat" }];
     },
   });
   try {
     assert.equal((await fixture.fire()).code, "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
-    await waitForStartupTest(() => fixture.reconnects() === 1 && targetReads >= 3);
+    await waitForStartupTest(() => fixture.reconnects() === 1 && targetReads >= 2);
     assert.equal(attempts, 2);
     assert.deepEqual(fixture.setup.counts(), {
       signals: 0,
@@ -1972,8 +1977,7 @@ test("multi-target handoff retries a transient visible-thread restore failure", 
     visibleDelays: [1, 1],
     recoverTargets: async () => {
       targetReads += 1;
-      if (targetReads === 1) return [];
-      if (targetReads === 3) await rm(stateBlocker);
+      if (targetReads === 2) await rm(stateBlocker);
       return [{ targetId: "window", threadId: "transient-chat" }];
     },
   });
@@ -1986,7 +1990,7 @@ test("multi-target handoff retries a transient visible-thread restore failure", 
     // A file at the session-directory path makes the first restore fail with a store I/O error.
     await writeFile(stateBlocker, "temporary");
     assert.equal((await fixture.fire()).code, "STARTUP_EVENT_EXISTING_CDP");
-    await waitForStartupTest(() => targetReads >= 3);
+    await waitForStartupTest(() => targetReads >= 2);
     await waitForStartupTest(
       async () => (await stat(stateBlocker).catch(() => undefined))?.isDirectory() === true,
     );
@@ -1999,5 +2003,132 @@ test("multi-target handoff retries a transient visible-thread restore failure", 
     });
   } finally {
     await fixture.close();
+  }
+});
+
+function legacyListenerChild(failWrite = false) {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    stdin: Writable;
+    exitCode: number | null;
+    signalCode: string | null;
+    kill: (signal: string) => boolean;
+  };
+  let suspended = false;
+  const actions: string[] = [];
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      if (failWrite) {
+        callback(new Error("broken pipe"));
+        return;
+      }
+      const response = JSON.parse(chunk.toString()) as { action: string };
+      actions.push(response.action);
+      if (response.action === "continue") suspended = false;
+      callback();
+    },
+    final(callback) {
+      // Legacy Swift resumes on stdin EOF.
+      suspended = false;
+      callback();
+    },
+  });
+  child.kill = (signal) => {
+    // Legacy Swift catches SIGTERM and resumes its pending process before exiting.
+    if (signal === "SIGTERM") suspended = false;
+    child.signalCode = signal;
+    queueMicrotask(() => child.emit("close"));
+    return true;
+  };
+  return {
+    child,
+    actions,
+    suspended: () => suspended,
+    ready: () =>
+      child.stdout.write(
+        `${JSON.stringify({ schemaVersion: 1, event: "listener.ready", pid: 99 })}\n`,
+      ),
+    launch: (deadlineAtMs: number) => {
+      suspended = true;
+      child.stdout.write(
+        `${JSON.stringify({ ...startupEvent(startupExecutablePath), deadlineAtMs })}\n`,
+      );
+    },
+  };
+}
+
+test("supervisor releases a legacy suspended launch on continue, failure, timeout, stop and write failure", async () => {
+  for (const scenario of ["continue", "failure", "timeout", "stop", "write-failure"] as const) {
+    const fake = legacyListenerChild(scenario === "write-failure");
+    let supervisorSignals = 0;
+    const supervisor = new MacosStartupListenerSupervisor({
+      executablePath: "/fake/listener",
+      bundleId: "com.openai.codex",
+      appPath: startupAppPath,
+      appExecutablePath: startupExecutablePath,
+      spawnProcess: (() => fake.child) as never,
+      restartDelaysMs: [],
+      signalProcess: () => {
+        supervisorSignals += 1;
+      },
+    });
+    supervisor.start(async (event) => {
+      if (scenario === "timeout" || scenario === "stop") return new Promise(() => undefined);
+      if (scenario === "failure") throw new Error("handler failed");
+      return { schemaVersion: 1, pid: event.pid, action: "continue", code: "TEST" };
+    });
+    fake.ready();
+    await waitForStartupTest(() => supervisor.health().ready);
+    fake.launch(Date.now() + (scenario === "timeout" ? 20 : 1_000));
+    await waitForStartupTest(() => supervisor.isPending(4242) || !fake.suspended());
+    if (scenario === "stop") await supervisor.stop();
+    await waitForStartupTest(() => !fake.suspended());
+    if (scenario === "continue" || scenario === "failure" || scenario === "timeout") {
+      assert.deepEqual(fake.actions, ["continue"], scenario);
+    }
+    assert.equal(supervisorSignals, 0, scenario);
+    await supervisor.stop();
+  }
+});
+
+test("multi-target recovery retries unknown thread identity and stops after bounded exhaustion", async () => {
+  for (const becomesKnown of [true, false]) {
+    let reads = 0;
+    const fixture = await startupHelperFixture({
+      verify: async (pid, command) => startupOwnership(pid, command),
+      visibleDelays: [1, 1],
+      recoverTargets: async () => {
+        reads += 1;
+        return [{ targetId: "window", threadId: becomesKnown && reads >= 3 ? "known-chat" : null }];
+      },
+    });
+    try {
+      assert.equal((await fixture.fire()).code, "STARTUP_EVENT_EXISTING_CDP");
+      await waitForStartupTest(() => reads === 3);
+      if (becomesKnown) {
+        const directory = join(
+          fixture.paths.stateRoot,
+          createHash("sha256").update("known-chat").digest("hex"),
+        );
+        await waitForStartupTest(
+          async () => (await stat(directory).catch(() => undefined))?.isDirectory() === true,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(reads, 3);
+      assert.deepEqual(fixture.setup.counts(), {
+        signals: 0,
+        launches: 0,
+        allocations: 0,
+        writes: 1,
+      });
+    } finally {
+      await fixture.close();
+    }
   }
 });

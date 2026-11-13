@@ -602,6 +602,7 @@ export class GoalProgressHelper {
       for (const target of targets) {
         await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
         if (!target.threadId) {
+          retry = true;
           continue;
         }
         if ((await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry")
@@ -1345,7 +1346,7 @@ export class GoalProgressHelper {
       let retry = targets.length === 0;
       for (const target of targets) {
         await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-        if (target.threadId && (await this.#restoreVisibleThread(target.threadId)) === "retry") {
+        if (!target.threadId || (await this.#restoreVisibleThread(target.threadId)) === "retry") {
           retry = true;
         }
       }
@@ -1939,6 +1940,7 @@ export class GoalProgressHelper {
         }
       }
       if (threadId === null) {
+        this.#scheduleVisibleThreadRecovery(0);
         return {
           revision: null,
           result: { status: "unknown" },
@@ -2691,13 +2693,17 @@ export class GoalProgressHelper {
       // Update state is optional; Goal tracking remains available if it cannot be restored.
     }
     if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
+      let retry = recoveredTargets.length === 0;
       for (const target of recoveredTargets) {
         await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-        if (!target.threadId) {
-          continue;
+        if (
+          !target.threadId ||
+          (await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry"
+        ) {
+          retry = true;
         }
-        await this.#restoreVisibleThread(target.threadId).catch(() => "retry");
       }
+      if (retry) this.#scheduleVisibleThreadRecovery(0);
     } else if (recoveredVisibleThreadId) {
       const restored = await this.#restoreVisibleThread(recoveredVisibleThreadId).catch(
         (): "retry" => "retry",

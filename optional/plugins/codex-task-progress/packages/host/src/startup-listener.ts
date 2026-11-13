@@ -936,7 +936,7 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
       if (!this.#releasePending(event.pid)) {
         return;
       }
-      this.#writeResponse(child, eventResponse(event, "complete", "STARTUP_HANDLER_TIMEOUT"));
+      this.#writeResponse(child, eventResponse(event, "continue", "STARTUP_HANDLER_TIMEOUT"));
     }, delay);
     timer.unref?.();
     this.#pending = { pid: event.pid, timer };
