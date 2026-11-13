@@ -2132,3 +2132,138 @@ test("multi-target recovery retries unknown thread identity and stops after boun
     }
   }
 });
+
+test("Helper remains ready and task IPC works through stale renderer bootstrap, then recovers", async () => {
+  for (const failure of [
+    "target-discovery",
+    "target-initialize",
+    "target-activation",
+    "thread-discovery",
+  ] as const) {
+    const root = await mkdtemp("/tmp/ctph-renderer-offline-");
+    await mkdir(join(root, ".git"));
+    const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+    let available = false;
+    let lookups = 0;
+    let signals = 0;
+    let listenerStarted = false;
+    const missing = () => {
+      throw new Error("GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED");
+    };
+    const sink = {
+      clear: async () => undefined,
+      publish: async () => undefined,
+      ...(failure === "thread-discovery"
+        ? {
+            recoverVisibleThreadId: async () => {
+              lookups += 1;
+              return available ? "recovered-chat" : missing();
+            },
+          }
+        : {
+            clearTarget: async () => undefined,
+            publishTarget: async () => undefined,
+            setTargetThread: async () => undefined,
+            hasTarget: () => (failure === "target-activation" && !available ? missing() : true),
+            recoverVisibleTargets: async () => {
+              lookups += 1;
+              if (
+                !available &&
+                (failure === "target-discovery" ||
+                  (failure === "target-initialize" && lookups >= 2))
+              )
+                return missing();
+              return failure === "target-activation" || available
+                ? [{ targetId: "window", threadId: "recovered-chat" }]
+                : [];
+            },
+          }),
+    };
+    const helper = new GoalProgressHelper({
+      paths,
+      runtime: runtime(root),
+      resolveNativeGoal: async () => null,
+      viewModelSink: sink,
+      visibleThreadRecoveryDelaysMs: Array.from({ length: 10 }, () => 100),
+      startupListener: {
+        start: () => {
+          listenerStarted = true;
+        },
+        health: () => ({ running: true, ready: true, pid: 1, pendingPid: null }),
+        isPending: () => false,
+        waitUntilReady: async () => true,
+        stop: async () => undefined,
+      },
+      startupHandoff: startupController(paths.root, {
+        signalProcess: () => {
+          signals += 1;
+        },
+      }).instance,
+    });
+    const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+    let call = 0;
+    const request = (action: "get" | "initialize" | "history", input: unknown) =>
+      client.request({
+        method: "task.request",
+        params: {
+          action,
+          auth: {
+            kind: "codex-request",
+            toolName: `task_progress_${action}`,
+            identity: {
+              threadId: "ordinary-chat",
+              sessionId: "ordinary-chat",
+              turnId: "turn-1",
+              callId: `call-${++call}`,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input,
+        },
+      });
+    try {
+      await helper.start();
+      assert.equal(listenerStarted, true, failure);
+      const ping = await client.request({ method: "ping", params: {} });
+      assert.equal((ping.result as { ready: boolean }).ready, true, failure);
+      assert.equal(((await request("get", {})).result as { task: unknown }).task, null);
+      await request("initialize", {
+        requestId: "init",
+        expectedRevision: 0,
+        title: "Offline task",
+        reason: "Requested",
+        objectives: [{ id: "C1", title: "Build" }],
+      });
+      assert.equal(
+        ((await request("get", {})).result as { task: TaskState }).task.title,
+        "Offline task",
+      );
+      const history = (await request("history", {})).result as { history: TaskHistoryPage };
+      assert.equal(history.history.events.length, 1);
+      available = true;
+      const recoveredDirectory = join(
+        paths.stateRoot,
+        createHash("sha256").update("recovered-chat").digest("hex"),
+      );
+      await waitForStartupTest(
+        async () => (await stat(recoveredDirectory).catch(() => undefined))?.isDirectory() === true,
+      );
+      const laterPing = await client.request({ method: "ping", params: {} });
+      assert.equal(
+        (laterPing.result as { instanceId: string }).instanceId,
+        (ping.result as { instanceId: string }).instanceId,
+      );
+      assert.equal(signals, 0);
+      assert.equal(
+        ((await request("history", {})).result as { history: TaskHistoryPage }).history.events
+          .length,
+        1,
+      );
+    } finally {
+      await helper.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});

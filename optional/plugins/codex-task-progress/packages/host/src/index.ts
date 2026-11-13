@@ -2676,13 +2676,28 @@ export class GoalProgressHelper {
     if (this.#server !== server) {
       return;
     }
-    const recoveredTargets = this.#viewModelPublisher.multiTargetAwarenessAvailable
-      ? await this.#viewModelPublisher.recoverVisibleTargets()
-      : [];
-    const recoveredVisibleThreadId = this.#viewModelPublisher.multiTargetAwarenessAvailable
-      ? undefined
-      : await this.#viewModelPublisher.recoverVisibleThreadId();
-    await this.#viewModelPublisher.initialize();
+    let rendererBootstrapFailed = false;
+    let recoveredTargets: readonly {
+      readonly targetId: string;
+      readonly threadId: string | null;
+    }[] = [];
+    let recoveredVisibleThreadId: string | undefined;
+    try {
+      if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
+        recoveredTargets = await this.#viewModelPublisher.recoverVisibleTargets();
+      } else {
+        recoveredVisibleThreadId = await this.#viewModelPublisher.recoverVisibleThreadId();
+      }
+      await this.#viewModelPublisher.initialize();
+    } catch (error) {
+      rendererBootstrapFailed = true;
+      await this.#log({
+        level: "warn",
+        event: "startup.recovery",
+        code: "STARTUP_RENDERER_RECOVERY_PENDING",
+        causeCode: helperDiagnosticCauseCode(error),
+      });
+    }
     try {
       const updateState = await this.#updateCoordinator.initialize();
       await this.#viewModelPublisher.setUpdateState(updateState);
@@ -2692,28 +2707,39 @@ export class GoalProgressHelper {
     } catch {
       // Update state is optional; Goal tracking remains available if it cannot be restored.
     }
-    if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      let retry = recoveredTargets.length === 0;
-      for (const target of recoveredTargets) {
-        await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-        if (
-          !target.threadId ||
-          (await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry"
-        ) {
-          retry = true;
+    try {
+      if (rendererBootstrapFailed) {
+        this.#scheduleVisibleThreadRecovery(0);
+      } else if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
+        let retry = recoveredTargets.length === 0;
+        for (const target of recoveredTargets) {
+          await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
+          if (
+            !target.threadId ||
+            (await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry"
+          ) {
+            retry = true;
+          }
         }
-      }
-      if (retry) this.#scheduleVisibleThreadRecovery(0);
-    } else if (recoveredVisibleThreadId) {
-      const restored = await this.#restoreVisibleThread(recoveredVisibleThreadId).catch(
-        (): "retry" => "retry",
-      );
-      if (restored === "retry") {
+        if (retry) this.#scheduleVisibleThreadRecovery(0);
+      } else if (recoveredVisibleThreadId) {
+        const restored = await this.#restoreVisibleThread(recoveredVisibleThreadId).catch(
+          (): "retry" => "retry",
+        );
+        if (restored === "retry") this.#scheduleVisibleThreadRecovery(0);
+      } else {
         this.#scheduleVisibleThreadRecovery(0);
       }
-    } else {
+    } catch (error) {
+      await this.#log({
+        level: "warn",
+        event: "startup.recovery",
+        code: "STARTUP_RENDERER_RECOVERY_PENDING",
+        causeCode: helperDiagnosticCauseCode(error),
+      });
       this.#scheduleVisibleThreadRecovery(0);
     }
+    if (this.#server !== server) return;
     this.#ready = true;
     void this.#maybeStartAutomaticUpdateCheck().catch(() => undefined);
     await this.#log({
