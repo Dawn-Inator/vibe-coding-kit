@@ -12,6 +12,7 @@ import rendererBundlePolicy from "../../contracts/src/renderer-bundle-policy.jso
   type: "json",
 };
 import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
+import { discoverCodexCdp, isCodexRendererPageUrl } from "../src/cdp.js";
 import { GOAL_PROGRESS_PAGE_HOST_VERSION } from "../src/page-host.js";
 import {
   GoalProgressRendererBridge,
@@ -21,6 +22,85 @@ import {
   createGoalProgressRendererBundle,
   GOAL_PROGRESS_RENDERER_BUNDLE_MAX_BYTES,
 } from "../src/renderer-bundle.js";
+
+test("CDP renderer discovery accepts only the Codex main and detached conversation pages", async () => {
+  const detachedUrl = "app://-/detached-window.html?initialRoute=%2Fdetached-window";
+  assert.equal(isCodexRendererPageUrl("app://-/index.html"), true);
+  assert.equal(isCodexRendererPageUrl("app://-/index.html?initialRoute=%2Flocal%2Fchat-1"), true);
+  assert.equal(isCodexRendererPageUrl(detachedUrl), true);
+  for (const rejectedUrl of [
+    "app://-/avatar-overlay.html",
+    "app://-/detached-window.html",
+    "app://-/detached-window.html?initialRoute=%2Fother",
+    "app://-/detached-window.html?initialRoute=%2Fdetached-window&extra=1",
+    "app://-/detached-window.html?initialRoute=%2Fdetached-window&initialRoute=%2Fdetached-window",
+    "app://-/detached-window.html?initialRoute=%2Fdetached-window#fragment",
+    "app://user@-/detached-window.html?initialRoute=%2Fdetached-window",
+    "app://-:1234/detached-window.html?initialRoute=%2Fdetached-window",
+    "https://example.com/detached-window.html?initialRoute=%2Fdetached-window",
+    "app://-/unknown.html",
+  ]) {
+    assert.equal(isCodexRendererPageUrl(rejectedUrl), false, rejectedUrl);
+  }
+
+  const urls = [
+    { id: "main", type: "page", url: "app://-/index.html" },
+    { id: "detached", type: "page", url: detachedUrl },
+    { id: "avatar", type: "page", url: "app://-/avatar-overlay.html" },
+    { id: "unknown", type: "page", url: "app://-/unexpected.html" },
+    {
+      id: "wrong-route",
+      type: "page",
+      url: "app://-/detached-window.html?initialRoute=%2Fother",
+    },
+    {
+      id: "multiple-params",
+      type: "page",
+      url: "app://-/detached-window.html?initialRoute=%2Fdetached-window&extra=1",
+    },
+    {
+      id: "hash",
+      type: "page",
+      url: "app://-/detached-window.html?initialRoute=%2Fdetached-window#fragment",
+    },
+    {
+      id: "credentials",
+      type: "page",
+      url: "app://user@-/detached-window.html?initialRoute=%2Fdetached-window",
+    },
+    {
+      id: "remote",
+      type: "page",
+      url: "https://example.com/detached-window.html?initialRoute=%2Fdetached-window",
+    },
+    { id: "iframe", type: "iframe", url: detachedUrl },
+    { id: "webview", type: "webview", url: detachedUrl },
+  ].map((target) => ({
+    ...target,
+    title: target.id,
+    webSocketDebuggerUrl: `ws://127.0.0.1:54235/devtools/page/${target.id}`,
+  }));
+  const discovery = await discoverCodexCdp(54235, async (input) => {
+    const path = new URL(String(input)).pathname;
+    const payload =
+      path === "/json/version"
+        ? {
+            Browser: "Codex",
+            "Protocol-Version": "1.3",
+            "User-Agent": "Codex test",
+            webSocketDebuggerUrl: "ws://127.0.0.1:54235/devtools/browser/test",
+          }
+        : urls;
+    return new Response(JSON.stringify(payload), { status: 200 });
+  });
+  assert.deepEqual(
+    discovery.targets.map(({ id, url }) => ({ id, url })),
+    [
+      { id: "main", url: "app://-/index.html" },
+      { id: "detached", url: detachedUrl },
+    ],
+  );
+});
 
 test("production renderer artifact obeys the shared size policy and runtime integrity checks", async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -389,6 +469,64 @@ test("task page wrapper waits through the IPC deadline, then cleans timed-out re
       "a late reply cannot settle the next request",
     );
     assert.equal(timers.size, 0);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("doctor exposes the ordinary task panel independently of native Goal health", async () => {
+  const source = "/* diagnostic bundle */";
+  const bundle = createGoalProgressRendererBundle(source, {
+    schemaVersion: 1,
+    releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
+    pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION,
+    file: "goal-progress.js",
+    bytes: Buffer.byteLength(source),
+    sha256: createHash("sha256").update(source).digest("hex"),
+  });
+  const panel = {
+    version: 1,
+    elementName: "codex-task-panel",
+    threadId: "chat-a",
+    visible: true,
+    connected: true,
+    count: 1,
+    threadMatched: true,
+    bounds: { x: 1, y: 2, width: 100, height: 44 },
+    status: "connected",
+    lastError: null,
+    lastRefreshAt: null,
+    revision: 3,
+  };
+  const bridge = new GoalProgressRendererBridge({
+    bundle,
+    platform: "macos",
+    appVersion: "test",
+    sender: {
+      async send() {
+        return {
+          result: {
+            value: {
+              reason: "not-configured",
+              hostCount: 0,
+              componentVisible: false,
+              taskPanel: panel,
+            },
+          },
+        };
+      },
+    },
+  });
+  try {
+    const matching = await bridge.doctor("chat-a");
+    assert.deepEqual(matching.taskPanel, panel);
+    assert.equal(matching.componentCount, 0);
+    assert.equal(matching.capabilityReason, "not-configured");
+    assert.equal(matching.bundleSha256, bundle.manifest.sha256);
+    const mismatch = await bridge.doctor("chat-b");
+    assert.equal(mismatch.taskPanel?.visible, false);
+    assert.equal(mismatch.taskPanel?.threadMatched, false);
+    assert.equal(mismatch.taskPanel?.bounds, null);
   } finally {
     await bridge.close();
   }

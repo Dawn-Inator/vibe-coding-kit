@@ -96,23 +96,25 @@ export function isCodexRendererPageUrl(rawUrl: string): boolean {
   }
   if (
     url.protocol !== "app:" ||
-    url.hostname !== "-" ||
-    url.pathname !== "/index.html" ||
+    url.host !== "-" ||
     url.username !== "" ||
     url.password !== "" ||
-    url.hash !== ""
+    url.hash !== "" ||
+    (url.pathname !== "/index.html" && url.pathname !== "/detached-window.html")
   ) {
     return false;
   }
   const keys = [...url.searchParams.keys()];
   if (keys.length === 0) {
-    return url.search === "";
+    return url.pathname === "/index.html" && url.search === "";
   }
-  return (
-    keys.length === 1 &&
-    keys[0] === "initialRoute" &&
-    CODEX_LOCAL_THREAD_ROUTE_PATTERN.test(url.searchParams.get("initialRoute") ?? "")
-  );
+  if (keys.length !== 1 || keys[0] !== "initialRoute") {
+    return false;
+  }
+  const initialRoute = url.searchParams.get("initialRoute") ?? "";
+  return url.pathname === "/detached-window.html"
+    ? initialRoute === "/detached-window"
+    : CODEX_LOCAL_THREAD_ROUTE_PATTERN.test(initialRoute);
 }
 
 export type FetchLike = (

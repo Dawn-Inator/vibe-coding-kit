@@ -153,6 +153,67 @@ test("ordinary chat task panel browser flows", async (t) => {
   };
   try {
     await t.test(
+      "health reports only the owned ordinary task panel without a native Goal",
+      async () => {
+        const { context, page } = await open();
+        try {
+          await page.evaluate(async (value) => {
+            window.fixture.task = value;
+            await window.__CODEX_TASK_PROGRESS__.refresh();
+          }, task);
+          const health = await page.evaluate(() => window.__CODEX_GOAL_PROGRESS__.health());
+          assert.equal(health.reason, "not-configured");
+          assert.equal(health.hostCount, 0);
+          assert.equal(health.taskPanel.status, "connected");
+          assert.equal(health.taskPanel.threadId, "thread-a");
+          assert.equal(health.taskPanel.threadMatched, true);
+          assert.equal(health.taskPanel.revision, 1);
+          assert.equal(health.taskPanel.connected, true);
+          assert.equal(health.taskPanel.visible, true);
+          assert.equal(health.taskPanel.count, 1);
+          assert.ok(health.taskPanel.bounds.width > 0 && health.taskPanel.bounds.height > 0);
+          await page.evaluate(async () => {
+            window.fixture.getFailureNext = "GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED";
+            await window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          const failed = await page.evaluate(
+            () => window.__CODEX_GOAL_PROGRESS__.health().taskPanel,
+          );
+          assert.equal(failed.status, "error");
+          assert.equal(failed.lastError, "GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED");
+          const switched = await page.evaluate(() => {
+            document
+              .querySelector("[data-app-action-sidebar-thread-id]")
+              .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
+          });
+          assert.equal(switched.visible, false);
+          assert.equal(switched.threadMatched, false);
+          assert.equal(switched.bounds, null);
+          await page.evaluate(() =>
+            document
+              .querySelector("[data-app-action-sidebar-thread-id]")
+              .setAttribute("data-app-action-sidebar-thread-id", "thread-a"),
+          );
+          const hidden = await page.evaluate(() => {
+            document.querySelector("[data-codex-task-panel]").style.display = "none";
+            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
+          });
+          assert.equal(hidden.visible, false);
+          assert.equal(hidden.bounds, null);
+          const destroyed = await page.evaluate(() => {
+            window.__CODEX_TASK_PROGRESS__.destroy();
+            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
+          });
+          assert.equal(destroyed.connected, false);
+          assert.equal(destroyed.visible, false);
+          assert.equal(destroyed.count, 0);
+        } finally {
+          await context.close();
+        }
+      },
+    );
+    await t.test(
       "disabled project hides panel without stale data; omitted legacy flag stays enabled",
       async () => {
         const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });

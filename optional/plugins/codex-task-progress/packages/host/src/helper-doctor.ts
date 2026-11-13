@@ -69,6 +69,7 @@ export interface GoalProgressDoctorResult {
       readonly targetUrl: string | null;
     };
     readonly renderer: {
+      readonly taskPanel: GoalProgressRendererBridgeDoctor["taskPanel"] | null;
       readonly displayState: GoalProgressRendererBridgeDoctor["displayState"] | null;
       readonly displayRequired: boolean | null;
       readonly receivedViewModelRevision: number | null;
@@ -110,6 +111,7 @@ function emptyDoctorRuntime(lastErrorCode: string | null): GoalProgressDoctorRes
     app: { path: null, signatureValid: null },
     cdp: { port: null, loopback: null, targetUrl: null },
     renderer: {
+      taskPanel: null,
       displayState: null,
       displayRequired: null,
       receivedViewModelRevision: null,
@@ -391,6 +393,7 @@ export async function inspectGoalProgressRuntime(
       targetUrl: renderer?.targetUrl ?? null,
     },
     renderer: {
+      taskPanel: renderer?.taskPanel ?? null,
       displayState: renderer?.displayState ?? null,
       displayRequired: renderer?.displayRequired ?? null,
       receivedViewModelRevision: renderer?.receivedViewModelRevision ?? null,

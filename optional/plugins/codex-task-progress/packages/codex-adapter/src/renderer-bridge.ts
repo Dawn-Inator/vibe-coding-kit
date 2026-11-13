@@ -37,6 +37,7 @@ import {
   refreshGoalProgressVisibleThreadWatcher,
 } from "./cdp.js";
 import type { GoalProgressRendererBundle } from "./renderer-bundle.js";
+import type { TaskPageHostDiagnostics } from "./task-page-host.js";
 
 // The bridge verifies visibility before dispatch and sends the reply afterward;
 // both CDP steps can consume their own IPC budget.
@@ -111,7 +112,30 @@ export interface ConnectedGoalProgressRendererBridge {
   readonly targetId: string;
 }
 
+const TaskPanelDiagnosticsSchema = z.object({
+  version: z.literal(1),
+  elementName: z.string().max(128),
+  threadId: z.string().max(1024).nullable(),
+  visible: z.boolean(),
+  connected: z.boolean(),
+  count: z.number().int().nonnegative(),
+  threadMatched: z.boolean(),
+  bounds: z
+    .object({
+      x: z.number().finite(),
+      y: z.number().finite(),
+      width: z.number().positive(),
+      height: z.number().positive(),
+    })
+    .nullable(),
+  status: z.enum(["waiting", "connected", "error"]),
+  lastError: z.string().max(128).nullable(),
+  lastRefreshAt: z.string().nullable(),
+  revision: z.number().int().nonnegative().nullable(),
+});
+
 export interface GoalProgressRendererBridgeDoctor {
+  readonly taskPanel?: TaskPageHostDiagnostics | null;
   readonly displayState?: "rendered" | "pending" | "not-needed" | "unrecognized";
   readonly displayRequired?: boolean | null;
   readonly receivedViewModelRevision?: number | null;
@@ -383,6 +407,12 @@ export class GoalProgressRendererBridge {
       health?.runtime !== null && typeof health?.runtime === "object"
         ? (health.runtime as Record<string, unknown>)
         : null;
+    const taskPanelParsed = TaskPanelDiagnosticsSchema.safeParse(health?.taskPanel);
+    const panel = taskPanelParsed.success ? taskPanelParsed.data : null;
+    const taskPanel =
+      panel && expectedThreadId !== undefined && panel.threadId !== expectedThreadId
+        ? { ...panel, visible: false, threadMatched: false, bounds: null }
+        : panel;
     const reason = typeof health?.reason === "string" ? health.reason : null;
     const adapterId = typeof health?.adapterId === "string" ? health.adapterId : null;
     const displayMode =
@@ -420,6 +450,7 @@ export class GoalProgressRendererBridge {
         ? health.displayState
         : "pending";
     return {
+      taskPanel,
       displayState:
         displayState === "rendered" && receivedViewModelRevision !== latest?.revision
           ? "pending"

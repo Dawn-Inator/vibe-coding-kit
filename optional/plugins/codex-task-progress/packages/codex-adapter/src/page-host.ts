@@ -46,6 +46,7 @@ import {
   SidecarMountController,
   type SidecarMountResult,
 } from "./sidecar-mount.js";
+import type { TaskPageHostDiagnostics } from "./task-page-host.js";
 
 export const GOAL_PROGRESS_PAGE_HOST_GLOBAL = "__CODEX_GOAL_PROGRESS__";
 export const GOAL_PROGRESS_PAGE_HOST_VERSION = pageHostVersionManifest.pageHostVersion;
@@ -135,6 +136,7 @@ export type GoalProgressPageHealthResult = (
   readonly visibleThreadStatus: "matched" | "retained" | "unknown" | "mismatch" | null;
   readonly componentVisible: boolean;
   readonly runtime: GoalProgressPageRuntimeDiagnostics;
+  readonly taskPanel: TaskPageHostDiagnostics | null;
   readonly displayState: "rendered" | "pending" | "not-needed" | "unrecognized";
   readonly displayRequired: boolean | null;
   readonly receivedViewModelRevision: number | null;
@@ -604,6 +606,12 @@ class GoalProgressPageHost implements GoalProgressPageHostApi {
         : match?.status === "matched" || retained
           ? true
           : null;
+    let taskPanel: TaskPageHostDiagnostics | null = null;
+    try {
+      taskPanel = this.#document.defaultView?.__CODEX_TASK_PROGRESS__?.diagnostics() ?? null;
+    } catch {
+      // Optional task diagnostics cannot invalidate Goal health.
+    }
     return {
       ...result,
       componentVisible: result.componentVisible && match?.status !== "mismatch",
@@ -628,6 +636,7 @@ class GoalProgressPageHost implements GoalProgressPageHostApi {
         match?.rejectionReason ??
         (result.reason === "ok" ? null : result.reason),
       runtime: this.#diagnostics(),
+      taskPanel,
     };
   }
 

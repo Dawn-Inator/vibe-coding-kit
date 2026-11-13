@@ -13,6 +13,10 @@ export interface TaskPageHostDiagnostics {
   elementName: string;
   threadId: string | null;
   visible: boolean;
+  connected: boolean;
+  count: number;
+  threadMatched: boolean;
+  bounds: { x: number; y: number; width: number; height: number } | null;
   status: "waiting" | "connected" | "error";
   lastError: string | null;
   lastRefreshAt: string | null;
@@ -51,6 +55,10 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     elementName,
     threadId: null,
     visible: false,
+    connected: false,
+    count: 0,
+    threadMatched: false,
+    bounds: null,
     status: "waiting",
     lastError: null,
     lastRefreshAt: null,
@@ -338,7 +346,57 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     window.addEventListener("pointercancel", stop);
   });
   const host: TaskPageHost = {
-    diagnostics: () => ({ ...diagnostic }),
+    diagnostics: () => {
+      const page = readCurrentCodexPage(document);
+      const connected = !destroyed && element.isConnected;
+      const threadMatched =
+        !!diagnostic.threadId && page.threadId === diagnostic.threadId && !page.rejectionReason;
+      const rect = connected ? element.getBoundingClientRect() : null;
+      let stylesVisible = connected;
+      for (
+        let node: HTMLElement | null = connected ? element : null;
+        node;
+        node = node.parentElement
+      ) {
+        const style = window.getComputedStyle(node);
+        if (
+          style.display === "none" ||
+          style.visibility !== "visible" ||
+          Number(style.opacity) <= 0
+        ) {
+          stylesVisible = false;
+          break;
+        }
+      }
+      const visible =
+        connected &&
+        threadMatched &&
+        diagnostic.visible &&
+        !!rect &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.right > 0 &&
+        rect.bottom > 0 &&
+        rect.left < window.innerWidth &&
+        rect.top < window.innerHeight &&
+        stylesVisible;
+      const lastError =
+        diagnostic.lastError && /^[A-Z][A-Z0-9_]{1,127}$/u.test(diagnostic.lastError)
+          ? diagnostic.lastError
+          : diagnostic.lastError
+            ? "TASK_PROGRESS_ERROR"
+            : null;
+      return {
+        ...diagnostic,
+        connected,
+        count: document.querySelectorAll('[data-codex-task-panel="true"]').length,
+        threadMatched,
+        visible,
+        bounds:
+          visible && rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+        lastError,
+      };
+    },
     refresh,
     destroy: () => {
       destroyed = true;
