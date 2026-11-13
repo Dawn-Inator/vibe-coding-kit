@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	realpathSync,
+	truncateSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
@@ -237,4 +243,15 @@ test("no discovered source returns none without claiming a recorded project hear
 	assert.equal(empty.source, null);
 	assert.equal(empty.basis, "none");
 	assert.equal(empty.discovery.complete, true);
+});
+
+test("configured paired source rejects oversized history before parsing the companion", async () => {
+	const root = projectRoot();
+	const path = writeLedger(root, "heartbeat.md", { wake: "2026-01-01T10:00Z" });
+	const companion = join(root, "taskhistory.md");
+	writeFileSync(companion, "unrelated");
+	truncateSync(companion, 8 * 1024 * 1024 + 1);
+	const view = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
+	assert.equal(view.status, "error");
+	assert.match(view.error, /exceeds.*byte read limit/i);
 });

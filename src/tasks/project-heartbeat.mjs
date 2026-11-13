@@ -48,13 +48,8 @@ async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
 	const pair = readHeartbeatLedgerPair({
 		root: projectRoot,
 		path: canonicalPath,
+		maxBytes: MAX_BYTES,
 	});
-	if (
-		Buffer.byteLength(pair.headText, "utf8") +
-			Buffer.byteLength(pair.historyText, "utf8") >
-		MAX_BYTES
-	)
-		throw new Error("Paired heartbeat ledger exceeds the 8 MiB read limit");
 	const current = inspectHeartbeatLedgerPair(pair, {
 		mode: "current",
 		latest: true,

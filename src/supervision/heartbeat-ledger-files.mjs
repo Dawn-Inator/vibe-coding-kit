@@ -185,7 +185,10 @@ function historyText(body, head, backup, paths, previousHead) {
 // Open both files before reading so a combined limit is enforced without
 // materializing either oversized file. The read loop also catches growth after fstat.
 function boundedPairInputs(paths, maxBytes) {
-	const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+	const flags =
+		constants.O_RDONLY |
+		(constants.O_NOFOLLOW ?? 0) |
+		(constants.O_NONBLOCK ?? 0);
 	const descriptors = [];
 	const openRegular = (path, optional = false) => {
 		let fd;

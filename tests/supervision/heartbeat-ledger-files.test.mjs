@@ -860,3 +860,25 @@ test("bounded paired reads enforce combined size, including grown companion befo
 		/integrity/i,
 	);
 });
+
+test("bounded reads reject FIFO companions without waiting for a writer", {
+	skip: process.platform === "win32",
+}, (t) => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(path, wake("2026-01-01T10:00Z"));
+	const fifo = heartbeatLedgerPairPaths(path).historyPath;
+	const result = spawnSync("mkfifo", [fifo], {
+		encoding: "utf8",
+		timeout: 2000,
+	});
+	if (result.error?.code === "ENOENT") {
+		t.skip("mkfifo unavailable");
+		return;
+	}
+	assert.equal(result.status, 0, result.stderr);
+	assert.throws(
+		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: 1024 }),
+		/not a file|regular file/i,
+	);
+});
