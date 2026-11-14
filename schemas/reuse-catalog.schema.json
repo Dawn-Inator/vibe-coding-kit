@@ -22,7 +22,7 @@
     "title": {
       "type": "string",
       "minLength": 1,
-      "pattern": "[^\\s]"
+      "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
     },
     "entries": {
       "type": "array",
@@ -47,44 +47,44 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "name": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "category": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "owner": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "source": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "summary": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "useWhen": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "scope": {
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1,
-              "pattern": "[^\\s]"
+              "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
             }
           },
           "constraints": {
@@ -92,7 +92,7 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "pattern": "[^\\s]"
+              "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
             }
           },
           "examples": {
@@ -100,7 +100,7 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "pattern": "[^\\s]"
+              "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
             }
           },
           "tests": {
@@ -108,7 +108,7 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "pattern": "[^\\s]"
+              "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
             }
           },
           "publicEntry": {
@@ -122,12 +122,12 @@
               "module": {
                 "type": "string",
                 "minLength": 1,
-                "pattern": "[^\\s]"
+                "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
               },
               "symbol": {
                 "type": "string",
                 "minLength": 1,
-                "pattern": "[^\\s]"
+                "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
               }
             }
           }
@@ -148,17 +148,17 @@
           "source": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "module": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           },
           "kind": {
             "type": "string",
             "minLength": 1,
-            "pattern": "[^\\s]"
+            "pattern": "^(?=.*\\S)[^\\r\\n]+(?![\\s\\S])"
           }
         }
       }

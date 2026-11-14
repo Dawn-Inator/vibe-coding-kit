@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, realpath, stat, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { loadProjectAdapter } from './project-adapter.mjs';
 
@@ -25,7 +25,27 @@ async function projectPath(root, value, mustExist = true) {
     catch (error) { if (error.code !== 'ENOENT' || mustExist) throw error; const parent = dirname(probe); if (parent === probe) throw error; probe = parent; }
   }
   if (mustExist && !(await stat(target)).isFile()) throw new Error(`path is not a file: ${value}`);
+  if (!mustExist) {
+    let component = root;
+    for (const part of value.split('/')) {
+      component = resolve(component, part);
+      try { if ((await lstat(component)).isSymbolicLink()) throw new Error(`output path contains symlink: ${value}`); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
   return target;
+}
+
+async function writeIdentity(target) {
+  let ancestor = target; const suffix = [];
+  while (true) {
+    try { const canonical = resolve(await realpath(ancestor), ...suffix.reverse()); return process.platform === 'win32' ? canonical.toLowerCase() : canonical; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; suffix.push(ancestor.slice(dirname(ancestor).length + 1)); ancestor = dirname(ancestor); }
+  }
+}
+
+function ownershipMarker(kind, source) {
+  return `<!-- reuse-catalog: ${JSON.stringify({ kind, source })} -->`;
 }
 
 /** Validate a catalog and its referenced files. Findings are stable, structured diagnostics. */
@@ -60,7 +80,7 @@ const code = (text) => '`' + text.replace(/`/g, '\\`') + '`';
 export function renderReuseCatalog({ catalog, source, document, sourceHash }) {
   const covers = [...new Set([...catalog.entries.map((e) => e.source), ...(catalog.publicSurfaces || []).map((s) => s.source)])].sort();
   const coverage = covers.length ? ['covers:', ...covers.map((path) => `  - ${JSON.stringify(path)}`)] : ['covers: []'];
-  const lines = ['---', `title: ${JSON.stringify(catalog.title)}`, `description: ${JSON.stringify(`Generated ${catalog.kind} reuse catalog`)}`, 'authority: normal', ...coverage, '---', '', `# ${md(catalog.title)}`, '', `> NON-CANONICAL generated projection. Source: [${md(source)}](${link(document, source)}); SHA-256: ${sourceHash}.`, ''];
+  const lines = ['---', `title: ${JSON.stringify(catalog.title)}`, `description: ${JSON.stringify(`Generated ${catalog.kind} reuse catalog`)}`, 'authority: normal', ...coverage, '---', '', ownershipMarker(catalog.kind, source), '', `# ${md(catalog.title)}`, '', `> NON-CANONICAL generated projection. Source: [${md(source)}](${link(document, source)}); SHA-256: ${sourceHash}.`, ''];
   const groups = new Map();
   for (const e of [...catalog.entries].sort((a,b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) { if (!groups.has(e.category)) groups.set(e.category, []); groups.get(e.category).push(e); }
   for (const [category, entries] of groups) { lines.push(`## ${md(category)}`, ''); for (const e of entries) {
@@ -69,7 +89,11 @@ export function renderReuseCatalog({ catalog, source, document, sourceHash }) {
   return lines.join('\n');
 }
 
-/** Run check or regeneration; no output is written until every configured catalog validates. */
+/**
+ * Run check or regeneration; no output is written until every configured catalog validates.
+ * A consumer-supplied validateReuseCatalog callback is trusted project code and MUST be
+ * read-only. It receives action and readOnly: true; this is a contract, not a sandbox.
+ */
 export async function runReuseCatalog({ projectRoot, action = 'check', validatePublicSurface } = {}) {
   if (!['check', 'regen'].includes(action)) throw new Error('action must be check or regen');
   const root = await realpath(projectRoot); let config;
@@ -92,20 +116,28 @@ export async function runReuseCatalog({ projectRoot, action = 'check', validateP
     if (!keys(options, ['source','document'], []) || Object.values(options).some((v) => !string(v))) { findings.push(finding('invalid-config', `${kind} must be false or an object with source and document paths`)); continue; }
     const { source, document } = { ...defaults[kind], ...options };
     try {
+      if (!document.endsWith('.md')) throw new Error('document must be a Markdown (.md) path');
       const sourcePath = await projectPath(root, source); const documentPath = await projectPath(root, document, false);
-      if (sourcePath === documentPath || outputs.has(documentPath)) throw new Error('source and document paths must be distinct and outputs unique');
-      outputs.add(documentPath);
+      const identity = await writeIdentity(documentPath);
+      if (sourcePath === documentPath || document === '.vibe-coding/project.config.json' || document === config.adapter || outputs.has(identity)) throw new Error('source and document paths must be distinct and outputs unique');
+      outputs.add(identity);
       const raw = await readFile(sourcePath, 'utf8'); const catalog = JSON.parse(raw); inputs.add(await realpath(sourcePath));
       const validation = await validateReuseCatalog({ projectRoot: root, catalog, kind }); findings.push(...validation.findings);
       if (!validation.ok) continue;
       for (const input of [...catalog.entries.flatMap((e) => [e.source, ...e.examples, ...e.tests]), ...(catalog.publicSurfaces || []).map((s) => s.source)]) inputs.add(await realpath(resolve(root, input)));
       let publicSurface = 'unverified';
-      if (callback) { const result = await callback({ projectRoot: root, kind, catalog, source, document }); if (!result || result.ok !== true || result.skipped === true || result.skip === true) throw new Error('public-surface adapter rejected or did not verify catalog'); publicSurface = 'verified'; }
+      if (callback) { const result = await callback({ projectRoot: root, kind, catalog, source, document, action, readOnly: true }); if (!result || result.ok !== true || result.skipped === true || result.skip === true) throw new Error('public-surface adapter rejected or did not verify catalog'); publicSurface = 'verified'; }
       const content = renderReuseCatalog({ catalog, source, document, sourceHash: createHash('sha256').update(raw).digest('hex') });
-      catalogs.push({ kind, source, document, publicSurface }); prepared.push({ documentPath, document, content });
+      catalogs.push({ kind, source, document, publicSurface }); prepared.push({ documentPath, document, content, kind, source });
     } catch (error) { findings.push(finding('catalog-error', `${kind}: ${error.message}`, source)); }
   }
-  for (const entry of prepared) { let actual = entry.documentPath; try { actual = await realpath(actual); } catch (error) { if (error.code !== 'ENOENT') throw error; } if (inputs.has(actual)) findings.push(finding('invalid-path', `output overlaps catalog input: ${entry.document}`, entry.document)); }
+  for (const entry of prepared) {
+    let actual = entry.documentPath; let current;
+    try { actual = await realpath(actual); current = await readFile(actual, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') { findings.push(finding('invalid-path', `${entry.document}: ${error.message}`, entry.document)); continue; } }
+    if (inputs.has(actual) || actual === resolve(root, '.vibe-coding/project.config.json') || (config.adapter && actual === resolve(root, config.adapter))) findings.push(finding('invalid-path', `output overlaps a protected input: ${entry.document}`, entry.document));
+    if (action === 'regen' && current !== undefined && !current.split('\n').includes(ownershipMarker(entry.kind, entry.source))) findings.push(finding('unowned-document', `refusing to replace non-generated document: ${entry.document}`, entry.document));
+  }
   if (!findings.length && action === 'check') for (const entry of prepared) { let current; try { current = await readFile(entry.documentPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; } if (current !== entry.content) findings.push(finding('stale-document', `generated document missing or stale: ${entry.document}`, entry.document)); }
   if (!findings.length && action === 'regen') for (const entry of prepared) { await mkdir(dirname(entry.documentPath), { recursive: true }); await writeFile(entry.documentPath, entry.content); }
   return { ok: findings.length === 0, skipped: false, findings, catalogs };
