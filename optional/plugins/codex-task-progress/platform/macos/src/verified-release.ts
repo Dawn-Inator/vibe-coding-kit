@@ -42,6 +42,7 @@ export interface ParsedReleaseManifest {
   readonly files: {
     readonly helper: MacosReleaseFile;
     readonly startupListener: MacosReleaseFile;
+    readonly dockLauncher?: MacosReleaseFile;
     readonly renderer: MacosReleaseFile;
     readonly rendererManifest: MacosReleaseFile;
     readonly pluginArchive: MacosReleaseFile;
@@ -135,6 +136,7 @@ function parseReleaseManifest(input: unknown): ParsedReleaseManifest {
   }
   assertReleaseFile(input.files.helper);
   assertReleaseFile(input.files.startupListener);
+  if ("dockLauncher" in input.files) assertReleaseFile(input.files.dockLauncher);
   assertReleaseFile(input.files.renderer);
   assertReleaseFile(input.files.rendererManifest);
   assertReleaseFile(input.files.pluginArchive);
@@ -281,6 +283,7 @@ export async function copyRelease(
       destination,
       file.path === manifest.files.helper.path ||
         file.path === manifest.files.startupListener.path ||
+        file.path === manifest.files.dockLauncher?.path ||
         file.path === manifest.files.installCommand.path ||
         file.path === manifest.files.repairCommand.path ||
         file.path === manifest.files.disableCommand.path ||

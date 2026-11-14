@@ -6,6 +6,9 @@ import { dirname, isAbsolute, resolve } from "node:path";
 export const GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER = "com.codextaskprogress.helper";
 export const GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER =
   "com.codextaskprogress.startup-listener";
+export const GOAL_PROGRESS_DOCK_LAUNCHER_SIGNING_IDENTIFIER = "com.codextaskprogress.launcher";
+export const GOAL_PROGRESS_DOCK_LAUNCHER_APP_SIGNING_IDENTIFIER =
+  "com.codextaskprogress.codexlauncher";
 
 const DEFAULT_CONFIG_RELATIVE_PATH =
   "Library/Application Support/CodexTaskProgress/release-signing.json";
@@ -279,7 +282,9 @@ export function createCodesignArgs(identity, identifier, binaryPath) {
   const signingIdentity = validateIdentity(identity, "resolved");
   if (
     identifier !== GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER &&
-    identifier !== GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER
+    identifier !== GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER &&
+    identifier !== GOAL_PROGRESS_DOCK_LAUNCHER_SIGNING_IDENTIFIER &&
+    identifier !== GOAL_PROGRESS_DOCK_LAUNCHER_APP_SIGNING_IDENTIFIER
   ) {
     throw new Error("GOAL_PROGRESS_CODESIGN_IDENTIFIER_INVALID");
   }

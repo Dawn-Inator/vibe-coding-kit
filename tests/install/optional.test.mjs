@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { askTaskProgressSigningIdentity } from '../../cli.mjs';
+import { askTaskProgressDockSetup, askTaskProgressSigningIdentity, shouldAskTaskProgressDockSetup } from '../../cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
@@ -35,6 +35,24 @@ test('signing identity prompt is TTY-only, lists certificates, and declines by d
   assert.equal(await askTaskProgressSigningIdentity(candidates, {
     input: { isTTY: true }, output: { isTTY: true }, ask: async () => candidates[0].identity,
   }), candidates[0].identity);
+});
+
+test('managed Dock prompt is a separate default-no opt-in and is hidden unless the supported launcher is missing', async () => {
+  const status = { status: 'installed', launcherSupported: true, launcherInstalled: false, dockConfigured: false };
+  assert.equal(shouldAskTaskProgressDockSetup(status, true), true);
+  assert.equal(shouldAskTaskProgressDockSetup({ ...status, dockConfigured: true }, true), false);
+  assert.equal(shouldAskTaskProgressDockSetup({ ...status, launcherSupported: false }, true), false);
+  assert.equal(shouldAskTaskProgressDockSetup(status, false), false);
+
+  let message = '';
+  const ask = async (text) => { message = text; return ''; };
+  assert.equal(await askTaskProgressDockSetup({ input: { isTTY: true }, output: { isTTY: true }, ask }), false);
+  assert.match(message, /same-name, same-icon one-click Codex Task Progress entry in the Dock\? \[y\/N\]/);
+  assert.equal(await askTaskProgressDockSetup({ input: { isTTY: true }, output: { isTTY: true }, ask: async () => 'no' }), false);
+  assert.equal(await askTaskProgressDockSetup({ input: { isTTY: true }, output: { isTTY: true }, ask: async () => 'yes' }), true);
+  let prompted = false;
+  assert.equal(await askTaskProgressDockSetup({ input: { isTTY: false }, output: { isTTY: true }, ask: async () => { prompted = true; return 'yes'; } }), false);
+  assert.equal(prompted, false, 'non-TTY callers must not prompt or authorize Dock changes');
 });
 
 function optionalProbeEnv(fixture, env = process.env) {
@@ -205,6 +223,34 @@ test('fresh install reuses an already installed task progress plugin while confi
   const partialConfig = configure(fixture, 'aliyun=on', { ...process.env, HOME: fakeHome });
   assert.equal(partialConfig.status, 0, partialConfig.stderr || partialConfig.stdout);
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).optional['task-progress'], false);
+});
+
+test('existing plugin changes its Dock launcher only after explicit task-progress opt-in', {
+  skip: process.platform !== 'darwin' || process.arch !== 'arm64',
+}, () => {
+  for (const explicit of [false, true]) {
+    const fixture = optionalConsumer();
+    const initialized = install(fixture);
+    assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
+    const fakeHome = join(fixture.root, 'fake-home');
+    const launcherLog = join(fixture.root, 'launcher-calls.log');
+    const helper = join(fakeHome, 'Library/Application Support/CodexTaskProgress/install/bin/goal-progress');
+    mkdirSync(join(helper, '..'), { recursive: true });
+    writeFileSync(helper, [
+      '#!/bin/sh',
+      'if [ "$1" = doctor ]; then printf \'{"ok":true,"details":{"pluginInstalled":true}}\\n\'; exit 0; fi',
+      'if [ "$1" = launcher ] && [ "$2" = --status ]; then printf \'{"launcherInstalled":false,"dockConfigured":false,"launcherAppPath":null}\\n\'; exit 0; fi',
+      `printf '%s\\n' "$*" >> '${launcherLog}'`,
+      'if [ "$1" = launcher ] && [ "$2" = --install ]; then printf \'{"ok":true,"details":{"launcherInstalled":true,"dockConfigured":true,"launcherAppPath":"/Applications/Goal Progress.app"}}\\n\'; exit 0; fi',
+      'exit 2',
+      '',
+    ].join('\n'));
+    chmodSync(helper, 0o755);
+    const result = configure(fixture, explicit ? 'task-progress=on' : 'aliyun=on', { ...process.env, HOME: fakeHome });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    if (explicit) assert.equal(readFileSync(launcherLog, 'utf8').trim(), 'launcher --install --dock --json');
+    else assert.equal(existsSync(launcherLog), false, 'an unrelated category update must only reuse the installed plugin');
+  }
 });
 
 test('task progress detection errors do not block other categories but selected setup fails clearly', {

@@ -20,6 +20,7 @@ const configureIdentityIndex = cliArgs.indexOf("--identity");
 const configureIdentity =
   configureIdentityIndex < 0 ? undefined : cliArgs[configureIdentityIndex + 1];
 const replaceSigning = cliArgs.includes("--replace-signing");
+const deferConnection = cliArgs.includes("--defer-connection");
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -67,12 +68,16 @@ export function installerNeedsRestart(output) {
   );
 }
 
-export function classifyInstallerResult(exitCode, output) {
+export function classifyInstallerResult(exitCode, output, { deferConnection: defer = false } = {}) {
   if (exitCode !== 0) return { status: "error", reason: `Installer exited with code ${exitCode}` };
   if (installerNeedsRestart(output)) {
     return { status: "setup-required", reason: "Installation is pending a Codex restart." };
   }
-  if (output?.ok === true && output?.code === "INSTALL_OK") return { status: "installed" };
+  if (output?.ok === true && output?.code === "INSTALL_OK") {
+    const connectionPending =
+      output.connectionPending === true || output.details?.connectionPending === true;
+    if (!connectionPending || defer) return { status: "installed" };
+  }
   return { status: "error", reason: "Installer response did not confirm INSTALL_OK." };
 }
 
@@ -143,6 +148,7 @@ async function main(options = {}) {
   const env = options.env ?? process.env;
   const home = options.home;
   const isCheck = options.check ?? check;
+  const shouldDeferConnection = options.deferConnection ?? deferConnection;
   if (options.configureSigning ?? configureSigning) {
     try {
       if (!options.identity && !configureIdentity) {
@@ -321,7 +327,11 @@ async function main(options = {}) {
     }
     if (!(options.installerExists ?? existsSync(installer)))
       throw new Error("Release build completed without producing the installer binary");
-    const installed = runner(installer, ["install", "--json"]);
+    const installed = runner(installer, [
+      "install",
+      ...(shouldDeferConnection ? ["--defer-connection"] : []),
+      "--json",
+    ]);
     logResult("Release installer", { ...installed, stdout: "" });
     let output;
     try {
@@ -331,7 +341,9 @@ async function main(options = {}) {
         `Installer did not return JSON (${resultError(installed)}): ${(installed.stderr || installed.stdout || "").slice(-3000)}`,
       );
     }
-    const installResult = classifyInstallerResult(installed.status, output);
+    const installResult = classifyInstallerResult(installed.status, output, {
+      deferConnection: shouldDeferConnection,
+    });
     if (installResult.status !== "installed") {
       emitResult({ ...installResult, output }, 1);
       return;

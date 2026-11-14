@@ -1,5 +1,7 @@
 export const GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER: "com.codextaskprogress.helper";
 export const GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER: "com.codextaskprogress.startup-listener";
+export const GOAL_PROGRESS_DOCK_LAUNCHER_SIGNING_IDENTIFIER: "com.codextaskprogress.launcher";
+export const GOAL_PROGRESS_DOCK_LAUNCHER_APP_SIGNING_IDENTIFIER: "com.codextaskprogress.codexlauncher";
 
 export interface SigningCandidate {
   identity: string;

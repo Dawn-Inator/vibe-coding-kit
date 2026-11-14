@@ -168,6 +168,8 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
     command: "install" | "upgrade",
     input: MacosCommandInput,
   ): Promise<MacosCommandResult> => {
+    if (input.deferConnection && (command !== "install" || input.restartCodex || !input.json))
+      throw new Error("GOAL_PROGRESS_DEFER_CONNECTION_INVALID");
     const release = await readVerifiedRelease(dependencies.releaseRoot);
     const layout = resolveMacosInstallationLayout({
       homeDirectory: dependencies.homeDirectory,
@@ -275,9 +277,8 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       const connectionRebuildPending =
         !cdpReady &&
         !input.restartCodex &&
-        command === "upgrade" &&
-        installed !== null &&
-        installedRelease !== null;
+        ((command === "install" && input.deferConnection === true) ||
+          (command === "upgrade" && installed !== null && installedRelease !== null));
       if (!cdpReady && !connectionRebuildPending) {
         transaction.commit();
         return dependencies.commandResult(command, {
@@ -602,7 +603,9 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
               : "UPGRADE_ALREADY_CURRENT",
         changed,
         nextStep: connectionRebuildPending
-          ? "After the user confirms a Codex restart, run install --json --restart-codex with the installed release to rebuild connection identity, or use the update restart action."
+          ? command === "install" && input.deferConnection
+            ? "Install the managed Codex launcher, then use it after Codex is fully closed to rebuild the connection."
+            : "After the user confirms a Codex restart, run install --json --restart-codex with the installed release to rebuild connection identity, or use the update restart action."
           : codexSessionReconnectRequired
             ? "Close and reopen the current Codex session so MCP loads this release."
             : null,

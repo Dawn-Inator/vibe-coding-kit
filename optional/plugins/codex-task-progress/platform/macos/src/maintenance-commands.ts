@@ -1,8 +1,9 @@
-import { access, readlink, rm } from "node:fs/promises";
+import { access, lstat, readlink, rm } from "node:fs/promises";
 import { resolveGoalProgressPaths } from "../../../packages/store/src/index.js";
 import { cdpPaths, type RestoreCdpResult } from "./cdp-controller.js";
 import { readCodexCdpRuntimeState, verifyCodexCdpRuntimeIdentity } from "./cdp-runtime.js";
 import type { MacosCommandInput, MacosCommandResult } from "./command-protocol.js";
+import { type manageCodexDockLauncher, resolveCodexDockLauncherPaths } from "./dock-launcher.js";
 import { waitForHelperStopped } from "./helper-wait.js";
 import type { MacosCommandResultFactory } from "./install-command.js";
 import { resolveMacosInstallationLayout } from "./install-layout.js";
@@ -17,6 +18,7 @@ import {
 } from "./verified-release.js";
 
 export interface MaintenanceCommandDependencies {
+  readonly manageLauncher?: typeof manageCodexDockLauncher;
   readonly homeDirectory: string;
   readonly releaseRoot: string;
   readonly launchAgent: LaunchAgentController;
@@ -97,6 +99,68 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       homeDirectory: dependencies.homeDirectory,
       releaseVersion,
     });
+    // Marker/receipt presence is only a trigger; the manager verifies ownership before any mutation.
+    const { markerPath, dockReceiptPath, appInstallReceiptPath } = resolveCodexDockLauncherPaths(
+      dependencies.homeDirectory,
+    );
+    const present = async (path: string) => {
+      try {
+        await lstat(path);
+        return true;
+      } catch (error) {
+        if (isNotFound(error)) return false;
+        throw error;
+      }
+    };
+    let launcherChanged = false;
+    if (
+      (await present(markerPath)) ||
+      (await present(dockReceiptPath)) ||
+      (await present(appInstallReceiptPath))
+    ) {
+      if (!dependencies.manageLauncher)
+        return dependencies.commandResult("uninstall", {
+          ok: false,
+          code: "UNINSTALL_LAUNCHER_CLEANUP_UNAVAILABLE",
+          changed: false,
+          nextStep: "Restore the managed Codex launcher before uninstalling.",
+        });
+      try {
+        const codex = installed?.codex ?? (await dependencies.discoverCodex());
+        validateCodexIdentity(codex);
+        const cleanup = await dependencies.manageLauncher({
+          action: "remove",
+          configureDock: true,
+          homeDirectory: dependencies.homeDirectory,
+          releaseRoot: installed?.programReleaseRoot ?? dependencies.releaseRoot,
+          codex,
+        });
+        launcherChanged = cleanup.changed;
+        if (
+          !cleanup.ok ||
+          cleanup.details.retainedForUserEdit === true ||
+          cleanup.details.launcherInstalled === true ||
+          cleanup.details.dockConfigured === true
+        ) {
+          return dependencies.commandResult("uninstall", {
+            ok: false,
+            code: "UNINSTALL_LAUNCHER_CLEANUP_BLOCKED",
+            changed: cleanup.changed,
+            nextStep:
+              cleanup.nextStep ?? "Resolve the managed Dock entry before uninstalling the Helper.",
+            details: { launcherCode: cleanup.code, launcherDetails: cleanup.details },
+          });
+        }
+      } catch (error) {
+        return dependencies.commandResult("uninstall", {
+          ok: false,
+          code: "UNINSTALL_LAUNCHER_CLEANUP_FAILED",
+          changed: launcherChanged,
+          nextStep: "Resolve the managed Dock entry before uninstalling the Helper.",
+          details: { errorCode: stableErrorCode(error) },
+        });
+      }
+    }
     let pluginChanged = false;
     let pluginError: string | null = null;
     try {
@@ -150,7 +214,8 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       await rm(layout.applicationSupportRoot, { recursive: true, force: true });
       filesChanged = true;
     }
-    const changed = cdpRestore.changed || pluginChanged || jobChanged || filesChanged;
+    const changed =
+      launcherChanged || cdpRestore.changed || pluginChanged || jobChanged || filesChanged;
     if (pluginError) {
       return dependencies.commandResult("uninstall", {
         ok: false,

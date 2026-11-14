@@ -88,6 +88,7 @@ async function install(root, options) {
   if (unsupported.length) throw new Error(`Unsupported install option(s): ${unsupported.map((key) => `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`).join(', ')}`);
   if (options.positional.length) throw new Error(`Unexpected install argument(s): ${options.positional.join(' ')}`);
   const optionalOverrides = parseOptionalOverrides(options.optional);
+  let managedDockOptIn = optionalOverrides['task-progress'] === true;
   const url = options.url || DEFAULT_URL;
   const mirrorPolicy = options.mirrorPolicy || 'local';
   if (!['local', 'tracked'].includes(mirrorPolicy)) throw new Error('--mirror-policy must be local or tracked');
@@ -142,8 +143,13 @@ async function install(root, options) {
   applyInstalledPluginDefaults(REPO_ROOT, optional, detected, currentConfig.optional, optionalOverrides);
   Object.assign(optional, optionalOverrides);
   if (!options.optional.length && process.stdin.isTTY && process.stdout.isTTY && !options.check) {
-    const asked = await askOptionalCategories(REPO_ROOT, optional, detected, currentConfig.optional);
+    const consentGroups = new Set();
+    const asked = await askOptionalCategories(REPO_ROOT, optional, detected, currentConfig.optional, consentGroups);
     Object.assign(optional, asked);
+    managedDockOptIn ||= consentGroups.has('task-progress') && optional['task-progress'] === true;
+  }
+  if (!options.optional.length && !options.check && shouldAskTaskProgressDockSetup(detected.get('codex-task-progress'), optional['task-progress'])) {
+    managedDockOptIn = await askTaskProgressDockSetup();
   }
   const selectionPlan = resolveOptionalSelection({ kitRoot: REPO_ROOT, projectRoot: rootReal, projectConfig: {}, overrides: optional, fresh: true });
   const optionalStatuses = options.check ? new Map() : await preflightOptionalComponents(REPO_ROOT, selectionPlan.components, process.env, detected);
@@ -207,6 +213,8 @@ async function install(root, options) {
     console.log(`Created private secret repository ${secrets.repository} and cloned it to ${secrets.localPath}; it will be preserved if later setup fails.`);
   }
   const initArgs = ['init', '--project-root', rootReal, '--url', url, '--identity-name', options.identityName, '--identity-email', options.identityEmail, '--mirror-policy', mirrorPolicy];
+  initArgs.push('--install-mediated', 'true');
+  if (managedDockOptIn) initArgs.push('--managed-dock-opt-in', 'true');
   if (secrets?.method) initArgs.push('--secrets', secrets.method);
   if (secrets?.method === 'github') initArgs.push('--secrets-repository', secrets.repository, '--secrets-local-path', secrets.localPath);
   for (const skill of options.skill) initArgs.push('--skill', skill);
@@ -371,7 +379,7 @@ function applyInstalledPluginDefaults(kitRoot, preferences, detected, savedPrefe
   }
 }
 
-async function askOptionalCategories(kitRoot, current, detected = new Map(), savedPreferences = {}) {
+async function askOptionalCategories(kitRoot, current, detected = new Map(), savedPreferences = {}, consentGroups = new Set()) {
   const catalog = loadOptionalCatalog(kitRoot);
   if (!catalog) return Object.fromEntries(OPTIONAL_GROUPS.map((group) => [group, false]));
   const available = optionalWizardGroups(catalog, detected);
@@ -393,6 +401,7 @@ async function askOptionalCategories(kitRoot, current, detected = new Map(), sav
     for (const group of chosen) {
       if (!available.includes(group)) throw new Error(`Optional category ${group} is unavailable or already installed and was not offered`);
     }
+    for (const group of chosen) consentGroups.add(group);
     return { ...current, ...Object.fromEntries(available.map((group) => [group, chosen.includes(group)])) };
   } finally { prompt.close(); }
 }
@@ -427,11 +436,15 @@ function assertOptionalPreflight(components, statuses) {
   }
 }
 
-async function installOptionalComponents(kitRoot, components, env, statuses) {
+async function installOptionalComponents(kitRoot, components, env, statuses, { managedDockOptIn = false } = {}) {
   for (const component of components) {
     const inspected = statuses?.get(component.id);
-    if (inspected?.status === 'installed') {
-      console.log(`Optional ${component.id}: already installed; reused.`);
+    const configureManagedDock = component.id === 'codex-task-progress' && managedDockOptIn === true;
+    if (inspected?.status === 'installed' && !configureManagedDock) {
+      const launcher = component.id === 'codex-task-progress'
+        ? ` Managed Dock launcher ${inspected.dockConfigured === true && inspected.launcherInstalled === true ? 'is configured' : 'is not configured'}; no launcher change was requested.`
+        : '';
+      console.log(`Optional ${component.id}: already installed; reused.${launcher}`);
       continue;
     }
     if (inspected?.status === 'unsupported') {
@@ -441,7 +454,7 @@ async function installOptionalComponents(kitRoot, components, env, statuses) {
     const confirmSigning = component.id === 'codex-task-progress' && process.stdin.isTTY && process.stdout.isTTY
       ? askTaskProgressSigningIdentity
       : undefined;
-    const result = await installOptionalComponent({ kitRoot, component, env, confirmSigning });
+    const result = await installOptionalComponent({ kitRoot, component, env, confirmSigning, managedDock: configureManagedDock });
     if (!result || result.status !== 'installed') {
       const status = result?.status || 'invalid-result';
       throw new Error(`Optional ${component.id} setup is incomplete (${status}): ${result?.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
@@ -464,6 +477,23 @@ export async function askTaskProgressSigningIdentity(candidates, { input = proce
   } finally { prompt?.close(); }
 }
 
+export function shouldAskTaskProgressDockSetup(status, selected) {
+  return selected === true
+    && status?.status === 'installed'
+    && status.launcherSupported === true
+    && status.dockConfigured !== true;
+}
+
+export async function askTaskProgressDockSetup({ input = process.stdin, output = process.stdout, ask } = {}) {
+  if (!input.isTTY || !output.isTTY) return false;
+  const message = 'Create the same-name, same-icon one-click Codex Task Progress entry in the Dock? [y/N]: ';
+  const prompt = ask ? null : createInterface({ input, output });
+  try {
+    const answer = String(await (ask ? ask(message) : prompt.question(message))).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally { prompt?.close(); }
+}
+
 function printOptionalSummary(preferences, selection) {
   console.log('Optional categories:');
   for (const group of OPTIONAL_GROUPS) {
@@ -478,6 +508,7 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
   const currentSelection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config });
   let next = { ...currentSelection.selection, ...overrides };
   const explicitGroups = new Set(Object.keys(overrides));
+  let managedDockOptIn = explicitGroups.has('task-progress') && overrides['task-progress'] === true;
   const detected = checkOnly ? new Map() : await inspectPluginComponents(kitRoot, process.env);
   if (!checkOnly) applyInstalledPluginDefaults(kitRoot, next, detected, config.optional, overrides);
   if (!checkOnly) {
@@ -485,15 +516,19 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
     if (catalog) {
       for (const [group, descriptor] of Object.entries(catalog.groups)) {
         const installedPlugin = descriptor.components.some((id) => catalog.components[id].type === 'plugin' && detected.get(id)?.status === 'installed');
-        if (installedPlugin && config.optional?.[group] === undefined && overrides[group] !== false && next[group]) explicitGroups.add(group);
+        if (group !== 'task-progress' && installedPlugin && config.optional?.[group] === undefined && overrides[group] !== false && next[group]) explicitGroups.add(group);
       }
     }
   }
   if (interactive && !checkOnly && Object.keys(overrides).length === 0) {
     const catalog = loadOptionalCatalog(kitRoot);
     const offered = catalog ? optionalWizardGroups(catalog, detected) : [];
-    next = await askOptionalCategories(kitRoot, next, detected, config.optional);
-    for (const group of offered) explicitGroups.add(group);
+    const consentGroups = new Set();
+    next = await askOptionalCategories(kitRoot, next, detected, config.optional, consentGroups);
+    for (const group of offered) if (consentGroups.has(group) && next[group] === true) explicitGroups.add(group);
+    if (shouldAskTaskProgressDockSetup(detected.get('codex-task-progress'), next['task-progress'])) {
+      managedDockOptIn = await askTaskProgressDockSetup();
+    }
   }
   validateOptionalPreferences(next);
   const nextProjectConfig = planOptionalConfiguration({ kitRoot, projectRoot: root, projectConfig: config, nextSelection: next, explicitGroups: [...explicitGroups] });
@@ -521,7 +556,9 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
     throw new Error('Optional preferences were saved, but the skill synchronization result was invalid. Generated mirrors may be partial; verify them with the project skills:check command.');
   }
   console.log(`Synchronized ${synced.written} generated skill projection file(s).`);
-  await installOptionalComponents(kitRoot, selection.components, process.env, statuses);
+  await installOptionalComponents(kitRoot, selection.components, process.env, statuses, {
+    managedDockOptIn: managedDockOptIn || (explicitGroups.has('task-progress') && next['task-progress'] === true),
+  });
   printOptionalSummary(nextProjectConfig.optional, selection);
 }
 
@@ -756,7 +793,10 @@ async function init(root, options) {
   prepareKit({ projectRoot: root });
   mkdirSync(resolve(root, '.vibe-coding/skills'), { recursive: true });
   syncProjectSkills({ projectRoot: root, kitRoot: resolve(root, '.vibe-coding/kit') });
-  await installOptionalComponents(resolve(root, '.vibe-coding/kit'), selected.components, process.env, optionalStatuses);
+  const selectedByUser = parseOptionalOverrides(options.optional ?? []);
+  const managedDockOptIn = options.managedDockOptIn === 'true'
+    || (options.installMediated !== 'true' && selectedByUser['task-progress'] === true);
+  await installOptionalComponents(resolve(root, '.vibe-coding/kit'), selected.components, process.env, optionalStatuses, { managedDockOptIn });
   printOptionalSummary(plan.config.optional, selected);
   console.log('Initialization complete. No package.json or business dependencies were created.');
 }

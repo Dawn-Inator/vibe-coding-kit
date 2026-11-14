@@ -52,7 +52,7 @@ test('optional catalog exposes the five opted-in components and frozen group que
     aliyun: { question: '是否使用阿里云？', components: ['aliyun-skill-discovery'] },
     lark: { question: '是否使用飞书？', components: ['lark'] },
     'non-code': { question: '是否需要非代码能力，例如演示文稿、视频制作？', components: ['hyperframes', 'presentations'] },
-    'task-progress': { question: '是否安装任务进度插件？', components: ['codex-task-progress'] },
+    'task-progress': { question: '是否使用任务进度插件，并创建同名同图标的一键 Dock 启动入口？', components: ['codex-task-progress'] },
   });
 });
 

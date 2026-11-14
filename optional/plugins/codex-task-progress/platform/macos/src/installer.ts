@@ -14,6 +14,7 @@ import type {
   MacosCommandName,
   MacosCommandResult,
 } from "./command-protocol.js";
+import { manageCodexDockLauncher } from "./dock-launcher.js";
 import { createHealthCommands } from "./health-commands.js";
 import { waitForHelperReady } from "./helper-wait.js";
 import { createInstallCommand, type MacosCommandResultFactory } from "./install-command.js";
@@ -29,6 +30,7 @@ import {
   type LaunchAgentController,
 } from "./launch-agent-controller.js";
 import { createMaintenanceCommands } from "./maintenance-commands.js";
+import { type ManagedLaunchDependencies, managedLaunch } from "./managed-launch.js";
 import {
   createPluginController,
   type PluginController,
@@ -77,6 +79,8 @@ export {
 export interface CreateMacosCommandHandlersOptions {
   readonly homeDirectory: string;
   readonly releaseRoot: string;
+  readonly managedLaunchDependencies?: Partial<ManagedLaunchDependencies>;
+  readonly manageLauncher?: typeof manageCodexDockLauncher;
   readonly launchAgent?: LaunchAgentController;
   readonly plugin?: PluginController;
   readonly cdp?: CdpController;
@@ -196,9 +200,54 @@ export function createMacosCommandHandlers(
     pluginFor,
     restoreCdp,
     commandResult,
+    manageLauncher: options.manageLauncher ?? manageCodexDockLauncher,
   });
 
   return {
+    launch: async () => {
+      const result = await managedLaunch({
+        homeDirectory: options.homeDirectory,
+        codex: await discoverCodex(),
+        launchAgent,
+        cdp,
+        ...(options.managedLaunchDependencies
+          ? { dependencies: options.managedLaunchDependencies }
+          : {}),
+      });
+      return commandResult("launch", {
+        ok: true,
+        code: result.connectionRebuildPending
+          ? "CODEX_CONNECTION_REBUILD_PENDING"
+          : "CODEX_LAUNCHED",
+        changed: result.changed,
+        details: result,
+      });
+    },
+    launcher: async (input: MacosCommandInput) => {
+      if (!input.launcherAction) throw new Error("GOAL_PROGRESS_LAUNCHER_ACTION_INVALID");
+      const result = await (options.manageLauncher ?? manageCodexDockLauncher)({
+        action: input.launcherAction,
+        homeDirectory: options.homeDirectory,
+        releaseRoot: options.releaseRoot,
+        codex: await discoverCodex(),
+        configureDock: input.configureDock ?? false,
+      });
+      let policyChanged = false;
+      if (result.ok && input.launcherAction === "install") {
+        policyChanged = (await readCodexStartupRecoveryPolicy(goalPaths)).autoPrepareOnLaunch;
+        await writeCodexStartupRecoveryPolicy(goalPaths, "disable");
+      }
+      return commandResult("launcher", {
+        ...result,
+        changed: result.changed || policyChanged,
+        details: {
+          ...result.details,
+          ...(result.ok && input.launcherAction === "install"
+            ? { startupRecovery: "disabled", currentCodexRestarted: false }
+            : {}),
+        },
+      });
+    },
     install: (input: MacosCommandInput) => installOrUpgrade("install", input),
     doctor: health.doctor,
     "emergency-disable": maintenance.emergencyDisable,

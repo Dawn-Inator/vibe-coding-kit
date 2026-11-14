@@ -5,6 +5,7 @@ export const GOAL_PROGRESS_INSTALL_COMMAND_PATH = "Install Goal Progress.command
 export const GOAL_PROGRESS_REPAIR_COMMAND_PATH = "Repair Goal Progress.command" as const;
 export const GOAL_PROGRESS_DISABLE_COMMAND_PATH = "Disable Goal Progress.command" as const;
 export const GOAL_PROGRESS_UNINSTALL_COMMAND_PATH = "Uninstall Goal Progress.command" as const;
+export const GOAL_PROGRESS_DOCK_LAUNCHER_PATH = "bin/goal-progress-launcher" as const;
 
 export interface MacosReleaseFile {
   readonly path: string;
@@ -43,6 +44,7 @@ export interface CreateMacosReleaseManifestInput {
   readonly pluginTreeManifestSha256: string;
   readonly helper: MacosReleaseFile;
   readonly startupListener: MacosReleaseFile;
+  readonly dockLauncher: MacosReleaseFile;
   readonly renderer: MacosReleaseFile;
   readonly rendererManifest: MacosReleaseFile;
   readonly pluginArchive: MacosReleaseFile;
@@ -78,6 +80,7 @@ export function createMacosReleaseManifest(input: CreateMacosReleaseManifestInpu
   for (const file of [
     input.helper,
     input.startupListener,
+    input.dockLauncher,
     input.renderer,
     input.rendererManifest,
     input.pluginArchive,
@@ -106,6 +109,7 @@ export function createMacosReleaseManifest(input: CreateMacosReleaseManifestInpu
     files: {
       helper: input.helper,
       startupListener: input.startupListener,
+      dockLauncher: input.dockLauncher,
       renderer: input.renderer,
       rendererManifest: input.rendererManifest,
       pluginArchive: input.pluginArchive,

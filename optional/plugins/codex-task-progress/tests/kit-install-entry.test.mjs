@@ -278,6 +278,62 @@ test("installer reports success only for the explicit INSTALL_OK contract", () =
   assert.equal(classifyInstallerResult(0, { ok: false, code: "INSTALL_FAILED" }).status, "error");
   assert.equal(classifyInstallerResult(0, { ok: true, code: "OTHER" }).status, "error");
   assert.equal(classifyInstallerResult(1, { ok: true, code: "INSTALL_OK" }).status, "error");
+  const pendingConnection = { ok: true, code: "INSTALL_OK", connectionPending: true };
+  assert.equal(classifyInstallerResult(0, pendingConnection).status, "error");
+  assert.deepEqual(classifyInstallerResult(0, pendingConnection, { deferConnection: true }), {
+    status: "installed",
+  });
+});
+
+test("deferred managed launcher install forwards no-connection flag and accepts backend install while connection is pending", async () => {
+  const commandCalls = [];
+  let report;
+  const env = {
+    GOAL_PROGRESS_CODESIGN_IDENTITY: "9A0CFCD701BC9E8FAE05C12DCB5564C2BE0D1EFA",
+    GOAL_PROGRESS_NODE_BINARY: "/fixture/node",
+    PATH: "/fixture/bin",
+  };
+  const fakeRunner = (command, args) => {
+    commandCalls.push({ command, args });
+    if (command === "/fixture/node" && args[0] === "--version")
+      return { status: 0, stdout: "v24.19.0\n", stderr: "" };
+    if (args[0] === "/fixture/pnpm.cjs") return { status: 0, stdout: "", stderr: "" };
+    if (args[0] === "install" && args.includes("--defer-connection"))
+      return {
+        status: 0,
+        stdout: JSON.stringify({ ok: true, code: "INSTALL_OK", connectionPending: true }),
+        stderr: "",
+      };
+    throw new Error(`Unexpected injected command: ${command} ${args.join(" ")}`);
+  };
+  await runInstallerMain({
+    env,
+    deferConnection: true,
+    signingRunner: signingFixtureRunner(),
+    run: fakeRunner,
+    inspectPinnedNodeRuntime: async () => ({
+      suppliedValid: true,
+      cachedBinary: null,
+      runtimeRoot: "/fixture/runtime",
+    }),
+    ensurePinnedNodeRuntime: async () => ({
+      nodeBinary: "/fixture/node",
+      runtimeRoot: "/fixture/runtime",
+      source: "provided",
+    }),
+    resolvePnpm: async () => ({
+      pnpmCli: "/fixture/pnpm.cjs",
+      env: { PATH: "/fixture/build-bin" },
+    }),
+    componentDependenciesInstalled: () => true,
+    installerExists: true,
+    emit: (value) => {
+      report = value;
+    },
+  });
+  assert.equal(report.status, "installed");
+  assert.equal(commandCalls.at(-1).args.includes("--defer-connection"), true);
+  assert.equal(commandCalls.at(-1).args.at(-1), "--json");
 });
 
 test("restart-required or pending install responses remain setup-required without a Codex restart", () => {

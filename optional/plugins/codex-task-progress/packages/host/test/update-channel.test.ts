@@ -388,7 +388,11 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
 
   const makeDependencies = (
     releaseRoot: string,
-    options: { readonly fault?: "after-current"; readonly helperReady?: boolean } = {},
+    options: {
+      readonly fault?: "after-current";
+      readonly helperReady?: boolean;
+      readonly cdpReady?: boolean;
+    } = {},
   ): InstallCommandDependencies => {
     const homeDirectory = join(root, "home");
     const goalPaths = resolveGoalProgressPaths({
@@ -448,10 +452,10 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
       launchAgent,
       cdp: {
         async verify(_knownApp) {
-          return true;
+          return options.cdpReady ?? true;
         },
         async ensure(_restartCodex) {
-          return false;
+          throw new Error("Unexpected Codex restart");
         },
       },
       async inspectHelper() {
@@ -515,6 +519,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
     const invoke = async (
       dependencies: ReturnType<typeof makeDependencies>,
       command: "install" | "upgrade",
+      deferConnection = false,
     ) =>
       createInstallCommand(dependencies)(command, {
         command,
@@ -522,11 +527,30 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         human: false,
         verbose: false,
         restartCodex: false,
+        deferConnection,
         preserveHistory: true,
         startupRecoveryAction: null,
       });
 
-    const initialInstall = await invoke(installV1, "install");
+    const noCdp = makeDependencies(v1.releaseRoot, { cdpReady: false });
+    const legacyPending = await invoke(noCdp, "install");
+    assert.equal(legacyPending.code, "INSTALL_RESTART_REQUIRED");
+    const freshLayout = resolveMacosInstallationLayout({
+      homeDirectory: noCdp.homeDirectory,
+      releaseVersion: "1.0.0",
+    });
+    await assert.rejects(fs.lstat(freshLayout.installManifestPath), { code: "ENOENT" });
+    const initialInstall = await invoke(noCdp, "install", true);
+    assert.equal(initialInstall.code, "INSTALL_OK");
+    assert.equal(initialInstall.details.cdpReady, false);
+    assert.equal(initialInstall.details.connectionRebuildPending, true);
+    assert.equal(initialInstall.details.pluginInstalled, true);
+    assert.match(initialInstall.nextStep ?? "", /managed Codex launcher/);
+    assert.equal(await noCdp.launchAgent.isLoaded("com.codextaskprogress.helper"), true);
+    assert.equal(
+      (await readInstalledManifest(freshLayout.installManifestPath))?.codex.bundleId,
+      CODEX_BUNDLE_ID,
+    );
     assert.equal(initialInstall.ok, true, JSON.stringify(initialInstall));
     const layout = resolveMacosInstallationLayout({
       homeDirectory: installV1.homeDirectory,

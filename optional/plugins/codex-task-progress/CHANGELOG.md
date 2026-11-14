@@ -1,3 +1,13 @@
+# Task Progress 0.5.14
+
+- Add an optional separately signed managed Codex launcher that starts the Helper and Codex with connection arguments; keep the Codex bundle untouched and derive the launcher name/icon from the detected vendor app.
+- Add JSON status/install/remove launcher management and the explicit `--dock` replacement option. Preserve unrelated Dock entries and the current session; do not promise that macOS shows only one app icon or that direct launches of the original app are intercepted.
+- Reuse an existing verified CDP connection. If Codex is already running without CDP, activation is the only immediate action; a later full cold launch through the managed launcher is needed. Never force-restart Codex or bootstrap CDP into an existing process.
+- Disable the older persisted startup-recovery policy during Dock launcher configuration; it is no longer recommended as reliable automatic recovery.
+- Keep Kit integration opt-in: an existing plugin is reused by ordinary Kit installation rather than silently upgraded, and launcher configuration requires the explicit opt-in supplied by the Kit worker.
+- In interactive Kit setup, ask a separate default-No, one-click question before configuring Dock for a selected, already-installed launcher-capable helper; declining preserves plugin and project selection. Non-interactive saved/auto-detected preferences only reuse the installation.
+- Remove the owned launcher and Dock entry before Helper uninstall. Block Helper removal if cleanup fails or a user-edited Dock entry must be retained; preserve legacy-helper uninstall behavior.
+
 # Task Progress 0.5.13
 
 - Update foreground startup classification using fresh PID/process identity, positive native `!finished` confirmation, no observed task activity, verified loopback CDP, and positive proof that the target PID owns no onscreen windows. A foreground process may still be preparing before finish and remain eligible when it owns no onscreen window. Any owned onscreen window or missing/unknown window-owner metadata fails closed. The check uses public CoreGraphics owner-PID metadata only, without screenshots or window titles.

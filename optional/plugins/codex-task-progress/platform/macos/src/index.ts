@@ -57,6 +57,18 @@ export {
   serializeMacosCommandResultHuman,
 } from "./command-protocol.js";
 export {
+  CODEX_MANAGED_LAUNCHER_APP_NAME,
+  CODEX_MANAGED_LAUNCHER_BUNDLE_ID,
+  CODEX_MANAGED_LAUNCHER_MARKER,
+  type CodexDockLauncherPaths,
+  createDockLauncherInfoPlist,
+  type DockLauncherRunner,
+  type ManageCodexDockLauncherInput,
+  type ManageCodexDockLauncherResult,
+  manageCodexDockLauncher,
+  resolveCodexDockLauncherPaths,
+} from "./dock-launcher.js";
+export {
   ensureMacosInstallationDirectories,
   GOAL_PROGRESS_LAUNCH_AGENT_LABEL,
   MACOS_PRIVATE_DIRECTORY_MODE,

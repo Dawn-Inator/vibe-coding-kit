@@ -1,6 +1,6 @@
 {
   "name": "@codex-task-progress/core",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "private": true,
   "type": "module",
   "exports": "./src/index.ts"
