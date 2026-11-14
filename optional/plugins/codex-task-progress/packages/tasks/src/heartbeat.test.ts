@@ -1114,6 +1114,214 @@ test("corrupt or unavailable heartbeat cache never blocks Kit source, task, or h
   }
 });
 
+test("bound read-only views inspect only their source; forced projection scans the project", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "bound-only-data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+  });
+  const originalReadDir = fs.promises.readdir;
+  const root = await realpath(f.project);
+  let scans = 0;
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    assert.equal((await service.view("chat-A", f.project))?.status, "ready");
+    fs.promises.readdir = (async (...args: unknown[]) => {
+      if (typeof args[0] === "string" && (args[0] === root || args[0].startsWith(`${root}/`))) scans += 1;
+      return Reflect.apply(originalReadDir, fs.promises, args);
+    }) as typeof originalReadDir;
+    syncBuiltinESMExports();
+    const bound = await service.view("chat-A", f.project);
+    assert.equal(bound?.status, "ready");
+    assert.equal(bound?.sourcePath, f.source);
+    assert.equal(bound?.discoveryComplete, false);
+    assert.deepEqual(bound?.discoveryReasons, ["source-only"]);
+    assert.equal((await service.taskProjection("chat-A", f.project)).status, "ready");
+    assert.equal(scans, 0);
+    assert.equal((await service.taskProjection("chat-A", f.project, { forceDiscovery: true })).status, "ready");
+    assert.ok(scans > 0);
+    await writeFile(f.source, ledger("another-chat"));
+    const lost = await service.taskProjection("chat-A", f.project);
+    assert.equal(lost.status, "stale");
+    assert.equal(lost.sourcePath, f.source);
+    assert.equal(lost.task, null);
+    await rm(f.source);
+    const missing = await service.taskProjection("chat-A", f.project);
+    assert.equal(missing.status, "stale");
+    assert.equal(missing.sourcePath, f.source);
+    assert.equal(missing.task, null);
+  } finally {
+    fs.promises.readdir = originalReadDir;
+    syncBuiltinESMExports();
+    service.close();
+    await f.close();
+  }
+});
+
+test("unrelated project changes during bound reads do not repeat source audits", async () => {
+  const f = await fixture();
+  let notify: ((_event: string, filename: string) => void) | undefined;
+  const watcher = Object.assign(new EventEmitter(), { close() {} });
+  const index = new HeartbeatDiscoveryIndex({
+    watchFactory: ((_root: unknown, _options: unknown, callback: typeof notify) => {
+      notify = callback; return watcher;
+    }) as unknown as typeof import("node:fs").watch,
+  });
+  const service = new HeartbeatService(resolve(f.root, "data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0, discoveryIndex: index,
+  });
+  const hookTarget = globalThis as typeof globalThis & { __boundAuditHook?: () => void };
+  try {
+    const inspector = (await readFile(f.kitPath, "utf8")).replace(
+      "export function inspectHeartbeatLedger(text, {mode}) {",
+      "export function inspectHeartbeatLedger(text, {mode}) { globalThis.__boundAuditHook?.();",
+    );
+    assert.match(inspector, /__boundAuditHook/);
+    await writeFile(f.kitPath, inspector);
+    await writeFile(f.source, ledger("chat-A"));
+    assert.equal((await f.service.view("chat-A", f.project))?.status, "ready");
+    await index.discover({ root: f.project });
+    assert.ok(notify);
+    let audits = 0;
+    hookTarget.__boundAuditHook = () => { audits += 1; };
+    const baseline = await service.taskProjection("chat-A", f.project);
+    const baselineAudits = audits;
+    assert.equal(baseline.status, "ready");
+    assert.ok(baselineAudits > 0);
+    audits = 0;
+    hookTarget.__boundAuditHook = () => {
+      audits += 1;
+      fs.writeFileSync(resolve(f.project, "unrelated.md"), `unrelated ${audits}\n`);
+      notify?.("change", "unrelated.md");
+    };
+    const underChanges = await service.taskProjection("chat-A", f.project);
+    assert.equal(underChanges.status, "ready");
+    assert.equal(underChanges.sourcePath, baseline.sourcePath);
+    assert.equal(underChanges.contentHash, baseline.contentHash);
+    assert.equal(audits, baselineAudits);
+  } finally {
+    delete hookTarget.__boundAuditHook;
+    service.close(); index.close(); await f.close();
+  }
+});
+
+test("source changes during a bound audit cannot publish an old cached hash", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 60_000,
+  });
+  const hookTarget = globalThis as typeof globalThis & { __boundAuditHook?: () => void };
+  try {
+    const inspector = (await readFile(f.kitPath, "utf8")).replace(
+      "export function inspectHeartbeatLedger(text, {mode}) {",
+      "export function inspectHeartbeatLedger(text, {mode}) { globalThis.__boundAuditHook?.();",
+    );
+    await writeFile(f.kitPath, inspector);
+    await writeFile(f.source, ledger("chat-A"));
+    assert.equal((await f.service.view("chat-A", f.project))?.status, "ready");
+    const old = readHeartbeatLedgerPair({ root: await realpath(f.project), path: f.source, maxBytes: 8 * 1024 * 1024 }).contentHash;
+    let changed = false;
+    hookTarget.__boundAuditHook = () => {
+      if (!changed) { changed = true; fs.writeFileSync(f.source, `${ledger("chat-A")}\nchanged during audit\n`); }
+    };
+    const result = await service.taskProjection("chat-A", f.project);
+    assert.equal(changed, true);
+    assert.equal(result.status, "ready");
+    assert.notEqual(result.contentHash, old);
+    assert.equal(result.contentHash, readHeartbeatLedgerPair({ root: await realpath(f.project), path: f.source, maxBytes: 8 * 1024 * 1024 }).contentHash);
+    assert.equal((await service.taskProjection("chat-A", f.project)).contentHash, result.contentHash);
+  } finally { delete hookTarget.__boundAuditHook; service.close(); await f.close(); }
+});
+
+test("warm bound cache revalidates source hash and newly introduced Git boundaries", async () => {
+  const f = await fixture();
+  const nested = resolve(await realpath(f.project), "cache-bound");
+  const source = resolve(nested, "heartbeat.md");
+  const service = new HeartbeatService(resolve(f.root, "warm-bound-data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 60_000,
+  });
+  try {
+    await mkdir(nested);
+    await writeFile(source, ledger("chat-A"));
+    assert.equal((await service.view("chat-A", f.project))?.status, "ready");
+    assert.equal((await service.view("chat-A", f.project))?.discoveryComplete, false);
+    const prior = await service.taskProjection("chat-A", f.project);
+    await writeFile(source, `${ledger("chat-A")}\nchanged same source\n`);
+    const changed = await service.taskProjection("chat-A", f.project);
+    assert.equal(changed.status, "ready");
+    assert.notEqual(changed.contentHash, prior.contentHash);
+    assert.equal(changed.contentHash, readHeartbeatLedgerPair({ root: await realpath(f.project), path: source, maxBytes: 8 * 1024 * 1024 }).contentHash);
+    await writeFile(resolve(nested, ".git"), "gitdir: elsewhere\n");
+    const rejected = await service.taskProjection("chat-A", f.project);
+    assert.equal(rejected.status, "stale");
+    assert.equal(rejected.sourcePath, source);
+    assert.equal(rejected.task, null);
+    await rm(resolve(nested, ".git"));
+    assert.equal((await service.taskProjection("chat-A", f.project)).status, "ready");
+    const outside = resolve(f.root, "outside-warm.md");
+    await writeFile(outside, ledger("chat-A"));
+    await rm(source);
+    await symlink(outside, source);
+    const escaped = await service.taskProjection("chat-A", f.project);
+    assert.equal(escaped.status, "stale");
+    assert.equal(escaped.sourcePath, source);
+    assert.equal(escaped.task, null);
+  } finally { service.close(); await f.close(); }
+});
+
+test("bound-only reads preserve invalid Items errors and the canonical content hash", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "invalid-bound-data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+  });
+  try {
+    await writeFile(f.kitPath, `export function inspectHeartbeatLedger(text,{mode}) {
+      return { mode, certifiesCurrent:false, passed:mode!=="items", wakes:[],
+        items:[{id:"A",item:"test",status:"done",evidence:"ok",line:6}],
+        findings:mode==="items"?[{severity:"error",rule:"invalid-item",message:"invalid item"}]:[] };
+    }`);
+    await writeFile(f.source, ledger("chat-A"));
+    const full = await service.taskProjection("chat-A", f.project, { forceDiscovery: true });
+    const bound = await service.taskProjection("chat-A", f.project);
+    assert.equal(full.status, "error");
+    assert.equal(bound.status, "error");
+    assert.equal(bound.sourcePath, f.source);
+    assert.match(bound.error ?? "", /invalid-item.*invalid item/);
+    assert.equal(bound.error, full.error);
+    assert.ok(bound.contentHash);
+    assert.equal(bound.contentHash, full.contentHash);
+  } finally { service.close(); await f.close(); }
+});
+
+test("explicit manual bindings remain readable without thread metadata and reject changed boundaries", async () => {
+  const f = await fixture();
+  const nested = resolve(await realpath(f.project), "nested");
+  const source = resolve(nested, "heartbeat.md");
+  const service = new HeartbeatService(resolve(f.root, "manual-bound-data"), {
+    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+  });
+  try {
+    await mkdir(nested);
+    await writeFile(source, ledger("unrelated-chat"));
+    assert.equal((await service.bind("chat-A", source, f.project))?.status, "ready");
+    const manual = await service.taskProjection("chat-A", f.project);
+    assert.equal(manual.status, "ready");
+    assert.equal(manual.sourcePath, source);
+    await writeFile(resolve(nested, ".git"), "gitdir: elsewhere\n");
+    const nestedResult = await service.taskProjection("chat-A", f.project);
+    assert.equal(nestedResult.status, "stale");
+    assert.equal(nestedResult.sourcePath, source);
+    await rm(resolve(nested, ".git"));
+    const external = resolve(f.root, "external.md");
+    await writeFile(external, ledger("chat-A"));
+    await rm(source);
+    await symlink(external, source);
+    const escaped = await service.taskProjection("chat-A", f.project);
+    assert.equal(escaped.status, "stale");
+    assert.equal(escaped.sourcePath, source);
+    assert.equal(escaped.task, null);
+  } finally { service.close(); await f.close(); }
+});
+
 test("a stored source remains readable when discovery budgets hide it from the project scan", async () => {
   const f = await fixture();
   const nestedSource = resolve(f.project, ".workspace", "deep", "heartbeat.md");

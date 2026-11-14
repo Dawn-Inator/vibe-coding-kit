@@ -18,12 +18,15 @@ export type HeartbeatDiscoveryReason =
 	| "depth-limit"
 	| "unreadable-directory"
 	| "unreadable-file"
-	| "oversized-file";
+	| "oversized-file"
+	| "source-only";
 
 export interface HeartbeatLedgerDiscoveryReport {
 	schemaVersion: 1;
 	/** Non-enumerable scan generation, only present for protected indexed results. */
 	readonly indexGeneration?: number;
+	/** SHA-256 of the inspected source head, present only for bound-only reads. */
+	readonly boundSourceDigest?: string;
 	root: string;
 	candidates: HeartbeatLedgerCandidate[];
 	complete: boolean;
@@ -81,6 +84,11 @@ export class HeartbeatDiscoveryIndex {
 /** Discover bounded project-local ledgers and report whether the scan was exhaustive within its scope. */
 export function discoverHeartbeatLedgerSources(
 	options: DiscoverHeartbeatLedgersOptions,
+): Promise<HeartbeatLedgerDiscoveryReport>;
+
+/** Inspect only an existing bound source; complete is always false. */
+export function discoverBoundHeartbeatSource(
+	options: DiscoverHeartbeatLedgersOptions & { ledgerPath: string },
 ): Promise<HeartbeatLedgerDiscoveryReport>;
 
 /** Compatibility-only candidates projection; use discoverHeartbeatLedgerSources when completeness matters. */

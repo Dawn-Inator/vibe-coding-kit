@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
@@ -7,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	discoverHeartbeatLedgers,
+	discoverBoundHeartbeatSource,
 	HeartbeatDiscoveryIndex,
 	discoverHeartbeatLedgerSources,
 	projectHeartbeatTask,
@@ -873,4 +877,45 @@ test("force discovery rejects a cached negative without a watcher event", async 
 		const fresh = await index.discover({ root, threadId: "chat-A" }, { force: true });
 		assert.equal(fresh.candidates[0].associated, true);
 	} finally { index.close(); }
+});
+
+
+test("bound-only discovery uses canonical parsing without enumerating the project", async () => {
+	const root = projectRoot();
+	const nested = join(root, ".workspace", "deep");
+	mkdirSync(nested, { recursive: true });
+	const path = join(nested, "notes.md");
+	writeFileSync(path, `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`);
+	const original = fs.promises.readdir;
+	let reads = 0;
+	try {
+		fs.promises.readdir = async (...args) => { reads++; return original(...args); };
+		syncBuiltinESMExports();
+		const result = await discoverBoundHeartbeatSource({ root, threadId: THREAD, ledgerPath: path, maxFiles: 1, maxDepth: 0 });
+		assert.equal(reads, 0);
+		assert.equal(result.complete, false);
+		assert.deepEqual(result.reasons, ["source-only"]);
+		assert.equal(result.visitedFiles, 1);
+		assert.equal(result.boundSourceDigest, createHash("sha256").update(await fs.promises.readFile(path, "utf8")).digest("hex"));
+		assert.deepEqual(result.candidates, [{ path: realpathSync(path), associated: true }]);
+	} finally { fs.promises.readdir = original; syncBuiltinESMExports(); }
+});
+
+test("bound-only discovery enforces symlink, nested Git, companion, and exact association boundaries", async () => {
+	const root = projectRoot();
+	const outside = projectRoot();
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	const source = join(root, "heartbeat.md");
+	const content = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`;
+	writeFileSync(source, content);
+	assert.equal((await discoverBoundHeartbeatSource({ root, threadId: `${THREAD}-other`, ledgerPath: source })).candidates[0].associated, false);
+	writeFileSync(join(outside, "heartbeat.md"), content);
+	symlinkSync(join(outside, "heartbeat.md"), join(root, "link.md"));
+	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: "link.md" }), /within the project root/);
+	writeFileSync(join(nested, ".git"), "gitdir: other\n");
+	writeFileSync(join(nested, "heartbeat.md"), content);
+	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: join(nested, "heartbeat.md") }), /nested Git project/);
+	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: "taskhistory.md" }), /cannot be selected/);
+	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: "missing.md" }), /cannot be resolved/);
 });

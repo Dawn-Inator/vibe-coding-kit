@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
@@ -74,14 +75,14 @@ function priority(name) {
  * Find candidate heartbeat ledgers without mutating or scheduling anything. The canonical
  * heartbeat API remains responsible for parsing and validating ledger structure.
  */
-export async function discoverHeartbeatLedgerSources({
+async function discoverHeartbeatLedgerSourcesInternal({
 	root,
 	threadId,
 	ledgerPath,
 	maxFiles = 2500,
 	maxDepth = 5,
 	collectAssociation,
-} = {}) {
+} = {}, { boundOnly = false } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError(
 			"Heartbeat discovery requires an absolute project root",
@@ -109,6 +110,7 @@ export async function discoverHeartbeatLedgerSources({
 	const reasons = new Set();
 	let visitedFiles = 0;
 	let explicitRealPath = null;
+	let boundSourceDigest = null;
 	// Resolve and read concurrently, but commit results in traversal order. Only a
 	// bounded number of reads may be outstanding, and reservations are consumed
 	// in order so duplicate paths and maxFiles retain their serial semantics.
@@ -144,6 +146,7 @@ export async function discoverHeartbeatLedgerSources({
 		if (result.oversized) { reasons.add("oversized-file"); return; }
 		if (result.unreadable) { reasons.add("unreadable-file"); return; }
 		try {
+			if (boundOnly) boundSourceDigest = createHash("sha256").update(result.original, "utf8").digest("hex");
 			const text = withoutFencedExamples(result.original);
 			const named = /heartbeat/i.test(basename(path)) ||
 				(explicitRealPath && path === explicitRealPath);
@@ -177,6 +180,18 @@ export async function discoverHeartbeatLedgerSources({
 		if (isHeartbeatCompanion(basename(explicit)))
 			throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
 		commit(await prepare(explicit), true);
+	}
+
+	if (boundOnly) {
+		if (!ledgerPath) throw new TypeError("A bound ledgerPath is required");
+		// This report is deliberately incomplete: no project-wide scan took place.
+		reasons.add("source-only");
+		return {
+			schemaVersion: 1, root: projectRoot,
+			candidates: [...candidates.values()], complete: false, visitedFiles,
+			limits: { maxFiles, maxDepth }, reasons: [...reasons].sort(),
+			...(boundSourceDigest ? { boundSourceDigest } : {}),
+		};
 	}
 
 	const scan = async (directory, depth) => {
@@ -243,6 +258,16 @@ export async function discoverHeartbeatLedgerSources({
 		limits: { maxFiles, maxDepth },
 		reasons: [...reasons].sort(),
 	};
+}
+
+/** Full bounded project scan, including an optional prioritized explicit ledger. */
+export function discoverHeartbeatLedgerSources(options = {}) {
+	return discoverHeartbeatLedgerSourcesInternal(options);
+}
+
+/** Inspect only an already-bound ledger; never claims project-wide completeness. */
+export function discoverBoundHeartbeatSource(options = {}) {
+	return discoverHeartbeatLedgerSourcesInternal(options, { boundOnly: true });
 }
 
 /** Scan-local results are reused only while a live recursive watcher protects the root. */

@@ -2,6 +2,8 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
+0.5.10 对已有已保存的 Heartbeat 绑定使用一次 Kit 规范绑定来源查询进行校验，仍保留路径、内容哈希、任务关联和自定义 inspector 校验。新聊天、未绑定来源以及强制写入前的发现仍执行完整项目扫描；不完整扫描不会被当作完整扫描或“没有来源”的证明。
+
 0.5.9 保留按版本存放的发布资源，并将已校验的 Helper 原子安装为 `install/bin/goal-progress` 下的真实可执行文件；替换失败时会从快照回滚。launchd、MCP 和新 Hook 使用此稳定路径，CLI 根据安装清单解析当前版本资源；Doctor 会校验 Helper 哈希且拒绝符号链接。更新期间不会卸载 Codex。已有安装迁移到该路径时，macOS 仍可能要求用户重新批准受保护目录访问；不会复制或假定已有 TCC 授权，稳定路径也不保证以后永不再次弹窗。
 
 0.5.8 默认使用发布包内置的 Kit 任务与 Heartbeat API，不会隐式探测个人全局 Kit checkout。明确配置的项目 Kit 路径/固定版本或 fallback 路径仍可覆盖默认值；`fallbackKitPath: null` 可禁用 fallback。此改动仅影响 API 解析，不改变任务或 Heartbeat 存储格式。

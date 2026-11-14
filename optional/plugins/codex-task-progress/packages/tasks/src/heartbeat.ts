@@ -243,6 +243,8 @@ interface ProjectConfig {
 }
 interface CacheEntry {
   generation?: number | null;
+  bound?: boolean;
+  configFingerprint?: string;
   cwd: string;
   time: number;
   value: HeartbeatView | null;
@@ -821,14 +823,38 @@ export class HeartbeatService {
   #observeFile(threadId: string, path: string): void {
     this.#watchers.get(threadId)?.close();
     try {
-      const watcher = watch(dirname(path), { persistent: false }, () =>
-        this.#cache.delete(threadId),
-      );
+      const sourceName = path.split(/[\\/]/).at(-1);
+      const watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+        // A warm bound hit revalidates source, companion, binding and Git boundary.
+        // Unrelated siblings do not invalidate the selected source.
+        if (filename === null || filename.toString() === sourceName) this.#cache.delete(threadId);
+      });
       watcher.on("error", () => this.#cache.delete(threadId));
       this.#watchers.set(threadId, watcher);
     } catch {
-      /* view() also performs bounded-time polling. */
+      /* Bound warm hits perform canonical validation even without a watcher. */
     }
+  }
+
+  async #boundViewStillValid(threadId: string, root: string, view: HeartbeatView, configFingerprint: string): Promise<boolean> {
+    if (view.status !== "ready" || !view.sourcePath || !view.contentHash) return false;
+    try {
+      if (hash(JSON.stringify(await this.#config(root))) !== configFingerprint) return false;
+      const relations = await this.#relations();
+      const before = await relations.get(threadId);
+      if (!before.found || !before.binding) return false;
+      const { discoverBoundHeartbeatSource } = await loadHeartbeatTaskSourceApi();
+      const discovery = await discoverBoundHeartbeatSource({ root, threadId, ledgerPath: before.binding.path });
+      const candidate = discovery.candidates[0];
+      if (!candidate || (before.binding.origin === "automatic" && !candidate.associated)) return false;
+      if (candidate.path !== await realpath(view.sourcePath)) return false;
+      const pair = (await loadPairFilesApi()).readHeartbeatLedgerPair({ root, path: candidate.path, maxBytes: MAX_BYTES });
+      if (pair.contentHash !== view.contentHash || !discovery.boundSourceDigest ||
+          hash(pair.headText) !== discovery.boundSourceDigest) return false;
+      const after = await relations.get(threadId);
+      return Boolean(after.found && after.binding && after.binding.path === before.binding.path &&
+        after.binding.origin === before.binding.origin);
+    } catch { return false; }
   }
 
   async view(
@@ -838,15 +864,18 @@ export class HeartbeatService {
   ): Promise<HeartbeatView | null> {
     const index = this.#options.discoveryIndex;
     const root = index ? await this.#project(cwd) : null;
-    const generation = root && index ? await index.generation(root) : null;
     const cached = this.#cache.get(threadId);
     const now = this.#now().getTime();
-    if (
-      !options.forceDiscovery &&
-      cached?.cwd === cwd &&
-      (!index || (generation !== null && cached.generation === generation)) &&
-      now - cached.time < (this.#options.refreshMs ?? 30_000)
-    )
+    const fresh = !options.forceDiscovery && cached?.cwd === cwd &&
+      now - cached.time < (this.#options.refreshMs ?? 30_000);
+    if (fresh && cached?.bound && cached.value && cached.configFingerprint) {
+      const boundRoot = root ?? await this.#project(cwd).catch(() => null);
+      if (boundRoot && await this.#boundViewStillValid(threadId, boundRoot, cached.value, cached.configFingerprint))
+        return cached.value;
+      this.#cache.delete(threadId);
+    }
+    const generation = root && index ? await index.generation(root) : null;
+    if (fresh && cached && !cached.bound && (!index || (generation !== null && cached.generation === generation)))
       return cached.value;
     const pending = this.#pending.get(threadId);
     if (pending) {
@@ -855,7 +884,7 @@ export class HeartbeatService {
     }
     const operation = (async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const observation: { generation: number | null } = { generation: null };
+        const observation: { generation: number | null; configFingerprint?: string; boundOnly?: boolean } = { generation: null };
         const value = await this.#read(
           threadId,
           cwd,
@@ -864,6 +893,19 @@ export class HeartbeatService {
           },
           observation,
         );
+        if (value?.status === "ready" && value.sourcePath && observation.configFingerprint) {
+          const boundRoot = root ?? await this.#project(cwd).catch(() => null);
+          if (boundRoot && await this.#boundViewStillValid(threadId, boundRoot, value, observation.configFingerprint)) {
+            // Full-scan candidate metadata must not outlive its root generation.
+            // Cache only source-only views whose bounded claim remains accurate.
+            if (!options.forceDiscovery && value.discoveryReasons?.includes("source-only"))
+              this.#cache.set(threadId, { cwd, time: this.#now().getTime(), value, bound: true,
+                configFingerprint: observation.configFingerprint });
+            return value;
+          }
+          continue;
+        }
+        if (observation.boundOnly && value?.status !== "ready") return value;
         const completed = root && index ? await index.generation(root) : null;
         if (!index || (observation.generation !== null && completed === observation.generation)) {
           const explicitTemp = Boolean(
@@ -896,7 +938,7 @@ export class HeartbeatService {
     threadId: string,
     cwd: string,
     options: { forceDiscovery?: boolean } = {},
-    observation?: { generation: number | null },
+    observation?: { generation: number | null; configFingerprint?: string; boundOnly?: boolean },
   ): Promise<HeartbeatView | null> {
     await this.#restore(threadId);
     const now = this.#now().toISOString();
@@ -924,12 +966,13 @@ export class HeartbeatService {
     try {
       const root = await this.#project(cwd);
       const config = await this.#config(root);
+      if (observation) observation.configFingerprint = hash(JSON.stringify(config));
       if (source) {
         source = await realpath(source);
         if (!within(root, source))
           throw new Error("Bound heartbeat source is outside the project root.");
       }
-      const { discoverHeartbeatLedgerSources } = await loadHeartbeatTaskSourceApi();
+      const { discoverHeartbeatLedgerSources, discoverBoundHeartbeatSource } = await loadHeartbeatTaskSourceApi();
       const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
       const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
       const relations = await this.#relations();
@@ -951,12 +994,25 @@ export class HeartbeatService {
         ...(maxFiles === undefined ? {} : { maxFiles }),
         ...(maxDepth === undefined ? {} : { maxDepth }),
       };
-      const discovery = await (this.#options.discoveryIndex
-        ? this.#options.discoveryIndex.discover(discoveryOptions, {
-            force: Boolean(options.forceDiscovery),
-          })
-        : discoverHeartbeatLedgerSources(discoveryOptions));
-      if (observation) observation.generation = discovery.indexGeneration ?? null;
+      const boundPath = previous.found && previous.binding ? previous.binding.path : undefined;
+      const boundOnly = Boolean(boundPath && !options.forceDiscovery);
+      if (observation) observation.boundOnly = boundOnly;
+      let discovery;
+      try {
+        discovery = boundOnly && boundPath
+          ? await discoverBoundHeartbeatSource({ ...discoveryOptions, ledgerPath: boundPath })
+          : await (this.#options.discoveryIndex
+              ? this.#options.discoveryIndex.discover(discoveryOptions, { force: Boolean(options.forceDiscovery) })
+              : discoverHeartbeatLedgerSources(discoveryOptions));
+      } catch (error) {
+        // An existing binding remains latched on missing, escaped or unreadable
+        // sources; it must never fall back to an unrelated local checklist.
+        if (boundOnly && boundPath)
+          return compactView({ ...(this.#last.get(threadId) ?? empty), status: "stale", sourcePath: boundPath,
+            refreshedAt: now, certifiesCurrent: false, error: String(error) });
+        throw error;
+      }
+      if (observation) observation.generation = boundOnly ? null : (discovery.indexGeneration ?? null);
       const candidates = discovery.candidates;
       const relation = await relations.resolve(threadId, {
         projectRoot: root,

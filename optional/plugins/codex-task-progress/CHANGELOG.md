@@ -1,3 +1,7 @@
+# Task Progress 0.5.10
+
+- For a previously saved Heartbeat binding, validate that source with one targeted canonical Kit bound-source lookup while retaining path, hash, task-association and custom-inspector checks. New or unbound chats and forced-write discovery continue to use the full project scan; an incomplete scan is never treated as complete or as proof that no source exists.
+
 # Task Progress 0.5.9
 
 - Install the verified Helper as a real executable at the stable `install/bin/goal-progress` path while retaining versioned release assets. Updates copy atomically with rollback, and Doctor verifies the installed file instead of following a symlink. The stable launchd, MCP and Hook paths do not unload Codex.
