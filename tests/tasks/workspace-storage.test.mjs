@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -179,7 +181,8 @@ test('recovery follows valid routes and legacy indexes, rejecting corrupt and un
   const router = manager(app);
   assert.equal(await router.hasRecoverableTasks(), false);
   const context = await router.forThread('routed', cwd);
-  assert.equal(await router.hasRecoverableTasks(), false);
+  // A valid route is a startup eligibility hint, including an empty workspace.
+  assert.equal(await router.hasRecoverableTasks(), true);
   await context.ensureWritable();
   await initialize(context.taskStore, 'routed');
   assert.equal(await manager(app).hasRecoverableTasks(), true);
@@ -297,4 +300,49 @@ test('private mode checks use the effective UID when real and effective identiti
   assert.equal(privateModeNeedsChmod(foreign, 0o700, effectivePermissionUid(() => 501, () => 502)), false);
   assert.equal(effectivePermissionUid(undefined, () => 502), 502);
   assert.equal(effectivePermissionUid(undefined, undefined), undefined);
+});
+
+
+test('startup recovery hints never access routed workspaces and active chat validation remains authoritative', async () => {
+  const { cwd, app } = await setup();
+  const router = manager(app);
+  const context = await router.forThread('routed-lazy', cwd);
+  await context.ensureWritable();
+  await initialize(context.taskStore, 'routed-lazy', 'Saved task');
+  const canonical = context.storage.cwd;
+  const routePath = resolve(app, 'task-routing/taskhistory.md');
+  const route = await readFile(routePath, 'utf8');
+  const indexPath = resolve(app, 'workspace-storage-index.json');
+  const legacy = { threadId: 'routed-lazy', cwd: canonical, root: context.storage.root };
+  await writeFile(indexPath, JSON.stringify({ schemaVersion: 1, entries: { [digest(legacy.threadId)]: legacy } }));
+  const methods = ['realpath', 'stat', 'readFile', 'readdir'];
+  const originals = new Map();
+  const attempted = [];
+  try {
+    for (const method of methods) {
+      const original = fs.promises[method];
+      originals.set(method, original);
+      fs.promises[method] = async function(path, ...args) {
+        if (typeof path === 'string' && (path === canonical || path.startsWith(`${canonical}/`))) {
+          attempted.push(`${method}:${path}`);
+          throw Object.assign(new Error('protected workspace access forbidden'), { code: 'EACCES' });
+        }
+        return original.call(this, path, ...args);
+      };
+    }
+    syncBuiltinESMExports();
+    assert.equal(await manager(app).hasRecoverableTasks(), true);
+    await writeFile(routePath, 'corrupt');
+    assert.equal(await manager(app).hasRecoverableTasks(), true);
+    legacy.root = resolve(canonical, 'unrelated');
+    await writeFile(indexPath, JSON.stringify({ schemaVersion: 1, entries: { [digest(legacy.threadId)]: legacy } }));
+    assert.equal(await manager(app).hasRecoverableTasks(), false);
+    assert.deepEqual(attempted, []);
+  } finally {
+    for (const [method, original] of originals) fs.promises[method] = original;
+    syncBuiltinESMExports();
+  }
+  await writeFile(routePath, route);
+  const reopened = await manager(app).forThread('routed-lazy', cwd);
+  assert.equal((await reopened.taskStore.get('routed-lazy'))?.title, 'Saved task');
 });

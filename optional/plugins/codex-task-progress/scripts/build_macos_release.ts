@@ -31,6 +31,12 @@ import {
 } from "../platform/macos/src/release.js";
 import { generateThirdPartyNotices } from "./generate_third_party_notices.js";
 import { kitRoot } from "./kit_root.mjs";
+import {
+  createCodesignArgs,
+  GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER,
+  GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER,
+  resolveReleaseSigning,
+} from "./release-signing.mjs";
 
 const require = createRequire(import.meta.url);
 const { inject } = require("postject") as {
@@ -114,6 +120,10 @@ async function main(): Promise<void> {
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     throw new Error("GOAL_PROGRESS_RELEASE_MACOS_ARM64_REQUIRED");
   }
+  const signing = await resolveReleaseSigning();
+  if (signing.warning) {
+    process.stderr.write(`WARNING: ${signing.warning}\n`);
+  }
   assertSafeMacosReleaseOutput(root, outputRoot);
   const releaseNode = requireNodeBinary();
   const nodeLicenseSource = resolve(dirname(releaseNode), "..", "LICENSE");
@@ -153,7 +163,11 @@ async function main(): Promise<void> {
   await chmod(startupListenerPath, 0o755);
   run(
     "/usr/bin/codesign",
-    ["--force", "--sign", process.env.GOAL_PROGRESS_CODESIGN_IDENTITY ?? "-", startupListenerPath],
+    createCodesignArgs(
+      signing.identity,
+      GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER,
+      startupListenerPath,
+    ),
     "GOAL_PROGRESS_STARTUP_LISTENER_SIGN_FAILED",
   );
   run(
@@ -294,7 +308,7 @@ async function main(): Promise<void> {
   await chmod(helperPath, 0o755);
   run(
     "/usr/bin/codesign",
-    ["--force", "--sign", process.env.GOAL_PROGRESS_CODESIGN_IDENTITY ?? "-", helperPath],
+    createCodesignArgs(signing.identity, GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER, helperPath),
     "GOAL_PROGRESS_RELEASE_SIGN_FAILED",
   );
   run(

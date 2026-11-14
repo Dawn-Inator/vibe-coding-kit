@@ -148,6 +148,7 @@ test('Task Progress installer restart-required JSON becomes setup-required witho
   const runner = async (command, args) => {
     calls.push([command, args]);
     if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
+    if (command === 'node' && args[1] === '--check') return response(0, JSON.stringify({ signing: { status: 'ready', candidates: [] } }));
     if (command === 'node') return response(1, JSON.stringify({ status: 'setup-required', reason: 'Installation is pending a Codex restart.' }));
     return response(1);
   };
@@ -191,10 +192,130 @@ test('Task Progress installer fallback follows the component path in both layout
     const calls = [];
     const runner = async (command, args) => {
       calls.push([command, args]);
-      return command === 'codex' ? response(0, JSON.stringify({ installed: [] })) : response(1, JSON.stringify({ status: 'setup-required', reason: 'restart' }));
+      if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
+      if (args[1] === '--check') return response(0, JSON.stringify({ signing: { status: 'ready', candidates: [] } }));
+      return response(1, JSON.stringify({ status: 'setup-required', reason: 'restart' }));
     };
     const result = await installOptionalComponent({ ...f, component: { ...f.component, path: componentPath }, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
     assert.equal(result.status, 'setup-required');
     assert.equal(calls.find(([command]) => command === 'node')[1][0], script);
   }
+});
+
+function signingPluginFixture(t) {
+  const f = fixture(t, 'codex-task-progress');
+  const helper = join(f.kitRoot, f.component.path, 'scripts', 'install-from-kit.mjs');
+  mkdirSync(join(helper, '..'), { recursive: true });
+  writeFileSync(helper, 'fixture installer');
+  return { ...f, helper };
+}
+
+const signingCandidates = [{ name: 'Developer ID Application: Example', identity: '0123456789abcdef0123456789abcdef01234567' }];
+
+test('Task Progress installer performs a read-only signing check and stops before build when selection is absent', async (t) => {
+  const f = signingPluginFixture(t), calls = [];
+  const runner = async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
+    if (command === 'node' && args[0] === f.helper && args[1] === '--check') {
+      return response(0, JSON.stringify({ status: 'setup-required', signing: { status: 'confirmation-required', candidates: signingCandidates, configPath: '/local/signing.json' } }));
+    }
+    throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+  };
+  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'setup-required');
+  assert.match(result.message, /0123456789abcdef0123456789abcdef01234567/);
+  assert.match(result.message, new RegExp(`node '${f.helper.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' --configure-signing --identity`));
+  assert.deepEqual(calls.map(([, args]) => args.at(-1)), ['--json', '--check']);
+});
+
+test('Task Progress installer never auto-selects even one certificate and rejects an unknown confirmation', async (t) => {
+  for (const confirmSigning of [undefined, async () => 'ffffffffffffffffffffffffffffffffffffffff']) {
+    const f = signingPluginFixture(t), calls = [];
+    const runner = async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
+      if (command === 'node' && args[0] === f.helper && args[1] === '--check') return response(0, JSON.stringify({
+        signing: { status: 'confirmation-required', candidates: signingCandidates, configPath: '/local/signing.json' },
+      }));
+      throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+    };
+    const result = await installOptionalComponent({ ...f, confirmSigning, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+    assert.equal(result.status, 'setup-required');
+    assert.equal(calls.some(([, args]) => args.includes('--configure-signing')), false);
+    assert.equal(calls.some(([, args]) => args[0] === f.helper && args.length === 1), false);
+  }
+});
+
+test('Task Progress signing confirmation configures once, rechecks, then builds; installed reuse skips signing probes', async (t) => {
+  const f = signingPluginFixture(t), calls = [];
+  let configured = false, installed = false;
+  const runner = async (command, args, options) => {
+    calls.push({ command, args, options });
+    if (command === 'codex') return response(0, JSON.stringify({ installed: installed ? [{ pluginId: 'codex-task-progress@codex-task-progress-local', installed: true }] : [] }));
+    if (command === 'node' && args[0] === f.helper && args[1] === '--check') return response(0, JSON.stringify({
+      signing: configured ? { status: 'ready', candidates: [], configPath: '/local/signing.json' } : { status: 'confirmation-required', candidates: signingCandidates, configPath: '/local/signing.json' },
+    }));
+    if (command === 'node' && args[0] === f.helper && args[1] === '--configure-signing') {
+      configured = true;
+      return response(0, JSON.stringify({ status: 'configured' }));
+    }
+    if (command === 'node' && args[0] === f.helper && args.length === 1) {
+      assert.equal(configured, true, 'build begins only after persisted signing choice');
+      installed = true;
+      return response(0, JSON.stringify({ status: 'installed', code: 'INSTALL_OK' }));
+    }
+    throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+  };
+  const result = await installOptionalComponent({
+    ...f,
+    confirmSigning: async (candidates) => candidates[0].identity,
+    env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner,
+  });
+  assert.equal(result.status, 'installed');
+  assert.deepEqual(calls.filter(({ command, args }) => command === 'node').map(({ args }) => args.slice(1)), [
+    ['--check'], ['--configure-signing', '--identity', signingCandidates[0].identity], ['--check'], [],
+  ]);
+  const reused = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(reused.status, 'installed');
+  assert.equal(calls.filter(({ command, args }) => command === 'node' && args[0] === f.helper).length, 4);
+});
+
+test('Task Progress installer accepts explicit signing environment only through the safe child environment', async (t) => {
+  const f = signingPluginFixture(t), calls = [];
+  const identity = signingCandidates[0].identity;
+  let installed = false;
+  const runner = async (command, args, options) => {
+    calls.push({ command, args, options });
+    if (command === 'codex') return response(0, JSON.stringify({ installed: installed ? [{ pluginId: 'codex-task-progress@codex-task-progress-local', installed: true }] : [] }));
+    if (command === 'node' && args[0] === f.helper && args[1] === '--check') return response(0, JSON.stringify({ signing: { status: 'ready', candidates: [], configPath: '/local/signing.json' } }));
+    if (command === 'node' && args[0] === f.helper && args.length === 1) {
+      installed = true;
+      return response(0, JSON.stringify({ status: 'installed', code: 'INSTALL_OK' }));
+    }
+    throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+  };
+  const result = await installOptionalComponent({
+    ...f, env: { HOME: f.home, GOAL_PROGRESS_CODESIGN_IDENTITY: identity, GOAL_PROGRESS_CODESIGN_CONFIG: '/tmp/safe-config.json', SECRET_SENTINEL: 'never-forward' },
+    platform: 'darwin', arch: 'arm64', runner,
+  });
+  assert.equal(result.status, 'installed');
+  const childEnv = calls.find(({ command, args }) => command === 'node' && args[1] === '--check').options.env;
+  assert.equal(childEnv.GOAL_PROGRESS_CODESIGN_IDENTITY, identity);
+  assert.equal(childEnv.GOAL_PROGRESS_CODESIGN_CONFIG, '/tmp/safe-config.json');
+  assert.equal('SECRET_SENTINEL' in childEnv, false);
+  const buildEnv = calls.find(({ command, args }) => command === 'node' && args[0] === f.helper && args.length === 1).options.env;
+  assert.equal(buildEnv.GOAL_PROGRESS_CODESIGN_IDENTITY, identity);
+  assert.equal(buildEnv.GOAL_PROGRESS_CODESIGN_CONFIG, '/tmp/safe-config.json');
+});
+
+test('unavailable signing reports an accurate eligible certificate recovery step', async (t) => {
+  const f = signingPluginFixture(t);
+  const runner = async (command, args) => command === 'codex'
+    ? response(0, JSON.stringify({ installed: [] }))
+    : response(0, JSON.stringify({ signing: { status: 'unavailable', candidates: [], configPath: '/local/signing.json' } }));
+  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'setup-required');
+  assert.match(result.message, /eligible macOS code-signing certificate/);
+  assert.doesNotMatch(result.message, /Developer ID signing certificate/);
 });

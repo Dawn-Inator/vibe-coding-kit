@@ -438,13 +438,30 @@ async function installOptionalComponents(kitRoot, components, env, statuses) {
       throw new Error(`Optional ${component.id} is unsupported (${inspected.message || 'unsupported platform'}). Optional setup was not completed; core setup is preserved.`);
     }
     if (inspected?.status === 'error') throw new Error(`Optional ${component.id} could not be inspected: ${inspected.message || 'inspection failed'}. Optional setup was not completed; core setup is preserved.`);
-    const result = await installOptionalComponent({ kitRoot, component, env });
+    const confirmSigning = component.id === 'codex-task-progress' && process.stdin.isTTY && process.stdout.isTTY
+      ? askTaskProgressSigningIdentity
+      : undefined;
+    const result = await installOptionalComponent({ kitRoot, component, env, confirmSigning });
     if (!result || result.status !== 'installed') {
       const status = result?.status || 'invalid-result';
       throw new Error(`Optional ${component.id} setup is incomplete (${status}): ${result?.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
     }
     console.log(`Optional ${component.id}: ready.`);
   }
+}
+
+export async function askTaskProgressSigningIdentity(candidates, { input = process.stdin, output = process.stdout, ask } = {}) {
+  if (!input.isTTY || !output.isTTY) return null;
+  const choices = candidates.map(({ name, identity }, index) => `  ${index + 1}. ${name} — ${identity}`).join('\n');
+  const message = `Choose a macOS signing certificate for Codex Task Progress (Enter to decline):\n${choices}\nSelection (number or full fingerprint): `;
+  const prompt = ask ? null : createInterface({ input, output });
+  try {
+    const answer = String(await (ask ? ask(message) : prompt.question(message))).trim();
+    if (!answer) return null;
+    const numbered = /^\d+$/.test(answer) ? Number(answer) : 0;
+    if (numbered > 0 && numbered <= candidates.length) return candidates[numbered - 1].identity;
+    return candidates.find(({ identity }) => identity.toLowerCase() === answer.toLowerCase())?.identity ?? null;
+  } finally { prompt?.close(); }
 }
 
 function printOptionalSummary(preferences, selection) {

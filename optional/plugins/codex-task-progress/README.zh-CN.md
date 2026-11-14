@@ -4,6 +4,8 @@
 
 0.5.6 避免对所有权和权限已符合要求的私有目录重复设置权限，从而减少不必要的文件系统 watcher 事件。权限不匹配时仍会修复，操作系统所有权检查仍会执行。
 
+0.5.7 后台启动检查只读取 Helper 自有的可恢复性提示；提示仅决定是否尝试恢复，不提供任务内容或权威来源。建立可信聊天身份后，恢复流程仍通过 Kit 正常读取和校验该聊天的规范任务文件。不会扫描任意工作区，也不会用提示代替文件校验。Kit 会复用已安装的 Task Progress，不询问签名或重装；需新安装时，交互式流程只请求一次对合格本地证书的明确确认，非交互流程则返回 `setup-required` 和操作命令。`--check` 只读展示签名状态与证书候选；`--configure-signing --identity <指纹>` 会验证并仅私下保存选择，不构建、不签名、不安装、不重启 Codex。以后本地构建复用保存的身份，但不保证 macOS 对受保护目录的授权跨版本继承；TCC 可能按可执行文件的物理版本路径保存授权，跨升级继承尚未验证。此流程不创建证书、不导出私钥或授予隐私权限。macOS 本地构建可优先通过 `GOAL_PROGRESS_CODESIGN_IDENTITY` 指定签名身份，或使用应用支持目录下符合 `{ "schemaVersion": 1, "identity": "..." }` 的 `release-signing.json`；`GOAL_PROGRESS_CODESIGN_CONFIG` 可指定绝对配置路径，显式配置无效时必须失败关闭。未配置身份时保留 ad-hoc 签名并提示 macOS 可能重复询问权限。Apple Development 签名仅用于本地开发，并非 Developer ID 或公开公证发布。首次访问受 macOS 保护的目录需要用户批准；不自动授权、不修改或重置 TCC 数据库，也不默认要求 Full Disk Access。Helper 和 listener 标识固定为 `com.codextaskprogress.helper`、`com.codextaskprogress.listener`。
+
 项目 Heartbeat 在同一范围刷新期间会保留最近有效的摘要和历史，并显示等待提示；仍可手动刷新。旧摘要在刷新完成前标记为未认证，不代表当前来源已验证。切换到没有已验证快照的新范围时会清除旧展示，前端不另建来源权威缓存。
 
 0.5.4 的有界 Kit Heartbeat 发现会在单次扫描中复用规范化项目根路径与 Git 边界检查结果，并在扫描结束后丢弃缓存。仍遵循配置的文件数/深度限制，保持嵌套 Git 与符号链接边界以及精确线程关联行为。

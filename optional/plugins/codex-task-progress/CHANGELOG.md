@@ -1,3 +1,8 @@
+# Task Progress 0.5.7
+
+- Restrict background startup recovery checks to Helper-owned recoverability hints. A hint only authorizes attempting recovery; after trusted chat identity is established, canonical task files are read and validated normally.
+- Support local macOS release signing through `GOAL_PROGRESS_CODESIGN_IDENTITY` or a versioned `release-signing.json` configuration, with ad-hoc signing retained when no identity is configured.
+
 # Task Progress 0.5.6
 
 - Avoid redundant permission updates for private directories that already have the expected ownership and mode, preventing unnecessary filesystem watcher events; mismatched permissions are repaired and operating-system ownership checks remain enforced.

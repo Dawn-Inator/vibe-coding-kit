@@ -4,12 +4,38 @@ import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { askTaskProgressSigningIdentity } from '../../cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
 after(cleanupTempDirs);
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const cliPath = join(repoRoot, 'cli.mjs');
+
+test('signing identity prompt is TTY-only, lists certificates, and declines by default', async () => {
+  const candidates = [{ name: 'Developer ID Application: Example', identity: '0123456789abcdef0123456789abcdef01234567' }];
+  const unavailableQuestion = async () => assert.fail('a non-TTY invocation must not prompt');
+  assert.equal(await askTaskProgressSigningIdentity(candidates, {
+    input: { isTTY: false }, output: { isTTY: true }, ask: unavailableQuestion,
+  }), null);
+
+  let questionCount = 0, message = '';
+  const ask = async (text) => { questionCount += 1; message = text; return ''; };
+  assert.equal(await askTaskProgressSigningIdentity(candidates, {
+    input: { isTTY: true }, output: { isTTY: true }, ask,
+  }), null);
+  assert.equal(questionCount, 1);
+  assert.match(message, /1\. Developer ID Application: Example/);
+  assert.match(message, /0123456789abcdef0123456789abcdef01234567/);
+  assert.match(message, /Enter to decline/);
+
+  assert.equal(await askTaskProgressSigningIdentity(candidates, {
+    input: { isTTY: true }, output: { isTTY: true }, ask: async () => '1',
+  }), candidates[0].identity);
+  assert.equal(await askTaskProgressSigningIdentity(candidates, {
+    input: { isTTY: true }, output: { isTTY: true }, ask: async () => candidates[0].identity,
+  }), candidates[0].identity);
+});
 
 function optionalProbeEnv(fixture, env = process.env) {
   const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : join(fixture.root, 'isolated-home');

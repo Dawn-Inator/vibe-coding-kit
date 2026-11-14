@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Version 0.5.5 is installed locally; the next release is 0.5.6. This is not an official Codex extension API.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Version 0.5.7 adds bounded startup recovery checks and configurable local macOS release signing. This is not an official Codex extension API.
 
 The 44px capsule stays docked and centered at the top of the chat, reserves layout space, and shows progress along its lower curved edge. Click it to expand the real task's modules (`objectives`), then click a module to inspect its nodes (`items`), statuses and evidence. Each module has its own progress bar. Clicking a module does not add a black outline, while keyboard focus remains available. The two 40px round buttons open task History and the project's read-only Heartbeat; only one panel opens at a time. History and Heartbeat records retain their paginated data sources. Unfinished tasks appear in reverse original checklist-addition order at the top; completed tasks remain in stable order at the bottom. These display choices do not rewrite records. The panel does not allow horizontal scrolling or dragging; any saved floating-placement preference from an older version is ignored. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
@@ -18,6 +18,8 @@ Cold source validation can still take seconds.
 
 Version 0.5.6 avoids redundant permission updates when private directories already have the expected ownership and mode, reducing unnecessary filesystem watcher events. Mismatched permissions are repaired, and operating-system ownership checks remain enforced.
 
+At background startup, recovery eligibility checks inspect only Helper-owned recoverability hints. A hint does not provide task contents or authority: after a trusted chat identity is established, normal recovery reads and validates that chat's canonical task files through Kit. It does not scan arbitrary workspaces or use a hint as a substitute for file validation.
+
 Bounded Kit Heartbeat discovery memoizes the canonical project root and Git-boundary checks for one scan, then discards that memo before the next scan. Configured file/depth limits, nested-Git and symlink boundaries, and exact-thread association behavior are preserved.
 
 Progress counts non-cancelled required checklist leaves equally. A completed item needs evidence labelled `reported` or `verified`. Time, token use and activity do not count as completion. An idle chat has no invented percentage. SessionStart supplies a short instruction for the current model to maintain task records; semantic updates still depend on that model calling the tools at meaningful milestones. The panel automatically shows the current project's Heartbeat separately from chat task progress. Only a structured Kit record related to the current task may project into the checklist as a read-only source; the project view alone never creates or replaces a chat checklist.
@@ -33,6 +35,10 @@ To build a self-contained macOS release, obtain Node v24.19.0 darwin-arm64 from 
 ```sh
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
+
+Kit reuses an existing Task Progress installation without asking about signing or reinstalling. When a selected component is missing, interactive Kit setup asks once for explicit confirmation of an eligible local certificate; non-interactive setup returns an actionable setup-required result. `install-from-kit.mjs --check` lists status and candidates read-only. `install-from-kit.mjs --configure-signing --identity '<certificate fingerprint>'` validates and persists a choice privately only; future builds reuse it. This does not guarantee macOS protected-folder consent will carry across updates: TCC may associate consent with the executable's physical version path, and inheritance across upgrades has not been verified. This setup does not build, sign, install, restart Codex, create certificates, export private keys or grant privacy permissions.
+
+Local release signing accepts an identity through `GOAL_PROGRESS_CODESIGN_IDENTITY` or a `release-signing.json` configuration (`schemaVersion: 1`, `identity`) under the Task Progress application-support directory. Set `GOAL_PROGRESS_CODESIGN_CONFIG` to choose an explicit absolute configuration path. Do not put signing identities in source or shared docs. If no identity is configured, the local build remains ad-hoc signed and warns that macOS may request permission again. An Apple Development signature is for local development; it is not a Developer ID or publicly notarized release. Helper and listener identifiers remain fixed as `com.codextaskprogress.helper` and `com.codextaskprogress.listener`.
 
 The release is `dist/release/macos-arm64`; see [installation instructions](INSTALL-FOR-AI.md). Updates are manual: rebuild and install from the Kit checkout. No automatic release channel is configured. No credentials are embedded in the plugin.
 

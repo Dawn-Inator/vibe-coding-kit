@@ -135,18 +135,16 @@ export class WorkspaceTaskStorage {
     return ids;
   }
 
-  /** Read-only recovery eligibility for ordinary task and source-association history. */
+  /** Startup eligibility hint. Project routes are verified lazily when their chat opens. */
   async hasRecoverableTasks() {
     if (this.#closed) throw new TaskStoreError('TASK_STORAGE_CLOSED', 'Workspace storage is closed');
     for (const id of await this.#legacyThreadIds()) if (await this.#hasTask(this.#legacyRoot, id)) return true;
     let routes;
     try { routes = await this.#routes(); } catch { routes = new Map(); }
-    for (const route of routes.values()) {
-      try {
-        if (await realpath(route.cwd) !== route.cwd || await realpath(route.root) !== route.root) continue;
-        if (await this.#hasTask(route.root, route.threadId)) return true;
-      } catch { /* Missing or untrusted workspace is not evidence. */ }
-    }
+    // The Helper-owned route is only an eligibility hint; even an empty or
+    // missing workspace may justify attempting a visible-chat reattachment.
+    // Actual task/source authority stays with forThread and TaskStore validation.
+    if (routes.size > 0) return true;
     try {
       const text = await optionalText(resolve(this.#legacyRoot, 'workspace-storage-index.json'));
       if (text === null) return false;
@@ -154,10 +152,11 @@ export class WorkspaceTaskStorage {
       if (index?.schemaVersion !== 1 || !index.entries || typeof index.entries !== 'object' || Array.isArray(index.entries)) return false;
       for (const [key, entry] of Object.entries(index.entries)) {
         if (typeof entry?.threadId !== 'string' || !entry.threadId.trim() || entry.threadId.length > 512 || digest(entry.threadId) !== key) continue;
-        try {
-          const route = await this.#legacyRoute(entry.threadId);
-          if (route && await realpath(route.root) === route.root && await this.#hasTask(route.root, route.threadId)) return true;
-        } catch { /* Invalid index entries cannot supply evidence. */ }
+        // Match the legacy route's lexical shape without accessing its cwd.
+        if (typeof entry.cwd !== 'string' || !isAbsolute(entry.cwd) ||
+            typeof entry.root !== 'string' ||
+            entry.root !== resolve(entry.cwd, '.workspace/codex-task-progress')) continue;
+        return true;
       }
     } catch { /* Missing or corrupt index is not evidence. */ }
     return false;

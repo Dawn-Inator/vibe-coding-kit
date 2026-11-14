@@ -11,11 +11,22 @@ const SAFE_ENV_KEYS = new Set([
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
 ]);
+const SIGNING_IDENTITY_ENV_KEY = 'GOAL_PROGRESS_CODESIGN_IDENTITY';
+const SIGNING_CONFIG_ENV_KEY = 'GOAL_PROGRESS_CODESIGN_CONFIG';
+const SIGNING_IDENTITY_RE = /^[0-9a-f]{40}$/i;
 const VERSION_RE = /(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?(?:\s|$)/i;
 const minimumVersions = { node22: [22, 0, 0] };
 
 function safeEnv(env) {
   const safe = Object.fromEntries(Object.entries(env ?? {}).filter(([key, value]) => SAFE_ENV_KEYS.has(key) && typeof value === 'string'));
+  const signingIdentity = env?.[SIGNING_IDENTITY_ENV_KEY];
+  if (typeof signingIdentity === 'string' && SIGNING_IDENTITY_RE.test(signingIdentity)) {
+    safe[SIGNING_IDENTITY_ENV_KEY] = signingIdentity;
+  }
+  const signingConfig = env?.[SIGNING_CONFIG_ENV_KEY];
+  if (typeof signingConfig === 'string' && isAbsolute(signingConfig) && !/[\0\r\n]/.test(signingConfig)) {
+    safe[SIGNING_CONFIG_ENV_KEY] = signingConfig;
+  }
   const nodeBinary = env?.GOAL_PROGRESS_NODE_BINARY;
   if (typeof nodeBinary === 'string' && isAbsolute(nodeBinary)) {
     try {
@@ -304,6 +315,8 @@ async function installTaskProgress(component, context) {
   if (existing.status === 'installed') return existing;
   if (existing.status === 'error') return existing;
   if (!existsSync(helper) || !statSync(helper).isFile()) return result('setup-required', 'The bundled Codex Task Progress installer is unavailable in this Kit checkout.');
+  const signing = await prepareTaskProgressSigning(helper, context);
+  if (signing.status !== 'ready') return signing;
   const installed = await context.runner('node', [helper], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 10 * 60_000 });
   if (!installed || !Number.isInteger(installed.code)) return result('error', 'Codex Task Progress installer returned an invalid runner response.');
   let document;
@@ -316,6 +329,83 @@ async function installTaskProgress(component, context) {
   const after = await inspectTaskProgress(context);
   if (after.status === 'installed') return after;
   return after.status === 'error' ? after : result('setup-required', 'The installer completed but the existing installation could not be verified.');
+}
+
+function parseInstallerJson(response, action) {
+  if (!response || !Number.isInteger(response.code)) throw new Error(`Codex Task Progress ${action} returned an invalid runner response.`);
+  try { return JSON.parse(response.stdout); }
+  catch { throw new Error(`Codex Task Progress ${action} returned invalid JSON (exit ${response.code}).`); }
+}
+
+function signingCandidates(signing) {
+  if (!Array.isArray(signing?.candidates)) return [];
+  return signing.candidates.filter((candidate) => candidate && typeof candidate === 'object'
+    && typeof candidate.identity === 'string' && SIGNING_IDENTITY_RE.test(candidate.identity)
+    && typeof candidate.name === 'string');
+}
+
+function shellQuote(value) { return `'${String(value).replace(/'/g, `'\\''`)}'`; }
+
+function signingSetupMessage(signing, reason, helper) {
+  const candidates = signingCandidates(signing);
+  const details = candidates.length
+    ? `Available certificates: ${candidates.map(({ name, identity }) => `${name} (${identity})`).join('; ')}. To configure one non-interactively, run: node ${shellQuote(helper)} --configure-signing --identity <40-character fingerprint>.`
+    : 'No eligible macOS code-signing certificate was reported. Add an eligible signing identity to the macOS login Keychain, then rerun setup.';
+  const config = typeof signing?.configPath === 'string' ? ` Signing config: ${signing.configPath}.` : '';
+  return `${reason}${config} ${details}`;
+}
+
+async function checkTaskProgressSigning(helper, context) {
+  const response = await context.runner('node', [helper, '--check'], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 60_000 });
+  let document;
+  try { document = parseInstallerJson(response, 'signing check'); }
+  catch (error) { return { error: error.message }; }
+  if (response.code !== 0) return { error: document?.reason ?? document?.message ?? `Signing check failed (exit ${response.code}).` };
+  const signing = document?.signing;
+  if (!signing || !['ready', 'confirmation-required', 'unavailable'].includes(signing.status)) {
+    return { error: 'The bundled installer does not report the required signing readiness contract; update the Kit before installing.' };
+  }
+  return { signing, document };
+}
+
+async function prepareTaskProgressSigning(helper, context) {
+  let checked = await checkTaskProgressSigning(helper, context);
+  if (checked.error) return result('setup-required', checked.error, { component: 'codex-task-progress' });
+  if (checked.signing.status === 'ready') return { status: 'ready' };
+  if (checked.signing.status === 'unavailable') {
+    return result('setup-required', signingSetupMessage(checked.signing, 'A stable macOS signing identity is required before the installer can build the plugin.', helper), { component: 'codex-task-progress' });
+  }
+
+  const candidates = signingCandidates(checked.signing);
+  if (!candidates.length) {
+    return result('setup-required', signingSetupMessage(checked.signing, 'The installer requires a certificate choice, but reported no valid certificate candidates.', helper), { component: 'codex-task-progress' });
+  }
+  if (typeof context.confirmSigning !== 'function') {
+    return result('setup-required', signingSetupMessage(checked.signing, 'Choose a signing certificate before installation can continue.', helper), { component: 'codex-task-progress' });
+  }
+  let selected;
+  try { selected = await context.confirmSigning(candidates, checked.signing.configPath); }
+  catch (error) { return result('setup-required', `Signing certificate selection failed: ${error instanceof Error ? error.message : String(error)}`, { component: 'codex-task-progress' }); }
+  if (selected === null || selected === undefined || selected === '') {
+    return result('setup-required', signingSetupMessage(checked.signing, 'Signing certificate selection was declined; installation stopped before building.', helper), { component: 'codex-task-progress' });
+  }
+  if (typeof selected !== 'string' || !SIGNING_IDENTITY_RE.test(selected) || !candidates.some((candidate) => candidate.identity.toLowerCase() === selected.toLowerCase())) {
+    return result('setup-required', signingSetupMessage(checked.signing, 'The selected identity was not one of the reported certificate fingerprints.', helper), { component: 'codex-task-progress' });
+  }
+
+  const configured = await context.runner('node', [helper, '--configure-signing', '--identity', selected], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 60_000 });
+  let configuration;
+  try { configuration = parseInstallerJson(configured, 'signing configuration'); }
+  catch (error) { return result('setup-required', error.message, { component: 'codex-task-progress' }); }
+  if (configured.code !== 0 || configuration?.status !== 'configured') {
+    return result('setup-required', configuration?.reason ?? configuration?.message ?? 'Signing identity configuration was not confirmed.', { component: 'codex-task-progress' });
+  }
+
+  checked = await checkTaskProgressSigning(helper, context);
+  if (checked.error || checked.signing?.status !== 'ready') {
+    return result('setup-required', checked.error ?? 'Signing identity was saved but the read-only readiness check did not confirm it.', { component: 'codex-task-progress' });
+  }
+  return { status: 'ready' };
 }
 
 export async function installOptionalComponent(options) {

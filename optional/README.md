@@ -44,7 +44,21 @@ For a registered project, ordinary `install` checks the pinned Kit and current p
 | `non-code` | `hyperframes`, `presentations` | Add the HyperFrames video workflow and presentation authoring guidance. |
 | `task-progress` | `codex-task-progress` | Add Codex chat task progress and its optional project Heartbeat view. |
 
-The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. When the plugin is already installed, Kit reuses it without upgrading it or restarting Codex. When it is selected and supported but missing, Kit invokes [`plugins/codex-task-progress/scripts/install-from-kit.mjs`](plugins/codex-task-progress/scripts/install-from-kit.mjs) from the pinned Kit checkout. That installer builds and installs from the component embedded in Kit; it does not depend on cloning another repository. The plugin package is built with its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path.
+The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. When the plugin is already installed, Kit reuses it without asking about signing, rebuilding or restarting Codex. When it is selected and supported but missing, Kit invokes [`plugins/codex-task-progress/scripts/install-from-kit.mjs`](plugins/codex-task-progress/scripts/install-from-kit.mjs) from the pinned Kit checkout. That installer builds and installs from the component embedded in Kit; it does not depend on cloning another repository. The plugin package is built with its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path.
+
+Before a missing plugin is installed, an interactive TTY offers one explicit confirmation to select an eligible local signing certificate. In non-interactive use, Kit reports that signing setup is required and prints the command sequence instead of guessing an identity. To inspect signing status and available local candidates without writing anything, run:
+
+```sh
+node .vibe-coding/kit/optional/plugins/codex-task-progress/scripts/install-from-kit.mjs --check
+```
+
+To explicitly validate and persist a chosen certificate fingerprint:
+
+```sh
+node .vibe-coding/kit/optional/plugins/codex-task-progress/scripts/install-from-kit.mjs --configure-signing --identity '<certificate fingerprint>'
+```
+
+This command changes only the private signing configuration; it does not build, sign, install or restart Codex. An invalid or unavailable certificate produces actionable setup guidance. Once selected, later local builds reuse the saved identity automatically. This does not guarantee macOS protected-folder consent will carry across updates: TCC may associate consent with the executable's physical version path, and inheritance across upgrades has not been verified. Kit does not create certificates, export private keys or grant macOS privacy permissions.
 
 The Task Progress component retains its upstream license and attribution notices. Its source is maintained here with the Kit; projects should follow the component's own setup and compatibility instructions in [`plugins/codex-task-progress/README.md`](plugins/codex-task-progress/README.md). The plugin does not silently restart Codex; distinguish installer health checks from confirmation that the panel is visible in the UI.
 
