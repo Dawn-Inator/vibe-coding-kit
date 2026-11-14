@@ -154,6 +154,16 @@ test("discovery rejects out-of-root explicit bindings and requires exact thread 
 	]);
 });
 
+test("explicit project root is rejected as a non-file without hanging", async () => {
+	const root = projectRoot();
+	for (const ledgerPath of [".", root]) {
+		await assert.rejects(
+			discoverHeartbeatLedgerSources({ root, threadId: THREAD, ledgerPath }),
+			(error) => error.code === "not-file",
+		);
+	}
+});
+
 test("discovery associates only one exact standalone thread metadata field", async () => {
 	const root = projectRoot();
 	const unrelated = join(root, "heartbeat-evidence.md");

@@ -41,11 +41,14 @@ export function createProjectLedgerPathScan(root) {
 	const canonicalRoot = resolve(root);
 	const boundaries = new Map([[canonicalRoot, false]]);
 	const nestedCanonical = async (directory) => {
+		if (!isProjectPathWithinRoot(canonicalRoot, directory)) return false;
 		const pending = [];
 		let current = directory;
 		while (!boundaries.has(current)) {
 			pending.push(current);
-			current = dirname(current);
+			const parent = dirname(current);
+			if (parent === current) return false;
+			current = parent;
 		}
 		let nested = boundaries.get(current);
 		while (pending.length) {
