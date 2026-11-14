@@ -1372,14 +1372,24 @@ test("automatic heartbeat authority stays latched through association loss and r
       join(root, "heartbeat-fresh.md"),
       original.replaceAll("sticky-chat", "fresh-chat"),
     );
-    const fresh = (await request("get", {}, "fresh-chat")).result as {
+    type FreshResult = {
       task: (TaskState & { source?: { kind: string; path: string; readOnly: boolean } }) | null;
       taskSource: { status: string };
     };
-    assert.equal(fresh.task?.source?.kind, "kit-heartbeat");
-    assert.equal(fresh.task?.source?.readOnly, true);
-    assert.equal(fresh.task?.source?.path, await realpath(join(root, "heartbeat-fresh.md")));
-    assert.equal(fresh.taskSource.status, "ready");
+    let fresh: FreshResult | undefined;
+    // The recursive watcher may deliver the newly created source after the first
+    // read. Wait for the observable association, never for a fixed time interval.
+    const deadline = Date.now() + 5_000;
+    for (let attempt = 0; attempt < 100 && Date.now() < deadline; attempt += 1) {
+      fresh = (await request("get", {}, "fresh-chat")).result as FreshResult;
+      if (fresh.taskSource.status === "ready") break;
+      assert.equal(fresh.taskSource.status, "candidates");
+      assert.equal(fresh.task, null);
+    }
+    assert.equal(fresh?.task?.source?.kind, "kit-heartbeat");
+    assert.equal(fresh?.task?.source?.readOnly, true);
+    assert.equal(fresh?.task?.source?.path, await realpath(join(root, "heartbeat-fresh.md")));
+    assert.equal(fresh?.taskSource.status, "ready");
     assert.deepEqual(await taskEvents(root, "fresh-chat"), []);
     assert.equal(
       await readFile(join(root, ".workspace", "codex-task-progress", ".gitignore"), "utf8"),

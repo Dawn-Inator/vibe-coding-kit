@@ -58,8 +58,18 @@ test("the server extends only active task handlers and restores its idle timeout
   const directory = await mkdtemp(join(tmpdir(), "task-server-timeout-"));
   const timeoutRequests: number[] = [];
   const originalSetTimeout = Socket.prototype.setTimeout;
+  let releaseTaskHandler!: () => void;
+  const taskHandlerGate = new Promise<void>((resolve) => {
+    releaseTaskHandler = resolve;
+  });
+  let taskTimeoutConfigured!: () => void;
+  const taskTimeoutReady = new Promise<void>((resolve) => {
+    taskTimeoutConfigured = resolve;
+  });
   const helper = new GoalProgressIpcServer(join(directory, "helper.sock"), async (request) => {
-    if (request.method === "task.view" || request.method === "ping") {
+    if (request.method === "task.view") {
+      await taskHandlerGate;
+    } else if (request.method === "ping") {
       await new Promise((resolve) => setTimeout(resolve, 65));
     }
     return { revision: 1, result: { method: request.method } };
@@ -69,20 +79,50 @@ test("the server extends only active task handlers and restores its idle timeout
     clientKind: "cdp",
     timeoutMs: 500,
   });
+  const timeoutCallsBySocket = new WeakMap<Socket, number>();
   Socket.prototype.setTimeout = function (timeout: number, callback?: () => void): Socket {
     timeoutRequests.push(timeout);
-    const scaledTimeout = timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS ? 180 : 20;
+    const callCount = (timeoutCallsBySocket.get(this) ?? 0) + 1;
+    timeoutCallsBySocket.set(this, callCount);
+    // Keep setup robust, then arm the short idle timeout after the handshake.
+    // Task handlers get a wider window, and each completed task restores idle.
+    const scaledTimeout = timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS ? 2_000 : 20;
+    if (callCount === 1 && timeout !== TASK_PROGRESS_REQUEST_TIMEOUT_MS) {
+      originalSetTimeout.call(this, 10_000, callback);
+      let lineBuffer = "";
+      const requestLines: string[] = [];
+      const armShortIdleAfterRequest = (chunk: Buffer) => {
+        lineBuffer += chunk.toString("utf8");
+        let newline = lineBuffer.indexOf("\n");
+        while (newline >= 0) {
+          requestLines.push(lineBuffer.slice(0, newline));
+          lineBuffer = lineBuffer.slice(newline + 1);
+          newline = lineBuffer.indexOf("\n");
+        }
+        if (requestLines.length >= 2) {
+          this.removeListener("data", armShortIdleAfterRequest);
+          originalSetTimeout.call(this, 20);
+        }
+      };
+      this.on("data", armShortIdleAfterRequest);
+      return this;
+    }
+    if (timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS) taskTimeoutConfigured();
     originalSetTimeout.call(this, scaledTimeout, callback);
     return this;
   };
   try {
-    const taskResponse = await client.request(
+    const taskRequest = client.request(
       {
         method: "task.view",
         params: { threadId: "thread-1", action: "get" },
       },
       { timeoutMs: 300 },
     );
+    await taskTimeoutReady;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseTaskHandler();
+    const taskResponse = await taskRequest;
     assert.deepEqual(taskResponse.result, { method: "task.view" });
     assert.ok(timeoutRequests.includes(TASK_PROGRESS_REQUEST_TIMEOUT_MS));
     assert.ok(timeoutRequests.filter((timeout) => timeout === 10_000).length >= 2);
@@ -92,6 +132,7 @@ test("the server extends only active task handlers and restores its idle timeout
     });
     assert.equal(timeoutRequests.at(-1), 10_000);
   } finally {
+    releaseTaskHandler();
     Socket.prototype.setTimeout = originalSetTimeout;
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
@@ -102,19 +143,44 @@ test("repeated task requests on one socket reuse the single idle timeout listene
   const directory = await mkdtemp(join(tmpdir(), "task-timeout-listeners-"));
   const timeoutCalls: { timeout: number; callbackProvided: boolean; listenerCount: number }[] = [];
   const originalSetTimeout = Socket.prototype.setTimeout;
+  let releaseFirstTaskHandler!: () => void;
+  const firstTaskHandlerGate = new Promise<void>((resolve) => {
+    releaseFirstTaskHandler = resolve;
+  });
+  let taskTimeoutConfigured!: () => void;
+  const taskTimeoutReady = new Promise<void>((resolve) => {
+    taskTimeoutConfigured = resolve;
+  });
+  let firstTask = true;
   const helper = new GoalProgressIpcServer(join(directory, "helper.sock"), async (request) => {
     if (request.method === "ping") {
       await new Promise((resolve) => setTimeout(resolve, 65));
+    } else if (request.method === "task.view" && firstTask) {
+      firstTask = false;
+      await firstTaskHandlerGate;
     }
     return { revision: 1, result: { method: request.method } };
   });
   await helper.start();
+  const timeoutCallsBySocket = new WeakMap<Socket, number>();
   Socket.prototype.setTimeout = function (
     this: Socket,
     timeout: number,
     callback?: () => void,
   ): Socket {
-    const scaledTimeout = timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS ? 180 : 20;
+    const callCount = (timeoutCallsBySocket.get(this) ?? 0) + 1;
+    timeoutCallsBySocket.set(this, callCount);
+    const scaledTimeout = timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS ? 2_000 : 20;
+    if (callCount === 1 && timeout !== TASK_PROGRESS_REQUEST_TIMEOUT_MS) {
+      originalSetTimeout.call(this, 10_000, callback);
+      timeoutCalls.push({
+        timeout,
+        callbackProvided: callback !== undefined,
+        listenerCount: this.listenerCount("timeout"),
+      });
+      return this;
+    }
+    if (timeout === TASK_PROGRESS_REQUEST_TIMEOUT_MS) taskTimeoutConfigured();
     originalSetTimeout.call(this, scaledTimeout, callback);
     timeoutCalls.push({
       timeout,
@@ -172,10 +238,13 @@ test("repeated task requests on one socket reuse the single idle timeout listene
     });
     await send(envelope("hello", "hello", { clientKind: "cdp", clientVersion: "test" }));
     await readResponse();
-    for (const requestId of ["task-1", "task-2"]) {
-      await send(envelope(requestId, "task.view", { threadId: "thread-1", action: "get" }));
-      assert.deepEqual((await readResponse()).result, { method: "task.view" });
-    }
+    await send(envelope("task-1", "task.view", { threadId: "thread-1", action: "get" }));
+    await taskTimeoutReady;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseFirstTaskHandler();
+    assert.deepEqual((await readResponse()).result, { method: "task.view" });
+    await send(envelope("task-2", "task.view", { threadId: "thread-1", action: "get" }));
+    assert.deepEqual((await readResponse()).result, { method: "task.view" });
 
     assert.deepEqual(
       timeoutCalls.map((call) => call.timeout),
@@ -192,6 +261,7 @@ test("repeated task requests on one socket reuse the single idle timeout listene
     await socketClosed;
     assert.equal(timeoutCalls.at(-1)?.timeout, 10_000);
   } finally {
+    releaseFirstTaskHandler();
     Socket.prototype.setTimeout = originalSetTimeout;
     socket.destroy();
     await helper.stop();
