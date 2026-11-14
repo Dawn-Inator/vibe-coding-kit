@@ -2734,6 +2734,7 @@ test("two fresh ordinary launches within cooldown each hand off once", async () 
     const context = {
       isPending: () => true,
       allowRestart: true,
+      restartStillAllowedNow: () => true,
       canReplaceStartingApp: async () => true,
     };
     const first = startupController(root, options);
@@ -2791,6 +2792,7 @@ test("denied native proof releases only its own reservation for next fresh launc
         await first.instance.handle(event, true, {
           isPending: () => true,
           allowRestart: true,
+          restartStillAllowedNow: () => true,
           canReplaceStartingApp: async () => false,
         })
       ).code,
@@ -2803,6 +2805,7 @@ test("denied native proof releases only its own reservation for next fresh launc
         await second.instance.handle({ ...event, pid: 4244 }, true, {
           isPending: () => true,
           allowRestart: true,
+          restartStillAllowedNow: () => true,
           canReplaceStartingApp: async () => true,
         })
       ).code,
@@ -2837,6 +2840,7 @@ test("automatic recovery rejects late, synthetic, active, disabled, and changed 
       const response = await setup.instance.handle(event, true, {
         isPending: () => true,
         allowRestart: true,
+        restartStillAllowedNow: () => true,
         restartStillAllowed: async () => scenario !== "disabled",
         hasObservedTaskActivity: () => scenario === "activity",
       });
@@ -2880,6 +2884,7 @@ test("failed automatic launch restores normal Codex and blocks immediate repeat"
         await setup.instance.handle(event, true, {
           isPending: () => true,
           allowRestart: true,
+          restartStillAllowedNow: () => true,
           canReplaceStartingApp: async () => true,
         })
       ).code,
@@ -2892,6 +2897,7 @@ test("failed automatic launch restores normal Codex and blocks immediate repeat"
         await next.instance.handle({ ...event, pid: 4244 }, true, {
           isPending: () => true,
           allowRestart: true,
+          restartStillAllowedNow: () => true,
         })
       ).code,
       "STARTUP_RECOVERY_COOLDOWN",
@@ -2964,5 +2970,125 @@ test("native replacement proof binds listener generation, pid, deadline and fres
     } finally {
       await supervisor.stop();
     }
+  }
+});
+
+test("disabling startup recovery while native proof is pending prevents signalling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  let requestProof!: () => void;
+  let releaseProof!: () => void;
+  const requested = new Promise<void>((resolveRequested) => {
+    requestProof = resolveRequested;
+  });
+  const gate = new Promise<void>((resolveGate) => {
+    releaseProof = resolveGate;
+  });
+  let enabled = true;
+  try {
+    const setup = startupController(root);
+    const pending = setup.instance.handle(
+      { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" },
+      true,
+      {
+        isPending: () => true,
+        allowRestart: true,
+        restartStillAllowed: async () => true,
+        restartStillAllowedNow: () => enabled,
+        canReplaceStartingApp: async () => {
+          requestProof();
+          await gate;
+          return true;
+        },
+      },
+    );
+    await requested;
+    enabled = false;
+    releaseProof();
+    assert.equal((await pending).code, "STARTUP_RECOVERY_DISABLED");
+    assert.equal(setup.counts().signals, 0);
+  } finally {
+    releaseProof();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stop and supersession after original exit restore a usable app and drain recovery", async () => {
+  for (const scenario of ["stop", "supersede"] as const) {
+    const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+    let signalled!: () => void;
+    let releaseExit!: () => void;
+    const signalledGate = new Promise<void>((resolveSignal) => {
+      signalled = resolveSignal;
+    });
+    const exitGate = new Promise<void>((resolveExit) => {
+      releaseExit = resolveExit;
+    });
+    let stopped = false;
+    let alive = true;
+    let restores = 0;
+    try {
+      const setup = startupController(root, {
+        inspectTargetProcess: async (pid) => {
+          if (pid === 4242 && !alive) {
+            await exitGate;
+            throw new Error("exited");
+          }
+          return startupProcessSnapshot(pid, startupExecutablePath);
+        },
+        signalProcess: () => {
+          alive = false;
+          signalled();
+        },
+        launchNormal: async () => {
+          restores += 1;
+        },
+      });
+      const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
+      const pending = setup.instance.handle(event, true, {
+        isPending: () => true,
+        isStopped: () => stopped,
+        allowRestart: true,
+        restartStillAllowedNow: () => true,
+        canReplaceStartingApp: async () => true,
+      });
+      await signalledGate;
+      if (scenario === "stop") stopped = true;
+      else await setup.instance.handle({ ...event, pid: 4244 }, false);
+      let drained = false;
+      const idle = setup.instance.whenIdle().then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      assert.equal(drained, false);
+      releaseExit();
+      assert.equal((await pending).code, "STARTUP_HANDOFF_FALLBACK_NORMAL");
+      await idle;
+      assert.equal(restores, 1);
+      assert.equal(setup.counts().launches, 0);
+    } finally {
+      releaseExit();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("failed willLaunch observation does not suppress didLaunch CDP reattachment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  try {
+    let command = `${startupExecutablePath} --unsupported`;
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
+      verifyExistingOwnership: async (_app, pid) => startupOwnership(pid, command),
+    });
+    const will = startupEvent(startupExecutablePath);
+    assert.equal((await setup.instance.handle(will, true)).code, "STARTUP_EVENT_PROCESS_MISMATCH");
+    command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    assert.equal(
+      (await setup.instance.handle({ ...will, event: "codex.didLaunch" }, true)).code,
+      "STARTUP_EVENT_EXISTING_CDP",
+    );
+    assert.equal(setup.counts().signals, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

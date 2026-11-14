@@ -81,12 +81,16 @@ test("native AppKit listener proves the launch window and fails closed after rea
   let stdoutBuffer = "";
   let readyResolve;
   let launchResolve;
+  let didLaunchResolve;
   let stdoutFailure;
   const ready = new Promise((resolve) => {
     readyResolve = resolve;
   });
   const launched = new Promise((resolve) => {
     launchResolve = resolve;
+  });
+  const didLaunched = new Promise((resolve) => {
+    didLaunchResolve = resolve;
   });
   const fail = new Promise((_, reject) => {
     stdoutFailure = reject;
@@ -144,6 +148,7 @@ test("native AppKit listener proves the launch window and fails closed after rea
           if (message.event === "listener.ready") readyResolve(message);
           if (message.event === "codex.willLaunch" || message.event === "codex.didLaunch")
             launchResolve(message);
+          if (message.event === "codex.didLaunch") didLaunchResolve(message);
           if (message.event === "startup.replacement-check") responses.push(message);
         } catch {
           stdoutFailure(new Error(`invalid native listener output: ${line}`));
@@ -169,6 +174,7 @@ test("native AppKit listener proves the launch window and fails closed after rea
       fixtureMetadataPath,
     ]);
     const launchEvent = await withTimeout(launched, "fixture launch notification");
+    assert.equal(launchEvent.event, "codex.willLaunch");
     fixturePid = launchEvent.pid;
     fixtureMetadata = JSON.parse(await readFile(fixtureMetadataPath, "utf8"));
     assert.equal(
@@ -178,13 +184,13 @@ test("native AppKit listener proves the launch window and fails closed after rea
     );
     assert.equal(await realpath(fixtureMetadata.executablePath), executablePath);
 
-    const request = (overrides = {}) => ({
+    const request = (overrides = {}, launch = launchEvent) => ({
       schemaVersion: 1,
       event: "startup.inspect-replacement",
-      pid: launchEvent.pid,
+      pid: launch.pid,
       requestId: randomUUID(),
-      launchedAt: launchEvent.launchedAt,
-      deadlineAtMs: launchEvent.deadlineAtMs,
+      launchedAt: launch.launchedAt,
+      deadlineAtMs: launch.deadlineAtMs,
       ...overrides,
     });
     const ask = async (payload) => {
@@ -224,6 +230,16 @@ test("native AppKit listener proves the launch window and fails closed after rea
     assert.equal(unknown.allowed, false);
     assert.equal(unknown.reason, "unknown_message");
 
+    listener.stdin.write(
+      `${JSON.stringify({ schemaVersion: 1, pid: fixturePid, action: "continue" })}\n`,
+    );
+    const didLaunchEvent = await withTimeout(
+      didLaunched,
+      "same-process didLaunch after willLaunch continue",
+    );
+    assert.equal(didLaunchEvent.pid, fixturePid);
+    assert.equal(didLaunchEvent.event, "codex.didLaunch");
+
     const readyDeadline = Date.now() + 5_000;
     let readyExists = false;
     while (Date.now() < readyDeadline && !readyExists) {
@@ -235,8 +251,11 @@ test("native AppKit listener proves the launch window and fails closed after rea
       }
     }
     assert.equal(readyExists, true, "fixture should reach applicationDidFinishLaunching");
-    const afterReady = await ask(request());
+    const afterReady = await ask(request({}, didLaunchEvent));
     assert.equal(afterReady.allowed, false);
+    listener.stdin.write(
+      `${JSON.stringify({ schemaVersion: 1, pid: fixturePid, action: "complete" })}\n`,
+    );
   } finally {
     if (listener?.stdin.writable) {
       listener.stdin.write(

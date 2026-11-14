@@ -41,13 +41,19 @@ test("startup recovery policy defaults off without creating preferences and pers
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { resolveGoalProgressPaths } = await import("../../store/src/paths.js");
-  const { readCodexStartupRecoveryPolicy, writeCodexStartupRecoveryPolicy } = await import(
-    "../../../platform/macos/src/startup-recovery-policy.js"
-  );
+  const {
+    readCodexStartupRecoveryPolicy,
+    readCodexStartupRecoveryPolicySync,
+    writeCodexStartupRecoveryPolicy,
+  } = await import("../../../platform/macos/src/startup-recovery-policy.js");
   const root = await mkdtemp(join(tmpdir(), "ctp-startup-policy-"));
   const paths = resolveGoalProgressPaths({ platform: "darwin", homeDirectory: root });
   try {
     assert.deepEqual(await readCodexStartupRecoveryPolicy(paths), {
+      schemaVersion: 1,
+      autoPrepareOnLaunch: false,
+    });
+    assert.deepEqual(readCodexStartupRecoveryPolicySync(paths), {
       schemaVersion: 1,
       autoPrepareOnLaunch: false,
     });
@@ -58,17 +64,25 @@ test("startup recovery policy defaults off without creating preferences and pers
       schemaVersion: 1,
       autoPrepareOnLaunch: true,
     });
+    assert.deepEqual(readCodexStartupRecoveryPolicySync(paths), {
+      schemaVersion: 1,
+      autoPrepareOnLaunch: true,
+    });
     const policyPath = join(paths.preferencesRoot, "startup-recovery.json");
     const firstBytes = await readFile(policyPath, "utf8");
     await writeCodexStartupRecoveryPolicy(paths, "enable");
     assert.equal(await readFile(policyPath, "utf8"), firstBytes);
     await writeCodexStartupRecoveryPolicy(paths, "disable");
     assert.equal((await readCodexStartupRecoveryPolicy(paths)).autoPrepareOnLaunch, false);
+    assert.equal(readCodexStartupRecoveryPolicySync(paths).autoPrepareOnLaunch, false);
 
     await writeFile(policyPath, '{"schemaVersion":2,"autoPrepareOnLaunch":true}\n', {
       mode: 0o600,
     });
     await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    assert.throws(() => readCodexStartupRecoveryPolicySync(paths), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
     await writeFile(
@@ -81,8 +95,14 @@ test("startup recovery policy defaults off without creating preferences and pers
     await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
+    assert.throws(() => readCodexStartupRecoveryPolicySync(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
     await writeFile(policyPath, `${"x".repeat(4097)}\n`, { mode: 0o600 });
     await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    assert.throws(() => readCodexStartupRecoveryPolicySync(paths), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
     await rm(policyPath);
@@ -92,6 +112,9 @@ test("startup recovery policy defaults off without creating preferences and pers
     await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
+    assert.throws(() => readCodexStartupRecoveryPolicySync(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
     await assert.rejects(writeCodexStartupRecoveryPolicy(paths, "enable"), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
@@ -99,6 +122,9 @@ test("startup recovery policy defaults off without creating preferences and pers
     await writeFile(policyPath, '{"schemaVersion":1,"autoPrepareOnLaunch":false}\n');
     await chmod(policyPath, 0o644);
     await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    assert.throws(() => readCodexStartupRecoveryPolicySync(paths), {
       message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
     });
   } finally {

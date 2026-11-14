@@ -1,3 +1,4 @@
+import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { atomicWriteFile } from "../../../packages/store/src/atomic.js";
@@ -33,17 +34,29 @@ function hasExpectedOwner(metadata: { readonly uid?: number }): boolean {
   return uid === undefined || metadata.uid === undefined || metadata.uid === uid;
 }
 
+function isSafeDirectory(metadata: Awaited<ReturnType<typeof lstat>>): boolean {
+  return (
+    !metadata.isSymbolicLink() &&
+    metadata.isDirectory() &&
+    hasExpectedOwner(metadata) &&
+    (metadata.mode & 0o077) === 0
+  );
+}
+
+function isSafePolicyFile(metadata: Awaited<ReturnType<typeof lstat>>): boolean {
+  return (
+    !metadata.isSymbolicLink() &&
+    metadata.isFile() &&
+    hasExpectedOwner(metadata) &&
+    (metadata.mode & 0o077) === 0 &&
+    metadata.size <= maxPolicyBytes
+  );
+}
+
 async function validateDirectory(path: string): Promise<boolean> {
   try {
     const metadata = await lstat(path);
-    if (
-      metadata.isSymbolicLink() ||
-      !metadata.isDirectory() ||
-      !hasExpectedOwner(metadata) ||
-      (metadata.mode & 0o077) !== 0
-    ) {
-      throw invalidPolicy();
-    }
+    if (!isSafeDirectory(metadata)) throw invalidPolicy();
     return true;
   } catch (error) {
     if (isNotFound(error)) return false;
@@ -90,17 +103,36 @@ export async function readCodexStartupRecoveryPolicy(
     if (isNotFound(error)) return DEFAULT_CODEX_STARTUP_RECOVERY_POLICY;
     throw error;
   }
-  if (
-    metadata.isSymbolicLink() ||
-    !metadata.isFile() ||
-    !hasExpectedOwner(metadata) ||
-    (metadata.mode & 0o077) !== 0 ||
-    metadata.size > maxPolicyBytes
-  ) {
-    throw invalidPolicy();
-  }
+  if (!isSafePolicyFile(metadata)) throw invalidPolicy();
   try {
     return parsePolicy(await readFile(path, "utf8"));
+  } catch (error) {
+    if (isNotFound(error)) throw invalidPolicy();
+    throw error;
+  }
+}
+
+export function readCodexStartupRecoveryPolicySync(
+  paths: Pick<GoalProgressPaths, "preferencesRoot"> | { readonly preferencesRoot: string },
+): CodexStartupRecoveryPolicy {
+  try {
+    const directoryMetadata = lstatSync(paths.preferencesRoot);
+    if (!isSafeDirectory(directoryMetadata)) throw invalidPolicy();
+  } catch (error) {
+    if (isNotFound(error)) return DEFAULT_CODEX_STARTUP_RECOVERY_POLICY;
+    throw error;
+  }
+  const path = resolve(paths.preferencesRoot, policyFileName);
+  let metadata: ReturnType<typeof lstatSync>;
+  try {
+    metadata = lstatSync(path);
+  } catch (error) {
+    if (isNotFound(error)) return DEFAULT_CODEX_STARTUP_RECOVERY_POLICY;
+    throw error;
+  }
+  if (!isSafePolicyFile(metadata)) throw invalidPolicy();
+  try {
+    return parsePolicy(readFileSync(path, "utf8"));
   } catch (error) {
     if (isNotFound(error)) throw invalidPolicy();
     throw error;
@@ -118,15 +150,7 @@ export async function writeCodexStartupRecoveryPolicy(
   await validateDirectory(paths.preferencesRoot);
   try {
     const metadata = await lstat(path);
-    if (
-      metadata.isSymbolicLink() ||
-      !metadata.isFile() ||
-      !hasExpectedOwner(metadata) ||
-      (metadata.mode & 0o077) !== 0 ||
-      metadata.size > maxPolicyBytes
-    ) {
-      throw invalidPolicy();
-    }
+    if (!isSafePolicyFile(metadata)) throw invalidPolicy();
   } catch (error) {
     if (!isNotFound(error)) throw error;
   }

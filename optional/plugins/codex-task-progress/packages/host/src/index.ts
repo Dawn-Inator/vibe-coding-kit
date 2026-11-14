@@ -18,7 +18,10 @@ import {
   requireSingleCodexMacosApp,
 } from "../../../platform/macos/src/index.js";
 import { resolveVerifiedCodexCli } from "../../../platform/macos/src/plugin-controller.js";
-import { readCodexStartupRecoveryPolicy } from "../../../platform/macos/src/startup-recovery-policy.js";
+import {
+  readCodexStartupRecoveryPolicy,
+  readCodexStartupRecoveryPolicySync,
+} from "../../../platform/macos/src/startup-recovery-policy.js";
 import {
   type CodexAppServerRuntime,
   createCodexAppServerRuntime,
@@ -567,6 +570,8 @@ export class GoalProgressHelper {
                 return false;
               }
             },
+            restartStillAllowedNow: () =>
+              readCodexStartupRecoveryPolicySync(this.paths).autoPrepareOnLaunch,
             hasObservedTaskActivity: () =>
               this.#lastObservedTaskActivityAt >= Date.parse(event.launchedAt),
             canReplaceStartingApp: () =>
@@ -2916,6 +2921,7 @@ export class GoalProgressHelper {
     if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
     this.#startupReattachTimer = undefined;
     await this.#startupListener?.stop().catch(() => undefined);
+    await this.#startupHandoff?.whenIdle?.();
     if (this.#startupListener) {
       await this.#log({
         level: "info",

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 import {
@@ -17,7 +18,7 @@ import {
   launchCodexWithCdp,
   listCodexMainProcesses,
   readCodexCdpRuntimeState,
-  stopLaunchedCodexCdpProcess,
+  type stopLaunchedCodexCdpProcess,
   verifyCodexCdpListenerOwnership,
   waitForCodexCdpListenerOwnership,
   writeCodexCdpRuntimeState,
@@ -124,6 +125,7 @@ export interface MacosStartupHandoffContext {
   /** Explicit authorization for replacing the current Codex process. Defaults to false. */
   readonly allowRestart?: boolean;
   readonly restartStillAllowed?: () => Promise<boolean>;
+  readonly restartStillAllowedNow?: () => boolean;
   readonly hasObservedTaskActivity?: () => boolean;
   readonly canReplaceStartingApp?: () => Promise<boolean>;
 }
@@ -271,17 +273,16 @@ export class MacosStartupHandoffController {
   readonly #waitForOwnership: typeof waitForCodexCdpListenerOwnership;
   readonly #createRuntimeState: typeof createCodexCdpRuntimeState;
   readonly #writeRuntimeState: typeof writeCodexCdpRuntimeState;
-  readonly #stopCdpProcess: typeof stopLaunchedCodexCdpProcess;
   readonly #launchNormal: typeof launchCodexNormally;
   readonly #signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #outcomes = new Map<string, MacosCodexStartupResponse>();
-  readonly #reusedMainProcesses = new Map<number, string>();
   readonly #retryIdentities = new Map<string, string>();
   #operationSequence = 0;
   #runtimeWriteTail: Promise<void> = Promise.resolve();
   #attemptGuardTail: Promise<void> = Promise.resolve();
+  readonly #activeOperations = new Set<Promise<MacosCodexStartupResponse>>();
 
   constructor(options: MacosStartupHandoffControllerOptions) {
     this.#paths = options.paths;
@@ -296,7 +297,6 @@ export class MacosStartupHandoffController {
     this.#waitForOwnership = options.waitForOwnership ?? waitForCodexCdpListenerOwnership;
     this.#createRuntimeState = options.createRuntimeState ?? createCodexCdpRuntimeState;
     this.#writeRuntimeState = options.writeRuntimeState ?? writeCodexCdpRuntimeState;
-    this.#stopCdpProcess = options.stopCdpProcess ?? stopLaunchedCodexCdpProcess;
     this.#launchNormal = options.launchNormal ?? launchCodexNormally;
     this.#signalProcess =
       options.signalProcess ??
@@ -343,7 +343,6 @@ export class MacosStartupHandoffController {
           commandHasCdp(state.command) &&
           cdpPortFromCommand(state.command) === state.port
         ) {
-          this.#rememberReusedMainProcess(ownership.mainProcess);
           return eventResponse(event, "continue", "STARTUP_EVENT_EXISTING_CDP", state);
         }
         if (!isCurrent()) {
@@ -378,7 +377,6 @@ export class MacosStartupHandoffController {
             ownership.mainProcess.startedAt === existing.startedAt &&
             ownership.mainProcess.command === existing.command
           ) {
-            this.#rememberReusedMainProcess(ownership.mainProcess);
             const state = this.#runtimeFromVerifiedOwnership(app, ownership, port);
             if (!(await this.#writeRuntimeIfCurrent(state, isCurrent)) || !isCurrent()) {
               return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
@@ -425,66 +423,6 @@ export class MacosStartupHandoffController {
 
   #processIdentity(process: { readonly startedAt: string; readonly command: string }): string {
     return `${process.startedAt}\n${process.command}`;
-  }
-
-  #rememberReusedMainProcess(process: Awaited<ReturnType<typeof inspectProcess>>): void {
-    this.#reusedMainProcesses.set(process.pid, this.#processIdentity(process));
-    while (this.#reusedMainProcesses.size > STARTUP_EVENT_DEDUP_LIMIT) {
-      const oldest = this.#reusedMainProcesses.keys().next().value;
-      if (oldest === undefined) {
-        break;
-      }
-      this.#reusedMainProcesses.delete(oldest);
-    }
-  }
-
-  #launchedProcessIdentity(launched: Awaited<ReturnType<typeof launchCodexWithCdp>>): string {
-    return this.#processIdentity({
-      startedAt: launched.processStartedAt,
-      command: launched.command,
-    });
-  }
-
-  #launchWasReused(launched: Awaited<ReturnType<typeof launchCodexWithCdp>>): boolean {
-    return this.#reusedMainProcesses.get(launched.pid) === this.#launchedProcessIdentity(launched);
-  }
-
-  async #matchingLaunchedProcess(
-    launched: Awaited<ReturnType<typeof launchCodexWithCdp>>,
-  ): Promise<Awaited<ReturnType<typeof inspectProcess>> | null> {
-    try {
-      const current = await this.#inspectTargetProcess(launched.pid);
-      return this.#processIdentity(current) === this.#launchedProcessIdentity(launched)
-        ? current
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  async #launchIsInUse(
-    launched: Awaited<ReturnType<typeof launchCodexWithCdp>>,
-    port: number,
-  ): Promise<boolean> {
-    const current = await this.#matchingLaunchedProcess(launched);
-    if (!current) {
-      this.#reusedMainProcesses.delete(launched.pid);
-      return false;
-    }
-    if (this.#launchWasReused(launched)) {
-      return true;
-    }
-    try {
-      const state = await this.#readRuntimeState(this.#paths.cdpRuntimePath);
-      return (
-        state.mainPid === launched.pid &&
-        state.port === port &&
-        state.processStartedAt === launched.processStartedAt &&
-        state.command === launched.command
-      );
-    } catch {
-      return false;
-    }
   }
 
   async #writeRuntimeIfCurrent(
@@ -593,52 +531,44 @@ export class MacosStartupHandoffController {
     });
   }
 
-  async #stopOwnedLaunch(
+  async #ensureUsableApp(
     app: CodexMacosAppIdentity,
-    launched: Awaited<ReturnType<typeof launchCodexWithCdp>>,
-    port: number,
-    preserveForNewerOperation = false,
-  ): Promise<boolean> {
-    if (preserveForNewerOperation && (await this.#matchingLaunchedProcess(launched))) {
-      return true;
-    }
-    if (await this.#launchIsInUse(launched, port)) {
-      return true;
-    }
+    event: MacosCodexStartupEvent,
+    identity: string,
+    launched?: Awaited<ReturnType<typeof launchCodexWithCdp>>,
+  ): Promise<"original" | "running" | "restored" | "failed"> {
     try {
-      await this.#stopCdpProcess(app, launched, port);
-    } catch {
-      try {
-        const current = await this.#inspectTargetProcess(launched.pid);
+      const current = await this.#inspectTargetProcess(event.pid).catch(() => undefined);
+      if (current && this.#processIdentity(current) === identity) return "original";
+      if (launched) {
+        const managed = await this.#inspectTargetProcess(launched.pid).catch(() => undefined);
         if (
-          current.startedAt === launched.processStartedAt &&
-          current.command === launched.command
-        ) {
-          this.#signalProcess(launched.pid, "SIGTERM");
-          await waitForProcessExit(launched.pid, this.#inspectTargetProcess, this.#sleep);
-        }
-      } catch {
-        // The launched process already exited.
+          managed &&
+          managed.startedAt === launched.processStartedAt &&
+          managed.command === launched.command
+        )
+          return "running";
       }
+      if ((await this.#listMainProcesses(app)).length > 0) return "running";
+      await this.#launchNormal(app);
+      return "restored";
+    } catch {
+      return "failed";
     }
-    return processStillExists(launched.pid, this.#inspectTargetProcess);
   }
 
-  async #restoreNormalIfNoMain(
-    app: CodexMacosAppIdentity,
-    isStopped: () => boolean,
-  ): Promise<boolean> {
-    try {
-      if ((await this.#listMainProcesses(app)).length > 0) {
-        return false;
-      }
-      if (isStopped()) {
-        return false;
-      }
-      await this.#launchNormal(app);
-      return true;
-    } catch {
-      return false;
+  #track(operation: Promise<MacosCodexStartupResponse>): Promise<MacosCodexStartupResponse> {
+    this.#activeOperations.add(operation);
+    void operation.then(
+      () => this.#activeOperations.delete(operation),
+      () => this.#activeOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  async whenIdle(): Promise<void> {
+    while (this.#activeOperations.size > 0) {
+      await Promise.allSettled([...this.#activeOperations]);
     }
   }
 
@@ -646,7 +576,9 @@ export class MacosStartupHandoffController {
     event: MacosCodexStartupEvent,
     isCurrent: () => boolean,
   ): Promise<MacosCodexStartupResponse> {
-    return this.#handle(event, true, { isPending: isCurrent, isStopped: () => !isCurrent() }, true);
+    return this.#track(
+      this.#handle(event, true, { isPending: isCurrent, isStopped: () => !isCurrent() }, true),
+    );
   }
 
   async handle(
@@ -654,7 +586,7 @@ export class MacosStartupHandoffController {
     recoverableProgress: boolean,
     context: MacosStartupHandoffContext = { isPending: () => true },
   ): Promise<MacosCodexStartupResponse> {
-    return this.#handle(eventInput, recoverableProgress, context, false);
+    return this.#track(this.#handle(eventInput, recoverableProgress, context, false));
   }
 
   async #handle(
@@ -664,7 +596,7 @@ export class MacosStartupHandoffController {
     retry: boolean,
   ): Promise<MacosCodexStartupResponse> {
     const event = MacosCodexStartupEventSchema.parse(eventInput);
-    const key = `${event.pid}:${event.launchedAt}:${event.executablePath}`;
+    const key = `${event.event}:${event.pid}:${event.launchedAt}:${event.executablePath}`;
     const duplicate = this.#outcomes.get(key);
     if (duplicate && !retry) {
       return duplicate;
@@ -832,151 +764,148 @@ export class MacosStartupHandoffController {
     let reservation: string | undefined;
     let signalled = false;
     let handoffSucceeded = false;
-    try {
-      port = await this.#allocatePort();
-      if (this.#now() >= event.deadlineAtMs) {
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_EXPIRED"));
-      }
-      if (!canStart()) {
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
-      }
-      // Reserve durably before signalling. The unique token prevents an older
-      // operation from releasing a later operation's reservation.
-      const token = randomUUID();
-      const reserved = await this.#reserveAttempt(event, token);
-      if (reserved !== "reserved")
-        return this.#remember(
-          key,
-          eventResponse(
-            event,
-            "continue",
-            reserved === "cooldown"
-              ? "STARTUP_RECOVERY_COOLDOWN"
-              : "STARTUP_RECOVERY_GUARD_INVALID",
-          ),
-        );
-      reservation = token;
-      if (context.restartStillAllowed && !(await context.restartStillAllowed())) {
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_DISABLED"));
-      }
-      const current = await this.#inspectTargetProcess(event.pid);
-      if (
-        this.#processIdentity(current) !== identity ||
-        current.parentPid !== original.parentPid ||
-        current.command !== event.executablePath
-      ) {
-        return this.#remember(
-          key,
-          eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
-        );
-      }
-      if (!fresh())
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
-      if (context.hasObservedTaskActivity?.())
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
-      if (!context.canReplaceStartingApp || !(await context.canReplaceStartingApp())) {
-        return this.#remember(
-          key,
-          eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED"),
-        );
-      }
-      // No asynchronous work is permitted between native proof and signalling.
-      if (!fresh())
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
-      if (context.hasObservedTaskActivity?.())
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
-      this.#signalProcess(event.pid, "SIGTERM");
-      signalled = true;
-      if (!(await waitForProcessExit(event.pid, this.#inspectTargetProcess, this.#sleep))) {
-        throw new Error("GOAL_PROGRESS_CODEX_CURRENT_PROCESS_STOP_TIMEOUT");
-      }
-      if (!canFinish()) {
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      const concurrentInstance = await this.#existingInstanceResponse(event, app, canFinish);
-      if (concurrentInstance) {
-        handoffSucceeded = concurrentInstance.code === "STARTUP_EVENT_EXISTING_CDP";
-        return this.#remember(key, concurrentInstance);
-      }
-      if (!canFinish()) {
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      launched = await this.#launchWithCdp(app, { port });
-      if (!canFinish()) {
-        await this.#stopOwnedLaunch(app, launched, port, isSuperseded() && !isStopped());
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      const ownership = await this.#waitForOwnership(app, launched.pid, port);
-      if (!canFinish()) {
-        await this.#stopOwnedLaunch(app, launched, port, isSuperseded() && !isStopped());
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      const state = this.#createRuntimeState(app, launched, ownership, port);
-      if (!(await this.#writeRuntimeIfCurrent(state, canFinish))) {
-        await this.#stopOwnedLaunch(app, launched, port, isSuperseded() && !isStopped());
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      // A verified, published managed process is a success even if a newer
-      // observation supersedes the response immediately afterwards.
-      handoffSucceeded = true;
-      if (!canFinish()) {
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      return this.#remember(
-        key,
-        eventResponse(event, "complete", "STARTUP_HANDOFF_COMPLETE", state),
-      );
-    } catch {
-      const reusedByNewerOperation = launched ? this.#launchWasReused(launched) : false;
-      if (launched && port !== undefined) {
-        if (await this.#stopOwnedLaunch(app, launched, port, isSuperseded() && !isStopped())) {
+    const outcome = await (async (): Promise<MacosCodexStartupResponse> => {
+      try {
+        port = await this.#allocatePort();
+        if (this.#now() >= event.deadlineAtMs) {
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_EXPIRED"));
+        }
+        if (!canStart()) {
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
+        }
+        // Reserve durably before signalling. The unique token prevents an older
+        // operation from releasing a later operation's reservation.
+        const token = randomUUID();
+        const reserved = await this.#reserveAttempt(event, token);
+        if (reserved !== "reserved")
           return this.#remember(
             key,
-            eventResponse(event, "complete", "STARTUP_HANDOFF_CDP_PROCESS_RETAINED"),
+            eventResponse(
+              event,
+              "continue",
+              reserved === "cooldown"
+                ? "STARTUP_RECOVERY_COOLDOWN"
+                : "STARTUP_RECOVERY_GUARD_INVALID",
+            ),
           );
+        reservation = token;
+        if (context.restartStillAllowed && !(await context.restartStillAllowed())) {
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_DISABLED"));
         }
-      }
-      if (!canFinish()) {
+        const current = await this.#inspectTargetProcess(event.pid);
         if (
-          isSuperseded() &&
-          !isStopped() &&
-          reusedByNewerOperation &&
-          (await this.#restoreNormalIfNoMain(app, isStopped))
+          this.#processIdentity(current) !== identity ||
+          current.parentPid !== original.parentPid ||
+          current.command !== event.executablePath
         ) {
           return this.#remember(
             key,
-            eventResponse(event, "complete", "STARTUP_HANDOFF_FALLBACK_NORMAL"),
+            eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
           );
         }
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      if (await processStillExists(event.pid, this.#inspectTargetProcess)) {
+        if (!fresh())
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
+        if (context.hasObservedTaskActivity?.())
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
+        if (!context.canReplaceStartingApp || !(await context.canReplaceStartingApp())) {
+          return this.#remember(
+            key,
+            eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED"),
+          );
+        }
+        // Recheck the durable policy synchronously at the destructive boundary.
+        // A slow read invalidates the native proof; no await follows this point.
+        const proofReturnedAt = performance.now();
+        let stillAllowed = false;
+        try {
+          stillAllowed = context.restartStillAllowedNow?.() === true;
+        } catch {
+          /* fail closed */
+        }
+        if (!stillAllowed)
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_DISABLED"));
+        if (performance.now() - proofReturnedAt > 100)
+          return this.#remember(
+            key,
+            eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED"),
+          );
+        if (!fresh())
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
+        if (context.hasObservedTaskActivity?.())
+          return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
+        this.#signalProcess(event.pid, "SIGTERM");
+        signalled = true;
+        if (!(await waitForProcessExit(event.pid, this.#inspectTargetProcess, this.#sleep))) {
+          throw new Error("GOAL_PROGRESS_CODEX_CURRENT_PROCESS_STOP_TIMEOUT");
+        }
+        if (!canFinish()) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
+        const concurrentInstance = await this.#existingInstanceResponse(event, app, canFinish);
+        if (concurrentInstance) {
+          handoffSucceeded = concurrentInstance.code === "STARTUP_EVENT_EXISTING_CDP";
+          return this.#remember(key, concurrentInstance);
+        }
+        if (!canFinish()) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
+        launched = await this.#launchWithCdp(app, { port });
+        if (!canFinish()) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
+        const ownership = await this.#waitForOwnership(app, launched.pid, port);
+        if (!canFinish()) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
+        const state = this.#createRuntimeState(app, launched, ownership, port);
+        if (!(await this.#writeRuntimeIfCurrent(state, canFinish))) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
+        // A verified, published managed process is a success even if a newer
+        // observation supersedes the response immediately afterwards.
+        handoffSucceeded = true;
+        if (!canFinish()) {
+          return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
+        }
         return this.#remember(
           key,
-          eventResponse(event, "continue", "STARTUP_HANDOFF_CONTINUED_ORIGINAL"),
-        );
-      }
-      if (!canFinish()) {
-        return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
-      }
-      try {
-        await this.#launchNormal(app);
-        return this.#remember(
-          key,
-          eventResponse(event, "complete", "STARTUP_HANDOFF_FALLBACK_NORMAL"),
+          eventResponse(event, "complete", "STARTUP_HANDOFF_COMPLETE", state),
         );
       } catch {
-        return this.#remember(key, eventResponse(event, "continue", "STARTUP_HANDOFF_FAILED"));
-      }
-    } finally {
-      if (reservation) {
-        // Retain failures after SIGTERM, but release successful and pre-signal attempts.
-        // If persistence fails, the reserved record safely retains its cooldown.
-        await this.#finishAttempt(event, reservation, signalled && !handoffSucceeded).catch(
-          () => undefined,
+        return this.#remember(
+          key,
+          eventResponse(event, signalled ? "complete" : "continue", "STARTUP_HANDOFF_FAILED"),
         );
+      } finally {
+        if (reservation) {
+          // Retain failures after SIGTERM, but release successful and pre-signal attempts.
+          // If persistence fails, the reserved record safely retains its cooldown.
+          await this.#finishAttempt(event, reservation, signalled && !handoffSucceeded).catch(
+            () => undefined,
+          );
+        }
       }
+    })();
+    if (signalled && !handoffSucceeded) {
+      // Cancellation never abandons the user's application after SIGTERM.
+      // Keep an existing same-app process, otherwise restore a normal launch.
+      const result = await this.#ensureUsableApp(app, event, identity, launched);
+      return this.#remember(
+        key,
+        eventResponse(
+          event,
+          result === "failed" || result === "original" ? "continue" : "complete",
+          result === "restored"
+            ? "STARTUP_HANDOFF_FALLBACK_NORMAL"
+            : result === "original"
+              ? "STARTUP_HANDOFF_CONTINUED_ORIGINAL"
+              : result === "running"
+                ? "STARTUP_HANDOFF_CDP_PROCESS_RETAINED"
+                : "STARTUP_HANDOFF_FAILED",
+        ),
+      );
     }
+    return outcome;
   }
 }
 

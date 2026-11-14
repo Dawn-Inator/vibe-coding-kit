@@ -38,6 +38,17 @@ private struct PendingLaunch {
     let launchedAt: String
     let birthDate: Date?
     let deadlineAtMs: Int64
+    let eventName: String
+    var queuedDidLaunch: NSRunningApplication?
+}
+
+private struct LaunchEdgeIdentity: Hashable {
+    let pid: pid_t
+    let birthDate: Date
+    let bundleId: String
+    let appPath: String
+    let executablePath: String
+    let eventName: String
 }
 
 private struct StartupReady: Encodable {
@@ -59,7 +70,7 @@ private final class CodexStartupListener: NSObject {
     private let formatter = ISO8601DateFormatter()
     private var inputBuffer = Data()
     private var pendingLaunch: PendingLaunch?
-    private var recentlyEmittedPids: [pid_t] = []
+    private var recentlyEmittedEdges: [LaunchEdgeIdentity] = []
     private var discardingOversizedLine = false
     private var safetyTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
@@ -87,9 +98,20 @@ private final class CodexStartupListener: NSObject {
             clearPendingProcess()
             return
         }
+        let queuedDidLaunch = response.action == "continue"
+            ? pendingLaunch?.queuedDidLaunch
+            : nil
+        let shouldEmitQueuedDidLaunch = queuedDidLaunch.map {
+            matchesConfiguredApplication($0)
+                && hasSameActualLaunch(as: pendingLaunch?.application, and: $0)
+                && !$0.isTerminated
+        } ?? false
         safetyTimeout?.cancel()
         safetyTimeout = nil
         pendingLaunch = nil
+        if shouldEmitQueuedDidLaunch, let queuedDidLaunch {
+            handleLaunch(queuedDidLaunch, eventName: "codex.didLaunch")
+        }
     }
 
     private func consumeInput(_ data: Data) {
@@ -256,12 +278,61 @@ private final class CodexStartupListener: NSObject {
         }
     }
 
+    private func matchesConfiguredApplication(_ application: NSRunningApplication) -> Bool {
+        application.bundleIdentifier == bundleId
+            && application.bundleURL?.path == appPath
+            && application.executableURL?.path == executablePath
+    }
+
+    private func hasSameActualLaunch(
+        as first: NSRunningApplication?,
+        and second: NSRunningApplication
+    ) -> Bool {
+        guard let first,
+              first.processIdentifier == second.processIdentifier,
+              matchesConfiguredApplication(first),
+              matchesConfiguredApplication(second),
+              let firstBirth = first.launchDate,
+              let secondBirth = second.launchDate else {
+            return false
+        }
+        return firstBirth == secondBirth
+    }
+
+    private func edgeIdentity(
+        for application: NSRunningApplication,
+        eventName: String
+    ) -> LaunchEdgeIdentity? {
+        guard let birthDate = application.launchDate,
+              matchesConfiguredApplication(application) else {
+            return nil
+        }
+        return LaunchEdgeIdentity(
+            pid: application.processIdentifier,
+            birthDate: birthDate,
+            bundleId: bundleId,
+            appPath: appPath,
+            executablePath: executablePath,
+            eventName: eventName
+        )
+    }
+
     private func handleLaunch(_ application: NSRunningApplication, eventName: String) {
-        guard pendingLaunch == nil,
-              !recentlyEmittedPids.contains(application.processIdentifier),
-              application.bundleIdentifier == bundleId,
-              application.bundleURL?.path == appPath,
-              application.executableURL?.path == executablePath else {
+        guard matchesConfiguredApplication(application) else {
+            return
+        }
+
+        if let pending = pendingLaunch {
+            if eventName == "codex.didLaunch",
+               pending.eventName == "codex.willLaunch",
+               pending.queuedDidLaunch == nil,
+               hasSameActualLaunch(as: pending.application, and: application) {
+                pendingLaunch?.queuedDidLaunch = application
+            }
+            return
+        }
+        let edge = edgeIdentity(for: application, eventName: eventName)
+        if let edge, recentlyEmittedEdges.contains(edge) {
             return
         }
 
@@ -274,7 +345,9 @@ private final class CodexStartupListener: NSObject {
             pid: pid,
             launchedAt: launchedAt,
             birthDate: application.launchDate,
-            deadlineAtMs: deadlineAtMs
+            deadlineAtMs: deadlineAtMs,
+            eventName: eventName,
+            queuedDidLaunch: nil
         )
         let event = StartupEvent(
             event: eventName,
@@ -289,9 +362,11 @@ private final class CodexStartupListener: NSObject {
             clearPendingProcess()
             return
         }
-        recentlyEmittedPids.append(pid)
-        if recentlyEmittedPids.count > 64 {
-            recentlyEmittedPids.removeFirst(recentlyEmittedPids.count - 64)
+        if let edge {
+            recentlyEmittedEdges.append(edge)
+        }
+        if recentlyEmittedEdges.count > 64 {
+            recentlyEmittedEdges.removeFirst(recentlyEmittedEdges.count - 64)
         }
 
         let timeout = DispatchWorkItem { [weak self] in

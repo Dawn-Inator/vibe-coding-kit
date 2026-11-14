@@ -96,6 +96,7 @@ export {
   type CodexStartupRecoveryPolicy,
   DEFAULT_CODEX_STARTUP_RECOVERY_POLICY,
   readCodexStartupRecoveryPolicy,
+  readCodexStartupRecoveryPolicySync,
   type StartupRecoveryPolicyAction,
   writeCodexStartupRecoveryPolicy,
 } from "./startup-recovery-policy.js";
