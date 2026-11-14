@@ -68,6 +68,7 @@ export interface TaskPanelHeartbeat {
   status: "none" | "candidates" | "ready" | "stale" | "error";
   sourcePath: string | null;
   historyPath?: string;
+  contentHash?: string;
   candidates: readonly { path: string; associated: boolean }[];
   refreshedAt: string;
   modifiedAt: string | null;
@@ -113,6 +114,7 @@ export interface TaskPanelHeartbeatHistory {
   nextCursor: string | null;
   total: number;
   sourcePath?: string | null;
+  contentHash?: string;
   error?: string;
 }
 export interface TaskPanelExecution {
@@ -201,9 +203,11 @@ export class TaskProgressElement extends LitElement {
   private declare history: TaskPanelHistory | TaskPanelSourceHistory | null;
   private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
   private declare heartbeatBusy: boolean;
-  private heartbeatHistorySource: string | null = null;
-  private heartbeatHistoryAttemptedSource: string | null = null;
-  private heartbeatHistoryObservedSource: string | null | undefined;
+  private heartbeatHistoryContext: string | null = null;
+  private heartbeatHistoryAttemptedContext: string | null = null;
+  private heartbeatHistoryObservedContext: string | null | undefined;
+  private heartbeatHistoryError: string | null = null;
+  private heartbeatHistoryErrorContext: string | null = null;
   private heartbeatWakeExpansion = new Map<string, boolean>();
   private declare busy: boolean;
   private historyThread: string | null = null;
@@ -225,9 +229,11 @@ export class TaskProgressElement extends LitElement {
     this.history = null;
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
-    this.heartbeatHistorySource = null;
-    this.heartbeatHistoryAttemptedSource = null;
-    this.heartbeatHistoryObservedSource = undefined;
+    this.heartbeatHistoryContext = null;
+    this.heartbeatHistoryAttemptedContext = null;
+    this.heartbeatHistoryObservedContext = undefined;
+    this.heartbeatHistoryError = null;
+    this.heartbeatHistoryErrorContext = null;
     this.heartbeatWakeExpansion.clear();
     this.busy = false;
   }
@@ -307,9 +313,11 @@ export class TaskProgressElement extends LitElement {
     this.history = null;
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
-    this.heartbeatHistorySource = null;
-    this.heartbeatHistoryAttemptedSource = null;
-    this.heartbeatHistoryObservedSource = undefined;
+    this.heartbeatHistoryContext = null;
+    this.heartbeatHistoryAttemptedContext = null;
+    this.heartbeatHistoryObservedContext = undefined;
+    this.heartbeatHistoryError = null;
+    this.heartbeatHistoryErrorContext = null;
     this.heartbeatWakeExpansion.clear();
     this.heartbeatRequest++;
     this.historyThread = null;
@@ -356,21 +364,33 @@ export class TaskProgressElement extends LitElement {
 
   private loadHeartbeatHistoryOnOpen(): void {
     if (!this.expanded || this.tab !== "heartbeat") return;
-    const sourcePath = this.data.heartbeat?.sourcePath ?? null;
-    if (this.heartbeatHistoryObservedSource !== sourcePath) {
-      this.heartbeatHistoryObservedSource = sourcePath;
-      this.heartbeatHistoryAttemptedSource = null;
+    const context = this.currentHeartbeatHistoryContext();
+    if (this.heartbeatHistoryObservedContext !== context) {
+      this.heartbeatHistoryObservedContext = context;
+      this.heartbeatHistoryAttemptedContext = null;
+      this.heartbeatHistoryContext = null;
+      this.heartbeatHistory = null;
+      this.heartbeatHistoryError = null;
+      this.heartbeatHistoryErrorContext = null;
+      this.heartbeatRequest++;
+      this.heartbeatBusy = false;
     }
     if (
-      !sourcePath ||
+      !context ||
       !this.threadId ||
       !this.requester ||
       this.heartbeatBusy ||
-      this.heartbeatHistoryAttemptedSource === sourcePath
+      this.heartbeatHistoryAttemptedContext === context
     )
       return;
-    this.heartbeatHistoryAttemptedSource = sourcePath;
-    void this.loadHeartbeatHistory();
+    this.heartbeatHistoryAttemptedContext = context;
+    void this.loadHeartbeatHistory(false, context);
+  }
+
+  private currentHeartbeatHistoryContext(): string | null {
+    const heartbeat = this.data.heartbeat;
+    if (!this.threadId || !heartbeat?.sourcePath) return null;
+    return JSON.stringify([this.threadId, heartbeat.sourcePath, heartbeat.contentHash ?? null]);
   }
 
   private readonly outsideClick = (event: Event): void => {
@@ -698,17 +718,25 @@ export class TaskProgressElement extends LitElement {
     return null;
   }
 
-  private async loadHeartbeatHistory(more = false): Promise<void> {
+  private async loadHeartbeatHistory(more = false, expectedContext?: string): Promise<void> {
     const threadId = this.threadId;
-    const sourcePath = this.data.heartbeat?.sourcePath;
-    if (!threadId || !sourcePath || !this.requester || this.heartbeatBusy) return;
+    const heartbeat = this.data.heartbeat;
+    const sourcePath = heartbeat?.sourcePath;
+    const context = expectedContext ?? this.currentHeartbeatHistoryContext();
+    if (
+      !threadId ||
+      !sourcePath ||
+      !this.requester ||
+      this.heartbeatBusy ||
+      !context ||
+      context !== this.currentHeartbeatHistoryContext()
+    )
+      return;
     const requestId = ++this.heartbeatRequest;
     this.heartbeatBusy = true;
     try {
       const cursor =
-        more && this.heartbeatHistorySource === sourcePath
-          ? this.heartbeatHistory?.nextCursor
-          : null;
+        more && this.heartbeatHistoryContext === context ? this.heartbeatHistory?.nextCursor : null;
       const result = await this.requester({
         method: "heartbeat-history",
         threadId,
@@ -717,37 +745,57 @@ export class TaskProgressElement extends LitElement {
       if (
         requestId !== this.heartbeatRequest ||
         this.threadId !== threadId ||
-        this.data.heartbeat?.sourcePath !== sourcePath
+        this.currentHeartbeatHistoryContext() !== context
       )
         return;
       const page = result.heartbeatHistory;
-      if (page && (!page.sourcePath || page.sourcePath === sourcePath)) {
+      const currentHash = this.data.heartbeat?.contentHash;
+      const hashMismatch = Boolean(
+        page?.contentHash && currentHash && page.contentHash !== currentHash,
+      );
+      if (page?.error && hashMismatch) {
+        this.heartbeatHistoryError = page.error;
+        this.heartbeatHistoryErrorContext = context;
+      }
+      if (page && (!page.sourcePath || page.sourcePath === sourcePath) && !hashMismatch) {
         this.heartbeatHistory = {
           ...page,
           wakes:
-            more && this.heartbeatHistorySource === sourcePath
+            more && this.heartbeatHistoryContext === context
               ? [...(this.heartbeatHistory?.wakes ?? []), ...page.wakes]
               : page.wakes,
         };
-        this.heartbeatHistorySource = sourcePath;
+        this.heartbeatHistoryContext = context;
+        this.heartbeatHistoryError = null;
+        this.heartbeatHistoryErrorContext = null;
       }
     } catch (error) {
       if (
         requestId === this.heartbeatRequest &&
         this.threadId === threadId &&
-        this.data.heartbeat?.sourcePath === sourcePath
+        this.currentHeartbeatHistoryContext() === context
       ) {
         this.connectionError = String(error);
       }
     } finally {
-      if (requestId === this.heartbeatRequest && this.threadId === threadId)
+      if (
+        requestId === this.heartbeatRequest &&
+        this.threadId === threadId &&
+        this.currentHeartbeatHistoryContext() === context
+      )
         this.heartbeatBusy = false;
     }
   }
 
   private renderHeartbeatHistory(heartbeat: TaskPanelHeartbeat) {
     const history =
-      this.heartbeatHistorySource === heartbeat.sourcePath ? this.heartbeatHistory : null;
+      this.heartbeatHistoryContext === this.currentHeartbeatHistoryContext()
+        ? this.heartbeatHistory
+        : null;
+    const historyError =
+      this.heartbeatHistoryErrorContext === this.currentHeartbeatHistoryContext()
+        ? this.heartbeatHistoryError
+        : history?.error;
     const wakes = history?.wakes ?? [...heartbeat.wakes].reverse();
     const count = history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length;
     return html`<section class="hb-history" aria-label=${this.t("Heartbeat history", "巡检记录")}>
@@ -838,10 +886,10 @@ export class TaskProgressElement extends LitElement {
           </div>
         </details>`;
       })}
-      ${history?.error ? this.diagnostic(this.t("Heartbeat history error", "心跳历史错误"), history.error) : nothing}
+      ${historyError ? this.diagnostic(this.t("Heartbeat history error", "心跳历史错误"), historyError) : nothing}
       ${history?.nextCursor ? html`<button class="hb-older" ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
       ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
-      ${!wakes.length && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
+      ${!wakes.length && !historyError && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
     </section>`;
   }
 

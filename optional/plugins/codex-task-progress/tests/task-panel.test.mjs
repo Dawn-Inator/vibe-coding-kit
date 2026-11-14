@@ -1013,6 +1013,306 @@ test("ordinary chat task panel browser flows", async (t) => {
       },
     );
     await t.test(
+      "same-path heartbeat hash changes reload history once and reject mismatched cursor pages",
+      async () => {
+        const { context, page, panel } = await open();
+        const sourcePath = "/workspace/project/heartbeat.md";
+        const wake = (text, minute) => ({
+          timeMs: Date.parse(`2026-11-13T14:${minute}:00Z`),
+          rows: [{ category: "status", state: text }],
+        });
+        const historyA = {
+          sourcePath,
+          contentHash: "hash-a",
+          wakes: [wake("history hash A", "34")],
+          nextCursor: null,
+          total: 1,
+        };
+        const historyB = {
+          sourcePath,
+          contentHash: "hash-b",
+          wakes: [wake("history hash B", "35")],
+          nextCursor: "cursor-b",
+          total: 2,
+        };
+        try {
+          await page.evaluate(
+            ({ task, heartbeat, sourcePath, historyA }) => {
+              window.fixture.task = task;
+              window.fixture.heartbeat = {
+                ...heartbeat,
+                sourcePath,
+                contentHash: "hash-a",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:33:00Z"),
+                    rows: [{ category: "status", state: "current hash A snapshot" }],
+                  },
+                ],
+              };
+              window.fixture.heartbeatHistory = historyA;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { task, heartbeat, sourcePath, historyA },
+          );
+          await showView(panel, "heartbeat");
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("history hash A", { exact: true })
+            .waitFor();
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 1);
+          await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+            ),
+            1,
+            "same-hash get does not reload history",
+          );
+          await page.evaluate(
+            ({ heartbeat, sourcePath, historyB }) => {
+              window.fixture.heartbeat = {
+                ...heartbeat,
+                sourcePath,
+                contentHash: "hash-b",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:36:00Z"),
+                    rows: [{ category: "status", state: "current hash B snapshot" }],
+                  },
+                ],
+              };
+              window.fixture.heartbeatHistory = historyB;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { heartbeat, sourcePath, historyB },
+          );
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 2);
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("history hash B", { exact: true })
+            .waitFor();
+          assert.doesNotMatch(await panel.locator(".hb-history").innerText(), /history hash A/);
+          await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+            ),
+            2,
+            "changed hash loads once; same hash does not reload",
+          );
+          await page.evaluate(
+            ({ sourcePath }) => {
+              window.fixture.heartbeatHistory = {
+                sourcePath,
+                contentHash: "hash-a",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:30:00Z"),
+                    rows: [{ category: "status", state: "wrong hash cursor page" }],
+                  },
+                ],
+                nextCursor: null,
+                total: 2,
+              };
+            },
+            { sourcePath },
+          );
+          await panel.getByRole("button", { name: "加载更早心跳" }).click();
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 3);
+          await page.evaluate(
+            () =>
+              new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          );
+          const calls = await page.evaluate(() =>
+            window.fixture.calls.filter((call) => call.method === "heartbeat-history"),
+          );
+          assert.equal(calls[2].cursor, "cursor-b");
+          assert.match(await panel.locator(".hb-history").innerText(), /history hash B/);
+          assert.doesNotMatch(
+            await panel.locator(".hb-history").innerText(),
+            /history hash A|wrong hash cursor page/,
+          );
+          const capsule = panel.locator(".summary .main");
+          const capsuleLabel = await capsule.getAttribute("aria-label");
+          const capsulePercent = await capsule.locator(".percent").textContent();
+          await page.evaluate(
+            ({ sourcePath }) => {
+              window.fixture.heartbeatHistory = {
+                sourcePath,
+                contentHash: "hash-c",
+                error: "source changed; refresh project",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:31:00Z"),
+                    rows: [{ category: "status", state: "error page bad row" }],
+                  },
+                ],
+                nextCursor: "bad-cursor-c",
+                total: 99,
+              };
+            },
+            { sourcePath },
+          );
+          await panel.getByRole("button", { name: "加载更早心跳" }).click();
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 4);
+          const historyError = panel
+            .locator(".hb-history details.diagnostic")
+            .filter({ hasText: "心跳历史错误" });
+          await historyError.waitFor();
+          await historyError.locator(":scope > summary").click();
+          assert.match(await historyError.innerText(), /source changed; refresh project/);
+          assert.match(await panel.locator(".hb-history").innerText(), /history hash B/);
+          assert.doesNotMatch(await panel.locator(".hb-history").innerText(), /error page bad row/);
+          assert.equal(await panel.locator(".hb-history-head .hb-count").innerText(), "2");
+          assert.equal(await capsule.getAttribute("aria-label"), capsuleLabel);
+          assert.equal(await capsule.locator(".percent").textContent(), capsulePercent);
+          assert.equal(await panel.evaluate((element) => element.connectionError), null);
+          await page.evaluate(
+            ({ historyB }) => {
+              window.fixture.heartbeatHistory = historyB;
+            },
+            { historyB },
+          );
+          await panel.getByRole("button", { name: "加载更早心跳" }).click();
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 5);
+          await page.waitForFunction(
+            () =>
+              window.fixture.calls.filter((call) => call.method === "heartbeat-history").at(-1)
+                ?.cursor === "cursor-b",
+          );
+          await historyError.waitFor({ state: "hidden" });
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").at(-1)
+                  .cursor,
+            ),
+            "cursor-b",
+            "bad response cursor is not accepted",
+          );
+          assert.match(await panel.locator(".hb-history").innerText(), /history hash B/);
+          assert.doesNotMatch(await panel.locator(".hb-history").innerText(), /error page bad row/);
+          assert.equal(await capsule.getAttribute("aria-label"), capsuleLabel);
+          assert.equal(await capsule.locator(".percent").textContent(), capsulePercent);
+        } finally {
+          await context.close();
+        }
+      },
+    );
+    await t.test(
+      "same-path heartbeat hash change lets new history pass a held old response",
+      async () => {
+        const { context, page, panel } = await open();
+        const sourcePath = "/workspace/project/heartbeat.md";
+        const historyA = {
+          sourcePath,
+          contentHash: "hash-a",
+          wakes: [
+            {
+              timeMs: Date.parse("2026-11-13T14:34:00Z"),
+              rows: [{ category: "status", state: "held history hash A" }],
+            },
+          ],
+          nextCursor: null,
+          total: 1,
+        };
+        const historyB = {
+          sourcePath,
+          contentHash: "hash-b",
+          wakes: [
+            {
+              timeMs: Date.parse("2026-11-13T14:35:00Z"),
+              rows: [{ category: "status", state: "new history hash B" }],
+            },
+          ],
+          nextCursor: null,
+          total: 1,
+        };
+        try {
+          await page.evaluate(
+            ({ task, heartbeat, sourcePath, historyA }) => {
+              window.fixture.task = task;
+              window.fixture.heartbeat = {
+                ...heartbeat,
+                sourcePath,
+                contentHash: "hash-a",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:33:00Z"),
+                    rows: [{ category: "status", state: "current hash A snapshot" }],
+                  },
+                ],
+              };
+              window.fixture.heartbeatHistory = historyA;
+              window.fixture.holdNextHeartbeatHistory = true;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { task, heartbeat, sourcePath, historyA },
+          );
+          await showView(panel, "heartbeat");
+          await page.waitForFunction(
+            () => typeof window.fixture.releaseHeldHeartbeatHistory === "function",
+          );
+          await page.evaluate(
+            ({ heartbeat, sourcePath, historyB }) => {
+              window.fixture.heartbeat = {
+                ...heartbeat,
+                sourcePath,
+                contentHash: "hash-b",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T14:36:00Z"),
+                    rows: [{ category: "status", state: "current hash B snapshot" }],
+                  },
+                ],
+              };
+              window.fixture.heartbeatHistory = historyB;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { heartbeat, sourcePath, historyB },
+          );
+          await page.waitForFunction(
+            () =>
+              window.fixture.calls.filter((call) => call.method === "heartbeat-history").length ===
+              2,
+          );
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 1);
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("new history hash B", { exact: true })
+            .waitFor();
+          assert.equal(
+            await page.evaluate(() => typeof window.fixture.releaseHeldHeartbeatHistory),
+            "function",
+          );
+          await page.evaluate(() => window.fixture.releaseHeldHeartbeatHistory());
+          await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 2);
+          await page.evaluate(
+            () =>
+              new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          );
+          assert.match(await panel.locator(".hb-history").innerText(), /new history hash B/);
+          assert.doesNotMatch(
+            await panel.locator(".hb-history").innerText(),
+            /held history hash A/,
+          );
+          await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+            ),
+            2,
+          );
+        } finally {
+          await context.close();
+        }
+      },
+    );
+    await t.test(
       "pending project heartbeat keeps checklist visible, loads history once, and fences same-source chat changes",
       async () => {
         const { context, page, panel } = await open();
@@ -2708,7 +3008,12 @@ test("ordinary chat task panel browser flows", async (t) => {
         ];
         await page.evaluate(
           (value) => {
-            window.fixture.task = { ...value.task, phase: "active", progress: { completed: 2, total: 5, percent: 40 }, objectives: value.objectives };
+            window.fixture.task = {
+              ...value.task,
+              phase: "active",
+              progress: { completed: 2, total: 5, percent: 40 },
+              objectives: value.objectives,
+            };
             return window.__CODEX_TASK_PROGRESS__.refresh();
           },
           { task, objectives: sourceObjectives },
@@ -2727,7 +3032,10 @@ test("ordinary chat task panel browser flows", async (t) => {
           "已完成乙",
           "已取消乙",
         ]);
-        assert.match(await panel.locator(".summary .main").innerText(), /已登记清单 2\/5 · 清单进度 40%/);
+        assert.match(
+          await panel.locator(".summary .main").innerText(),
+          /已登记清单 2\/5 · 清单进度 40%/,
+        );
         await mkdir(".playwright-img", { recursive: true });
         await panel
           .locator(".body")
@@ -2767,7 +3075,10 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.getByRole("button", { name: /刚新增待办/ }).waitFor({ timeout: 6000 });
-        assert.match(await panel.locator(".summary .main").innerText(), /已登记清单 2\/6 · 清单进度 33.33%/);
+        assert.match(
+          await panel.locator(".summary .main").innerText(),
+          /已登记清单 2\/6 · 清单进度 33.33%/,
+        );
         assert.deepEqual(await names(), [
           "刚新增待办",
           "待办二",
