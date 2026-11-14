@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reuse catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "title",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "frontend",
+        "backend"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "category",
+          "owner",
+          "scope",
+          "source",
+          "publicEntry",
+          "summary",
+          "useWhen",
+          "constraints",
+          "examples",
+          "tests"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "useWhen": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "scope": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+            }
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+            }
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+            }
+          },
+          "publicEntry": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "module",
+              "symbol"
+            ],
+            "properties": {
+              "module": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+              },
+              "symbol": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+              }
+            }
+          }
+        }
+      }
+    },
+    "publicSurfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "module",
+          "kind"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)[^\\r\\n\\u2028\\u2029]+(?![\\s\\S])"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 ---
 name: frontend-layering-boundaries
-description: Use when adding or reviewing frontend code (React/Next/React Native or uniapp) that crosses feature boundaries, touches native/platform SDKs, grows a file or dependency list, or hard-codes colors/spacing. Turns module boundaries, platform-SDK containment, size/complexity budgets and design-token ownership into machine-checked facts.
+description: Use when adding, changing, or reviewing frontend code (React, Next, React Native, or uniapp), including components, hooks, utilities, and platform adapters. Check reuse, module boundaries, platform containment, complexity, and tokens.
 ---
 
 # Frontend Layering & Boundaries
@@ -11,6 +11,12 @@ description: Use when adding or reviewing frontend code (React/Next/React Native
 [backend-governance-ratchets](../backend-governance-ratchets/SKILL.md),这里只讲前端特有部分。
 
 下文路径(`src/features`、`@/lib/platform`)和阈值都是**示例值**,按项目调整;不变量才是重点。
+
+## 先查再复用
+
+新增或修改组件、hook、工具或 adapter 前,先查项目启用的前端复用目录,再搜索相关实现、公开入口、示例和测试。优先复用或扩展已有权威所有者;只有现有能力确实不满足时才新增,并在变更说明中解释具体缺口。相似外观不代表行为、可访问性或平台契约相同;保持 feature 边界和平台 adapter 的归属。
+
+项目可选启用自有目录:默认 `registries/architecture/frontend-components.json` 是人工维护的精选源,由 `contracts.reuseCatalogs` 配置路径;`doc/frontend-components.md` 是带来源标识、确定性生成的非权威视图。代码和类型仍是 API 真源,无需罗列每个私有 TSX。公开能力新增、迁移或退役时同次更新目录;既有未启用项目无需创建目录。启用后用 `reuse-catalog check|regen --project-root <root>` 检查或生成,目录不能替代源码搜索,也不声称自动发现语义重复。详见 [前端契约](../../tutorial/06-codebase-architecture/frontend-contracts.md)。
 
 ## 1. 模块只经公开入口互相引用
 

@@ -1,6 +1,6 @@
 ---
 name: backend-layering
-description: Use when adding or reviewing business-logic code inside a backend service. Governs how to split one business object's code into read/write slots so that "does this file touch the database, and how" becomes a machine-checkable fact instead of something a reviewer has to notice.
+description: Use when adding, changing, or reviewing backend code, including business logic, shared capabilities, providers, and data access. Check reuse, ownership, service boundaries, and read/write layering.
 ---
 
 # Backend Layering(读写分层)
@@ -14,6 +14,12 @@ skill 解决的是更细一层的问题:**一个服务内部**,单个业务对�
 下面举例用到的具体文件名(`operate.py`、`query.py` 等)是 Python 生态的命名习惯,换一种语言/框架
 可以用别的文件名或目录约定,只要保留"槽位职责单一、命名规范到机器能识别"这个核心设计——这才是这套
 机制真正的价值所在,具体文件名只是一种实现方式。
+
+## 先查再复用
+
+新增或修改后端能力前,先查项目启用的后端复用目录,再搜索相关实现、公开入口、示例和测试。优先复用或扩展权威所有者;确有缺口才新增,并在变更说明中解释缺口。复用不改变领域所有权、事务范围、鉴权或数据安全边界:跨域仍经稳定 facade/contract,不能为了共享而绕过这些约束。
+
+项目可选启用自有目录:默认 `registries/architecture/backend-capabilities.json` 是人工维护的精选源,路径可通过 `contracts.reuseCatalogs` 配置;`doc/backend-capabilities.md` 是带来源标识、确定性生成的非权威视图。代码和类型仍是 API 真源。公开能力新增、迁移或退役时同次更新目录;既有未启用项目无需创建目录。启用后用 `reuse-catalog check|regen --project-root <root>` 检查或生成,目录不能替代源码搜索,也不声称自动发现语义重复。详见 [后端分层](../../tutorial/06-codebase-architecture/backend-layering.md)。
 
 ## 服务骨架
 
@@ -95,8 +101,7 @@ Go 等语言按 package 与导出 API 表达领域边界,不要照搬 Python 的
   作者信息/点赞状态/关注状态,这种批量聚合应该放在批量组装槽里一次性做完,而不是在循环里逐条查
   (N+1)。
 - **纯组装槽升级的判断标准**:纯组装槽如果开始需要拿数据库会话再去查一次数据,说明它该升级成
-  批量组装槽;如果它开始组织 where/排序/分页这些查询条件,说明它该归到查询组合槽。这两条判断标准
-  本身可以直接写进代码评审 checklist,不需要每次都重新讨论。
+  批量组装槽;如果它开始组织 where/排序/分页这些查询条件,说明它该归到查询组合槽。
 - **槽位文件不一定要放在最深层的对象目录**——因为槽位划分不驱动路由,一个共享的模块级槽位文件,
   在多个对象只是同一个模块下不同路由切片的场景里是合理的(比如几个子对象共用同一个业务编排类)。
 
@@ -104,19 +109,15 @@ Go 等语言按 package 与导出 API 表达领域边界,不要照搬 Python 的
 
 读写分进命名规范的文件后,就能写静态扫描:只有查询/批量组装槽出现数据库读,只有写操作槽出现数据库
 写,其它文件(编排入口、共享工具、定时任务等)一旦出现原始 SQL 或会话调用即被拦下。机械扫描每次
-同一标准,不依赖评审者恰好留意。
+同一标准。
 
 对于分层规则落地之前就已经存在的历史违规,用 [backend-governance-ratchets](../backend-governance-ratchets/SKILL.md)
 的棘轮精确登记并只减不增——基线是承认历史债务,不是给新代码开口子;新项目则直接零债务。
 
 ## 跨领域导入边界
 
-除了槽位内部的读写分层,还有一条跨领域的导入边界:**禁止跨领域直接引用另一个领域内部更深层的
-编排入口文件**,只能通过对方的门面槽或者中立的公共层来交互。这条规则和
-[business-boundary-cards](../business-boundary-cards/SKILL.md) 里 M1 门("跨边界的事务/JOIN 都已
-改造成通过所有者暴露的查询/命令/事件/投影/编排来访问")是同一个思路在更小粒度上的延伸——即使两个
-领域现在都跑在同一个进程里、还没有物理拆分的必要,也应该提前维持"只能通过稳定接口交互"的纪律,
-这样将来真的需要把某个领域物化成独立服务时,迁移成本会小得多。
+禁止跨领域直接引用另一领域的内部编排或数据库层,只能通过其 facade/contract 或中立公共层交互。
+即使领域同进程也须保持此边界;事务/JOIN 遵守 [business-boundary-cards](../business-boundary-cards/SKILL.md) 的 M1 门。
 
 ## 槽位之外的机器门禁
 

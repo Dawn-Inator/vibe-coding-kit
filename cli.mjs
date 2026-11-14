@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { arch, platform, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { runReuseCatalog } from './src/contracts/reuse-catalog.mjs';
 import { checkKit, getKitRegistration, inspectKit, prepareKit } from './src/dependencies/submodule.mjs';
 import { syncProjectSkills } from './src/skills/project-sync.mjs';
 import { composeSources } from './src/skills/composition.mjs';
@@ -748,6 +749,14 @@ async function main() {
   const root = projectRoot(options);
 
   switch (options.command) {
+    case 'reuse-catalog': {
+      const allowed = new Set(['command', 'positional', 'skill', 'optional', 'projectRoot']);
+      if (Object.keys(options).some((key) => !allowed.has(key)) || options.skill.length || options.optional.length || options.positional.length !== 1 || !['check', 'regen'].includes(options.positional[0])) throw new Error('Usage: cli.mjs reuse-catalog <check|regen> --project-root <path>');
+      const result = await runReuseCatalog({ projectRoot: root, action: options.positional[0] });
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
     case 'install': await install(root, options); return;
     case 'backend-check': {
       const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'src/backend/dispatch.mjs'),
@@ -821,7 +830,7 @@ async function main() {
       return;
     }
     case 'help':
-      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check> --project-root <path> [options]\nOptional groups: aliyun, lark, non-code, task-progress. Backend: --config <project-relative JSON path>');
+      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check|reuse-catalog> --project-root <path> [options]\nOptional groups: aliyun, lark, non-code, task-progress. Backend: --config <project-relative JSON path>');
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }
