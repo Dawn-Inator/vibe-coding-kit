@@ -1117,7 +1117,9 @@ test("corrupt or unavailable heartbeat cache never blocks Kit source, task, or h
 test("bound read-only views inspect only their source; forced projection scans the project", async () => {
   const f = await fixture();
   const service = new HeartbeatService(resolve(f.root, "bound-only-data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
   });
   const originalReadDir = fs.promises.readdir;
   const root = await realpath(f.project);
@@ -1126,7 +1128,8 @@ test("bound read-only views inspect only their source; forced projection scans t
     await writeFile(f.source, ledger("chat-A"));
     assert.equal((await service.view("chat-A", f.project))?.status, "ready");
     fs.promises.readdir = (async (...args: unknown[]) => {
-      if (typeof args[0] === "string" && (args[0] === root || args[0].startsWith(`${root}/`))) scans += 1;
+      if (typeof args[0] === "string" && (args[0] === root || args[0].startsWith(`${root}/`)))
+        scans += 1;
       return Reflect.apply(originalReadDir, fs.promises, args);
     }) as typeof originalReadDir;
     syncBuiltinESMExports();
@@ -1137,7 +1140,10 @@ test("bound read-only views inspect only their source; forced projection scans t
     assert.deepEqual(bound?.discoveryReasons, ["source-only"]);
     assert.equal((await service.taskProjection("chat-A", f.project)).status, "ready");
     assert.equal(scans, 0);
-    assert.equal((await service.taskProjection("chat-A", f.project, { forceDiscovery: true })).status, "ready");
+    assert.equal(
+      (await service.taskProjection("chat-A", f.project, { forceDiscovery: true })).status,
+      "ready",
+    );
     assert.ok(scans > 0);
     await writeFile(f.source, ledger("another-chat"));
     const lost = await service.taskProjection("chat-A", f.project);
@@ -1163,11 +1169,15 @@ test("unrelated project changes during bound reads do not repeat source audits",
   const watcher = Object.assign(new EventEmitter(), { close() {} });
   const index = new HeartbeatDiscoveryIndex({
     watchFactory: ((_root: unknown, _options: unknown, callback: typeof notify) => {
-      notify = callback; return watcher;
+      notify = callback;
+      return watcher;
     }) as unknown as typeof import("node:fs").watch,
   });
   const service = new HeartbeatService(resolve(f.root, "data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0, discoveryIndex: index,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
   });
   const hookTarget = globalThis as typeof globalThis & { __boundAuditHook?: () => void };
   try {
@@ -1182,7 +1192,9 @@ test("unrelated project changes during bound reads do not repeat source audits",
     await index.discover({ root: f.project });
     assert.ok(notify);
     let audits = 0;
-    hookTarget.__boundAuditHook = () => { audits += 1; };
+    hookTarget.__boundAuditHook = () => {
+      audits += 1;
+    };
     const baseline = await service.taskProjection("chat-A", f.project);
     const baselineAudits = audits;
     assert.equal(baseline.status, "ready");
@@ -1200,14 +1212,18 @@ test("unrelated project changes during bound reads do not repeat source audits",
     assert.equal(audits, baselineAudits);
   } finally {
     delete hookTarget.__boundAuditHook;
-    service.close(); index.close(); await f.close();
+    service.close();
+    index.close();
+    await f.close();
   }
 });
 
 test("source changes during a bound audit cannot publish an old cached hash", async () => {
   const f = await fixture();
   const service = new HeartbeatService(resolve(f.root, "data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 60_000,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
   });
   const hookTarget = globalThis as typeof globalThis & { __boundAuditHook?: () => void };
   try {
@@ -1218,18 +1234,39 @@ test("source changes during a bound audit cannot publish an old cached hash", as
     await writeFile(f.kitPath, inspector);
     await writeFile(f.source, ledger("chat-A"));
     assert.equal((await f.service.view("chat-A", f.project))?.status, "ready");
-    const old = readHeartbeatLedgerPair({ root: await realpath(f.project), path: f.source, maxBytes: 8 * 1024 * 1024 }).contentHash;
+    const old = readHeartbeatLedgerPair({
+      root: await realpath(f.project),
+      path: f.source,
+      maxBytes: 8 * 1024 * 1024,
+    }).contentHash;
     let changed = false;
     hookTarget.__boundAuditHook = () => {
-      if (!changed) { changed = true; fs.writeFileSync(f.source, `${ledger("chat-A")}\nchanged during audit\n`); }
+      if (!changed) {
+        changed = true;
+        fs.writeFileSync(f.source, `${ledger("chat-A")}\nchanged during audit\n`);
+      }
     };
     const result = await service.taskProjection("chat-A", f.project);
     assert.equal(changed, true);
     assert.equal(result.status, "ready");
     assert.notEqual(result.contentHash, old);
-    assert.equal(result.contentHash, readHeartbeatLedgerPair({ root: await realpath(f.project), path: f.source, maxBytes: 8 * 1024 * 1024 }).contentHash);
-    assert.equal((await service.taskProjection("chat-A", f.project)).contentHash, result.contentHash);
-  } finally { delete hookTarget.__boundAuditHook; service.close(); await f.close(); }
+    assert.equal(
+      result.contentHash,
+      readHeartbeatLedgerPair({
+        root: await realpath(f.project),
+        path: f.source,
+        maxBytes: 8 * 1024 * 1024,
+      }).contentHash,
+    );
+    assert.equal(
+      (await service.taskProjection("chat-A", f.project)).contentHash,
+      result.contentHash,
+    );
+  } finally {
+    delete hookTarget.__boundAuditHook;
+    service.close();
+    await f.close();
+  }
 });
 
 test("warm bound cache revalidates source hash and newly introduced Git boundaries", async () => {
@@ -1237,7 +1274,9 @@ test("warm bound cache revalidates source hash and newly introduced Git boundari
   const nested = resolve(await realpath(f.project), "cache-bound");
   const source = resolve(nested, "heartbeat.md");
   const service = new HeartbeatService(resolve(f.root, "warm-bound-data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 60_000,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
   });
   try {
     await mkdir(nested);
@@ -1249,7 +1288,14 @@ test("warm bound cache revalidates source hash and newly introduced Git boundari
     const changed = await service.taskProjection("chat-A", f.project);
     assert.equal(changed.status, "ready");
     assert.notEqual(changed.contentHash, prior.contentHash);
-    assert.equal(changed.contentHash, readHeartbeatLedgerPair({ root: await realpath(f.project), path: source, maxBytes: 8 * 1024 * 1024 }).contentHash);
+    assert.equal(
+      changed.contentHash,
+      readHeartbeatLedgerPair({
+        root: await realpath(f.project),
+        path: source,
+        maxBytes: 8 * 1024 * 1024,
+      }).contentHash,
+    );
     await writeFile(resolve(nested, ".git"), "gitdir: elsewhere\n");
     const rejected = await service.taskProjection("chat-A", f.project);
     assert.equal(rejected.status, "stale");
@@ -1265,20 +1311,28 @@ test("warm bound cache revalidates source hash and newly introduced Git boundari
     assert.equal(escaped.status, "stale");
     assert.equal(escaped.sourcePath, source);
     assert.equal(escaped.task, null);
-  } finally { service.close(); await f.close(); }
+  } finally {
+    service.close();
+    await f.close();
+  }
 });
 
 test("bound-only reads preserve invalid Items errors and the canonical content hash", async () => {
   const f = await fixture();
   const service = new HeartbeatService(resolve(f.root, "invalid-bound-data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
   });
   try {
-    await writeFile(f.kitPath, `export function inspectHeartbeatLedger(text,{mode}) {
+    await writeFile(
+      f.kitPath,
+      `export function inspectHeartbeatLedger(text,{mode}) {
       return { mode, certifiesCurrent:false, passed:mode!=="items", wakes:[],
         items:[{id:"A",item:"test",status:"done",evidence:"ok",line:6}],
         findings:mode==="items"?[{severity:"error",rule:"invalid-item",message:"invalid item"}]:[] };
-    }`);
+    }`,
+    );
     await writeFile(f.source, ledger("chat-A"));
     const full = await service.taskProjection("chat-A", f.project, { forceDiscovery: true });
     const bound = await service.taskProjection("chat-A", f.project);
@@ -1289,7 +1343,10 @@ test("bound-only reads preserve invalid Items errors and the canonical content h
     assert.equal(bound.error, full.error);
     assert.ok(bound.contentHash);
     assert.equal(bound.contentHash, full.contentHash);
-  } finally { service.close(); await f.close(); }
+  } finally {
+    service.close();
+    await f.close();
+  }
 });
 
 test("explicit manual bindings remain readable without thread metadata and reject changed boundaries", async () => {
@@ -1297,7 +1354,9 @@ test("explicit manual bindings remain readable without thread metadata and rejec
   const nested = resolve(await realpath(f.project), "nested");
   const source = resolve(nested, "heartbeat.md");
   const service = new HeartbeatService(resolve(f.root, "manual-bound-data"), {
-    kitPath: f.kitPath, fallbackKitPath: null, refreshMs: 0,
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
   });
   try {
     await mkdir(nested);
@@ -1319,7 +1378,10 @@ test("explicit manual bindings remain readable without thread metadata and rejec
     assert.equal(escaped.status, "stale");
     assert.equal(escaped.sourcePath, source);
     assert.equal(escaped.task, null);
-  } finally { service.close(); await f.close(); }
+  } finally {
+    service.close();
+    await f.close();
+  }
 });
 
 test("a stored source remains readable when discovery budgets hide it from the project scan", async () => {
