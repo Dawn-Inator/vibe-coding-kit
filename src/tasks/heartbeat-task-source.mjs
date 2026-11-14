@@ -359,18 +359,20 @@ export class HeartbeatDiscoveryIndex {
 				const current = entry;
 				const watcher = this.#watch(root, { recursive: true, persistent: false }, (event, filename) => {
 					if (!current.active) return;
-					// Automatic scans never traverse these directories. An explicit
-					// .tmp head bypasses this index, so cache traffic stays isolated.
-					const parts = typeof filename === "string" ? filename.split(/[\\/]/) : [];
-					if (parts.includes(".tmp")) return;
-					if (parts.some((part, i) => SKIP.has(part) && i < parts.length - 1 &&
-						(part !== ".git" || i === 0))) return;
-					// A current canonical regular non-Markdown file cannot affect a
-					// completed scan if it was not an observed directory and does not
-					// share an inode with any inspected Markdown or explicit source.
-					// All keys must possess complete bounded metadata for this proof.
-					if (event === "change" && typeof filename === "string" && filename &&
-						!parts.includes(".git") && !basename(filename).toLowerCase().endsWith(".md")) {
+					// Skipped trees are excluded from automatic discovery, but a file
+					// inside one can still be a hardlink to an inspected ledger or an
+					// explicitly configured source. Never suppress an event until every
+					// active key has complete directory and source-identity proof.
+					const name = typeof filename === "string" ? filename : "";
+					const parts = name ? name.split(/[\\/]/) : [];
+					const skippedAncestor = parts.some((part, i) => SKIP.has(part) && i < parts.length - 1);
+					const nestedGit = parts.includes(".git") && parts[0] !== ".git";
+					const regularContentChange = event === "change" && !parts.includes(".git") &&
+						!basename(name).toLowerCase().endsWith(".md");
+					const skippedRegularEvent = skippedAncestor && !nestedGit &&
+						(event === "change" || event === "rename");
+					if (typeof filename === "string" && filename && basename(filename) !== ".git" &&
+						(regularContentChange || skippedRegularEvent)) {
 						const path = resolve(root, filename);
 						const relevant = [...this.#entries.values()].filter((other) => other.root === root && other.active);
 						if (isProjectPathWithinRoot(root, path) && relevant.length) {
@@ -380,7 +382,8 @@ export class HeartbeatDiscoveryIndex {
 								if (info.isFile() && identity && realpathSync(path) === path &&
 									relevant.every((other) => other.observedDirectories && !other.observedDirectories.has(path) &&
 										other.sourceIdentities && !other.sourceIdentities.has(identity) &&
-										other.explicit !== path && other.explicitCanonical !== path)) return;
+										(!other.explicit || !isProjectPathWithinRoot(path, other.explicit)) &&
+										(!other.explicitCanonical || !isProjectPathWithinRoot(path, other.explicitCanonical)))) return;
 							} catch { /* Missing or inaccessible paths invalidate. */ }
 						}
 					}

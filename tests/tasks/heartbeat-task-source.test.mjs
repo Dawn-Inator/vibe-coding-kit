@@ -1089,3 +1089,112 @@ test("new Markdown hardlink changed through its non-Markdown alias invalidates a
 		assert.equal(result.candidates[0]?.associated, false);
 	} finally { releaseScan(); index.close(); }
 });
+
+test("hardlink writes from skipped directories invalidate an indexed Markdown source", async () => {
+	const root = projectRoot();
+	const source = join(root, "heartbeat.md");
+	const content = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`;
+	writeFileSync(source, content);
+	mkdirSync(join(root, ".tmp"));
+	mkdirSync(join(root, "node_modules"));
+	const tmpAlias = join(root, ".tmp", "alias.ts");
+	const moduleAlias = join(root, "node_modules", "alias.ts");
+	linkSync(source, tmpAlias);
+	linkSync(source, moduleAlias);
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		assert.equal((await index.discover({ root, threadId: THREAD })).candidates[0].associated, true);
+		writeFileSync(tmpAlias, content.replace(THREAD, "other-thread"));
+		changed("change", ".tmp/alias.ts");
+		assert.equal((await index.discover({ root, threadId: THREAD })).candidates[0].associated, false);
+		writeFileSync(moduleAlias, content);
+		changed("change", "node_modules/alias.ts");
+		assert.equal((await index.discover({ root, threadId: THREAD })).candidates[0].associated, true);
+		assert.equal(scans, 3);
+	} finally { index.close(); }
+});
+
+test("skipped cache events reuse a valid proof, while missing or unproven events invalidate", async () => {
+	const root = projectRoot();
+	const cache = join(root, ".tmp", "codex-task-progress", "cache");
+	mkdirSync(cache, { recursive: true });
+	const name = `${"a".repeat(64)}.snapshot.json`;
+	const path = join(cache, name);
+	writeFileSync(path, "{}");
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		await index.discover({ root });
+		writeFileSync(path, '{"refreshed":true}');
+		changed("change", `.tmp/codex-task-progress/cache/${name}`);
+		await index.discover({ root });
+		assert.equal(scans, 1);
+		const tempName = `.${name}.1234.0123456789abcdef`;
+		writeFileSync(join(cache, tempName), "{}");
+		changed("rename", `.tmp/codex-task-progress/cache/${tempName}`);
+		await index.discover({ root });
+		assert.equal(scans, 1);
+		rmSync(join(cache, tempName));
+		changed("rename", `.tmp/codex-task-progress/cache/${tempName}`);
+		await index.discover({ root });
+		assert.equal(scans, 2, "missing skipped paths must invalidate");
+		changed("rename", ".tmp/codex-task-progress/cache");
+		await index.discover({ root });
+		assert.equal(scans, 3, "directory events remain conservative");
+	} finally { index.close(); }
+
+	let noProofChanged;
+	let noProofScans = 0;
+	const noProofWatcher = Object.assign(new EventEmitter(), { close() {} });
+	const withoutProof = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { noProofChanged = callback; return noProofWatcher; },
+		async scanFactory(options) {
+			noProofScans++;
+			const stripped = { ...options };
+			delete stripped.collectObservedDirectory;
+			return discoverHeartbeatLedgerSources(stripped);
+		},
+	});
+	try {
+		await withoutProof.discover({ root });
+		noProofChanged("change", `.tmp/codex-task-progress/cache/${name}`);
+		await withoutProof.discover({ root });
+		assert.equal(noProofScans, 2, "skipped-tree events require current proof");
+	} finally { withoutProof.close(); }
+});
+
+test("explicit sources inside skipped trees cannot be hidden by file-event filtering", async () => {
+	const root = projectRoot();
+	const directory = join(root, "node_modules");
+	mkdirSync(directory);
+	const source = join(directory, "explicit.data");
+	const content = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`;
+	writeFileSync(source, content);
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		await index.discover({ root });
+		assert.equal((await index.discover({ root, ledgerPath: source, threadId: THREAD })).candidates[0].associated, true);
+		writeFileSync(source, content.replace(THREAD, "other-thread"));
+		changed("change", "node_modules/explicit.data");
+		const refreshed = await index.discover({ root, ledgerPath: source, threadId: THREAD });
+		assert.equal(refreshed.candidates[0].associated, false);
+		assert.equal(scans, 3);
+	} finally { index.close(); }
+});
