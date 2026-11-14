@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { HelperHealthInspection } from "../../../platform/macos/src/installed-inspection.js";
+import type { MacosReleaseFile } from "../../../platform/macos/src/release.js";
 import type { GoalProgressUpdateState } from "../../contracts/src/index.js";
 import { GoalProgressUpdateCoordinator } from "../src/update-coordinator.js";
 
@@ -188,10 +190,15 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
           const target = join(releaseRoot, path);
           await fs.mkdir(resolve(target, ".."), { recursive: true });
           await fs.writeFile(target, contents);
-          return [path, { path, bytes: Buffer.byteLength(contents), sha256: hash(contents) }];
+          const file: MacosReleaseFile = {
+            path,
+            bytes: Buffer.byteLength(contents),
+            sha256: hash(contents),
+          };
+          return [path, file] as const;
         }),
       ),
-    );
+    ) satisfies Record<string, MacosReleaseFile>;
     const manifest = {
       schemaVersion: 1,
       releaseVersion: version,
@@ -283,7 +290,26 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         },
       },
       async inspectHelper() {
-        return { ok: true, startupListenerRunning: true, startupListenerReady: true };
+        const inspection: HelperHealthInspection = {
+          ok: true,
+          socketPathExists: true,
+          socketIsSocket: true,
+          socketMode: 0o600,
+          pingOk: true,
+          protocolVersion: 1,
+          protocolMatches: true,
+          pid: 123,
+          identityPid: 123,
+          pidMatches: true,
+          ownerCount: 1,
+          singleOwner: true,
+          storeReadOnly: true,
+          startupListenerRunning: true,
+          startupListenerReady: true,
+          startupListenerPid: 123,
+          code: null,
+        };
+        return inspection;
       },
       async inspectHelperReadiness() {
         return { pingOk: true, ready: true, code: null };

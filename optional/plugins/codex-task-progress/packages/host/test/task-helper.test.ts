@@ -439,17 +439,21 @@ test("slow task diagnostics record bounded stage timings without changing get re
     assert.ok(diagnostics.length >= 5);
     assert.ok(
       diagnostics.every(
-        (entry) => typeof entry.durationMs === "number" && Number.isInteger(entry.durationMs) && entry.durationMs >= 0,
+        (entry) =>
+          typeof entry.durationMs === "number" &&
+          Number.isInteger(entry.durationMs) &&
+          entry.durationMs >= 0,
       ),
     );
     assert.ok(diagnostics.every((entry) => /^[0-9a-f]{64}$/.test(entry.threadKey ?? "")));
     assert.ok(
-      diagnostics.some((entry) => entry.code === "TASK_PERF_TOTAL" && (entry.durationMs ?? -1) >= 500),
+      diagnostics.some(
+        (entry) => entry.code === "TASK_PERF_TOTAL" && (entry.durationMs ?? -1) >= 500,
+      ),
     );
     assert.ok(
       diagnostics.some(
-        (entry) =>
-          entry.code === "TASK_PERF_NATIVE_IDENTITY" && (entry.durationMs ?? -1) >= 500,
+        (entry) => entry.code === "TASK_PERF_NATIVE_IDENTITY" && (entry.durationMs ?? -1) >= 500,
       ),
     );
     assert.ok(diagnostics.some((entry) => entry.code === "TASK_PERF_TASK_PROJECTION"));

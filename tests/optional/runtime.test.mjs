@@ -131,6 +131,29 @@ test('fixed helper symlink fails closed instead of falling back to the legacy he
   assert.equal(calls, 0);
 });
 
+test('fixed bin parent symlink fails closed with or without a target before legacy fallback', { skip: process.platform === 'win32' }, async (t) => {
+  for (const dangling of [false, true]) {
+    const f = fixture(t, 'codex-task-progress');
+    const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
+    const fixedBin = join(installRoot, 'bin');
+    const legacy = join(installRoot, 'current', 'bin', 'goal-progress');
+    const targetBin = join(installRoot, 'fixed-bin-target');
+    mkdirSync(targetBin, { recursive: true });
+    mkdirSync(join(legacy, '..'), { recursive: true });
+    writeFileSync(join(targetBin, 'goal-progress'), 'fixed helper');
+    writeFileSync(legacy, 'legacy helper');
+    symlinkSync(dangling ? join(installRoot, 'missing-bin-target') : targetBin, fixedBin, 'dir');
+    let calls = 0;
+    const result = await inspectOptionalComponent({
+      ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
+      runner: async () => { calls += 1; return response(0, JSON.stringify({ ok: true })); },
+    });
+    assert.equal(result.status, 'error');
+    assert.match(result.message, /fixed goal-progress helper parent is not a physical directory/);
+    assert.equal(calls, 0);
+  }
+});
+
 test('legacy current helper remains usable when the fixed helper is absent', async (t) => {
   const f = fixture(t, 'codex-task-progress');
   const legacy = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', 'current', 'bin', 'goal-progress');

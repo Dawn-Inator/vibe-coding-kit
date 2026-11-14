@@ -203,13 +203,48 @@ async function inspectTaskProgress(context) {
 
 function resolveInstalledTaskProgressHelper(dataRoot) {
   const installRoot = join(dataRoot, 'install');
-  const fixedHelper = join(installRoot, 'bin', 'goal-progress');
+  const fixedBin = join(installRoot, 'bin');
+  const fixedHelper = join(fixedBin, 'goal-progress');
   const legacyHelper = join(installRoot, 'current', 'bin', 'goal-progress');
-  for (const [path, label] of [[fixedHelper, 'fixed'], [legacyHelper, 'legacy']]) {
+  const applicationSupport = dirname(dataRoot);
+  const library = dirname(applicationSupport);
+
+  // A missing ancestor makes the fixed helper absent. Existing ancestors must
+  // themselves be physical directories, so dangling or directory symlinks do
+  // not turn an unsafe fixed location into a legacy fallback.
+  const fixedParentChain = [
+    library,
+    applicationSupport,
+    dataRoot,
+    installRoot,
+    fixedBin,
+  ];
+  let fixedParentAbsent = false;
+  for (const path of fixedParentChain) {
     let stat;
     try { stat = lstatSync(path); }
     catch (error) {
-      if (error.code === 'ENOENT') continue;
+      if (error.code === 'ENOENT') { fixedParentAbsent = true; break; }
+      throw new Error('installed fixed goal-progress helper parent could not be inspected');
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('installed fixed goal-progress helper parent is not a physical directory');
+    }
+  }
+
+  if (!fixedParentAbsent) {
+    const selectedFixed = inspectHelperFile(fixedHelper, 'fixed');
+    if (selectedFixed) return selectedFixed;
+  }
+
+  return inspectHelperFile(legacyHelper, 'legacy');
+}
+
+function inspectHelperFile(path, label) {
+    let stat;
+    try { stat = lstatSync(path); }
+    catch (error) {
+      if (error.code === 'ENOENT') return null;
       throw new Error(`installed ${label} goal-progress helper could not be inspected`);
     }
     if (stat.isSymbolicLink() || !stat.isFile()) {
@@ -218,8 +253,6 @@ function resolveInstalledTaskProgressHelper(dataRoot) {
     try { realpathSync(path); }
     catch { throw new Error(`installed ${label} goal-progress helper could not be resolved`); }
     return path;
-  }
-  return null;
 }
 
 async function inspectRegularComponent(component, context) {
