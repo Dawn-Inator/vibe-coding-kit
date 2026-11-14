@@ -4,9 +4,8 @@ import { basename, isAbsolute, resolve } from "node:path";
 import { calculateTaskProgress } from "./task-contract.mjs";
 import { inspectHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
 import {
-	isNestedGitProject,
+	createProjectLedgerPathScan,
 	isProjectPathWithinRoot,
-	resolveProjectLedgerPath,
 } from "./project-ledger-path.mjs";
 
 const SKIP = new Set([
@@ -99,6 +98,7 @@ export async function discoverHeartbeatLedgerSources({
 		);
 
 	const projectRoot = await realpath(resolve(root));
+	const pathScan = createProjectLedgerPathScan(projectRoot);
 	const candidates = new Map();
 	const seenFiles = new Set();
 	const seenDirectories = new Set();
@@ -113,10 +113,7 @@ export async function discoverHeartbeatLedgerSources({
 		let path;
 		let info;
 		try {
-			({ path, info } = await resolveProjectLedgerPath(
-				projectRoot,
-				candidatePath,
-			));
+			({ path, info } = await pathScan.resolve(candidatePath));
 		} catch (error) {
 			if (failClosed) throw error;
 			if (error?.code !== "nested-git") reasons.add("unreadable-file");
@@ -174,7 +171,7 @@ export async function discoverHeartbeatLedgerSources({
 			return;
 		}
 		if (seenDirectories.has(canonicalDirectory)) return;
-		if (await isNestedGitProject(projectRoot, canonicalDirectory)) return;
+		if (await pathScan.isNested(canonicalDirectory)) return;
 		seenDirectories.add(canonicalDirectory);
 		let entries;
 		try {
@@ -190,7 +187,7 @@ export async function discoverHeartbeatLedgerSources({
 		for (const entry of entries) {
 			const path = resolve(canonicalDirectory, entry.name);
 			if (entry.isDirectory() && !SKIP.has(entry.name)) {
-				if (await isNestedGitProject(projectRoot, path)) continue;
+				if (await pathScan.isNested(path)) continue;
 				if (depth + 1 > maxDepth) reasons.add("depth-limit");
 				else await scan(path, depth + 1);
 			} else if (
@@ -212,7 +209,7 @@ export async function discoverHeartbeatLedgerSources({
 	for (const directory of [".workspace", ".todolist"]) {
 		const path = resolve(projectRoot, directory);
 		if ((await lstat(path).catch(() => null))?.isDirectory()) {
-			if (await isNestedGitProject(projectRoot, path)) continue;
+			if (await pathScan.isNested(path)) continue;
 			if (1 > maxDepth) reasons.add("depth-limit");
 			else await scan(path, 1);
 		}

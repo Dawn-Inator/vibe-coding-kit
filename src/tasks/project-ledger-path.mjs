@@ -34,9 +34,47 @@ export async function isNestedGitProject(root, directory) {
 	return false;
 }
 
+/** Create boundary checks whose memoization is limited to one bounded discovery scan.
+ * root must already be canonical. Never reuse this across discovery requests.
+ */
+export function createProjectLedgerPathScan(root) {
+	const canonicalRoot = resolve(root);
+	const boundaries = new Map([[canonicalRoot, false]]);
+	const nestedCanonical = async (directory) => {
+		const pending = [];
+		let current = directory;
+		while (!boundaries.has(current)) {
+			pending.push(current);
+			current = dirname(current);
+		}
+		let nested = boundaries.get(current);
+		while (pending.length) {
+			current = pending.pop();
+			if (!nested) nested = Boolean(await lstat(resolve(current, ".git")).catch(() => null));
+			boundaries.set(current, nested);
+		}
+		return nested;
+	};
+	return {
+		async isNested(directory) {
+			const canonical = await realpath(directory).catch(() => null);
+			if (!canonical || !isProjectPathWithinRoot(canonicalRoot, canonical)) return false;
+			return nestedCanonical(canonical);
+		},
+		async resolve(candidate) {
+			return resolveProjectLedgerPathWithBoundary(canonicalRoot, candidate, nestedCanonical);
+		},
+	};
+}
+
 /** Canonicalize and validate one ledger against the current project's Git boundary. */
 export async function resolveProjectLedgerPath(root, candidate) {
 	const canonicalRoot = await realpath(root);
+	return resolveProjectLedgerPathWithBoundary(canonicalRoot, candidate, (directory) =>
+		isNestedGitProject(canonicalRoot, directory));
+}
+
+async function resolveProjectLedgerPathWithBoundary(canonicalRoot, candidate, isNested) {
 	const requested = resolve(canonicalRoot, candidate);
 	let canonicalPath;
 	try {
@@ -52,7 +90,7 @@ export async function resolveProjectLedgerPath(root, candidate) {
 			"outside-root",
 			"Project ledger path must stay within the project root",
 		);
-	if (await isNestedGitProject(canonicalRoot, dirname(canonicalPath)))
+	if (await isNested(dirname(canonicalPath)))
 		throw new ProjectLedgerPathError(
 			"nested-git",
 			"Project ledger is inside a nested Git project",

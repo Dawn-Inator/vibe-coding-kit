@@ -609,3 +609,31 @@ test("discovery keeps the trusted root Git project but rejects explicit nested G
 		/nested Git project/i,
 	);
 });
+
+test("each discovery refreshes Git boundaries and confines explicit symlinks", async () => {
+	const root = projectRoot();
+	const outside = projectRoot();
+	const directory = join(root, "docs", "nested");
+	mkdirSync(directory, { recursive: true });
+	const local = join(directory, "heartbeat.md");
+	const external = join(outside, "heartbeat.md");
+	const contents = `${ledger([["I1", "report:r1", "source", "done", "receipt", "[]"]])}\nthread: ${THREAD}\n`;
+	writeFileSync(local, contents);
+	writeFileSync(external, contents);
+	symlinkSync(external, join(root, "linked.md"));
+	const first = await discoverHeartbeatLedgerSources({ root, threadId: THREAD });
+	assert.deepEqual(first.candidates, [{ path: realpathSync(local), associated: true }]);
+	assert.equal(first.complete, true);
+	await assert.rejects(
+		discoverHeartbeatLedgerSources({ root, threadId: THREAD, ledgerPath: "linked.md" }),
+		/within the project root/i,
+	);
+	writeFileSync(join(root, "docs", ".git"), "gitdir: elsewhere\n");
+	const second = await discoverHeartbeatLedgerSources({ root, threadId: THREAD });
+	assert.deepEqual(second.candidates, []);
+	assert.equal(second.complete, true);
+	await assert.rejects(
+		discoverHeartbeatLedgerSources({ root, threadId: THREAD, ledgerPath: local }),
+		/nested Git project/i,
+	);
+});

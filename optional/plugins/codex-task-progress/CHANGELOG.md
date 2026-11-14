@@ -1,3 +1,8 @@
+# Task Progress 0.5.4
+
+- Reduce bounded Kit Heartbeat discovery work by memoizing the canonical root and Git-boundary checks within one scan; discard the memo between scans.
+- Preserve the configured file/depth limits, nested-Git and symlink boundaries, and exact-thread association behavior.
+
 # Task Progress 0.5.3
 
 - Present Heartbeat history as grouped time cards with expandable records and a bounded preview of available raw fields; the source file retains the complete record.
