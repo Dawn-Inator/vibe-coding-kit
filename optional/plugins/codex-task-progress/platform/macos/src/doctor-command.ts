@@ -48,6 +48,14 @@ function createHealthInspectionCommand(
     const health = await inspectOperationalHealth(state);
     if (!health.ok) {
       const { facts, failure } = health;
+      if (failure === "stable-helper-invalid") {
+        return dependencies.commandResult(command, {
+          ok: false,
+          code: `${prefix}_STABLE_HELPER_INVALID`,
+          changed: false,
+          nextStep: "Run install --json to restore the Helper.",
+        });
+      }
       if (failure === "not-installed") {
         return dependencies.commandResult(command, {
           ok: false,

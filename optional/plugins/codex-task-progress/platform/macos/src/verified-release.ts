@@ -62,6 +62,7 @@ export interface InstalledManifest {
   readonly releaseVersion: string;
   readonly installedAt: string;
   readonly helperSha256: string;
+  readonly stableHelper?: true;
   readonly pluginVersion: string;
   readonly hookSha256: string;
   readonly programReleaseRoot: string;

@@ -15,6 +15,7 @@ import {
 import type { LaunchAgentController } from "./launch-agent-controller.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
 import type { PluginController } from "./plugin-controller.js";
+import { stableHelperMatches } from "./stable-helper.js";
 import { compareGoalProgressVersions } from "./update-manifest.js";
 import {
   type CodexInstallIdentity,
@@ -265,6 +266,10 @@ export class InstallationState {
       }
       throw error;
     }
+  }
+
+  async stableHelperValid(installed: InstalledManifest): Promise<boolean> {
+    return stableHelperMatches((await this.layout()).stableHelperPath, installed.helperSha256);
   }
 
   async permissionFacts(

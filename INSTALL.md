@@ -114,7 +114,7 @@ node .vibe-coding/kit/cli.mjs help
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --optional lark=on --optional non-code=off
 ```
 
-选择组件只接入已随 Kit 提供的技能或插件；它不会隐式登录账号、创建远端仓库、配置云账号或建立业务资源。未选择的类别不会安装或生成对应工具入口。受支持的平台缺少 Codex Task Progress 时，Kit 会在用户选择后调用内置安装器。交互式安装会对符合条件的本地签名证书请求一次明确确认；非交互安装不会猜选证书，而会返回 `setup-required` 状态和可执行命令。已保存的证书选择会供后续本地构建复用，但不保证 macOS 对受保护目录的授权跨版本继承；系统仍可能再次请求用户批准。完整流程、只读候选检查和仅配置证书的命令见[可选组件指南](optional/README.md#categories)。
+选择组件只接入已随 Kit 提供的技能或插件；它不会隐式登录账号、创建远端仓库、配置云账号或建立业务资源。未选择的类别不会安装或生成对应工具入口。受支持的平台缺少 Codex Task Progress 时，Kit 会在用户选择后调用内置安装器。交互式安装会对符合条件的本地签名证书请求一次明确确认；非交互安装不会猜选证书，而会返回 `setup-required` 状态和可执行命令。已保存的证书选择会被后续构建自动复用；Helper 会安装在真实的稳定 `install/bin/goal-progress` 路径，版本资源仍分目录保留。TCC 授权不会自动转移，首次迁移到稳定路径时系统仍可能要求用户批准，之后是否再次弹窗也不作保证。完整流程、只读候选检查和仅配置证书的命令见[可选组件指南](optional/README.md#categories)。
 
 首次交互安装会把已检测到的 Task Progress 安装作为复用默认值，除非已有设置或本次选择明确关闭它。其他类别新项目默认关闭。非交互安装可用重复 `--optional <group>=on|off` 指定选择；类别偏好写入项目配置。
 

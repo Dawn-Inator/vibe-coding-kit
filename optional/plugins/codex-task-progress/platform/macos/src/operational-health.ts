@@ -8,6 +8,7 @@ import type {
 
 export type OperationalHealthFailure =
   | "not-installed"
+  | "stable-helper-invalid"
   | "helper-job-not-loaded"
   | "helper-unhealthy"
   | "startup-listener-missing"
@@ -71,6 +72,9 @@ export async function inspectOperationalHealth(
   if (!installed) {
     return failure("not-installed", facts);
   }
+
+  if (installed.stableHelper && !(await state.stableHelperValid(installed)))
+    return failure("stable-helper-invalid", facts);
 
   const helperJobLoaded = await state.helperJobLoaded();
   facts = { ...facts, helperJobLoaded };

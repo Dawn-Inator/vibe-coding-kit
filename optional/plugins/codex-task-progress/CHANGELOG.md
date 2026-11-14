@@ -1,3 +1,8 @@
+# Task Progress 0.5.9
+
+- Install the verified Helper as a real executable at the stable `install/bin/goal-progress` path while retaining versioned release assets. Updates copy atomically with rollback, and Doctor verifies the installed file instead of following a symlink. The stable launchd, MCP and Hook paths do not unload Codex.
+- Keep the Helper's executable path stable across version updates while retaining versioned release assets. A transition to this path can still require user approval; no TCC grant is transferred or assumed, and later prompts are not ruled out.
+
 # Task Progress 0.5.8
 
 - Use the release-bundled Kit task and Heartbeat APIs by default instead of implicitly loading a personal Kit checkout. Explicit project Kit paths/pins and configured fallback paths remain supported; this changes API resolution only, not task or Heartbeat storage formats.

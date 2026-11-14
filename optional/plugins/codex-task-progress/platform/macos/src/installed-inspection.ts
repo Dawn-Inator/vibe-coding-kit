@@ -331,7 +331,13 @@ export async function inspectInstalledHook(
     hashMatchesManifest: (await fileSha256(hookPath)) === installed.hookSha256,
     stableCommand:
       commands.length > 0 &&
-      commands.every((command) => command === GOAL_PROGRESS_STABLE_HOOK_COMMAND),
+      commands.every(
+        (command) =>
+          command === GOAL_PROGRESS_STABLE_HOOK_COMMAND ||
+          (!installed.stableHelper &&
+            command ===
+              GOAL_PROGRESS_STABLE_HOOK_COMMAND.replace("/install/bin/", "/install/current/bin/")),
+      ),
     userLevelHookAbsent,
     embeddedTrustStateAbsent:
       !hookText.includes("trusted_hash") &&

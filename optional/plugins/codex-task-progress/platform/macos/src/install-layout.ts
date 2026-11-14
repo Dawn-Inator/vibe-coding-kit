@@ -19,6 +19,7 @@ export interface MacosInstallationLayout {
   readonly programReleasesRoot: string;
   readonly programReleaseRoot: string;
   readonly currentReleasePath: string;
+  readonly stableHelperPath: string;
   readonly installManifestPath: string;
   readonly stateRoot: string;
   readonly logsRoot: string;
@@ -50,6 +51,7 @@ export function resolveMacosInstallationLayout(
     programReleasesRoot: paths.programReleasesRoot,
     programReleaseRoot: resolve(paths.programReleasesRoot, input.releaseVersion),
     currentReleasePath: resolve(paths.installRoot, "current"),
+    stableHelperPath: resolve(paths.installRoot, "bin", "goal-progress"),
     installManifestPath: paths.installManifestPath,
     stateRoot: paths.stateRoot,
     logsRoot: paths.logsRoot,

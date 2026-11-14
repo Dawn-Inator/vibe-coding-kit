@@ -171,10 +171,8 @@ async function inspectCommandRequirement(requirement, context) {
 async function inspectTaskProgress(context) {
   if (context.platform !== 'darwin' || context.arch !== 'arm64') return result('unsupported', 'Codex Task Progress installation supports macOS arm64 only.');
   const dataRoot = join(context.home, 'Library', 'Application Support', 'CodexTaskProgress');
-  const stableHelper = join(dataRoot, 'install', 'current', 'bin', 'goal-progress');
-  if (existsSync(stableHelper)) {
-    const stat = statSync(stableHelper);
-    if (!stat.isFile()) throw new Error('installed goal-progress helper is not a regular file');
+  const stableHelper = resolveInstalledTaskProgressHelper(dataRoot);
+  if (stableHelper) {
     const doctor = await run(context.runner, stableHelper, ['doctor', '--json'], dirname(stableHelper), context.env);
     let document;
     try { document = JSON.parse(doctor.stdout); } catch { throw new Error('goal-progress doctor returned invalid JSON'); }
@@ -201,6 +199,27 @@ async function inspectTaskProgress(context) {
   return record
     ? result('installed', undefined, { component: 'codex-task-progress', source: 'codex-plugin-registration', version: typeof record.version === 'string' ? record.version : undefined })
     : result('missing', 'Codex Task Progress is not installed.');
+}
+
+function resolveInstalledTaskProgressHelper(dataRoot) {
+  const installRoot = join(dataRoot, 'install');
+  const fixedHelper = join(installRoot, 'bin', 'goal-progress');
+  const legacyHelper = join(installRoot, 'current', 'bin', 'goal-progress');
+  for (const [path, label] of [[fixedHelper, 'fixed'], [legacyHelper, 'legacy']]) {
+    let stat;
+    try { stat = lstatSync(path); }
+    catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw new Error(`installed ${label} goal-progress helper could not be inspected`);
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(`installed ${label} goal-progress helper is not a regular non-symlink file`);
+    }
+    try { realpathSync(path); }
+    catch { throw new Error(`installed ${label} goal-progress helper could not be resolved`); }
+    return path;
+  }
+  return null;
 }
 
 async function inspectRegularComponent(component, context) {

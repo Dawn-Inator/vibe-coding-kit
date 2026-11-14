@@ -23,6 +23,12 @@ import {
 } from "./launch-agent-controller.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
 import type { PluginController } from "./plugin-controller.js";
+import {
+  captureStableHelper,
+  installStableHelper,
+  restoreStableHelper,
+  stableHelperMatches,
+} from "./stable-helper.js";
 import { MacosGoalProgressUpdateStateStore } from "./update-state-store.js";
 import {
   type CodexInstallIdentity,
@@ -183,7 +189,11 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       /^[0-9a-f]{64}$/u.test(installed.hookSha256) &&
       (await currentLinkMatches(layout)) &&
       (await installedReleaseMatches(layout, release));
-    if (input.restartCodex && alreadyCurrent) {
+    const stableAlreadyCurrent = await stableHelperMatches(
+      layout.stableHelperPath,
+      release.files.helper.sha256,
+    );
+    if (input.restartCodex && alreadyCurrent && stableAlreadyCurrent) {
       const store = new MacosGoalProgressUpdateStateStore(dependencies.goalPaths);
       const update = await store.read();
       if (
@@ -222,6 +232,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       }
     }
     const currentTarget = await captureLink(layout.currentReleasePath);
+    const stableSnapshot = await captureStableHelper(layout.stableHelperPath);
     const plistSnapshot = await captureFile(layout.launchAgentPath);
     const manifestSnapshot = await captureFile(layout.installManifestPath);
     const helperJobWasLoaded = await dependencies.launchAgent.isLoaded(layout.launchAgentLabel);
@@ -335,6 +346,19 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
         },
       );
 
+      await transaction.step(
+        "install-stable-helper",
+        async () => ({
+          changed: await installStableHelper(
+            layout.stableHelperPath,
+            resolve(layout.programReleaseRoot, release.files.helper.path),
+            release.files.helper.sha256,
+          ),
+          value: undefined,
+        }),
+        async () => restoreStableHelper(layout.stableHelperPath, stableSnapshot),
+      );
+
       const plistChanged = await transaction.step(
         "write-launchd-plist",
         async () => {
@@ -423,12 +447,15 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
           const changed = await dependencies.launchAgent.ensure(
             layout.launchAgentLabel,
             layout.launchAgentPath,
-            !alreadyCurrent || plistChanged,
+            !alreadyCurrent || plistChanged || !stableAlreadyCurrent,
           );
           await dependencies.installFaultForTest?.("after-helper");
           return { changed, value: undefined };
         },
         async () => {
+          // Restore the executable and asset target before restarting the prior job.
+          await restoreStableHelper(layout.stableHelperPath, stableSnapshot);
+          await restoreLink(layout.currentReleasePath, currentTarget);
           await restoreFile(layout.launchAgentPath, plistSnapshot);
           if (helperJobWasLoaded) {
             await dependencies.launchAgent.ensure(
@@ -454,6 +481,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
         installedAt:
           alreadyCurrent && installed ? installed.installedAt : dependencies.now().toISOString(),
         helperSha256: release.files.helper.sha256,
+        stableHelper: true,
         pluginVersion: release.releaseVersion,
         hookSha256,
         programReleaseRoot: layout.programReleaseRoot,
@@ -466,6 +494,8 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       await transaction.step(
         "doctor",
         async () => {
+          if (!(await stableHelperMatches(layout.stableHelperPath, release.files.helper.sha256)))
+            throw new Error("GOAL_PROGRESS_STABLE_HELPER_INVALID");
           const helperReady = await dependencies.waitForHelperReady((timeoutMs) =>
             dependencies.inspectHelperReadiness(dependencies.goalPaths, timeoutMs),
           );

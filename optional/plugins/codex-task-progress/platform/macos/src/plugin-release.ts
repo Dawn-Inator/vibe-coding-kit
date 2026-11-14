@@ -2,9 +2,9 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const INSTALLED_BINARY =
-  "$HOME/Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress";
+  "$HOME/Library/Application Support/CodexTaskProgress/install/bin/goal-progress";
 export const GOAL_PROGRESS_STABLE_HOOK_COMMAND =
-  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
+  '/bin/sh -c \'p="$HOME/Library/Application Support/CodexTaskProgress/install/bin/goal-progress"; [ -x "$p" ] || exit 0; exec "$p" hook\'';
 export const GOAL_PROGRESS_STABLE_MCP_LAUNCHER = [
   "#!/bin/sh",
   "set -eu",

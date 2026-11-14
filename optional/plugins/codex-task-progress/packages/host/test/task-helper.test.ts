@@ -370,6 +370,97 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("slow task diagnostics record bounded stage timings without changing get results", async () => {
+  const root = await mkdtemp("/tmp/ctph-task-diagnostics-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const testRuntime = runtime(root);
+  testRuntime.readThreadIdentity = async (threadId) => {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 520));
+    return identity(threadId, root);
+  };
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    await helper.start();
+    const response = await client.request({
+      method: "task.request",
+      params: {
+        action: "get",
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_get",
+          identity: {
+            threadId: "private-thread-id",
+            sessionId: "private-thread-id",
+            turnId: "turn-1",
+            callId: "call-1",
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+        input: {},
+      },
+    });
+    const result = response.result as {
+      task: TaskState | null;
+      heartbeat: unknown;
+      taskSource: unknown;
+      completionBasis: string;
+      execution: { state: string };
+      storage: { mode: string; root: string };
+    };
+    assert.equal(result.task, null);
+    assert.equal(result.heartbeat, null);
+    assert.equal(result.taskSource, null);
+    assert.equal(result.completionBasis, "registered-checklist");
+    assert.equal(result.execution.state, "idle");
+    assert.equal(result.storage.mode, "workspace");
+    assert.ok(result.storage.root.endsWith("/.workspace/codex-task-progress"));
+  } finally {
+    await helper.stop();
+  }
+
+  try {
+    const log = (await readFile(paths.helperLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (line) => JSON.parse(line) as { code?: string; durationMs?: number; threadKey?: string },
+      );
+    const diagnostics = log.filter((entry) => entry.code?.startsWith("TASK_PERF_"));
+    assert.ok(diagnostics.length >= 5);
+    assert.ok(
+      diagnostics.every(
+        (entry) => typeof entry.durationMs === "number" && Number.isInteger(entry.durationMs) && entry.durationMs >= 0,
+      ),
+    );
+    assert.ok(diagnostics.every((entry) => /^[0-9a-f]{64}$/.test(entry.threadKey ?? "")));
+    assert.ok(
+      diagnostics.some((entry) => entry.code === "TASK_PERF_TOTAL" && (entry.durationMs ?? -1) >= 500),
+    );
+    assert.ok(
+      diagnostics.some(
+        (entry) =>
+          entry.code === "TASK_PERF_NATIVE_IDENTITY" && (entry.durationMs ?? -1) >= 500,
+      ),
+    );
+    assert.ok(diagnostics.some((entry) => entry.code === "TASK_PERF_TASK_PROJECTION"));
+    assert.doesNotMatch(
+      JSON.stringify(diagnostics),
+      /private-thread-id|private-session-id|cwd|sourcePath|evidence/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 async function taskEvents(root: string, threadId: string) {
   const store = new TaskStore(join(root, ".workspace", "codex-task-progress"));
   return (await store.history(threadId, { limit: 100 })).events;

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -64,6 +64,89 @@ test('valid doctor JSON confirms installed plugin even when doctor exits nonzero
   assert.match(result.message, /plugin remains installed/);
   assert.equal(result.diagnostic.details.pluginInstalled, true);
   assert.equal(calls, 1);
+});
+
+test('fixed physical helper wins over the legacy current helper and is invoked once', async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
+  const fixed = join(installRoot, 'bin', 'goal-progress');
+  const legacy = join(installRoot, 'current', 'bin', 'goal-progress');
+  mkdirSync(join(fixed, '..'), { recursive: true });
+  mkdirSync(join(legacy, '..'), { recursive: true });
+  writeFileSync(fixed, 'fixed helper');
+  writeFileSync(legacy, 'legacy helper retained');
+  const calls = [];
+  const runner = async (command, args, options) => {
+    calls.push({ command, args, options });
+    assert.equal(command, fixed);
+    return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
+  };
+  const result = await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'installed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.cwd, join(installRoot, 'bin'));
+  assert.deepEqual(calls[0].args, ['doctor', '--json']);
+  assert.equal(readFileSync(legacy, 'utf8'), 'legacy helper retained');
+});
+
+test('broken fixed helper fails closed without invoking a valid legacy helper', async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
+  const fixed = join(installRoot, 'bin', 'goal-progress');
+  const legacy = join(installRoot, 'current', 'bin', 'goal-progress');
+  mkdirSync(join(fixed, '..'), { recursive: true });
+  mkdirSync(join(legacy, '..'), { recursive: true });
+  writeFileSync(legacy, 'legacy helper');
+  writeFileSync(fixed, 'directory sentinel');
+  rmSync(fixed);
+  mkdirSync(fixed);
+  let calls = 0;
+  const result = await inspectOptionalComponent({
+    ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
+    runner: async () => { calls += 1; return response(0, JSON.stringify({ ok: true })); },
+  });
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /fixed goal-progress helper is not a regular non-symlink file/);
+  assert.equal(calls, 0);
+});
+
+test('fixed helper symlink fails closed instead of falling back to the legacy helper', { skip: process.platform === 'win32' }, async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
+  const fixed = join(installRoot, 'bin', 'goal-progress');
+  const legacy = join(installRoot, 'current', 'bin', 'goal-progress');
+  mkdirSync(join(fixed, '..'), { recursive: true });
+  mkdirSync(join(legacy, '..'), { recursive: true });
+  writeFileSync(legacy, 'legacy helper');
+  const target = join(installRoot, 'target-helper');
+  writeFileSync(target, 'target helper');
+  symlinkSync(target, fixed);
+  let calls = 0;
+  const result = await inspectOptionalComponent({
+    ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
+    runner: async () => { calls += 1; return response(0, JSON.stringify({ ok: true })); },
+  });
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /fixed goal-progress helper is not a regular non-symlink file/);
+  assert.equal(calls, 0);
+});
+
+test('legacy current helper remains usable when the fixed helper is absent', async (t) => {
+  const f = fixture(t, 'codex-task-progress');
+  const legacy = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', 'current', 'bin', 'goal-progress');
+  mkdirSync(join(legacy, '..'), { recursive: true });
+  writeFileSync(legacy, 'legacy helper');
+  const calls = [];
+  const runner = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
+  };
+  const result = await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'installed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, legacy);
+  assert.equal(calls[0].options.cwd, join(legacy, '..'));
+  assert.deepEqual(calls[0].args, ['doctor', '--json']);
 });
 
 test('missing lark-cli uses the documented package, then reprobes before success', async (t) => {

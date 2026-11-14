@@ -10,6 +10,7 @@ import {
   serializeMacosCommandResult,
   serializeMacosCommandResultHuman,
 } from "./command-protocol.js";
+import { resolveMacosInstallationLayout } from "./install-layout.js";
 import {
   createMacosCommandHandlers,
   GOAL_PROGRESS_CDP_HANDOFF_COMMAND,
@@ -37,6 +38,13 @@ import {
 export interface RunGoalProgressCliOptions {
   readonly homeDirectory?: string;
   readonly releaseRoot?: string;
+}
+
+export function resolveCliReleaseRoot(executablePath: string, homeDirectory: string): string {
+  const layout = resolveMacosInstallationLayout({ homeDirectory, releaseVersion: "current" });
+  return resolve(executablePath) === layout.stableHelperPath
+    ? layout.currentReleasePath
+    : resolve(dirname(executablePath), "..");
 }
 
 export async function runGoalProgressCli(
@@ -145,14 +153,14 @@ export async function runGoalProgressCli(
     return;
   }
   if (command !== undefined && (MACOS_COMMAND_NAMES as readonly string[]).includes(command)) {
+    const homeDirectory = resolve(options.homeDirectory ?? process.env.HOME ?? homedir());
+    const executableReleaseRoot = resolveCliReleaseRoot(process.execPath, homeDirectory);
     const result = await executeMacosCommand(
       argv,
       createMacosCommandHandlers({
-        homeDirectory: resolve(options.homeDirectory ?? process.env.HOME ?? homedir()),
+        homeDirectory,
         releaseRoot: resolve(
-          options.releaseRoot ??
-            process.env.GOAL_PROGRESS_RELEASE_ROOT ??
-            resolve(dirname(process.execPath), ".."),
+          options.releaseRoot ?? process.env.GOAL_PROGRESS_RELEASE_ROOT ?? executableReleaseRoot,
         ),
       }),
     );

@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { z } from "zod";
@@ -175,6 +176,28 @@ interface VisibleThreadOrder {
   sequence: number;
   retiredLifecycleIds: string[];
 }
+
+type TaskDiagnosticStage =
+  | "native-identity"
+  | "project-preferences"
+  | "workspace-routing"
+  | "task-projection"
+  | "project-view"
+  | "project-view-snapshot"
+  | "local-task-store"
+  | "history";
+
+const TASK_DIAGNOSTIC_STAGES: readonly TaskDiagnosticStage[] = [
+  "native-identity",
+  "project-preferences",
+  "workspace-routing",
+  "task-projection",
+  "project-view",
+  "project-view-snapshot",
+  "local-task-store",
+  "history",
+];
+const TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS = 500;
 
 export function usesSourcePluginRuntime(
   environment: Readonly<Record<string, string | undefined>> = process.env,
@@ -2373,6 +2396,42 @@ export class GoalProgressHelper {
 
   async #handleTaskIpc(request: HelperTaskIpcRequest): Promise<GoalProgressIpcHandlerResult> {
     const action = request.params.action;
+    const diagnosticStartedAt = performance.now();
+    const stageDurations: Partial<Record<TaskDiagnosticStage, number>> = {};
+    const measureStage = async <T>(stage: TaskDiagnosticStage, work: () => Promise<T>) => {
+      const startedAt = performance.now();
+      try {
+        return await work();
+      } finally {
+        stageDurations[stage] = Math.min(
+          60_000,
+          Math.round((stageDurations[stage] ?? 0) + performance.now() - startedAt),
+        );
+      }
+    };
+    const logSlowTask = (threadId: string) => {
+      const durationMs = Math.min(60_000, Math.round(performance.now() - diagnosticStartedAt));
+      if (durationMs < TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS) return;
+      const threadKey = hashGoalProgressIdentity(threadId);
+      void this.#log({
+        level: "info",
+        event: "ipc.response",
+        code: "TASK_PERF_TOTAL",
+        durationMs,
+        threadKey,
+      });
+      for (const stage of TASK_DIAGNOSTIC_STAGES) {
+        const stageDuration = stageDurations[stage];
+        if (stageDuration === undefined) continue;
+        void this.#log({
+          level: "info",
+          event: "ipc.response",
+          code: `TASK_PERF_${stage.toUpperCase().replaceAll("-", "_")}`,
+          durationMs: stageDuration,
+          threadKey,
+        });
+      }
+    };
     let threadId: string;
     let cwd: string;
     let input: unknown;
@@ -2387,17 +2446,23 @@ export class GoalProgressHelper {
           "TASK_TOOL_MISMATCH",
           "Task action does not match tool identity",
         );
-      const identity = await this.#sessionCoordinator.authorizeSessionRequest(request.params.auth);
+      const identity = await measureStage("native-identity", () =>
+        this.#sessionCoordinator.authorizeSessionRequest(request.params.auth),
+      );
       threadId = identity.threadId;
       cwd = identity.cwd;
       input = request.params.input;
-      nativeStatus = await this.#runtime
-        .readThreadIdentity(threadId)
-        .then((thread) => thread.status)
-        .catch(() => undefined);
+      nativeStatus = await measureStage("native-identity", () =>
+        this.#runtime
+          .readThreadIdentity(threadId)
+          .then((thread) => thread.status)
+          .catch(() => undefined),
+      );
     } else {
       threadId = request.params.threadId;
-      const identity = await this.#runtime.readThreadIdentity(threadId);
+      const identity = await measureStage("native-identity", () =>
+        this.#runtime.readThreadIdentity(threadId),
+      );
       if (
         identity.id !== threadId ||
         identity.threadSource !== "user" ||
@@ -2413,46 +2478,57 @@ export class GoalProgressHelper {
       input = request.params;
     }
     // Use the same nearest-Git-boundary rule as heartbeat discovery, before storage is opened.
-    const initial = resolve(cwd);
-    let project = initial;
-    while (true) {
-      if (
-        await stat(resolve(project, ".git")).then(
-          () => true,
-          () => false,
+    const projectEnabled = await measureStage("project-preferences", async () => {
+      const initial = resolve(cwd);
+      let project = initial;
+      while (true) {
+        if (
+          await stat(resolve(project, ".git")).then(
+            () => true,
+            () => false,
+          )
         )
-      )
-        break;
-      const parent = dirname(project);
-      if (parent === project || project === homedir()) {
-        project = initial;
-        break;
+          break;
+        const parent = dirname(project);
+        if (parent === project || project === homedir()) {
+          project = initial;
+          break;
+        }
+        project = parent;
       }
-      project = parent;
-    }
-    project = await realpath(project);
-    if (readOptionalGroupPreference(project, "task-progress") === false) {
+      project = await realpath(project);
+      return readOptionalGroupPreference(project, "task-progress") !== false;
+    });
+    if (!projectEnabled) {
       if (!["get", "history", "heartbeat-history"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
           "Task progress is disabled for this project",
         );
+      logSlowTask(threadId);
       return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
     }
-    const workspace = await this.#workspaceStorage.forThread(threadId, cwd);
+    const workspace = await measureStage("workspace-routing", () =>
+      this.#workspaceStorage.forThread(threadId, cwd),
+    );
     const { taskStore, heartbeat: heartbeatService } = workspace;
     const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
     let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
     let heartbeat: Awaited<ReturnType<typeof heartbeatService.projectView>> | null = null;
     let heartbeatPending = false;
-    if (action === "get") sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+    if (action === "get")
+      sourceTask = await measureStage("task-projection", () =>
+        heartbeatService.taskProjection(threadId, cwd),
+      );
     else {
       [sourceTask, heartbeat] = await Promise.all([
-        heartbeatService.taskProjection(threadId, cwd, {
-          forceDiscovery: ["initialize", "update", "rescope", "bind-heartbeat"].includes(action),
-        }),
-        heartbeatService.projectView(cwd),
+        measureStage("task-projection", () =>
+          heartbeatService.taskProjection(threadId, cwd, {
+            forceDiscovery: ["initialize", "update", "rescope", "bind-heartbeat"].includes(action),
+          }),
+        ),
+        measureStage("project-view", () => heartbeatService.projectView(cwd)),
       ]);
     }
     let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
@@ -2460,8 +2536,10 @@ export class GoalProgressHelper {
     if (action === "bind-heartbeat") {
       await workspace.ensureWritable();
       const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
-      await heartbeatService.bind(threadId, bind.path, cwd);
-      sourceTask = await heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: true });
+      await measureStage("local-task-store", () => heartbeatService.bind(threadId, bind.path, cwd));
+      sourceTask = await measureStage("task-projection", () =>
+        heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: true }),
+      );
     }
     if (
       ["initialize", "update", "rescope"].includes(action) &&
@@ -2487,9 +2565,13 @@ export class GoalProgressHelper {
       );
     if (["initialize", "update", "rescope"].includes(action)) await workspace.ensureWritable();
     if (action === "initialize")
-      result = await taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input));
+      result = await measureStage("local-task-store", () =>
+        taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input)),
+      );
     else if (action === "update")
-      result = await taskStore.update(threadId, TaskUpdateInputSchema.parse(input));
+      result = await measureStage("local-task-store", () =>
+        taskStore.update(threadId, TaskUpdateInputSchema.parse(input)),
+      );
     else if (action === "rescope") {
       const parsed = TaskRescopeInputSchema.parse(input);
       const rescopeInput = {
@@ -2499,10 +2581,14 @@ export class GoalProgressHelper {
         objectives: parsed.objectives,
         ...(parsed.title === undefined ? {} : { title: parsed.title }),
       };
-      result = await taskStore.rescope(threadId, rescopeInput);
+      result = await measureStage("local-task-store", () =>
+        taskStore.rescope(threadId, rescopeInput),
+      );
     } else {
       if (action === "get") {
-        const snapshot = await heartbeatService.projectViewSnapshot(cwd);
+        const snapshot = await measureStage("project-view-snapshot", () =>
+          heartbeatService.projectViewSnapshot(cwd),
+        );
         heartbeat = snapshot.view;
         heartbeatPending = snapshot.pending;
       }
@@ -2511,7 +2597,9 @@ export class GoalProgressHelper {
         sourceTask.status === "error" ||
         sourceTask.status === "pending-selection"
       );
-      localTaskState = localTaskRead ? await taskStore.get(threadId) : null;
+      localTaskState = localTaskRead
+        ? await measureStage("local-task-store", () => taskStore.get(threadId))
+        : null;
       const task = sourceTask.sourcePath
         ? sourceTask.task
         : sourceTask.status === "error" || sourceTask.status === "pending-selection"
@@ -2615,7 +2703,8 @@ export class GoalProgressHelper {
         ? null
         : localTaskRead
           ? localTaskState
-          : await taskStore.get(threadId);
+          : await measureStage("local-task-store", () => taskStore.get(threadId));
+    logSlowTask(threadId);
     return {
       revision: sourceTask.sourcePath
         ? (sourceTask.task?.revision ?? null)
