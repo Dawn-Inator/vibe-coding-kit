@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reuse catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "title",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "frontend",
+        "backend"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "[^\\s]"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "category",
+          "owner",
+          "scope",
+          "source",
+          "publicEntry",
+          "summary",
+          "useWhen",
+          "constraints",
+          "examples",
+          "tests"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "useWhen": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "scope": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "[^\\s]"
+            }
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "[^\\s]"
+            }
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "[^\\s]"
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "[^\\s]"
+            }
+          },
+          "publicEntry": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "module",
+              "symbol"
+            ],
+            "properties": {
+              "module": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "[^\\s]"
+              },
+              "symbol": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "[^\\s]"
+              }
+            }
+          }
+        }
+      }
+    },
+    "publicSurfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "module",
+          "kind"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "[^\\s]"
+          }
+        }
+      }
+    }
+  }
+}

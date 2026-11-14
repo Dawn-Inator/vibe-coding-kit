@@ -1,6 +1,6 @@
 ---
 name: backend-layering
-description: Use when adding or reviewing business-logic code inside a backend service. Governs how to split one business object's code into read/write slots so that "does this file touch the database, and how" becomes a machine-checkable fact instead of something a reviewer has to notice.
+description: Use when adding, changing, or reviewing backend code, including business logic, shared capabilities, providers, and data access. Check reuse, ownership, service boundaries, and read/write layering.
 ---
 
 # Backend Layering(读写分层)
@@ -14,6 +14,12 @@ skill 解决的是更细一层的问题:**一个服务内部**,单个业务对�
 下面举例用到的具体文件名(`operate.py`、`query.py` 等)是 Python 生态的命名习惯,换一种语言/框架
 可以用别的文件名或目录约定,只要保留"槽位职责单一、命名规范到机器能识别"这个核心设计——这才是这套
 机制真正的价值所在,具体文件名只是一种实现方式。
+
+## 先查再复用
+
+新增或修改后端能力前,先查项目启用的后端复用目录,再搜索相关实现、公开入口、示例和测试。优先复用或扩展权威所有者;确有缺口才新增,并在变更说明中解释缺口。复用不改变领域所有权、事务范围、鉴权或数据安全边界:跨域仍经稳定 facade/contract,不能为了共享而绕过这些约束。
+
+项目可选启用自有目录:默认 `registries/architecture/backend-capabilities.json` 是人工维护的精选源,路径可通过 `contracts.reuseCatalogs` 配置;`doc/backend-capabilities.md` 是带来源标识、确定性生成的非权威视图。代码和类型仍是 API 真源。公开能力新增、迁移或退役时同次更新目录;既有未启用项目无需创建目录。启用后用 `reuse-catalog check|regen --project-root <root>` 检查或生成,目录不能替代源码搜索,也不声称自动发现语义重复。详见 [后端分层](../../tutorial/06-codebase-architecture/backend-layering.md)。
 
 ## 服务骨架
 
