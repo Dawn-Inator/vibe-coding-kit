@@ -226,6 +226,8 @@ export interface HeartbeatOptions {
   recordsRoot?: string;
   cacheRoot?: string;
   legacyHeartbeatRoots?: string[];
+  /** Workspace-owned cache for read-only project summaries; thread state stays service-local. */
+  projectViewCache?: HeartbeatProjectViewCache;
 }
 interface ProjectConfig {
   heartbeat?: {
@@ -242,8 +244,88 @@ interface CacheEntry {
   time: number;
   value: HeartbeatView | null;
 }
+interface ProjectViewCacheEntry {
+  time: number;
+  value: HeartbeatView;
+}
+/** Shared only by services with the same owner; it contains no thread bindings or task history. */
+export class HeartbeatProjectViewCache {
+  readonly #values = new Map<string, ProjectViewCacheEntry>();
+  readonly #failures = new Map<string, HeartbeatView>();
+  readonly #pending = new Map<
+    string,
+    { root: string; epoch: number; owner: object; promise: Promise<HeartbeatView> }
+  >();
+  readonly #epochs = new Map<string, number>();
+  #closed = false;
+
+  get(key: string): ProjectViewCacheEntry | undefined {
+    return this.#values.get(key);
+  }
+
+  epoch(root: string): number {
+    return this.#epochs.get(root) ?? 0;
+  }
+
+  pending(key: string, root: string, epoch: number): Promise<HeartbeatView> | undefined {
+    const pending = this.#pending.get(key);
+    return pending?.root === root && pending.epoch === epoch ? pending.promise : undefined;
+  }
+
+  setPending(
+    key: string,
+    root: string,
+    epoch: number,
+    owner: object,
+    promise: Promise<HeartbeatView>,
+  ): void {
+    if (!this.#closed && this.epoch(root) === epoch)
+      this.#pending.set(key, { root, epoch, owner, promise });
+  }
+
+  setValue(key: string, root: string, epoch: number, entry: ProjectViewCacheEntry): void {
+    if (!this.#closed && this.epoch(root) === epoch) this.#values.set(key, entry);
+  }
+
+  invalidateProject(root: string): void {
+    if (this.#closed) return;
+    this.#epochs.set(root, this.epoch(root) + 1);
+    const prefix = `${root}\0`;
+    for (const key of this.#values.keys()) if (key.startsWith(prefix)) this.#values.delete(key);
+    for (const key of this.#failures.keys()) if (key.startsWith(prefix)) this.#failures.delete(key);
+  }
+
+  failure(key: string): HeartbeatView | undefined {
+    return this.#failures.get(key);
+  }
+
+  setFailure(key: string, root: string, epoch: number, value: HeartbeatView): void {
+    if (!this.#closed && this.epoch(root) === epoch) this.#failures.set(key, value);
+  }
+
+  clearFailure(key: string, root: string, epoch: number): void {
+    if (!this.#closed && this.epoch(root) === epoch) this.#failures.delete(key);
+  }
+
+  clearPendingIfOwner(key: string, owner: object): void {
+    if (this.#pending.get(key)?.owner === owner) this.#pending.delete(key);
+  }
+
+  clear(): void {
+    this.#pending.clear();
+    this.#values.clear();
+    this.#failures.clear();
+  }
+
+  close(): void {
+    this.#closed = true;
+    this.clear();
+  }
+}
 const MAX_BYTES = 8 * 1024 * 1024;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const nowFunctionIds = new WeakMap<() => Date, number>();
+let nextNowFunctionId = 1;
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -367,7 +449,8 @@ export class HeartbeatService {
   readonly #legacyHeartbeatRoots: string[];
   readonly #options: HeartbeatOptions;
   readonly #cache = new Map<string, CacheEntry>();
-  readonly #projectCache = new Map<string, { time: number; value: HeartbeatView }>();
+  readonly #projectViewCache: HeartbeatProjectViewCache;
+  readonly #ownsProjectViewCache: boolean;
   readonly #last = new Map<string, HeartbeatView>();
   readonly #watchers = new Map<string, FSWatcher>();
   readonly #pending = new Map<string, Promise<HeartbeatView | null>>();
@@ -381,6 +464,8 @@ export class HeartbeatService {
     );
     this.#legacyHeartbeatRoots = options.legacyHeartbeatRoots ?? [];
     this.#options = options;
+    this.#projectViewCache = options.projectViewCache ?? new HeartbeatProjectViewCache();
+    this.#ownsProjectViewCache = options.projectViewCache === undefined;
   }
 
   async #relations() {
@@ -428,12 +513,164 @@ export class HeartbeatService {
     const now = this.#now();
     const refreshedAt = now.toISOString();
     let root: string | null = null;
+    let rootEpoch: number | null = null;
     try {
-      root = await this.#project(cwd);
-      const cached = this.#projectCache.get(root);
+      const resolvedRoot = await this.#project(cwd);
+      root = resolvedRoot;
+      const epoch = this.#projectViewCache.epoch(resolvedRoot);
+      rootEpoch = epoch;
+      // Read config before consulting the shared cache so changed discovery bounds and source
+      // selection cannot be hidden by another chat's still-fresh summary.
+      const config = await this.#config(resolvedRoot);
+      const key = this.#projectViewKey(resolvedRoot, config, this.#nowFunctionId());
+      const cached = this.#projectViewCache.get(key);
       if (cached && now.getTime() - cached.time < (this.#options.refreshMs ?? 30_000))
         return cached.value;
-      const config = await this.#config(root);
+      const pending = this.#projectViewCache.pending(key, resolvedRoot, epoch);
+      if (pending) return pending;
+      const owner = {};
+      const operation = this.#readProjectView(resolvedRoot, config, now, refreshedAt)
+        .then((view) => {
+          // A failed source read is not cached: another call can retry immediately.
+          if (view.status !== "error") {
+            this.#projectViewCache.setValue(key, resolvedRoot, epoch, {
+              time: now.getTime(),
+              value: view,
+            });
+            this.#projectViewCache.clearFailure(key, resolvedRoot, epoch);
+            this.#projectViewCache.clearFailure(
+              this.#projectViewBaseKey(resolvedRoot),
+              resolvedRoot,
+              epoch,
+            );
+          } else this.#projectViewCache.setFailure(key, resolvedRoot, epoch, view);
+          return view;
+        })
+        .finally(() => this.#projectViewCache.clearPendingIfOwner(key, owner));
+      this.#projectViewCache.setPending(key, resolvedRoot, epoch, owner, operation);
+      return operation;
+    } catch (error) {
+      const view = compactView({
+        status: "error",
+        sourcePath: null,
+        candidates: [],
+        refreshedAt,
+        modifiedAt: null,
+        lastWakeAt: null,
+        nextWakeAt: null,
+        cadenceMinutes: null,
+        certifiesCurrent: false,
+        passed: false,
+        items: [],
+        wakes: [],
+        findings: [],
+        itemCount: 0,
+        wakeCount: 0,
+        itemStatusCounts: {},
+        itemsTruncated: false,
+        wakesTruncated: false,
+        basis: "none",
+        error: String(error),
+      });
+      if (root && rootEpoch !== null)
+        this.#projectViewCache.setFailure(this.#projectViewBaseKey(root), root, rootEpoch, view);
+      return view;
+    }
+  }
+
+  /** Returns a fresh cached project summary, if available, and schedules a deduplicated refresh. */
+  async projectViewSnapshot(
+    cwd: string,
+  ): Promise<{ view: HeartbeatView | null; pending: boolean }> {
+    try {
+      const root = await this.#project(cwd);
+      const now = this.#now();
+      const nowId = this.#nowFunctionId();
+      const baseKey = this.#projectViewBaseKey(root, nowId);
+      let key: string | null = null;
+      let cached: ProjectViewCacheEntry | undefined;
+      let failure = this.#projectViewCache.failure(baseKey);
+      try {
+        const config = await this.#config(root);
+        key = this.#projectViewKey(root, config, nowId);
+        cached = this.#projectViewCache.get(key);
+        failure = this.#projectViewCache.failure(key) ?? failure;
+      } catch {
+        // Keep the last config-read failure visible while the retry below checks the source again.
+      }
+      const fresh =
+        key !== null &&
+        cached !== undefined &&
+        now.getTime() - cached.time < (this.#options.refreshMs ?? 30_000);
+      const refresh = this.projectView(cwd);
+      // Refresh failures are represented by projectView's error view; no detached rejection leaks.
+      void refresh.catch(() => undefined);
+      return { view: fresh ? (cached?.value ?? null) : (failure ?? null), pending: !fresh };
+    } catch (error) {
+      const refresh = this.projectView(cwd);
+      void refresh.catch(() => undefined);
+      return {
+        view: compactView({
+          status: "error",
+          sourcePath: null,
+          candidates: [],
+          refreshedAt: this.#now().toISOString(),
+          modifiedAt: null,
+          lastWakeAt: null,
+          nextWakeAt: null,
+          cadenceMinutes: null,
+          certifiesCurrent: false,
+          passed: false,
+          items: [],
+          wakes: [],
+          findings: [],
+          itemCount: 0,
+          wakeCount: 0,
+          itemStatusCounts: {},
+          itemsTruncated: false,
+          wakesTruncated: false,
+          basis: "none",
+          error: String(error),
+        }),
+        pending: true,
+      };
+    }
+  }
+
+  #nowFunctionId(): number {
+    if (!this.#options.now) return 0;
+    const existing = nowFunctionIds.get(this.#options.now);
+    if (existing !== undefined) return existing;
+    const id = nextNowFunctionId++;
+    nowFunctionIds.set(this.#options.now, id);
+    return id;
+  }
+
+  #projectViewKey(root: string, config: ProjectConfig, nowId: number): string {
+    return `${this.#projectViewBaseKey(root, nowId)}\0${hash(JSON.stringify(config.heartbeat ?? null))}`;
+  }
+
+  #projectViewBaseKey(root: string, nowId = this.#nowFunctionId()): string {
+    const scope = JSON.stringify({
+      options: {
+        kitPath: this.#options.kitPath ?? null,
+        fallbackKitPath: this.#options.fallbackKitPath ?? null,
+        refreshMs: this.#options.refreshMs ?? 30_000,
+        maxFiles: this.#options.maxFiles ?? null,
+        maxDepth: this.#options.maxDepth ?? null,
+        nowId,
+      },
+    });
+    return `${root}\0${hash(scope)}`;
+  }
+
+  async #readProjectView(
+    root: string,
+    config: ProjectConfig,
+    now: Date,
+    refreshedAt: string,
+  ): Promise<HeartbeatView> {
+    try {
       const { readProjectHeartbeat } = await loadProjectHeartbeatApi();
       const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
       const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
@@ -499,10 +736,9 @@ export class HeartbeatService {
         ...(discoveryWarning ? { warning: discoveryWarning } : {}),
         ...(source?.contentHash ? { contentHash: source.contentHash } : {}),
       });
-      this.#projectCache.set(root, { time: now.getTime(), value: view });
       return view;
     } catch (error) {
-      const view = compactView({
+      return compactView({
         status: "error",
         sourcePath: null,
         candidates: [],
@@ -524,8 +760,6 @@ export class HeartbeatService {
         basis: "none",
         error: String(error),
       });
-      if (root) this.#projectCache.set(root, { time: now.getTime(), value: view });
-      return view;
     }
   }
 
@@ -1092,6 +1326,6 @@ export class HeartbeatService {
     for (const watcher of this.#watchers.values()) watcher.close();
     this.#watchers.clear();
     this.#cache.clear();
-    this.#projectCache.clear();
+    if (this.#ownsProjectViewCache) this.#projectViewCache.close();
   }
 }

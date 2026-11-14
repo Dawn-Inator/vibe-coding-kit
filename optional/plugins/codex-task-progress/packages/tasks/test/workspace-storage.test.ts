@@ -172,6 +172,9 @@ test("workspace router reuses heartbeat service for cwd aliases and closes it on
   await mkdir(join(other, ".git"), { recursive: true });
   const router = manager(legacy);
   const initial = await router.forThread("lifecycle-chat", cwd);
+  const sibling = await router.forThread("sibling-chat", cwd);
+  const projectSummary = await initial.heartbeat.projectView(cwd);
+  assert.strictEqual(await sibling.heartbeat.projectView(cwd), projectSummary);
   let closeCalls = 0;
   const originalClose = initial.heartbeat.close.bind(initial.heartbeat);
   initial.heartbeat.close = () => {
@@ -186,6 +189,8 @@ test("workspace router reuses heartbeat service for cwd aliases and closes it on
   const moved = await router.forThread("lifecycle-chat", other);
   assert.notStrictEqual(moved.heartbeat, initial.heartbeat);
   assert.equal(closeCalls, 1);
+  // Closing the moved chat's service must leave the workspace-owned summary usable by its sibling.
+  assert.strictEqual(await sibling.heartbeat.projectView(cwd), projectSummary);
 });
 
 test("invalid trusted cwd and blocked workspace roots fail closed", async () => {

@@ -19,7 +19,7 @@ import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
-import { HeartbeatService } from "./heartbeat.js";
+import { HeartbeatProjectViewCache, HeartbeatService, type HeartbeatView } from "./heartbeat.js";
 
 const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
   import.meta.resolve("vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs"),
@@ -121,6 +121,163 @@ test("project heartbeat view is independent of chat associations and isolated by
   } finally {
     await f.close();
   }
+});
+
+test("project summaries share only within matching root and config scope, dedupe refreshes, and expire", async () => {
+  const f = await fixture();
+  const shared = new HeartbeatProjectViewCache();
+  let clock = 1_000;
+  const now = () => new Date(clock);
+  const options = {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
+    now,
+    projectViewCache: shared,
+  };
+  const first = new HeartbeatService(resolve(f.root, "thread-a"), options);
+  const second = new HeartbeatService(resolve(f.root, "thread-b"), options);
+  const differentConfig = new HeartbeatService(resolve(f.root, "thread-c"), {
+    ...options,
+    maxFiles: 1,
+  });
+  try {
+    const [initialA, initialB] = await Promise.all([
+      first.projectView(f.project),
+      second.projectView(f.project),
+    ]);
+    assert.strictEqual(initialA, initialB);
+    assert.equal(initialA.status, "none");
+
+    await writeFile(f.source, ledger("another-chat"));
+    clock += 1_000;
+    assert.strictEqual(await second.projectView(f.project), initialA);
+
+    // Different effective discovery bounds must not inherit another service's cached view.
+    const bounded = await differentConfig.projectView(f.project);
+    assert.notStrictEqual(bounded, initialA);
+    assert.equal(bounded.discoveryLimits?.maxFiles, 1);
+
+    const secondProject = resolve(f.root, "second-project");
+    await mkdir(resolve(secondProject, ".git"), { recursive: true });
+    const secondLedger = resolve(secondProject, "heartbeat.md");
+    await writeFile(secondLedger, ledger("other-project-chat"));
+    const isolated = await second.projectView(secondProject);
+    assert.equal(isolated.sourcePath, await realpath(secondLedger));
+    assert.notEqual(isolated.sourcePath, await realpath(f.source));
+
+    clock += 61_000;
+    const refreshed = await second.projectView(f.project);
+    assert.notStrictEqual(refreshed, initialA);
+    assert.equal(refreshed.sourcePath, await realpath(f.source));
+    assert.equal(refreshed.status, "ready");
+  } finally {
+    first.close();
+    second.close();
+    differentConfig.close();
+    shared.clear();
+    await f.close();
+  }
+});
+
+test("failed project refresh stays visible without becoming a successful cache hit, then retry recovers", async () => {
+  const f = await fixture();
+  const shared = new HeartbeatProjectViewCache();
+  const service = new HeartbeatService(resolve(f.root, "failure-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    projectViewCache: shared,
+  });
+  const configPath = resolve(f.project, ".codex-task-progress.json");
+  try {
+    await writeFile(configPath, "{invalid-json");
+    const initial = await service.projectViewSnapshot(f.project);
+    assert.equal(initial.view, null);
+    assert.equal(initial.pending, true);
+
+    const failedRefresh = await service.projectView(f.project);
+    assert.equal(failedRefresh.status, "error");
+    assert.match(failedRefresh.error ?? "", /Cannot read \.codex-task-progress\.json/i);
+    const failedSnapshot = await service.projectViewSnapshot(f.project);
+    assert.equal(failedSnapshot.view?.status, "error");
+    assert.match(failedSnapshot.view?.error ?? "", /Cannot read \.codex-task-progress\.json/i);
+    assert.equal(failedSnapshot.pending, true);
+
+    await rm(configPath);
+    await service.projectView(f.project);
+    const recovered = await service.projectViewSnapshot(f.project);
+    assert.equal(recovered.view?.status, "none");
+    assert.equal(recovered.pending, false);
+  } finally {
+    service.close();
+    shared.close();
+    await f.close();
+  }
+});
+
+test("project invalidation epochs reject late reads and preserve newer in-flight ownership", async () => {
+  const cache = new HeartbeatProjectViewCache();
+  const root = "/tmp/heartbeat-epoch-project";
+  const key = `${root}\0scope`;
+  const makeView = (status: HeartbeatView["status"], refreshedAt: string): HeartbeatView => ({
+    status,
+    sourcePath: null,
+    candidates: [],
+    refreshedAt,
+    modifiedAt: null,
+    lastWakeAt: null,
+    nextWakeAt: null,
+    cadenceMinutes: null,
+    certifiesCurrent: false,
+    passed: false,
+    items: [],
+    wakes: [],
+    findings: [],
+    itemCount: 0,
+    wakeCount: 0,
+    itemStatusCounts: {},
+    itemsTruncated: false,
+    wakesTruncated: false,
+  });
+  const oldOwner = {};
+  const newOwner = {};
+  const resolvers: { old?: (view: HeartbeatView) => void; new?: (view: HeartbeatView) => void } =
+    {};
+  const oldRead = new Promise<HeartbeatView>((resolve) => {
+    resolvers.old = resolve;
+  });
+  const newRead = new Promise<HeartbeatView>((resolve) => {
+    resolvers.new = resolve;
+  });
+  const oldEpoch = cache.epoch(root);
+  cache.setPending(key, root, oldEpoch, oldOwner, oldRead);
+  cache.invalidateProject(root);
+  const newEpoch = cache.epoch(root);
+  cache.setPending(key, root, newEpoch, newOwner, newRead);
+
+  const oldFailure = makeView("error", "old-read");
+  resolvers.old?.(oldFailure);
+  await oldRead;
+  cache.setFailure(key, root, oldEpoch, oldFailure);
+  cache.setValue(key, root, oldEpoch, {
+    time: Date.now(),
+    value: makeView("ready", "stale-old-read"),
+  });
+  cache.clearPendingIfOwner(key, oldOwner);
+  assert.equal(cache.failure(key), undefined);
+  assert.equal(cache.get(key), undefined);
+  assert.strictEqual(cache.pending(key, root, newEpoch), newRead);
+
+  const newView = makeView("ready", "new-read");
+  resolvers.new?.(newView);
+  await newRead;
+  cache.setValue(key, root, newEpoch, { time: Date.now(), value: newView });
+  cache.clearPendingIfOwner(key, newOwner);
+  assert.strictEqual(cache.get(key)?.value, newView);
+
+  cache.close();
+  cache.setValue(key, root, newEpoch, { time: Date.now(), value: oldFailure });
+  assert.equal(cache.get(key), undefined);
 });
 
 test("project history pages reuse the selected pair, fail closed on changes, and reject escaped paths", async () => {

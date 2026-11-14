@@ -1,3 +1,12 @@
+# Task Progress 0.5.3
+
+- Present Heartbeat history as grouped time cards with expandable records and a bounded preview of available raw fields; the source file retains the complete record.
+- Keep summaries compact with collapsible diagnostics; retain pagination, host theme support and responsive layouts.
+- Reuse project Heartbeat summary cache within its configured scope and 30-second TTL, and reuse in-flight reads per project; resolve `get` independently after related-task-source validation while project display loads in the background. Generation changes refresh without waiting for older requests, with two-second polling. The bound-source watcher invalidates that source's cache.
+- Keep the capsule docked and centered, remove horizontal scrolling and dragging, ignore legacy floating preferences, and preserve keyboard focus without a black click outline.
+- Order unfinished tasks by reverse original checklist-addition order at the top and completed tasks stably at the bottom; this changes presentation only, not records.
+- Presentation-only update; existing tool inputs, storage formats and source-authority behavior remain compatible. The `get` output may include an optional `heartbeatPending` status.
+
 # Task Progress 0.5.2
 
 - Share the renderer bundle size budget between runtime validation and both build paths.

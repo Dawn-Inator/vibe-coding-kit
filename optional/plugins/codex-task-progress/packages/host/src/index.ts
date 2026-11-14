@@ -2443,8 +2443,18 @@ export class GoalProgressHelper {
     const { taskStore, heartbeat: heartbeatService } = workspace;
     const execution = projectTaskExecution(nativeStatus);
     let result: unknown;
-    const heartbeat = await heartbeatService.projectView(cwd);
-    let sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+    let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
+    let heartbeat: Awaited<ReturnType<typeof heartbeatService.projectView>> | null = null;
+    let heartbeatPending = false;
+    if (action === "get") sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+    else {
+      [sourceTask, heartbeat] = await Promise.all([
+        heartbeatService.taskProjection(threadId, cwd),
+        heartbeatService.projectView(cwd),
+      ]);
+    }
+    let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
+    let localTaskRead = false;
     if (action === "bind-heartbeat") {
       await workspace.ensureWritable();
       const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
@@ -2489,17 +2499,22 @@ export class GoalProgressHelper {
       };
       result = await taskStore.rescope(threadId, rescopeInput);
     } else {
-      const localTask =
+      if (action === "get") {
+        const snapshot = await heartbeatService.projectViewSnapshot(cwd);
+        heartbeat = snapshot.view;
+        heartbeatPending = snapshot.pending;
+      }
+      localTaskRead = !(
         sourceTask.sourcePath ||
         sourceTask.status === "error" ||
         sourceTask.status === "pending-selection"
-          ? null
-          : await taskStore.get(threadId);
+      );
+      localTaskState = localTaskRead ? await taskStore.get(threadId) : null;
       const task = sourceTask.sourcePath
         ? sourceTask.task
         : sourceTask.status === "error" || sourceTask.status === "pending-selection"
           ? null
-          : localTask;
+          : localTaskState;
       const history =
         action === "history"
           ? sourceTask.sourcePath ||
@@ -2569,6 +2584,7 @@ export class GoalProgressHelper {
       result = {
         task,
         heartbeat,
+        ...(heartbeatPending ? { heartbeatPending: true } : {}),
         taskSource:
           sourceTask.sourcePath ||
           sourceTask.status === "error" ||
@@ -2595,7 +2611,9 @@ export class GoalProgressHelper {
       sourceTask.status === "error" ||
       sourceTask.status === "pending-selection"
         ? null
-        : await taskStore.get(threadId);
+        : localTaskRead
+          ? localTaskState
+          : await taskStore.get(threadId);
     return {
       revision: sourceTask.sourcePath
         ? (sourceTask.task?.revision ?? null)

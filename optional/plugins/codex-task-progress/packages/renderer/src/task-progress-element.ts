@@ -1,4 +1,18 @@
+import {
+  AlertTriangle,
+  CalendarDays,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Layers3,
+  List,
+  type LucideIconData,
+  type LucideIconNode,
+  RefreshCw,
+} from "@lucide/icons";
 import { html, LitElement, nothing, svg } from "lit";
+import { repeat } from "lit/directives/repeat.js";
+import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/release-version.js";
 import {
   GOAL_PROGRESS_ELEMENT_NAME,
@@ -53,6 +67,7 @@ export interface TaskPanelState {
 export interface TaskPanelHeartbeat {
   status: "none" | "candidates" | "ready" | "stale" | "error";
   sourcePath: string | null;
+  historyPath?: string;
   candidates: readonly { path: string; associated: boolean }[];
   refreshedAt: string;
   modifiedAt: string | null;
@@ -98,6 +113,7 @@ export interface TaskPanelHeartbeatHistory {
   nextCursor: string | null;
   total: number;
   sourcePath?: string | null;
+  error?: string;
 }
 export interface TaskPanelExecution {
   state: "working" | "waiting" | "idle" | "unknown";
@@ -109,6 +125,7 @@ export interface TaskPanelResponse {
   enabled?: boolean;
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
+  heartbeatPending?: boolean;
   taskSource?: {
     status: "candidates" | "pending-selection" | "ready" | "stale" | "error";
     path?: string;
@@ -163,7 +180,6 @@ export class TaskProgressElement extends LitElement {
     heartbeatHistory: { state: true },
     heartbeatBusy: { state: true },
     busy: { state: true },
-    floating: { type: Boolean, reflect: true },
     locale: { attribute: false },
   };
 
@@ -175,7 +191,6 @@ export class TaskProgressElement extends LitElement {
   declare requester: TaskPanelRequester | null;
   declare connectionError: string | null;
   declare expanded: boolean;
-  declare floating: boolean;
   declare locale: string;
   private declare tab: "tasks" | "history" | "heartbeat";
   private declare closing: boolean;
@@ -187,6 +202,9 @@ export class TaskProgressElement extends LitElement {
   private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
   private declare heartbeatBusy: boolean;
   private heartbeatHistorySource: string | null = null;
+  private heartbeatHistoryAttemptedSource: string | null = null;
+  private heartbeatHistoryObservedSource: string | null | undefined;
+  private heartbeatWakeExpansion = new Map<string, boolean>();
   private declare busy: boolean;
   private historyThread: string | null = null;
   private historyContext: string | null = null;
@@ -200,7 +218,6 @@ export class TaskProgressElement extends LitElement {
     this.requester = null;
     this.connectionError = null;
     this.expanded = persisted("expanded") === "true";
-    this.floating = persisted("floating") === "true";
     this.locale = "en";
     this.tab = "tasks";
     this.closing = false;
@@ -209,11 +226,22 @@ export class TaskProgressElement extends LitElement {
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
     this.heartbeatHistorySource = null;
+    this.heartbeatHistoryAttemptedSource = null;
+    this.heartbeatHistoryObservedSource = undefined;
+    this.heartbeatWakeExpansion.clear();
     this.busy = false;
   }
 
   private t(en: string, zh: string): string {
     return this.locale.toLowerCase().startsWith("zh") ? zh : en;
+  }
+
+  get floating(): boolean {
+    return false;
+  }
+
+  set floating(_value: boolean) {
+    // The ordinary task panel remains docked; ignore persisted and external requests.
   }
 
   private date(value: unknown): string {
@@ -229,6 +257,36 @@ export class TaskProgressElement extends LitElement {
     return Number.isFinite(date.getTime())
       ? date.toLocaleTimeString(this.locale || "en", { hour: "2-digit", minute: "2-digit" })
       : "—";
+  }
+
+  private dateOnly(value: unknown): string {
+    if (typeof value !== "string" && typeof value !== "number") return "—";
+    const date = new Date(value);
+    return Number.isFinite(date.getTime())
+      ? date.toLocaleDateString(this.locale || "en", {
+          month: "short",
+          day: "numeric",
+        })
+      : String(value);
+  }
+
+  private wakeHeading(value: unknown): string {
+    if (typeof value !== "string" && typeof value !== "number") return String(value);
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return String(value);
+    const today = new Date();
+    const isToday =
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth() &&
+      date.getDate() === today.getDate();
+    const datePart = isToday
+      ? this.t("Today", "今天")
+      : date.toLocaleDateString(this.locale || "en", { month: "short", day: "numeric" });
+    const timePart = date.toLocaleTimeString(this.locale || "en", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${datePart} ${timePart}`;
   }
 
   private status(value: string): string {
@@ -250,6 +308,9 @@ export class TaskProgressElement extends LitElement {
     this.heartbeatHistory = null;
     this.heartbeatBusy = false;
     this.heartbeatHistorySource = null;
+    this.heartbeatHistoryAttemptedSource = null;
+    this.heartbeatHistoryObservedSource = undefined;
+    this.heartbeatWakeExpansion.clear();
     this.heartbeatRequest++;
     this.historyThread = null;
     this.historyContext = null;
@@ -290,6 +351,26 @@ export class TaskProgressElement extends LitElement {
   protected override updated(): void {
     this.drawEdge();
     this.positionPopover();
+    this.loadHeartbeatHistoryOnOpen();
+  }
+
+  private loadHeartbeatHistoryOnOpen(): void {
+    if (!this.expanded || this.tab !== "heartbeat") return;
+    const sourcePath = this.data.heartbeat?.sourcePath ?? null;
+    if (this.heartbeatHistoryObservedSource !== sourcePath) {
+      this.heartbeatHistoryObservedSource = sourcePath;
+      this.heartbeatHistoryAttemptedSource = null;
+    }
+    if (
+      !sourcePath ||
+      !this.threadId ||
+      !this.requester ||
+      this.heartbeatBusy ||
+      this.heartbeatHistoryAttemptedSource === sourcePath
+    )
+      return;
+    this.heartbeatHistoryAttemptedSource = sourcePath;
+    void this.loadHeartbeatHistory();
   }
 
   private readonly outsideClick = (event: Event): void => {
@@ -346,6 +427,7 @@ export class TaskProgressElement extends LitElement {
     this.expanded = true;
     persist("expanded", "true");
     if (view === "history") void this.loadHistory();
+    if (view === "heartbeat") this.loadHeartbeatHistoryOnOpen();
     await this.updateComplete;
     if (this.expanded && this.tab === view)
       this.renderRoot.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
@@ -422,10 +504,23 @@ export class TaskProgressElement extends LitElement {
     return html`<svg class=${className} viewBox="0 0 24 24" aria-hidden="true"><path d=${paths[name] ?? paths.layers}></path></svg>`;
   }
 
-  private toggleFloating(): void {
-    this.floating = !this.floating;
-    persist("floating", String(this.floating));
-    this.dispatchEvent(new CustomEvent("task-progress-layout", { bubbles: true, composed: true }));
+  private lucideIcon(icon: LucideIconData, className = "") {
+    const renderNode = ([tag, attributes, children = []]: LucideIconNode): string => {
+      const attrs = Object.entries(attributes)
+        .filter(([name]) => name !== "key")
+        .map(([name, value]) => `${name}="${value}"`)
+        .join(" ");
+      return `<${tag} ${attrs}>${children.map(renderNode).join("")}</${tag}>`;
+    };
+    return unsafeSVG(
+      `<svg class="lucide lucide-${icon.name} ${className}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icon.node.map(renderNode).join("")}</svg>`,
+    );
+  }
+
+  private basename(path: string | null | undefined): string | null {
+    if (!path) return null;
+    const name = path.split(/[\\/]/).filter(Boolean).at(-1);
+    return name || null;
   }
 
   private async loadHistory(more = false): Promise<void> {
@@ -654,26 +749,100 @@ export class TaskProgressElement extends LitElement {
     const history =
       this.heartbeatHistorySource === heartbeat.sourcePath ? this.heartbeatHistory : null;
     const wakes = history?.wakes ?? [...heartbeat.wakes].reverse();
-    return html`<details @toggle=${(event: Event) => {
-      if ((event.target as HTMLDetailsElement).open && !history && !this.heartbeatBusy) {
-        void this.loadHeartbeatHistory();
+    const count = history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length;
+    return html`<section class="hb-history" aria-label=${this.t("Heartbeat history", "巡检记录")}>
+      <header class="hb-history-head">
+        <h3>${this.lucideIcon(List)}<span>${this.t("Heartbeat history", "巡检记录")}</span><span class="hb-count">${count}</span></h3>
+        <button class="hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} ?disabled=${this.heartbeatBusy || !heartbeat.sourcePath} @click=${() => void this.loadHeartbeatHistory()}>
+          ${this.lucideIcon(RefreshCw)}<span>${this.heartbeatBusy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</span>
+        </button>
+      </header>
+      ${
+        !heartbeat.sourcePath
+          ? html`<p class="empty">${this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p>`
+          : nothing
       }
-    }}><summary>${this.t("Heartbeat history", "心跳历史")} (${history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length})</summary>
-      ${wakes.map(
-        (wake) =>
-          html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.line}</div>` : nothing}${
-            Array.isArray(wake.rows)
-              ? wake.rows.map((raw) => {
-                  const row = raw as Record<string, unknown>;
-                  return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}</p>`;
-                })
-              : nothing
-          }</div>`,
-      )}
-      ${history?.nextCursor ? html`<button ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
+      ${wakes.map((wake, index) => {
+        const key = `${String(wake.line ?? "")}:${String(wake.timeMs ?? "")}:${String(wake.heading ?? "")}:${index}`;
+        const heading =
+          wake.timeMs !== null && wake.timeMs !== undefined
+            ? this.wakeHeading(wake.timeMs)
+            : String(wake.heading ?? this.t("Untimed record", "时间未知的记录"));
+        const rowCount =
+          typeof wake.rowCount === "number"
+            ? wake.rowCount
+            : Array.isArray(wake.rows)
+              ? wake.rows.length
+              : 0;
+        const rows = Array.isArray(wake.rows)
+          ? wake.rows.filter(
+              (row): row is Record<string, unknown> =>
+                typeof row === "object" && row !== null && !Array.isArray(row),
+            )
+          : [];
+        const renderRow = (row: Record<string, unknown>) => {
+          const label = String(row.category ?? row.item ?? row.id ?? "");
+          const state = String(row.state ?? row.status ?? "");
+          const wakeSourcePath = wake.sourcePath ?? heartbeat.sourcePath;
+          const wakeLocation =
+            typeof wake.line === "number"
+              ? wakeSourcePath
+                ? `${String(wakeSourcePath)}:${wake.line}`
+                : `#${wake.line}`
+              : "";
+          const rowSourcePath = row.sourcePath ?? wake.sourcePath ?? heartbeat.sourcePath;
+          const rowLocation =
+            typeof row.line === "number"
+              ? rowSourcePath
+                ? `${String(rowSourcePath)}:${row.line}`
+                : `#${row.line}`
+              : "";
+          const provenance =
+            wakeLocation && rowLocation && wakeLocation !== rowLocation
+              ? html`<p><strong>${this.t("Record source", "记录来源")}</strong><code>${wakeLocation}</code></p><p><strong>${this.t("Row source", "行来源")}</strong><code>${rowLocation}</code></p>`
+              : wakeLocation || rowLocation
+                ? html`<p><strong>${this.t("Source", "来源")}</strong><code>${rowLocation || wakeLocation}</code></p>`
+                : nothing;
+          return html`<div class="hb-record">
+            <div class="hb-record-preview"><strong>${label}</strong><span>${state}</span></div>
+            <details class="hb-record-raw hb-wake-raw"><summary>${this.t("View original", "查看原文")}</summary><div class="hb-row-original">
+              ${wake.timeMs !== null && wake.timeMs !== undefined ? html`<p><strong>${this.t("Recorded time", "记录时间")}</strong><code>${this.date(wake.timeMs)}</code></p>` : nothing}
+              ${typeof wake.heading === "string" ? html`<p><strong>${this.t("Heading", "标题")}</strong><code>${wake.heading}</code></p>` : nothing}
+              ${row.category !== undefined ? html`<p><strong>${this.t("Category", "分类")}</strong><span>${String(row.category)}</span></p>` : nothing}
+              ${row.state !== undefined ? html`<p><strong>${this.t("State", "状态")}</strong><span>${String(row.state)}</span></p>` : nothing}
+              ${row.heading !== undefined ? html`<p><strong>${this.t("Heading", "标题")}</strong><span>${String(row.heading)}</span></p>` : nothing}
+              ${provenance}
+            </div></details>
+          </div>`;
+        };
+        return html`<details class="hb-wake" ?open=${this.heartbeatWakeExpansion.get(key) ?? index === 0} @toggle=${(
+          event: Event,
+        ) => {
+          if (event.target === event.currentTarget)
+            this.heartbeatWakeExpansion.set(key, (event.currentTarget as HTMLDetailsElement).open);
+        }}>
+          <summary><span class="hb-wake-time">${heading}</span><span class="hb-wake-count">${this.t(`${rowCount} records`, `${rowCount}项记录`)}</span>${this.lucideIcon(ChevronRight, "hb-wake-chevron")}</summary>
+          <div class="hb-wake-body">
+            ${
+              !rows.length
+                ? html`<details class="hb-wake-raw"><summary>${this.t("View original", "查看原文")}</summary><div class="hb-wake-original">
+              ${wake.timeMs !== null && wake.timeMs !== undefined ? html`<p><strong>${this.t("Recorded time", "记录时间")}</strong><code>${this.date(wake.timeMs)}</code></p>` : nothing}
+              ${typeof wake.heading === "string" ? html`<p><strong>${this.t("Heading", "标题")}</strong><code>${wake.heading}</code></p>` : nothing}
+              ${typeof wake.line === "number" ? html`<p><strong>${this.t("Source", "来源")}</strong><code>${(wake.sourcePath ?? heartbeat.sourcePath) ? `${String(wake.sourcePath ?? heartbeat.sourcePath)}:${wake.line}` : `#${wake.line}`}</code></p>` : nothing}
+            </div></details>`
+                : nothing
+            }
+            ${rows.slice(0, 2).map(renderRow)}
+            ${rows.length > 2 ? html`<details class="hb-more-records"><summary>${this.t(`Show ${rows.length - 2} more records`, `查看其余 ${rows.length - 2} 项记录`)}</summary>${rows.slice(2).map(renderRow)}</details>` : nothing}
+            ${wake.truncated === true ? html`<p class="hb-truncated">${this.t("This is a record preview. See the source file for full content.", "当前为记录预览，完整内容见来源文件。")}</p>` : nothing}
+          </div>
+        </details>`;
+      })}
+      ${history?.error ? this.diagnostic(this.t("Heartbeat history error", "心跳历史错误"), history.error) : nothing}
+      ${history?.nextCursor ? html`<button class="hb-older" ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
       ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
-      <button ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory()}>${this.heartbeatBusy ? this.t("Loading…", "加载中…") : this.t("Refresh heartbeat history", "刷新心跳历史")}</button>
-    </details>`;
+      ${!wakes.length && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
+    </section>`;
   }
 
   private evidence(items: readonly TaskPanelEvidence[]) {
@@ -683,7 +852,7 @@ export class TaskProgressElement extends LitElement {
     );
   }
 
-  private objective(objective: TaskPanelObjective, index: number) {
+  private objectiveDisplay(objective: TaskPanelObjective) {
     const effective =
       objective.status === "cancelled"
         ? []
@@ -704,11 +873,31 @@ export class TaskProgressElement extends LitElement {
               : done > 0
                 ? "active"
                 : "pending";
+    return { effective, done, percent, status: displayedStatus };
+  }
+
+  private objectiveDomId(id: string): string {
+    const key = Array.from(id, (character) => character.codePointAt(0)?.toString(16) ?? "").join(
+      "-",
+    );
+    return `objective-${key || "empty"}`;
+  }
+
+  private objective(
+    objective: TaskPanelObjective,
+    index: number,
+    display = this.objectiveDisplay(objective),
+  ) {
+    const { effective, done, percent, status: displayedStatus } = display;
+    const rowId = this.objectiveDomId(objective.id);
+    const detailId = `${rowId}-details`;
     const selected = this.selectedObjective === objective.id;
-    return html`<button class="row" id=${`module-${index}`} data-objective=${objective.id} aria-expanded=${selected} aria-controls=${`nodes-${index}`} @click=${async () => {
+    return html`<button class="row" id=${rowId} data-objective=${objective.id} aria-expanded=${selected} aria-controls=${detailId} @click=${async () => {
       this.selectedObjective = selected ? null : objective.id;
       await this.updateComplete;
-      const row = this.renderRoot.querySelector<HTMLElement>(`#module-${index}`);
+      const row = [
+        ...this.renderRoot.querySelectorAll<HTMLButtonElement>(".row[data-objective]"),
+      ].find((element) => element.dataset.objective === objective.id);
       const scroll = this.renderRoot.querySelector<HTMLElement>(".scroll");
       if (row && scroll) {
         const box = row.getBoundingClientRect();
@@ -723,8 +912,8 @@ export class TaskProgressElement extends LitElement {
       <span class="module-meta"><span>${done}/${effective.length}</span><span>${this.t("nodes completed", "节点完成")}</span><span class="status">${this.status(displayedStatus)}</span></span></span>${this.icon("chevron", "module-arrow")}
     </button>${
       selected
-        ? html`<div class="detail" id=${`nodes-${index}`} role="group" aria-labelledby=${`module-${index}`}>
-      ${this.evidence(objective.evidence)}${objective.items.map((item) => html`<article class="check"><span class="node-symbol" data-status=${item.status} aria-hidden="true">${item.status === "completed" ? this.icon("check") : item.status === "blocked" ? "!" : item.status === "active" ? "·" : item.status === "cancelled" ? "−" : ""}</span><div class="node-head"><span class="node-title">${item.title}</span><span class="node-status" data-status=${item.status}>${this.status(item.status)}</span></div>${this.evidence(item.evidence)}${!item.evidence.length ? html`<p class="evidence">${this.t("No explanation or verification recorded yet.", "尚无说明或验证记录。")}</p>` : nothing}</article>`)}
+        ? html`<div class="detail" id=${detailId} role="group" aria-labelledby=${rowId}>
+      <h3 class="objective-detail-title">${objective.title}</h3>${this.evidence(objective.evidence)}${objective.items.map((item) => html`<article class="check"><span class="node-symbol" data-status=${item.status} aria-hidden="true">${item.status === "completed" ? this.icon("check") : item.status === "blocked" ? "!" : item.status === "active" ? "·" : item.status === "cancelled" ? "−" : ""}</span><div class="node-head"><span class="node-title">${item.title}</span><span class="node-status" data-status=${item.status}>${this.status(item.status)}</span></div>${this.evidence(item.evidence)}${!item.evidence.length ? html`<p class="evidence">${this.t("No explanation or verification recorded yet.", "尚无说明或验证记录。")}</p>` : nothing}</article>`)}
     </div>`
         : nothing
     }`;
@@ -732,28 +921,53 @@ export class TaskProgressElement extends LitElement {
 
   private renderHeartbeat() {
     const heartbeat = this.data.heartbeat;
-    if (!heartbeat)
-      return html`<p class="empty">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`;
-    if (
-      heartbeat.status === "none" ||
-      heartbeat.status === "candidates" ||
-      (heartbeat.status === "error" && !heartbeat.sourcePath)
-    )
-      return html`<div class="heartbeat"><h3>${this.t("Project heartbeat", "项目心跳")}</h3>${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : html`<p class="muted">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`}</div>`;
-    return html`<div class="heartbeat"><div class="audit-summary"><span class="audit-symbol">${this.icon("heartbeat")}</span><div><h3>${this.t("Project heartbeat", "项目心跳")} <span class="status">${heartbeat.status === "stale" ? this.t("Stale", "已过期") : heartbeat.certifiesCurrent ? this.t("Current audit certified", "当前审计已认证") : this.t("Not certified", "当前未认证")}</span></h3><p>${this.t("Recorded audit status", "已记录的巡检状态")}</p></div></div>
-      <dl class="audit-time"><div><dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.time(heartbeat.lastWakeAt)}</dd></div><div><dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.time(heartbeat.nextWakeAt)}</dd></div></dl>
+    if (!heartbeat) {
+      const pending = this.data.heartbeatPending === true;
+      const statusText = pending
+        ? this.t("Reading project heartbeat…", "正在读取项目心跳…")
+        : this.t(
+            "No current project heartbeat source is available.",
+            "当前项目没有可显示的心跳来源。",
+          );
+      return html`<div class="heartbeat hb-panel"><p class="empty" role="status" aria-live="polite">${statusText}</p><section class="hb-history" aria-label=${this.t("Heartbeat history", "巡检记录")}><header class="hb-history-head"><h3>${this.lucideIcon(List)}<span>${this.t("Heartbeat history", "巡检记录")}</span><span class="hb-count">0</span></h3><button class="hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} disabled>${this.lucideIcon(RefreshCw)}<span>${this.t("Refresh", "刷新")}</span></button></header><p class="empty">${pending ? this.t("Waiting for the heartbeat source before loading history.", "等待心跳来源后再读取历史。") : this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p></section></div>`;
+    }
+    const sourcePath = heartbeat.sourcePath;
+    const sourceName = this.basename(sourcePath);
+    const historyName = this.basename(heartbeat.historyPath);
+    const hasAlert = Boolean(heartbeat.warning || heartbeat.findings.length);
+    return html`<div class="heartbeat hb-panel">
+      ${
+        sourcePath
+          ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>
+        <div class="hb-times"><div class="hb-time"><div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Latest record", "最近记录")}</span></div><strong>${this.time(heartbeat.lastWakeAt)}</strong></div><div class="hb-time"><div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Next audit", "下次巡检")}</span></div><strong>${heartbeat.nextWakeAt ? this.time(heartbeat.nextWakeAt) : "—"}</strong></div></div>
+        <div class="hb-time-date">${heartbeat.lastWakeAt ? this.dateOnly(heartbeat.lastWakeAt) : this.t("No heartbeat time recorded", "尚无心跳时间记录")}${sourceName ? html`<span> · ${sourceName}</span>` : nothing}</div>
+      </section>`
+          : html`<p class="empty">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`
+      }
+      ${hasAlert ? html`<details class="hb-alert"><summary>${this.lucideIcon(AlertTriangle)}<span>${this.t("Validation notice", "校验提示")}</span>${this.lucideIcon(ChevronDown, "hb-alert-chevron")}</summary>${heartbeat.warning ? html`<p>${heartbeat.warning}</p>` : nothing}${heartbeat.findings.map((finding) => html`<p><strong>${finding.severity}</strong>${finding.rule ? ` · ${finding.rule}` : ""} · ${finding.message}</p>`)}</details>` : nothing}
       ${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
-      ${heartbeat.warning ? this.diagnostic(this.t("Project heartbeat warning", "项目心跳提示"), heartbeat.warning) : nothing}
-      <details><summary>${this.t("Source and diagnostics", "来源与诊断")}</summary><dl><dt>${this.t("Source path", "来源路径")}</dt><dd>${heartbeat.sourcePath}</dd><dt>${this.t("Access", "访问方式")}</dt><dd>${this.t("Read only", "只读")}</dd>${heartbeat.basis ? html`<dt>${this.t("Source basis", "来源依据")}</dt><dd>${this.heartbeatBasisLabel(heartbeat.basis)}</dd>` : nothing}<dt>${this.t("Latest heartbeat record", "最近心跳记录")}</dt><dd>${this.date(heartbeat.lastWakeAt)}</dd>${heartbeat.nextWakeAt ? html`<dt>${this.t("Expected next audit", "预期下次巡检")}</dt><dd>${this.date(heartbeat.nextWakeAt)}</dd>` : nothing}<dt>${this.t("Ledger modified", "台账更新时间")}</dt><dd>${this.date(heartbeat.modifiedAt)}</dd><dt>${this.t("Refreshed", "刷新时间")}</dt><dd>${this.date(heartbeat.refreshedAt)}</dd><dt>${this.t("Items", "登记项")}</dt><dd>${heartbeat.itemCount ?? heartbeat.items.length} · ${
-        heartbeat.itemStatusCounts
-          ? Object.entries(heartbeat.itemStatusCounts)
-              .map(([status, count]) => `${this.status(status)} ${count}`)
-              .join(" · ")
-          : this.itemSummary(heartbeat.items)
-      }${heartbeat.itemsTruncated && !heartbeat.itemStatusCounts ? this.t(" (counts from visible sample)", "（状态统计为当前样本）") : nothing}</dd></dl></details>
-      ${heartbeat.findings.length ? html`<details><summary>${this.t("Audit findings", "审计结果")} (${heartbeat.findings.length})</summary>${heartbeat.findings.map((finding) => html`<p class="muted">${finding.severity}: ${finding.message}</p>`)}</details>` : nothing}
-      <details><summary>${this.t("Items and blockers", "登记项与阻塞")}</summary>${heartbeat.items.map((item) => html`<div class="event"><span class="status">${String(item.status ?? "")}</span> ${String(item.item ?? item.id ?? "")}<p class="muted">${String(item.evidence ?? "")}</p></div>`)}</details>
+      <details class="hb-items"><summary>${this.lucideIcon(Layers3)}<span>${this.t("Items and blockers", "登记项与阻塞")}</span><span class="hb-count">${heartbeat.itemCount ?? heartbeat.items.length}</span>${this.lucideIcon(ChevronRight, "hb-disclosure-chevron")}</summary><div class="hb-items-body">${heartbeat.items.map((item) => html`<article class="hb-item"><div><span class="status">${String(item.status ?? "")}</span> <strong>${String(item.item ?? item.id ?? "")}</strong></div>${item.evidence !== undefined ? html`<p>${String(item.evidence)}</p>` : nothing}</article>`)}</div></details>
       ${this.renderHeartbeatHistory(heartbeat)}
+      <details class="hb-source"><summary>${this.lucideIcon(FileText)}<span>${sourceName ?? this.t("Heartbeat source", "心跳来源")}${heartbeat.historyPath && heartbeat.historyPath !== sourcePath && historyName ? ` / ${historyName}` : ""}</span>${this.lucideIcon(ChevronRight, "hb-disclosure-chevron")}</summary><div class="hb-source-list">
+        ${sourcePath ? html`<div><span>${this.t("Heartbeat", "心跳")}</span><code>${sourcePath}</code></div>` : nothing}
+        ${heartbeat.historyPath && heartbeat.historyPath !== sourcePath ? html`<div><span>${this.t("History", "历史")}</span><code>${heartbeat.historyPath}</code></div>` : nothing}
+        <div><span>${this.t("Access", "访问方式")}</span><span>${this.t("Read only", "只读")}</span></div>
+        ${heartbeat.basis ? html`<div><span>${this.t("Source basis", "来源依据")}</span><span>${this.heartbeatBasisLabel(heartbeat.basis)}</span></div>` : nothing}
+        <div><span>${this.t("Latest record", "最近记录")}</span><span>${this.date(heartbeat.lastWakeAt)}</span></div>
+        ${heartbeat.nextWakeAt ? html`<div><span>${this.t("Next audit", "下次巡检")}</span><span>${this.date(heartbeat.nextWakeAt)}</span></div>` : nothing}
+        <div><span>${this.t("Ledger modified", "台账更新时间")}</span><span>${this.date(heartbeat.modifiedAt)}</span></div>
+        <div><span>${this.t("Refreshed", "刷新时间")}</span><span>${this.date(heartbeat.refreshedAt)}</span></div>
+        <div><span>${this.t("Items", "登记项")}</span><span>${heartbeat.itemCount ?? heartbeat.items.length} · ${
+          heartbeat.itemStatusCounts
+            ? Object.entries(heartbeat.itemStatusCounts)
+                .map(([status, count]) => `${this.status(status)} ${count}`)
+                .join(" · ")
+            : this.itemSummary(heartbeat.items)
+        }${heartbeat.itemsTruncated && !heartbeat.itemStatusCounts ? this.t(" (counts from visible sample)", "（状态统计为当前样本）") : nothing}</span></div>
+        ${heartbeat.error ? html`<div><span>${this.t("Error", "错误")}</span><span>${heartbeat.error}</span></div>` : nothing}
+        ${heartbeat.warning ? html`<div><span>${this.t("Warning", "警告")}</span><span>${heartbeat.warning}</span></div>` : nothing}
+        ${heartbeat.findings.map((finding) => html`<div><span>${finding.severity}</span><span>${finding.rule ? `${finding.rule} · ` : ""}${finding.message}</span></div>`)}
+      </div></details>
     </div>`;
   }
 
@@ -945,6 +1159,18 @@ export class TaskProgressElement extends LitElement {
       (!checklistComplete || this.data.execution?.state === "idle");
     const countedPercent = Math.max(0, Math.min(100, progress?.percent ?? 0));
     const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
+    const orderedObjectives = (task?.objectives ?? [])
+      .map((objective, originalIndex) => ({
+        objective,
+        originalIndex,
+        display: this.objectiveDisplay(objective),
+      }))
+      .sort((a, b) => {
+        const aTerminal = a.display.status === "completed" || a.display.status === "cancelled";
+        const bTerminal = b.display.status === "completed" || b.display.status === "cancelled";
+        if (aTerminal !== bTerminal) return aTerminal ? 1 : -1;
+        return aTerminal ? a.originalIndex - b.originalIndex : b.originalIndex - a.originalIndex;
+      });
     const viewTitle =
       this.tab === "tasks"
         ? title
@@ -953,10 +1179,10 @@ export class TaskProgressElement extends LitElement {
           : this.t("Project heartbeat", "项目心跳");
     const execution = this.executionLabel(checklistComplete);
     return html`<section class="panel" aria-label=${this.t("Task progress", "任务进度")}>
-      <div class="summary">${this.floating ? html`<span class="grip" title=${this.t("Drag panel", "拖动面板")} @pointerdown=${(event: PointerEvent) => this.dispatchEvent(new CustomEvent("task-progress-drag", { detail: { x: event.clientX, y: event.clientY }, bubbles: true, composed: true }))}>⠿</span>` : nothing}
+      <div class="summary">
         <button class="main" title=${title} aria-label=${`${title} · ${this.checklistLabel()} · ${execution}`} aria-expanded=${this.expanded && this.tab === "tasks"} aria-controls="task-popover" @click=${this.toggleExpanded}>
           ${this.icon("layers", "capsule-icon")}<span class="capsule-copy"><span class="title">${title}</span><span class="summary-state"><span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${execution}</span> · ${this.checklistLabel()}</span></span>
-          <span class="percent">${showProgressBar ? (checklistComplete ? this.icon("check") : html`${countedPercent}<small>%</small>`) : "—"}</span>${this.icon("down", "capsule-chevron")}
+          <span class="percent">${showProgressBar ? (checklistComplete ? this.icon("check") : html`${countedPercent}<small>%</small>`) : nothing}</span>${this.icon("down", "capsule-chevron")}
           <svg class="edge-progress" viewBox="0 0 368 44" aria-hidden="true"><path class="edge-track" pathLength="100"></path>${showProgressBar ? svg`<path class="edge-fill" pathLength="100" stroke-dasharray=${`${countedPercent} 100`}></path>` : nothing}</svg>
           ${showProgressBar ? html`<span class="track sr-status" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><span class="fill" style=${`width:${countedPercent}%`}></span></span>` : nothing}
         </button>
@@ -967,17 +1193,31 @@ export class TaskProgressElement extends LitElement {
       ${
         this.expanded || this.closing
           ? html`<div class="body" id="task-popover" role="region" aria-labelledby="panel-title" data-state=${this.closing ? "closing" : "open"} ?inert=${this.closing}>
-        <header class="panel-head"><div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.tab === "history" ? this.t("Recorded changes", "变更记录") : this.t("Read-only project records", "项目只读记录")}</div>
-          <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2><button class="close-panel" aria-label=${this.t("Close panel", "关闭面板")} @click=${() => this.closePanel()}>${this.icon("close")}</button></div>
-          ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : html`<p class="panel-subtitle">${this.tab === "history" ? this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。") : this.t("Recorded audits do not imply the agent is currently working.", "已记录的巡检不代表当前正在执行任务。")}</p>`}
+        <header class="panel-head" data-view=${this.tab}>
+          ${this.tab === "heartbeat" ? nothing : html`<div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.t("Recorded changes", "变更记录")}</div>`}
+          <div class="panel-heading">${this.tab === "heartbeat" ? html`<span class="heartbeat-heading-icon">${this.icon("heartbeat")}</span>` : nothing}<h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat ? html`<span class="hb-status" data-status=${this.data.heartbeat.status}>${this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.data.heartbeat.certifiesCurrent ? this.t("Certified", "已认证") : this.t("Not certified", "未认证")}</span>` : nothing}<button class="close-panel" aria-label=${this.t("Close panel", "关闭面板")} @click=${() => this.closePanel()}>${this.icon("close")}</button></div>
+          ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : this.tab === "history" ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>` : nothing}
         </header>
         <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>
           ${this.connectionError ? this.diagnostic(this.t("Connection error details", "连接错误详情"), this.connectionError) : nothing}
-          ${this.tab === "history" ? this.renderHistory() : this.tab === "heartbeat" ? this.renderHeartbeat() : html`${task?.objectives.length ? task.objectives.map((objective, index) => this.objective(objective, index)) : html`<p class="empty">${sourceUnavailable ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`}${this.renderTaskSource()}`}
+          ${
+            this.tab === "history"
+              ? this.renderHistory()
+              : this.tab === "heartbeat"
+                ? this.renderHeartbeat()
+                : html`${
+                    orderedObjectives.length
+                      ? repeat(
+                          orderedObjectives,
+                          ({ objective }) => objective.id,
+                          ({ objective, display }, index) =>
+                            this.objective(objective, index, display),
+                        )
+                      : html`<p class="empty">${sourceUnavailable ? this.checklistLabel() : !this.observed ? this.checklistLabel() : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`
+                  }${this.renderTaskSource()}`
+          }
         </div>
-        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}` : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span>
-          <details class="panel-actions"><summary aria-label=${this.t("Display settings", "显示设置")}>${this.t("Display settings", "显示设置")}</summary><div class="display-menu"><button aria-label=${this.floating ? this.t("Dock panel", "固定面板") : this.t("Float panel", "浮动面板")} @click=${this.toggleFloating}>${this.floating ? this.t("Dock at top of chat", "固定在聊天顶部") : this.t("Float panel", "浮动面板")}</button></div></details>
-        </footer>
+        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}` : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
       </div>`
           : nothing
       }

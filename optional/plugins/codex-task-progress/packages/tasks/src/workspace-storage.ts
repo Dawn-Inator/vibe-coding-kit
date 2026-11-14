@@ -6,7 +6,7 @@ import { resolveTaskProgressStorage } from "vibe-coding-kit/src/contracts/task-p
 import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import type { WorkspaceTaskStorageContext as KitWorkspaceContext } from "vibe-coding-kit/src/tasks/workspace-storage.mjs";
 import { z } from "zod";
-import { type HeartbeatOptions, HeartbeatService } from "./heartbeat.js";
+import { type HeartbeatOptions, HeartbeatProjectViewCache, HeartbeatService } from "./heartbeat.js";
 import { TaskStoreError } from "./task-store.js";
 
 export interface WorkspaceTaskStorageOptions {
@@ -29,6 +29,7 @@ export class WorkspaceTaskStorage {
   readonly #legacyRoot: string;
   readonly #options: WorkspaceTaskStorageOptions;
   readonly #contexts = new Map<string, WorkspaceTaskStorageContext>();
+  readonly #projectViewCache = new HeartbeatProjectViewCache();
   #kit?: KitWorkspace;
   #closed = false;
 
@@ -111,6 +112,7 @@ export class WorkspaceTaskStorage {
       cacheRoot: context.cacheRoot,
       legacyHeartbeatRoots: context.legacyHeartbeatRoots,
       prepareWrite: context.ensureWritable,
+      projectViewCache: this.#projectViewCache,
     });
     const adapted: WorkspaceTaskStorageContext = { ...context, heartbeat };
     this.#contexts.set(threadId, adapted);
@@ -134,6 +136,7 @@ export class WorkspaceTaskStorage {
     this.#closed = true;
     for (const context of this.#contexts.values()) context.heartbeat.close();
     this.#contexts.clear();
+    this.#projectViewCache.close();
     this.#kit?.close();
   }
 }

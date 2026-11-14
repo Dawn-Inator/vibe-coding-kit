@@ -21,6 +21,7 @@ import type {
   GoalProgressIpcRequestInput,
 } from "../../ipc/src/protocol.js";
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
+import { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
   type TaskHistoryPage,
   type TaskMutationResult,
@@ -209,6 +210,153 @@ function legacyEventPath(root: string, threadId: string) {
 function hasCode(code: string) {
   return (error: unknown) => error instanceof GoalProgressIpcClientError && error.code === code;
 }
+function trackProjectViewReads() {
+  const original = HeartbeatService.prototype.projectView;
+  const pending = new Set<Promise<unknown>>();
+  HeartbeatService.prototype.projectView = function (cwd) {
+    const read = original.call(this, cwd);
+    pending.add(read);
+    void read.then(
+      () => pending.delete(read),
+      () => pending.delete(read),
+    );
+    return read;
+  };
+  return {
+    async wait(): Promise<void> {
+      while (pending.size) await Promise.all([...pending]);
+    },
+    restore(): void {
+      HeartbeatService.prototype.projectView = original;
+    },
+  };
+}
+async function getAfterProjectViewRefresh<T>(
+  request: () => Promise<T>,
+  tracker: ReturnType<typeof trackProjectViewReads>,
+): Promise<T> {
+  let response = await request();
+  while (
+    (response as unknown as { result?: { heartbeatPending?: boolean } }).result?.heartbeatPending
+  ) {
+    await tracker.wait();
+    response = await request();
+  }
+  return response;
+}
+
+test("ordinary get returns local task while a deduplicated project heartbeat refresh is pending", async () => {
+  const root = await mkdtemp("/tmp/ctph-heartbeat-pending-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const request = (action: "initialize" | "get", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        auth: {
+          kind: "codex-request",
+          toolName: action === "get" ? "task_progress_get" : "task_progress_initialize",
+          identity: {
+            threadId: "pending-chat",
+            sessionId: "pending-chat",
+            turnId: "turn-1",
+            callId: `pending-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+        input,
+      },
+    });
+  const originalProjectView = HeartbeatService.prototype.projectView;
+  let releaseRefresh: (() => void) | undefined;
+  let refreshDone: Promise<void> | undefined;
+  let holdNextProjectRead = false;
+  try {
+    await helper.start();
+    await request("initialize", {
+      requestId: "pending-init",
+      expectedRevision: 0,
+      title: "Local checklist",
+      reason: "Exercise nonblocking project summary",
+      objectives: [{ id: "L1", title: "Persisted locally" }],
+    });
+    await writeFile(join(root, ".codex-task-progress.json"), "{invalid-json");
+    holdNextProjectRead = true;
+    HeartbeatService.prototype.projectView = function (cwd) {
+      if (holdNextProjectRead) {
+        holdNextProjectRead = false;
+        return new Promise((resolve) => {
+          refreshDone = new Promise<void>((done) => {
+            releaseRefresh = () => {
+              void originalProjectView.call(this, cwd).then(resolve).finally(done);
+            };
+          });
+        });
+      }
+      const refresh = originalProjectView.call(this, cwd);
+      refreshDone = refresh.then(() => undefined);
+      return refresh;
+    };
+
+    const pending = await request("get", {});
+    const pendingResult = pending.result as {
+      task: TaskState | null;
+      taskSource: unknown;
+      heartbeat: unknown;
+      heartbeatPending?: boolean;
+    };
+    assert.equal(pendingResult.task?.title, "Local checklist");
+    assert.equal(pendingResult.taskSource, null);
+    assert.equal(pendingResult.heartbeat, null);
+    assert.equal(pendingResult.heartbeatPending, true);
+    assert.equal(pending.revision, 1);
+
+    assert.ok(releaseRefresh);
+    releaseRefresh();
+    await refreshDone;
+    const visibleError = (await request("get", {})).result as {
+      heartbeat: { status: string; error?: string } | null;
+      taskSource: unknown;
+      heartbeatPending?: boolean;
+    };
+    assert.equal(visibleError.heartbeat?.status, "error");
+    assert.match(visibleError.heartbeat?.error ?? "", /Cannot read \.codex-task-progress\.json/i);
+    assert.equal(visibleError.taskSource, null);
+
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { maxFiles: 500 } }),
+    );
+    const retry = (await request("get", {})).result as {
+      heartbeat: { status: string; error?: string } | null;
+      heartbeatPending?: boolean;
+    };
+    assert.equal(retry.heartbeat?.status, "error");
+    assert.equal(retry.heartbeatPending, true);
+    await refreshDone;
+    const recovered = (await request("get", {})).result as {
+      heartbeat: { status: string } | null;
+      heartbeatPending?: boolean;
+    };
+    assert.equal(recovered.heartbeat?.status, "none");
+    assert.equal(recovered.heartbeatPending, undefined);
+  } finally {
+    HeartbeatService.prototype.projectView = originalProjectView;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 async function taskEvents(root: string, threadId: string) {
   const store = new TaskStore(join(root, ".workspace", "codex-task-progress"));
   return (await store.history(threadId, { limit: 100 })).events;
@@ -226,6 +374,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
   };
   let helper = new GoalProgressHelper(options);
   let callNumber = 0;
+  const projectReads = trackProjectViewReads();
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   async function request(
     action: "get" | "initialize" | "update" | "rescope" | "history",
@@ -249,7 +398,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
   }
   try {
     await helper.start();
-    const empty = await request("get", {});
+    const empty = await getAfterProjectViewRefresh(() => request("get", {}), projectReads);
     const emptyState = empty.result as {
       task: TaskState | null;
       heartbeat: { status: string; sourcePath: string | null; itemCount: number };
@@ -358,7 +507,9 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
         "",
       ].join("\n"),
     );
-    const projectHeartbeat = (await request("get", {}, "inventory-chat")).result as {
+    const projectHeartbeat = (
+      await getAfterProjectViewRefresh(() => request("get", {}, "inventory-chat"), projectReads)
+    ).result as {
       heartbeat: { status: string; itemCount: number; itemStatusCounts: Record<string, number> };
       task: TaskState | null;
       taskSource: { status: string; path: string; error: string };
@@ -399,6 +550,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       hasCode("TASK_REVISION_CONFLICT"),
     );
   } finally {
+    projectReads.restore();
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -480,6 +632,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
+  const projectReads = trackProjectViewReads();
   async function request(
     action: "initialize" | "update" | "get" | "history" | "bind-heartbeat",
     input: unknown,
@@ -529,6 +682,10 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       `export function inspectHeartbeatLedger(text, {mode}) { const lines=text.split('\\n'); const headings=lines.filter(line=>/^#{1,6}\\s+.* wake \\(/i.test(line)); const selected=mode==='history'?headings:headings.slice(-1); const wakes=selected.map((heading,index)=>({heading:heading.trim(),timeMs:1794391200000+index,line:lines.indexOf(heading)+1,rows:[]})); const items=text.includes('large-source')?Array.from({length:2500},(_,i)=>({id:i===0?'H'+('x'.repeat(200)):'H'+i,item:'Source item '+i,status:i%2?'blocked':'done',evidence:'Evidence '+i,line:i+1})): [{id:'H1',item:'Source task',status:'blocked',evidence:'Waiting',line:7}]; return {mode, certifiesCurrent: mode==='current', passed:true, wakeCount:wakes.length, itemCount:items.length, wakes, items, findings:[]}; }`,
     );
     await writeFile(ledgerPath, ledger);
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs", maxFiles: 100 } }),
+    );
     const canonicalLedgerPath = await realpath(ledgerPath);
     const canonicalRoot = await realpath(root);
     const legacyPair = readHeartbeatLedgerPair({ root: canonicalRoot, path: canonicalLedgerPath });
@@ -546,7 +703,8 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     assert.equal(await readFile(`${canonicalLedgerPath}.legacy`, "utf8"), ledger);
     await request("bind-heartbeat", { path: ledgerPath });
     const before = await taskEvents(root, "source-chat");
-    const projected = (await request("get", {})).result as {
+    const projected = (await getAfterProjectViewRefresh(() => request("get", {}), projectReads))
+      .result as {
       task: TaskState & {
         source: {
           itemStatusCount: number;
@@ -614,6 +772,10 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       .replace("<!-- large-source -->\n", "");
     await writeFile(join(root, "heartbeat-one.md"), ambiguousLedger);
     await writeFile(join(root, "heartbeat-two.md"), ambiguousLedger);
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs", maxFiles: 101 } }),
+    );
     await assert.rejects(
       request(
         "initialize",
@@ -628,7 +790,9 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       ),
       hasCode("TASK_SOURCE_SELECTION_REQUIRED"),
     );
-    const ambiguous = (await request("get", {}, "ambiguous-chat")).result as {
+    const ambiguous = (
+      await getAfterProjectViewRefresh(() => request("get", {}, "ambiguous-chat"), projectReads)
+    ).result as {
       task: TaskState | null;
       taskSource: { status: string; error?: string };
       heartbeat: { status: string; sourcePath: string | null; candidates: readonly unknown[] };
@@ -701,6 +865,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     assert.match(bounded.heartbeat.warning ?? "", /discovery was incomplete/);
     assert.match(bounded.taskSource.error ?? "", /incomplete/);
   } finally {
+    projectReads.restore();
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -752,6 +917,7 @@ test("incomplete discovery preserves known local history but still guards new an
   const ledger = (threadId: string, title: string) =>
     `# Supervision\nthread: ${threadId}\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | ${title} | pending | - |\n`;
   let helperStarted = false;
+  const projectReads = trackProjectViewReads();
   try {
     await mkdir(join(root, "kit"), { recursive: true });
     await writeFile(
@@ -831,7 +997,8 @@ test("incomplete discovery preserves known local history but still guards new an
     await helper.start();
     helperStarted = true;
 
-    const known = (await request("get", {})).result as {
+    const known = (await getAfterProjectViewRefresh(() => request("get", {}), projectReads))
+      .result as {
       task: TaskState | null;
       taskSource: unknown;
       heartbeat: {
@@ -939,6 +1106,7 @@ test("incomplete discovery preserves known local history but still guards new an
     assert.deepEqual(await taskEvents(root, "invalid-bound-chat"), boundEventsBefore);
     assert.deepEqual(await taskEvents(root, "known-local-chat"), knownEventsAfter);
   } finally {
+    projectReads.restore();
     if (helperStarted) await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -988,6 +1156,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n## 2026-11-11T11:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n";
   let reopened: GoalProgressHelper | undefined;
   let canonicalSourcePath: string | undefined;
+  const projectReads = trackProjectViewReads();
   try {
     const localStore = new TaskStore(join(root, ".workspace", "codex-task-progress"));
     await localStore.initialize("sticky-chat", {
@@ -1012,7 +1181,8 @@ test("automatic heartbeat authority stays latched through association loss and r
       original.replace("sticky-chat", "unrelated-chat"),
     );
     await helper.start();
-    const initial = (await request("get", {})).result as {
+    const initial = (await getAfterProjectViewRefresh(() => request("get", {}), projectReads))
+      .result as {
       taskSource: { status: string; path: string; historyPath?: string };
       heartbeat: { status: string; sourcePath: string | null; basis?: string };
     };
@@ -1204,6 +1374,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     );
     await restartHelper.stop();
   } finally {
+    projectReads.restore();
     await reopened?.stop();
     await helper.stop();
     await rm(root, { recursive: true, force: true });

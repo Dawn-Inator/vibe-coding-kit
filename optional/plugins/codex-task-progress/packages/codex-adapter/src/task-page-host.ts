@@ -49,12 +49,11 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   element.style.cssText = "position:fixed;z-index:50;display:none;max-width:calc(100vw - 24px);";
   document.body.append(element);
   let destroyed = false;
-  let busy = false;
   let generation = 0;
+  let currentRefresh: { generation: number; threadId: string; promise: Promise<void> } | undefined;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let backendExecution: TaskPanelExecution | undefined;
   let projectEnabled: boolean | undefined;
-  let floatPosition: { x: number; y: number } | null = null;
   let diagnostic: TaskPageHostDiagnostics = {
     version: 1,
     elementName,
@@ -155,8 +154,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       const box = root.getBoundingClientRect();
       return box.width > 0 && box.height > 0;
     });
-    if (reservation && (element.floating || reservation.target !== layoutRoot))
-      releaseReservation();
+    if (reservation && reservation.target !== layoutRoot) releaseReservation();
     const rect = page.composer?.getBoundingClientRect();
     const visible =
       projectEnabled !== false && !!rect && rect.width > 0 && !!layoutRoot && !page.rejectionReason;
@@ -179,6 +177,7 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     element.style.setProperty("--ctp-text", computed.color || (dark ? "#eee" : "#222"));
     element.style.setProperty("--ctp-border", dark ? "#ffffff20" : "#00000020");
     element.style.setProperty("--ctp-muted", dark ? "#b0b0b0" : "#666");
+    element.style.setProperty("--ctp-warning-ink", dark ? "#efbf7a" : "#8b4c08");
     element.style.setProperty("--ctp-hover", dark ? "#ffffff12" : "#00000009");
     const accent =
       computed.getPropertyValue("--color-token-primary") ||
@@ -205,15 +204,9 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       12,
       Math.min(rect.left + (rect.width - width) / 2, window.innerWidth - width - 12),
     );
-    if (element.floating) {
-      const position = floatPosition ?? { x: dockLeft, y: Math.max(12, dockTop) };
-      element.style.left = `${Math.max(12, Math.min(position.x, window.innerWidth - width - 12))}px`;
-      element.style.top = `${Math.max(12, Math.min(position.y, window.innerHeight - height - 12))}px`;
-    } else {
-      element.style.left = `${dockLeft}px`;
-      element.style.top = `${dockTop}px`;
-      reserveTop(layoutRoot, height);
-    }
+    element.style.left = `${dockLeft}px`;
+    element.style.top = `${Math.max(12, Math.min(dockTop, window.innerHeight - height - 12))}px`;
+    reserveTop(layoutRoot, height);
     element.dispatchEvent(new CustomEvent("task-progress-position"));
   };
 
@@ -249,44 +242,53 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
 
   const refresh = async (): Promise<void> => {
     layout();
-    if (destroyed || busy || !diagnostic.threadId) return;
+    if (destroyed || !diagnostic.threadId) return;
     if (!window.__codexTaskProgressRequest) return;
-    busy = true;
     const threadId = diagnostic.threadId;
     const expectedGeneration = generation;
-    try {
-      const result = await request({ method: "get", threadId });
-      projectEnabled = result.enabled !== false;
-      backendExecution = result.execution;
-      element.data = {
-        ...result,
-        execution: mergeTaskExecution(
-          backendExecution,
-          readTaskComposerExecution(readCurrentCodexPage(document).composer),
-        ),
-      };
-      element.observed = true;
-      element.connectionError = null;
-      diagnostic.status = "connected";
-      diagnostic.lastError = null;
-      diagnostic.revision = result.task?.revision ?? null;
-      diagnostic.lastRefreshAt = new Date().toISOString();
-      await element.updateComplete;
-      layout();
-    } catch (error) {
-      if (
+    if (currentRefresh?.generation === expectedGeneration) return currentRefresh.promise;
+
+    let owner: { generation: number; threadId: string; promise: Promise<void> } | undefined;
+    const promise = (async (): Promise<void> => {
+      const isCurrent = (): boolean =>
         !destroyed &&
         generation === expectedGeneration &&
         diagnostic.threadId === threadId &&
-        readCurrentCodexPage(document).threadId === threadId
-      ) {
-        diagnostic.status = "error";
-        diagnostic.lastError = error instanceof Error ? error.message : String(error);
-        element.connectionError = diagnostic.lastError;
+        readCurrentCodexPage(document).threadId === threadId;
+      try {
+        const result = await request({ method: "get", threadId });
+        if (!isCurrent()) return;
+        projectEnabled = result.enabled !== false;
+        backendExecution = result.execution;
+        element.data = {
+          ...result,
+          execution: mergeTaskExecution(
+            backendExecution,
+            readTaskComposerExecution(readCurrentCodexPage(document).composer),
+          ),
+        };
+        element.observed = true;
+        element.connectionError = null;
+        diagnostic.status = "connected";
+        diagnostic.lastError = null;
+        diagnostic.revision = result.task?.revision ?? null;
+        diagnostic.lastRefreshAt = new Date().toISOString();
+        await element.updateComplete;
+        if (isCurrent()) layout();
+      } catch (error) {
+        if (isCurrent()) {
+          diagnostic.status = "error";
+          diagnostic.lastError = error instanceof Error ? error.message : String(error);
+          element.connectionError = diagnostic.lastError;
+        }
+      } finally {
+        // An older thread's completion must not release the newer thread's slot.
+        if (currentRefresh === owner) currentRefresh = undefined;
       }
-    } finally {
-      busy = false;
-    }
+    })();
+    owner = { generation: expectedGeneration, threadId, promise };
+    currentRefresh = owner;
+    return promise;
   };
 
   const schedule = (): void => {
@@ -322,6 +324,21 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
       "inert",
     ],
   });
+  const themeObserver = new MutationObserver(() => layout());
+  const themeAttributes = ["class", "data-theme", "style", "dir", "lang"];
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: themeAttributes,
+  });
+  themeObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: themeAttributes,
+  });
+  const colorSchemeMedia =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : undefined;
+  colorSchemeMedia?.addEventListener("change", layout);
   const resizeObserver = new ResizeObserver(layout);
   resizeObserver.observe(element);
   const interval = window.setInterval(() => void refresh(), 2_000);
@@ -329,31 +346,6 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
   window.addEventListener("scroll", schedule, true);
   element.addEventListener("task-progress-layout", () => {
     void element.updateComplete.then(layout);
-  });
-  let removeDrag: (() => void) | null = null;
-  element.addEventListener("task-progress-drag", (raw: Event) => {
-    removeDrag?.();
-    const event = raw as CustomEvent<{ x: number; y: number }>;
-    const rect = element.getBoundingClientRect();
-    const move = (eventMove: PointerEvent): void => {
-      floatPosition = {
-        x: rect.left + eventMove.clientX - event.detail.x,
-        y: rect.top + eventMove.clientY - event.detail.y,
-      };
-      layout();
-    };
-    const stop = (): void => {
-      removeDrag?.();
-      removeDrag = null;
-    };
-    removeDrag = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
   });
   const host: TaskPageHost = {
     diagnostics: () => {
@@ -416,14 +408,16 @@ export function installTaskProgressPageHost(window: Window): TaskPageHost {
     destroy: () => {
       destroyed = true;
       generation++;
+      currentRefresh = undefined;
       releaseReservation();
       observer.disconnect();
+      themeObserver.disconnect();
       resizeObserver.disconnect();
       window.clearInterval(interval);
       if (debounce !== undefined) clearTimeout(debounce);
-      removeDrag?.();
       window.removeEventListener("resize", schedule);
       window.removeEventListener("scroll", schedule, true);
+      colorSchemeMedia?.removeEventListener("change", layout);
       element.remove();
     },
   };
