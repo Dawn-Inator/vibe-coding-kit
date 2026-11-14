@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -918,4 +918,130 @@ test("bound-only discovery enforces symlink, nested Git, companion, and exact as
 	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: join(nested, "heartbeat.md") }), /nested Git project/);
 	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: "taskhistory.md" }), /cannot be selected/);
 	await assert.rejects(discoverBoundHeartbeatSource({ root, ledgerPath: "missing.md" }), /cannot be resolved/);
+});
+
+
+test("watch filtering ignores unrelated regular code content, including untracked files and pending scans", async () => {
+	const root = projectRoot();
+	const code = join(root, "source.ts");
+	writeFileSync(code, "first");
+	writeFileSync(join(root, "heartbeat.md"), `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`);
+	let changed;
+	let scans = 0;
+	let inject = false;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			scans++;
+			const operation = discoverHeartbeatLedgerSources(options);
+			if (inject) queueMicrotask(() => { writeFileSync(code, "updated"); changed("change", "source.ts"); });
+			return operation;
+		},
+	});
+	try {
+		const first = await index.discover({ root, threadId: THREAD });
+		const generation = await index.generation(root);
+		writeFileSync(code, "edited");
+		changed("change", "source.ts");
+		const reused = await index.discover({ root, threadId: THREAD });
+		assert.equal(scans, 1);
+		assert.equal(await index.generation(root), generation);
+		assert.deepEqual(reused.candidates, first.candidates);
+		// A regular file not present in the previous scan is still harmless when
+		// it is neither an observed directory nor an alias of any source.
+		writeFileSync(join(root, "previously-untracked.ts"), "code");
+		changed("change", "previously-untracked.ts");
+		await index.discover({ root });
+		assert.equal(scans, 1);
+		inject = true;
+		await index.discover({ root, threadId: THREAD }, { force: true });
+		assert.equal(scans, 2, "unrelated pending content changes must not restart the scan");
+		inject = false;
+		changed("rename", "source.ts");
+		await index.discover({ root });
+		assert.equal(scans, 3, "rename remains conservative");
+		changed("change", null);
+		await index.discover({ root });
+		assert.equal(scans, 4, "unknown filenames remain conservative");
+	} finally { index.close(); }
+});
+
+test("watch filtering rejects markdown, explicit non-md, hardlink, Git, and structural changes", async () => {
+	const root = projectRoot();
+	const content = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`;
+	const md = join(root, "heartbeat.md");
+	const explicit = join(root, "explicit.data");
+	writeFileSync(md, content);
+	writeFileSync(explicit, content);
+	linkSync(explicit, join(root, "explicit-alias.ts"));
+	linkSync(md, join(root, "alias.ts"));
+	mkdirSync(join(root, "directory.ts"));
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		await index.discover({ root, threadId: THREAD });
+		await index.discover({ root, threadId: THREAD, ledgerPath: explicit });
+		assert.equal(scans, 2);
+		writeFileSync(join(root, "alias.ts"), content.replace(THREAD, "other-thread"));
+		changed("change", "alias.ts");
+		const afterHardlink = await index.discover({ root, threadId: THREAD });
+		assert.equal(afterHardlink.candidates.find((candidate) => candidate.path === md)?.associated, false);
+		assert.equal(scans, 3);
+		await index.discover({ root, threadId: THREAD, ledgerPath: explicit });
+		writeFileSync(join(root, "explicit-alias.ts"), content.replace(THREAD, "other-thread"));
+		changed("change", "explicit-alias.ts");
+		const afterExplicit = await index.discover({ root, threadId: THREAD, ledgerPath: explicit });
+		assert.equal(afterExplicit.candidates.find((candidate) => candidate.path === explicit)?.associated, false);
+		const afterExplicitScans = scans;
+		writeFileSync(md, content);
+		changed("change", "heartbeat.md");
+		assert.equal((await index.discover({ root, threadId: THREAD })).candidates.find((candidate) => candidate.path === md)?.associated, true);
+		assert.equal(scans, afterExplicitScans + 1);
+		rmSync(join(root, "directory.ts"), { recursive: true });
+		writeFileSync(join(root, "directory.ts"), "file replacement");
+		changed("change", "directory.ts");
+		await index.discover({ root });
+		assert.equal(scans, afterExplicitScans + 2);
+		mkdirSync(join(root, "nested"));
+		writeFileSync(join(root, "nested", ".git"), "gitdir: elsewhere\n");
+		changed("change", "nested/.git");
+		await index.discover({ root });
+		assert.equal(scans, afterExplicitScans + 3);
+		symlinkSync(md, join(root, "linked.ts"));
+		changed("rename", "linked.ts");
+		await index.discover({ root });
+		assert.equal(scans, afterExplicitScans + 4);
+	} finally { index.close(); }
+});
+
+test("watch filtering fails closed when scan metadata is unavailable", async () => {
+	const root = projectRoot();
+	writeFileSync(join(root, "source.ts"), "code");
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			scans++;
+			// A noncanonical/custom scanner that cannot supply directory proof
+			// must never authorize filtering based on an empty set.
+			const withoutDirectoryProof = { ...options };
+			delete withoutDirectoryProof.collectObservedDirectory;
+			return discoverHeartbeatLedgerSources(withoutDirectoryProof);
+		},
+	});
+	try {
+		await index.discover({ root });
+		writeFileSync(join(root, "source.ts"), "new code");
+		changed("change", "source.ts");
+		await index.discover({ root });
+		assert.equal(scans, 2);
+	} finally { index.close(); }
 });

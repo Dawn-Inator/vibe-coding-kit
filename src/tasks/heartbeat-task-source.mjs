@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { watch } from "node:fs";
+import { lstatSync, realpathSync, watch } from "node:fs";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
@@ -21,6 +21,11 @@ const SKIP = new Set([
 	".tmp",
 ]);
 const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_FILTER_DIRECTORIES = 16384;
+const MAX_FILTER_SOURCE_IDENTITIES = 2500;
+const fileIdentity = (info) =>
+	Number.isSafeInteger(info?.dev) && Number.isSafeInteger(info?.ino)
+		? `${info.dev}:${info.ino}` : null;
 function isHeartbeatCompanion(name) {
 	return /^taskhistory\.md$/i.test(name) || /(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(name);
 }
@@ -82,6 +87,8 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	maxFiles = 2500,
 	maxDepth = 5,
 	collectAssociation,
+	collectObservedDirectory,
+	collectSourceIdentity,
 } = {}, { boundOnly = false } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError(
@@ -118,11 +125,11 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	const prepare = async (candidatePath) => {
 		try {
 			const { path, info } = await pathScan.resolve(candidatePath);
-			if (info.size > MAX_BYTES) return { path, oversized: true };
+			if (info.size > MAX_BYTES) return { path, info, oversized: true };
 			try {
-				return { path, original: await readFile(path, "utf8") };
+				return { path, info, original: await readFile(path, "utf8") };
 			} catch {
-				return { path, unreadable: true };
+				return { path, info, unreadable: true };
 			}
 		} catch (error) {
 			return { error };
@@ -131,7 +138,10 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	const commit = (result, failClosed = false) => {
 		if (result.error) {
 			if (failClosed) throw result.error;
-			if (result.error?.code !== "nested-git") reasons.add("unreadable-file");
+			if (result.error?.code !== "nested-git") {
+				collectSourceIdentity?.(null);
+				reasons.add("unreadable-file");
+			}
 			return;
 		}
 		const { path } = result;
@@ -143,6 +153,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		}
 		seenFiles.add(path);
 		visitedFiles += 1;
+		collectSourceIdentity?.(result.info);
 		if (result.oversized) { reasons.add("oversized-file"); return; }
 		if (result.unreadable) { reasons.add("unreadable-file"); return; }
 		try {
@@ -199,6 +210,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		try {
 			canonicalDirectory = await realpath(directory);
 		} catch {
+			collectObservedDirectory?.(null);
 			reasons.add("unreadable-directory");
 			return;
 		}
@@ -209,8 +221,10 @@ async function discoverHeartbeatLedgerSourcesInternal({
 			entries = await readdir(canonicalDirectory, { withFileTypes: true });
 		} catch {
 			// A nested repository is excluded even if its directory is unreadable.
-			if (!await pathScan.isNestedCanonical(canonicalDirectory))
+			if (!await pathScan.isNestedCanonical(canonicalDirectory)) {
+				collectObservedDirectory?.(null);
 				reasons.add("unreadable-directory");
+			}
 			return;
 		}
 		if (await pathScan.isNestedListedCanonical(canonicalDirectory, entries)) return;
@@ -219,6 +233,13 @@ async function discoverHeartbeatLedgerSourcesInternal({
 			(a, b) =>
 				priority(a.name) - priority(b.name) || a.name.localeCompare(b.name),
 		);
+		// Record all observed directories, including depth-limited entries and
+		// entries later than the Markdown budget. A former directory changing
+		// into a regular file is a structural event, not a content-only edit.
+		collectObservedDirectory?.(canonicalDirectory);
+		if (collectObservedDirectory)
+			for (const entry of entries)
+				if (entry.isDirectory()) collectObservedDirectory(resolve(canonicalDirectory, entry.name));
 		for (const entry of entries) {
 			const path = resolve(canonicalDirectory, entry.name);
 			if (entry.isDirectory() && !SKIP.has(entry.name)) {
@@ -316,20 +337,22 @@ export class HeartbeatDiscoveryIndex {
 		const root = await realpath(resolve(options.root));
 		const { threadId, ledgerPath, maxFiles = 2500, maxDepth = 5 } = options;
 		const explicit = ledgerPath ? resolve(root, ledgerPath) : null;
+		let explicitCanonical = null;
 		// Automatic discovery skips .tmp. An explicitly selected head there
 		// retains its existing behavior but is always read afresh.
 		if (explicit) {
-			const canonical = await realpath(explicit).catch(() => explicit);
-			if ([explicit, canonical].some((path) => relative(root, path).split(/[\\/]/).includes(".tmp")))
+			explicitCanonical = await realpath(explicit).catch(() => explicit);
+			if ([explicit, explicitCanonical].some((path) => relative(root, path).split(/[\\/]/).includes(".tmp")))
 				return this.#scan(options);
 		}
 		const key = JSON.stringify([root, explicit, maxFiles, maxDepth]);
 		let entry = this.#entries.get(key);
 		if (!entry) {
-			entry = { root, epoch: 0, value: null, pending: null, watcher: null, active: false };
+			entry = { root, epoch: 0, value: null, pending: null, watcher: null, active: false,
+				explicit, explicitCanonical, observedDirectories: null, sourceIdentities: null };
 			try {
 				const current = entry;
-				const watcher = this.#watch(root, { recursive: true, persistent: false }, (_event, filename) => {
+				const watcher = this.#watch(root, { recursive: true, persistent: false }, (event, filename) => {
 					if (!current.active) return;
 					// Automatic scans never traverse these directories. An explicit
 					// .tmp head bypasses this index, so cache traffic stays isolated.
@@ -337,6 +360,25 @@ export class HeartbeatDiscoveryIndex {
 					if (parts.includes(".tmp")) return;
 					if (parts.some((part, i) => SKIP.has(part) && i < parts.length - 1 &&
 						(part !== ".git" || i === 0))) return;
+					// A current canonical regular non-Markdown file cannot affect a
+					// completed scan if it was not an observed directory and does not
+					// share an inode with any inspected Markdown or explicit source.
+					// All keys must possess complete bounded metadata for this proof.
+					if (event === "change" && typeof filename === "string" && filename &&
+						!parts.includes(".git") && !basename(filename).toLowerCase().endsWith(".md")) {
+						const path = resolve(root, filename);
+						const relevant = [...this.#entries.values()].filter((other) => other.root === root && other.active);
+						if (isProjectPathWithinRoot(root, path) && relevant.length) {
+							try {
+								const info = lstatSync(path);
+								const identity = fileIdentity(info);
+								if (info.isFile() && identity && realpathSync(path) === path &&
+									relevant.every((other) => other.observedDirectories && !other.observedDirectories.has(path) &&
+										other.sourceIdentities && !other.sourceIdentities.has(identity) &&
+										other.explicit !== path && other.explicitCanonical !== path)) return;
+							} catch { /* Missing or inaccessible paths invalidate. */ }
+						}
+					}
 					// Every key observes the same root. Invalidate them together before
 					// another key can serve a result while its own event is still queued.
 					for (const other of this.#entries.values())
@@ -361,6 +403,11 @@ export class HeartbeatDiscoveryIndex {
 				return this.#scan(options);
 			}
 		} else {
+			if (entry.explicitCanonical !== explicitCanonical) {
+				entry.explicitCanonical = explicitCanonical;
+				for (const other of this.#entries.values())
+					if (other.root === root && other.active) this.#invalidate(other);
+			}
 			this.#entries.delete(key);
 			this.#entries.set(key, entry);
 		}
@@ -391,10 +438,33 @@ export class HeartbeatDiscoveryIndex {
 				for (let attempt = 0; attempt < 3; attempt++) {
 					const epoch = current.epoch;
 					const associations = new Map();
+					const observedDirectories = new Set();
+					const sourceIdentities = new Set();
+					let directoryMetadataComplete = true;
+					let sourceIdentitiesComplete = true;
+					let observedSources = 0;
 					const report = await this.#scan({ ...options, root, threadId: undefined,
-						collectAssociation: (path, value) => associations.set(path, value) });
+						collectAssociation: (path, value) => associations.set(path, value),
+						collectSourceIdentity: (info) => {
+							observedSources++;
+							const identity = fileIdentity(info);
+							if (!identity) sourceIdentitiesComplete = false;
+							else if (!sourceIdentities.has(identity)) {
+								if (sourceIdentities.size >= MAX_FILTER_SOURCE_IDENTITIES) sourceIdentitiesComplete = false;
+								else sourceIdentities.add(identity);
+							}
+						},
+						collectObservedDirectory: (path) => {
+							if (!path) directoryMetadataComplete = false;
+							else if (!observedDirectories.has(path)) {
+								if (observedDirectories.size >= MAX_FILTER_DIRECTORIES) directoryMetadataComplete = false;
+								else observedDirectories.add(path);
+							}
+						} });
 					if (current.active && current.epoch === epoch) {
 						const record = { report, associations, generation: this.#versions.get(root) };
+						current.observedDirectories = directoryMetadataComplete && observedDirectories.has(root) ? observedDirectories : null;
+						current.sourceIdentities = sourceIdentitiesComplete && observedSources === report.visitedFiles ? sourceIdentities : null;
 						current.value = record;
 						return record;
 					}

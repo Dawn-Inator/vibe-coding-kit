@@ -1,3 +1,8 @@
+# Task Progress 0.5.11
+
+- For watched project Heartbeat discovery, skip invalidation only when bounded directory observations and source inode identities prove a content-only change to a current canonical regular non-Markdown file, including one not previously visited. Incomplete or overflowing observations, unknown filename/type, hard links, rename/delete, directories, symlinks, `.git` changes and explicit source invalidations still invalidate discovery.
+- Keep the stable Helper executable and saved local signing choice introduced in 0.5.9; no TCC authorization is copied or assumed.
+
 # Task Progress 0.5.10
 
 - For a previously saved Heartbeat binding, validate that source with one targeted canonical Kit bound-source lookup while retaining path, hash, task-association and custom-inspector checks. New or unbound chats and forced-write discovery continue to use the full project scan; an incomplete scan is never treated as complete or as proof that no source exists.
