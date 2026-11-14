@@ -100,19 +100,27 @@ test('output symlinks and symlinked parent aliases fail closed', async (t) => {
   assert.equal(await readFile(join(root,'doc/real.md'),'utf8'),'handwritten');
 });
 
-test('schema string rules match runtime for every string field', async (t) => {
+test('schema and runtime agree on string boundaries across every field', async (t) => {
   const { root, catalog } = await setup(t);
   const schema = JSON.parse(await readFile(new URL('../../schemas/reuse-catalog.schema.json', import.meta.url), 'utf8'));
   const entrySchema = schema.properties.entries.items.properties;
   const surfaceSchema = schema.properties.publicSurfaces.items.properties;
-  for (const value of ['valid', ' ', 'valid\n', '\rvalid', 'a\nb']) {
-    const valid = new RegExp(schema.properties.title.pattern).test(value);
-    for (const field of ['id','name','category','owner','source','summary','useWhen']) assert.equal(new RegExp(entrySchema[field].pattern).test(value), valid);
-    for (const field of ['scope','constraints','examples','tests']) assert.equal(new RegExp(entrySchema[field].items.pattern).test(value), valid);
-    for (const field of ['module','symbol']) assert.equal(new RegExp(entrySchema.publicEntry.properties[field].pattern).test(value), valid);
-    for (const field of ['source','module','kind']) assert.equal(new RegExp(surfaceSchema[field].pattern).test(value), valid);
-    const copy = structuredClone(catalog); copy.title = value;
-    assert.equal((await validateReuseCatalog({projectRoot:root, kind:'frontend', catalog:copy})).ok, valid);
+  const fields = [
+    [schema.properties.title, (c, v) => { c.title = v; }],
+    ...['id','name','category','owner','source','summary','useWhen'].map((field) => [entrySchema[field], (c, v) => { c.entries[0][field] = v; }]),
+    ...['scope','constraints','examples','tests'].map((field) => [entrySchema[field].items, (c, v) => { c.entries[0][field] = [v]; }]),
+    ...['module','symbol'].map((field) => [entrySchema.publicEntry.properties[field], (c, v) => { c.entries[0].publicEntry[field] = v; }]),
+    ...['source','module','kind'].map((field) => [surfaceSchema[field], (c, v) => { c.publicSurfaces = [{source:'src/button.ts',module:'ui',kind:'module',[field]:v}]; }]),
+  ];
+  const boundaries = ['\r','\n','\u2028','\u2029'].flatMap((c) => [c + 'Title', 'Ti' + c + 'tle', 'Title' + c]);
+  const values = ['Title', '文字', 'a\\n', 'a\\u2028', '', ' ', '\t', '\u00a0', '\u2003', ...boundaries];
+  for (const [fieldSchema, assign] of fields) for (const value of values) {
+    const schemaAccepts = value.length >= fieldSchema.minLength && new RegExp(fieldSchema.pattern).test(value);
+    const copy = structuredClone(catalog); assign(copy, value);
+    const result = await validateReuseCatalog({projectRoot:root, kind:'frontend', catalog:copy});
+    // Missing or forbidden file paths are independently checked; compare only shape validation.
+    const runtimeAccepts = !result.findings.some((item) => item.code === 'invalid-catalog');
+    assert.equal(runtimeAccepts, schemaAccepts, JSON.stringify(value));
   }
 });
 

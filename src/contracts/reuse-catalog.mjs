@@ -8,7 +8,7 @@ const defaults = {
   backend: { source: 'registries/architecture/backend-capabilities.json', document: 'doc/backend-capabilities.md' },
 };
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const string = (v) => typeof v === 'string' && !!v.trim() && !/[\r\n]/.test(v);
+const string = (v) => typeof v === 'string' && !!v.trim() && !/[\r\n\u2028\u2029]/.test(v);
 const strings = (v) => Array.isArray(v) && v.every(string);
 const keys = (v, allowed, required = allowed) => object(v) && Object.keys(v).every((k) => allowed.includes(k)) && required.every((k) => Object.hasOwn(v, k));
 const inside = (root, p) => { const r = relative(root, p); return r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
