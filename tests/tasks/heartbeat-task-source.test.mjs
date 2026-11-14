@@ -866,16 +866,28 @@ test("unexpected watcher closure discards protected discovery", async () => {
 	} finally { index.close(); }
 });
 
-test("force discovery rejects a cached negative without a watcher event", async () => {
+test("automatic discovery detects a created ledger and force bypasses a fresh cache", async () => {
 	const root = projectRoot();
 	const watcher = Object.assign(new EventEmitter(), { close() {} });
-	const index = new HeartbeatDiscoveryIndex({ watchFactory() { return watcher; } });
+	let scans = 0;
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory() { return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
 	try {
 		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 0);
+		assert.equal(scans, 1);
 		writeFileSync(join(root, "heartbeat.md"), `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: chat-A\n`);
-		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 0);
+		const automatic = await index.discover({ root, threadId: "chat-A" });
+		assert.equal(automatic.candidates.length, 1);
+		assert.equal(automatic.candidates[0].associated, true);
+		assert.equal(scans, 2, "new ledger invalidates the negative without a watcher event");
+		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 1);
+		assert.equal(scans, 2, "unchanged discovery reuses the fresh cache");
 		const fresh = await index.discover({ root, threadId: "chat-A" }, { force: true });
+		assert.equal(fresh.candidates.length, 1);
 		assert.equal(fresh.candidates[0].associated, true);
+		assert.equal(scans, 3, "force performs a new scan even with a fresh cache");
 	} finally { index.close(); }
 });
 
@@ -1196,5 +1208,66 @@ test("explicit sources inside skipped trees cannot be hidden by file-event filte
 		const refreshed = await index.discover({ root, ledgerPath: source, threadId: THREAD });
 		assert.equal(refreshed.candidates[0].associated, false);
 		assert.equal(scans, 3);
+	} finally { index.close(); }
+});
+
+test("cached discovery validates metadata when watcher delivery is delayed", async () => {
+	const root = projectRoot();
+	const directory = join(root, "deep", "nested");
+	mkdirSync(directory, { recursive: true });
+	const code = join(root, "source.ts");
+	writeFileSync(code, "first");
+	const top = join(root, "heartbeat.md");
+	const deep = join(directory, "heartbeat.md");
+	const body = `${ledger([["I", "request", "work", "done", "ok", "[]"]])}\nthread: A\n`;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory() { return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		assert.equal((await index.discover({ root })).candidates.length, 0);
+		writeFileSync(code, "changed contents");
+		assert.equal((await index.discover({ root })).candidates.length, 0);
+		assert.equal(scans, 1, "unrelated non-Markdown content does not rescan");
+		writeFileSync(join(root, "unrelated.ts"), "new code");
+		await index.discover({ root });
+		assert.equal(scans, 1, "new unrelated regular files preserve the snapshot");
+		writeFileSync(join(root, "another.ts"), "new code");
+		writeFileSync(top, body);
+		assert.deepEqual((await index.discover({ root })).candidates.map(x => x.path), [top], "unrelated file cannot hide a simultaneous ledger");
+		writeFileSync(deep, body);
+		assert.equal((await index.discover({ root })).candidates.length, 2);
+		writeFileSync(top, body.replace("thread: A", "thread: other"));
+		const edited = await index.discover({ root, threadId: "other" });
+		assert.equal(edited.candidates.find(x => x.path === top)?.associated, true);
+		rmSync(top);
+		assert.deepEqual((await index.discover({ root })).candidates.map(x => x.path), [deep]);
+		const after = scans;
+		await index.discover({ root });
+		assert.equal(scans, after, "quiet reuse avoids discovery");
+	} finally { index.close(); }
+});
+
+test("discovery observation limit fails closed for cache reuse", async () => {
+	const root = projectRoot();
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory() { return watcher; },
+		async scanFactory(options) {
+			scans++;
+			const report = await discoverHeartbeatLedgerSources(options);
+			const info = statSync(root);
+			for (let i = 0; i < 16384 + 2500; i++)
+				options.collectObservation(join(root, `unobserved-${i}`), info);
+			return report;
+		},
+	});
+	try {
+		await index.discover({ root });
+		await index.discover({ root });
+		assert.equal(scans, 2);
 	} finally { index.close(); }
 });

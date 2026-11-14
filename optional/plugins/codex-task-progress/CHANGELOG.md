@@ -7,6 +7,7 @@
 - Keep Kit integration opt-in: an existing plugin is reused by ordinary Kit installation rather than silently upgraded, and launcher configuration requires the explicit opt-in supplied by the Kit worker.
 - In interactive Kit setup, ask a separate default-No, one-click question before configuring Dock for a selected, already-installed launcher-capable helper; declining preserves plugin and project selection. Non-interactive saved/auto-detected preferences only reuse the installation.
 - Remove the owned launcher and Dock entry before Helper uninstall. Block Helper removal if cleanup fails or a user-edited Dock entry must be retained; preserve legacy-helper uninstall behavior.
+- Refresh cached project discovery against bounded directory and Markdown freshness before reuse, so new, modified or deleted Heartbeat files appear even if watcher delivery lags. Keep the fast path for ordinary new non-Markdown files.
 
 # Task Progress 0.5.13
 

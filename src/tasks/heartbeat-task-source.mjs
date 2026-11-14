@@ -23,9 +23,12 @@ const SKIP = new Set([
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_FILTER_DIRECTORIES = 16384;
 const MAX_FILTER_SOURCE_IDENTITIES = 2500;
+const MAX_DIRECTORY_ENTRIES = 65536;
+const metadataStamp = (info) => `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 const fileIdentity = (info) =>
 	Number.isSafeInteger(info?.dev) && Number.isSafeInteger(info?.ino)
 		? `${info.dev}:${info.ino}` : null;
+const directoryEntryKind = (entry) => entry.isFile() ? "file" : entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink" : "other";
 function isHeartbeatCompanion(name) {
 	return /^taskhistory\.md$/i.test(name) || /(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(name);
 }
@@ -89,6 +92,8 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	collectAssociation,
 	collectObservedDirectory,
 	collectSourceIdentity,
+	collectObservation,
+	collectDirectoryEntries,
 } = {}, { boundOnly = false } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError(
@@ -140,6 +145,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 			if (failClosed) throw result.error;
 			if (result.error?.code !== "nested-git") {
 				collectSourceIdentity?.(null);
+				collectObservation?.(null, null);
 				reasons.add("unreadable-file");
 			}
 			return;
@@ -154,6 +160,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		seenFiles.add(path);
 		visitedFiles += 1;
 		collectSourceIdentity?.(result.info);
+		collectObservation?.(path, result.info);
 		if (result.oversized) { reasons.add("oversized-file"); return; }
 		if (result.unreadable) { reasons.add("unreadable-file"); return; }
 		try {
@@ -218,11 +225,14 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		if (!isProjectPathWithinRoot(projectRoot, canonicalDirectory)) return;
 		let entries;
 		try {
+			if (collectObservation) collectObservation(canonicalDirectory, await lstat(canonicalDirectory));
 			entries = await readdir(canonicalDirectory, { withFileTypes: true });
+			collectDirectoryEntries?.(canonicalDirectory, entries);
 		} catch {
 			// A nested repository is excluded even if its directory is unreadable.
 			if (!await pathScan.isNestedCanonical(canonicalDirectory)) {
 				collectObservedDirectory?.(null);
+				collectObservation?.(canonicalDirectory, null);
 				reasons.add("unreadable-directory");
 			}
 			return;
@@ -439,19 +449,83 @@ export class HeartbeatDiscoveryIndex {
 			for (const other of this.#entries.values())
 				if (other.root === root && other.active) this.#invalidate(other);
 		}
-		if (entry.value && entry.active) return derive(entry.value);
+		while (entry.value && entry.active) {
+			const record = entry.value;
+			const revision = record.revision;
+			const updates = [];
+			let valid = Boolean(record.observations && record.directories && entry.sourceIdentities);
+			if (valid) {
+				const observations = [...record.observations];
+				for (let offset = 0; offset < observations.length && valid; offset += 32) {
+					const results = await Promise.all(observations.slice(offset, offset + 32).map(async ([path, stamp]) => {
+						const info = await lstat(path).catch(() => null);
+						if (!info) return false;
+						if (metadataStamp(info) === stamp) return true;
+						const oldEntries = record.directories.get(path);
+						if (!oldEntries || !info.isDirectory()) return false;
+						const list = await readdir(path, { withFileTypes: true }).catch(() => null);
+						if (!list || list.length > MAX_DIRECTORY_ENTRIES) return false;
+						const current = new Map(list.map((item) => [item.name, directoryEntryKind(item)]));
+						for (const [name, kind] of oldEntries) if (current.get(name) !== kind) return false;
+						for (const [name, kind] of current) {
+							if (oldEntries.has(name)) continue;
+							if (kind !== "file" || name === ".git" || name.toLowerCase().endsWith(".md")) return false;
+							const added = resolve(path, name);
+							const addedInfo = await lstat(added).catch(() => null);
+							const identity = fileIdentity(addedInfo);
+							if (!addedInfo?.isFile() || addedInfo.nlink !== 1 || !identity || entry.sourceIdentities.has(identity) ||
+								(entry.explicit && isProjectPathWithinRoot(added, entry.explicit)) ||
+								(entry.explicitCanonical && isProjectPathWithinRoot(added, entry.explicitCanonical)) ||
+								await realpath(added).catch(() => null) !== added) return false;
+						}
+						const after = await lstat(path).catch(() => null);
+						if (!after || metadataStamp(after) !== metadataStamp(info)) return false;
+						updates.push([path, metadataStamp(info), current]);
+						return true;
+					}));
+					valid = results.every(Boolean);
+				}
+			}
+			if (valid && record.directoryEntryCount + updates.reduce((sum, [path, , entries]) => sum + entries.size - record.directories.get(path).size, 0) > MAX_DIRECTORY_ENTRIES) valid = false;
+			// An older validation cannot invalidate or overwrite a replacement proof.
+			if (entry.value !== record || !entry.active || record.revision !== revision) continue;
+			if (valid) {
+				for (const [path, stamp, entries] of updates) {
+					record.directoryEntryCount += entries.size - record.directories.get(path).size;
+					record.observations.set(path, stamp);
+					record.directories.set(path, entries);
+				}
+				if (updates.length) record.revision++;
+				return derive(record);
+			}
+			for (const other of this.#entries.values())
+				if (other.root === root && other.active) this.#invalidate(other);
+		}
 		if (!entry.pending) {
 			const current = entry;
 			const pending = (async () => {
 				for (let attempt = 0; attempt < 3; attempt++) {
 					const epoch = current.epoch;
 					const associations = new Map();
+					const observations = new Map();
+					const directories = new Map();
+					let directoryEntryCount = 0;
+					let observationsComplete = true;
 					const observedDirectories = new Set();
 					const sourceIdentities = new Set();
 					let directoryMetadataComplete = true;
 					let sourceIdentitiesComplete = true;
 					let observedSources = 0;
 					const report = await this.#scan({ ...options, root, threadId: undefined,
+						collectObservation: (path, info) => {
+							if (!info || (!observations.has(path) && observations.size >= MAX_FILTER_DIRECTORIES + MAX_FILTER_SOURCE_IDENTITIES)) observationsComplete = false;
+							else observations.set(path, metadataStamp(info));
+						},
+						collectDirectoryEntries: (path, entries) => {
+							directoryEntryCount += entries.length;
+							if (directoryEntryCount > MAX_DIRECTORY_ENTRIES) observationsComplete = false;
+							else directories.set(path, new Map(entries.map((item) => [item.name, directoryEntryKind(item)])));
+						},
 						collectAssociation: (path, value) => associations.set(path, value),
 						collectSourceIdentity: (info) => {
 							observedSources++;
@@ -470,7 +544,7 @@ export class HeartbeatDiscoveryIndex {
 							}
 						} });
 					if (current.active && current.epoch === epoch) {
-						const record = { report, associations, generation: this.#versions.get(root) };
+						const record = { report, associations, directories: observationsComplete && directories.has(root) ? directories : null, directoryEntryCount, revision: 0, observations: observationsComplete && observations.has(root) && observedSources === report.visitedFiles ? observations : null, generation: this.#versions.get(root) };
 						current.observedDirectories = directoryMetadataComplete && observedDirectories.has(root) ? observedDirectories : null;
 						current.sourceIdentities = sourceIdentitiesComplete && observedSources === report.visitedFiles ? sourceIdentities : null;
 						current.value = record;
