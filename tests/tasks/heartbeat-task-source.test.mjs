@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
 	discoverHeartbeatLedgers,
+	HeartbeatDiscoveryIndex,
 	discoverHeartbeatLedgerSources,
 	projectHeartbeatTask,
 } from "../../src/tasks/heartbeat-task-source.mjs";
-import { inspectHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
+import { inspectHeartbeatLedger, summarizeHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
 
 after(cleanupTempDirs);
@@ -196,6 +198,43 @@ test("discovery associates only one exact standalone thread metadata field", asy
 			.associated,
 		false,
 	);
+});
+
+test("discovery metadata uses the canonical wake and inventory parsers", () => {
+	for (const text of [
+		"ordinary markdown\n",
+		ledger([["I1", "source", "one", "pending", "", "[]"]]),
+		"## 2026-01-01T10:00Z wake (10-row ledger)\n" + ledger([["I2", "source", "two", "done", "ok", "[]"]]),
+		"## not-a-time wake (8-row ledger)\n## Items\n| id | item |\n| -- | -- |\n| I3 | three |\n",
+	]) {
+		const full = inspectHeartbeatLedger(text, { mode: "items" });
+		const summary = summarizeHeartbeatLedger(text);
+		assert.deepEqual(summary.wakes, full.wakes);
+		assert.equal(summary.itemCount, full.itemCount);
+	}
+});
+
+test("bounded concurrent discovery preserves traversal priority and refreshes source contents", async () => {
+	const root = projectRoot();
+	const workspace = join(root, ".workspace");
+	mkdirSync(workspace);
+	for (let i = 0; i < 40; i += 1) {
+		const name = `heartbeat-${String(i).padStart(2, "0")}.md`;
+		writeFileSync(join(workspace, name), `${ledger([[`I${i}`, "report:r", name, "pending", "", "[]"]])}\nthread: ${THREAD}\n`);
+	}
+	writeFileSync(join(root, "heartbeat-root.md"), `${ledger([["R", "report:r", "root", "done", "", "[]"]])}\nthread: ${THREAD}\n`);
+	const first = await discoverHeartbeatLedgerSources({ root, threadId: THREAD, maxFiles: 35 });
+	assert.equal(first.visitedFiles, 35);
+	assert.deepEqual(first.reasons, ["file-limit"]);
+	assert.equal(first.candidates.length, 35);
+	assert.ok(first.candidates.every((candidate) => dirname(candidate.path) === workspace && candidate.associated));
+	assert.ok(first.candidates.some((candidate) => basename(candidate.path) === "heartbeat-34.md"));
+	assert.ok(!first.candidates.some((candidate) => basename(candidate.path) === "heartbeat-35.md"));
+	writeFileSync(join(workspace, "heartbeat-00.md"), "ordinary text\n");
+	const refreshed = await discoverHeartbeatLedgerSources({ root, threadId: THREAD, maxFiles: 35 });
+	assert.equal(refreshed.visitedFiles, 35);
+	assert.equal(refreshed.candidates.length, 34);
+	assert.ok(!refreshed.candidates.some((candidate) => basename(candidate.path) === "heartbeat-00.md"));
 });
 
 test("discovery reports incomplete scans at file/depth limits and preserves wrapper behavior", async () => {
@@ -646,4 +685,192 @@ test("each discovery refreshes Git boundaries and confines explicit symlinks", a
 		discoverHeartbeatLedgerSources({ root, threadId: THREAD, ledgerPath: local }),
 		/nested Git project/i,
 	);
+	rmSync(join(root, "docs", ".git"));
+	const third = await discoverHeartbeatLedgerSources({ root, threadId: THREAD });
+	assert.deepEqual(third.candidates, [{ path: realpathSync(local), associated: true }]);
+	mkdirSync(join(directory, ".git"));
+	const fourth = await discoverHeartbeatLedgerSources({ root, threadId: THREAD });
+	assert.deepEqual(fourth.candidates, []);
+	assert.equal(fourth.complete, true);
+});
+
+
+test("watch-protected discovery is shared across threads and invalidates on content and boundary changes", async () => {
+	const root = projectRoot();
+	const path = join(root, "heartbeat.md");
+	const body = `${ledger([["I1", "report:r", "source", "done", "receipt", "[]"]])}\nthread: chat-A\n`;
+	writeFileSync(path, body);
+	const mtime = statSync(path).mtime;
+	let changed;
+	let scans = 0;
+	let closed = false;
+	const watcher = Object.assign(new EventEmitter(), { close() { closed = true; } });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		const [a, b] = await Promise.all([
+			index.discover({ root, threadId: "chat-A" }), index.discover({ root, threadId: "chat-B" }),
+		]);
+		assert.equal(scans, 1);
+		assert.equal(a.candidates[0].associated, true);
+		assert.equal(b.candidates[0].associated, false);
+		const generation = await index.generation(root);
+		writeFileSync(path, body.replace("chat-A", "chat-B"));
+		utimesSync(path, mtime, mtime);
+		changed("change", "heartbeat.md");
+		assert.notEqual(await index.generation(root), generation);
+		assert.equal((await index.discover({ root, threadId: "chat-B" })).candidates[0].associated, true);
+		assert.equal(scans, 2);
+		mkdirSync(join(root, "docs"));
+		writeFileSync(join(root, "docs", ".git"), "gitdir: elsewhere\n");
+		writeFileSync(join(root, "docs", "heartbeat.md"), body);
+		changed("rename", "docs/.git");
+		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 1);
+		assert.equal(scans, 3);
+	} finally { index.close(); }
+	assert.equal(closed, true);
+	await assert.rejects(index.discover({ root }), /closed/);
+});
+
+test("unavailable watcher never reuses discovery and in-flight invalidation retries", async () => {
+	const root = projectRoot();
+	writeFileSync(join(root, "heartbeat.md"), `${ledger([["I1", "report:r", "x", "done", "", "[]"]])}\nthread: A\n`);
+	let scans = 0;
+	const fallback = new HeartbeatDiscoveryIndex({
+		watchFactory() { throw new Error("unsupported"); },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	await fallback.discover({ root, threadId: "A" });
+	await fallback.discover({ root, threadId: "A" });
+	assert.equal(scans, 2);
+	assert.equal(await fallback.generation(root), null);
+	fallback.close();
+	let changed;
+	let release;
+	const barrier = new Promise((resolve) => { release = resolve; });
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const indexed = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			const report = await discoverHeartbeatLedgerSources(options);
+			if (++scans === 3) await barrier;
+			return report;
+		},
+	});
+	const pending = indexed.discover({ root, threadId: "A" });
+	while (!changed) await new Promise((resolve) => setImmediate(resolve));
+	changed("change", "heartbeat.md");
+	release();
+	await pending;
+	assert.equal(scans, 4);
+	watcher.emit("error", new Error("watch lost"));
+	assert.equal(await indexed.generation(root), null);
+	indexed.close();
+});
+
+
+test("index isolates bounds and roots, and reports creates, removals and renames", async () => {
+	const root = projectRoot();
+	const other = projectRoot();
+	let scans = 0;
+	const callbacks = new Map();
+	const watchers = [];
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(path, _options, callback) {
+			const w = Object.assign(new EventEmitter(), { closed: false, close() { this.closed = true; } });
+			watchers.push(w); callbacks.set(path, callback); return w;
+		},
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+		maxEntries: 2,
+	});
+	try {
+		await index.discover({ root, maxFiles: 2 });
+		await index.discover({ root, maxFiles: 3 });
+		assert.equal(scans, 2);
+		const file = join(root, "heartbeat.md");
+		writeFileSync(file, `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: A\n`);
+		callbacks.get(root)("rename", "heartbeat.md");
+		assert.equal((await index.discover({ root, maxFiles: 2 })).candidates.length, 1);
+		assert.equal((await index.discover({ root, maxFiles: 3 })).candidates.length, 1);
+		rmSync(file);
+		callbacks.get(root)("rename", "heartbeat.md");
+		assert.equal((await index.discover({ root, maxFiles: 2 })).candidates.length, 0);
+		await index.discover({ root: other });
+		assert.ok(watchers.some((watcher) => watcher.closed));
+	} finally { index.close(); }
+	assert.ok(watchers.every((watcher) => watcher.closed));
+});
+
+
+test("automatic scans exclude .tmp but explicit .tmp ledgers are always read fresh", async () => {
+	const root = projectRoot();
+	const tmp = join(root, ".tmp", "codex-task-progress", "cache");
+	mkdirSync(tmp, { recursive: true });
+	const path = join(tmp, "heartbeat.md");
+	const first = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: chat-A\n`;
+	writeFileSync(path, first);
+	let changed;
+	let scans = 0;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		assert.equal((await index.discover({ root })).candidates.length, 0);
+		changed("change", ".tmp/codex-task-progress/cache/heartbeat.md");
+		await index.discover({ root });
+		assert.equal(scans, 1);
+		assert.equal((await index.discover({ root, ledgerPath: path, threadId: "chat-A" })).candidates[0].associated, true);
+		writeFileSync(path, first.replace("chat-A", "chat-B"));
+		assert.equal((await index.discover({ root, ledgerPath: path, threadId: "chat-B" })).candidates[0].associated, true);
+		assert.equal(scans, 3);
+		const cacheName = join(root, "fake.snapshot.json");
+		mkdirSync(cacheName);
+		writeFileSync(join(cacheName, "heartbeat.md"), first);
+		changed("rename", "fake.snapshot.json");
+		assert.equal((await index.discover({ root })).candidates.length, 1);
+		rmSync(cacheName, { recursive: true });
+		changed("rename", "fake.snapshot.json");
+		assert.equal((await index.discover({ root })).candidates.length, 0);
+	} finally { index.close(); }
+});
+
+test("unexpected watcher closure discards protected discovery", async () => {
+	const root = projectRoot();
+	let scans = 0;
+	let watchCount = 0;
+	const watchers = [];
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory() {
+			watchCount++;
+			const watcher = Object.assign(new EventEmitter(), { close() {} });
+			watchers.push(watcher);
+			return watcher;
+		},
+		async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+	});
+	try {
+		await index.discover({ root });
+		watchers[0].emit("close");
+		assert.equal(await index.generation(root), null);
+		await index.discover({ root });
+		assert.equal(scans, 2);
+		assert.equal(watchCount, 2);
+	} finally { index.close(); }
+});
+
+test("force discovery rejects a cached negative without a watcher event", async () => {
+	const root = projectRoot();
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({ watchFactory() { return watcher; } });
+	try {
+		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 0);
+		writeFileSync(join(root, "heartbeat.md"), `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: chat-A\n`);
+		assert.equal((await index.discover({ root, threadId: "chat-A" })).candidates.length, 0);
+		const fresh = await index.discover({ root, threadId: "chat-A" }, { force: true });
+		assert.equal(fresh.candidates[0].associated, true);
+	} finally { index.close(); }
 });

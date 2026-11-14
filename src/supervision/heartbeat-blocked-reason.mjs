@@ -130,9 +130,16 @@ export function findStaleBlockedRows({ rows, blockedReason, isDone, wakeSpan = (
   const unitRows = new Map();
   for (const row of rows) {
     const unit = unitOfSource(row.source);
-    if (unit) unitRows.set(unit, [...(unitRows.get(unit) ?? []), row]);
+    if (unit) {
+      if (!unitRows.has(unit)) unitRows.set(unit, []);
+      unitRows.get(unit).push(row);
+    }
   }
   const doneUnits = [...unitRows].filter(([, rs]) => rs.every((r) => isDone(r))).map(([unit]) => unit);
+  const doneUnitMatchers = doneUnits.map((unit) => {
+    const escaped = unit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b(?:report|audit):${escaped}(?![A-Za-z0-9-])`, 'i');
+  });
   const doneText = rows.filter((row) => isDone(row)).map((row) => ({ row, text: `${row.item ?? ''} ${row.evidence ?? ''}`.toLowerCase() }));
 
   for (const row of rows) {
@@ -144,11 +151,12 @@ export function findStaleBlockedRows({ rows, blockedReason, isDone, wakeSpan = (
       const target = byId.get(ref.toUpperCase());
       if (target && target !== row && isDone(target)) reasons.push(`item ${ref} is done`);
     }
-    for (const unit of doneUnits) {
+    for (let i = 0; i < doneUnits.length; i += 1) {
+      const unit = doneUnits[i];
       if (unit === selfUnit) continue;
       // Explicit tokens only (`report:<unit>` / `audit:<unit>`); a bare unit name or a path segment
       // (`engineering/testing/rot-gate/**`) is never a reference to the unit (I514).
-      if (new RegExp(`\\b(?:report|audit):${unit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9-])`, 'i').test(reason)) {
+      if (doneUnitMatchers[i].test(reason)) {
         reasons.push(`unit ${unit} is done`);
       }
     }

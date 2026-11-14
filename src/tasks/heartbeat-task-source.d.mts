@@ -22,6 +22,8 @@ export type HeartbeatDiscoveryReason =
 
 export interface HeartbeatLedgerDiscoveryReport {
 	schemaVersion: 1;
+	/** Non-enumerable scan generation, only present for protected indexed results. */
+	readonly indexGeneration?: number;
 	root: string;
 	candidates: HeartbeatLedgerCandidate[];
 	complete: boolean;
@@ -65,6 +67,16 @@ export interface ProjectHeartbeatTaskOptions {
 export type HeartbeatTaskState = Omit<TaskState, "source"> & {
 	source: HeartbeatTaskSource;
 };
+
+/** Per-workspace bounded cache. Read-only reuse relies on the OS recursive watcher delivering
+ * changes; watcher error or closure discards its entries. Unsupported watchers scan afresh.
+ * There is no time-based refresh. Use force for write authorization, and close on owner shutdown. */
+export class HeartbeatDiscoveryIndex {
+	constructor(options?: { maxEntries?: number; watchFactory?: typeof import("node:fs").watch; scanFactory?: typeof discoverHeartbeatLedgerSources });
+	discover(options: DiscoverHeartbeatLedgersOptions, context?: { force?: boolean }): Promise<HeartbeatLedgerDiscoveryReport>;
+	generation(root: string): Promise<number | null>;
+	close(): void;
+}
 
 /** Discover bounded project-local ledgers and report whether the scan was exhaustive within its scope. */
 export function discoverHeartbeatLedgerSources(

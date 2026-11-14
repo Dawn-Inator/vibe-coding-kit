@@ -39,6 +39,7 @@ export interface ReadProjectHeartbeatOptions {
 	maxFiles?: number;
 	maxDepth?: number;
 	intervalMinutes?: number;
+	discoveryIndex?: import("./heartbeat-task-source.mjs").HeartbeatDiscoveryIndex;
 	/** @deprecated Ignored; all observation is read-only. */
 	migrate?: boolean;
 }

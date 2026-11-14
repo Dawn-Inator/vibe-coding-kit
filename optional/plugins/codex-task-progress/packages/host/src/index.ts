@@ -2449,7 +2449,9 @@ export class GoalProgressHelper {
     if (action === "get") sourceTask = await heartbeatService.taskProjection(threadId, cwd);
     else {
       [sourceTask, heartbeat] = await Promise.all([
-        heartbeatService.taskProjection(threadId, cwd),
+        heartbeatService.taskProjection(threadId, cwd, {
+          forceDiscovery: ["initialize", "update", "rescope", "bind-heartbeat"].includes(action),
+        }),
         heartbeatService.projectView(cwd),
       ]);
     }
@@ -2459,7 +2461,7 @@ export class GoalProgressHelper {
       await workspace.ensureWritable();
       const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
       await heartbeatService.bind(threadId, bind.path, cwd);
-      sourceTask = await heartbeatService.taskProjection(threadId, cwd);
+      sourceTask = await heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: true });
     }
     if (
       ["initialize", "update", "rescope"].includes(action) &&

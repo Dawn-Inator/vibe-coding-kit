@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   mkdir,
   mkdtemp,
@@ -19,6 +20,10 @@ import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
+import {
+  discoverHeartbeatLedgerSources,
+  HeartbeatDiscoveryIndex,
+} from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import { HeartbeatProjectViewCache, HeartbeatService, type HeartbeatView } from "./heartbeat.js";
 
 const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
@@ -176,6 +181,189 @@ test("project summaries share only within matching root and config scope, dedupe
     second.close();
     differentConfig.close();
     shared.clear();
+    await f.close();
+  }
+});
+
+test("expired project snapshots retain only the matching scoped summary while refreshing", async () => {
+  const f = await fixture();
+  const shared = new HeartbeatProjectViewCache();
+  let clock = 1_000;
+  const now = () => new Date(clock);
+  const service = new HeartbeatService(resolve(f.root, "snapshot-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 100,
+    now,
+    projectViewCache: shared,
+  });
+  const otherScope = new HeartbeatService(resolve(f.root, "other-scope"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 100,
+    now,
+    maxFiles: 1,
+    projectViewCache: shared,
+  });
+  try {
+    await writeFile(f.source, ledger("chat"));
+    const cold = await service.projectViewSnapshot(f.project);
+    assert.equal(cold.view, null);
+    assert.equal(cold.pending, true);
+    const initial = await service.projectView(f.project);
+    assert.equal(initial.status, "ready");
+    clock += 101;
+    const stale = await service.projectViewSnapshot(f.project);
+    assert.equal(stale.pending, true);
+    assert.equal(stale.view?.sourcePath, initial.sourcePath);
+    assert.equal(stale.view?.certifiesCurrent, false);
+    const isolated = await otherScope.projectViewSnapshot(f.project);
+    assert.equal(isolated.view, null);
+    assert.equal(isolated.pending, true);
+    await Promise.all([service.projectView(f.project), otherScope.projectView(f.project)]);
+    assert.equal((await service.projectViewSnapshot(f.project)).pending, false);
+  } finally {
+    service.close();
+    otherScope.close();
+    shared.close();
+    await f.close();
+  }
+});
+
+test("a slow project read starts its cache lifetime on completion", async () => {
+  const f = await fixture();
+  let calls = 0;
+  const now = () => new Date(++calls === 1 ? 1_000 : 61_000);
+  const service = new HeartbeatService(resolve(f.root, "slow-read-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 30_000,
+    now,
+  });
+  try {
+    await writeFile(f.source, ledger("chat"));
+    const view = await service.projectView(f.project);
+    assert.equal(view.refreshedAt, new Date(1_000).toISOString());
+    const snapshot = await service.projectViewSnapshot(f.project);
+    assert.equal(snapshot.pending, false);
+    assert.strictEqual(snapshot.view, view);
+    assert.strictEqual(await service.projectView(f.project), view);
+  } finally {
+    service.close();
+    await f.close();
+  }
+});
+
+test("a slow thread read starts its cache lifetime on completion", async () => {
+  const f = await fixture();
+  let calls = 0;
+  const now = () => new Date(++calls === 1 ? 1_000 : 61_000);
+  const service = new HeartbeatService(resolve(f.root, "slow-thread-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 30_000,
+    now,
+  });
+  try {
+    await writeFile(f.source, ledger("other-chat"));
+    const view = await service.view("chat", f.project);
+    assert.equal(view?.status, "candidates");
+    assert.strictEqual(await service.view("chat", f.project), view);
+  } finally {
+    service.close();
+    await f.close();
+  }
+});
+
+test("project summary retains its selected pair while discovery index is invalidated", async () => {
+  const f = await fixture();
+  let onChange: ((event: string, filename: string) => void) | undefined;
+  const watcher = Object.assign(new EventEmitter(), { close() {} });
+  const index = new HeartbeatDiscoveryIndex({
+    watchFactory: ((_root: unknown, _options: unknown, callback: typeof onChange) => {
+      onChange = callback;
+      return watcher;
+    }) as unknown as typeof import("node:fs").watch,
+  });
+  const service = new HeartbeatService(resolve(f.root, "history-stable"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
+    discoveryIndex: index,
+  });
+  try {
+    await writeFile(f.source, ledger("chat"));
+    const original = await service.projectView(f.project);
+    assert.equal(original.status, "ready");
+    await writeFile(f.source, ledger("different"));
+    onChange?.("change", "heartbeat.md");
+    const same = await service.projectView(f.project);
+    assert.strictEqual(same, original);
+    assert.equal(same.contentHash, original.contentHash);
+  } finally {
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("two services share an indexed discovery while retaining exact thread associations", async () => {
+  const f = await fixture();
+  let scans = 0;
+  const watcher = Object.assign(new EventEmitter(), { close() {} });
+  const index = new HeartbeatDiscoveryIndex({
+    watchFactory: (() => watcher) as unknown as typeof import("node:fs").watch,
+    scanFactory: async (options) => {
+      scans += 1;
+      return discoverHeartbeatLedgerSources(options);
+    },
+  });
+  const first = new HeartbeatService(resolve(f.root, "first-index"), {
+    kitPath: f.kitPath,
+    discoveryIndex: index,
+  });
+  const second = new HeartbeatService(resolve(f.root, "second-index"), {
+    kitPath: f.kitPath,
+    discoveryIndex: index,
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const [a, b] = await Promise.all([
+      first.view("chat-A", f.project),
+      second.view("chat-B", f.project),
+    ]);
+    assert.equal(a?.status, "ready");
+    assert.equal(b?.status, "candidates");
+    assert.equal(scans, 1);
+  } finally {
+    first.close();
+    second.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("forced projection refreshes a cached negative even before watcher delivery", async () => {
+  const f = await fixture();
+  const watcher = Object.assign(new EventEmitter(), { close() {} });
+  const index = new HeartbeatDiscoveryIndex({
+    watchFactory: (() => watcher) as unknown as typeof import("node:fs").watch,
+  });
+  const service = new HeartbeatService(resolve(f.root, "forced-authority"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 60_000,
+    discoveryIndex: index,
+  });
+  try {
+    assert.equal((await service.taskProjection("chat-A", f.project)).status, "none");
+    await writeFile(f.source, ledger("chat-A"));
+    const refreshed = await service.taskProjection("chat-A", f.project, { forceDiscovery: true });
+    assert.equal(refreshed.sourcePath, await realpath(f.source));
+    assert.equal(refreshed.status, "ready");
+  } finally {
+    service.close();
+    index.close();
     await f.close();
   }
 });

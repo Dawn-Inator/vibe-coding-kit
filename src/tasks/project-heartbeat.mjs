@@ -6,6 +6,7 @@ import { parseStrictIsoTimestamp } from "../supervision/heartbeat-audit-due.mjs"
 import {
 	inspectHeartbeatLedgerPair,
 	readHeartbeatLedgerPair,
+	summarizeHeartbeatLedgerPair,
 } from "../supervision/heartbeat-ledger-files.mjs";
 import { discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
 import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
@@ -38,49 +39,36 @@ function lastRecordedWakeAt(report, now) {
 	return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
-async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
-	const { path: canonicalPath, info } = await resolveProjectLedgerPath(
-		projectRoot,
-		path,
-	);
-	if (info.size > MAX_BYTES)
-		throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
-	const pair = readHeartbeatLedgerPair({
-		root: projectRoot,
-		path: canonicalPath,
-		maxBytes: MAX_BYTES,
-	});
-	const current = inspectHeartbeatLedgerPair(pair, {
-		mode: "current",
-		latest: true,
-		now,
-		ledgerPath: canonicalPath,
-	});
-	const history = inspectHeartbeatLedgerPair(pair, {
-		mode: "history",
-		latest: false,
-		now,
-		ledgerPath: canonicalPath,
-	});
-	const inventory = inspectHeartbeatLedgerPair(pair, {
-		mode: "items",
-		now,
-		ledgerPath: canonicalPath,
-	});
+async function readCanonicalPair(projectRoot, path, now) {
+	const { path: canonicalPath, info } = await resolveProjectLedgerPath(projectRoot, path);
+	if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
+	const pair = readHeartbeatLedgerPair({ root: projectRoot, path: canonicalPath, maxBytes: MAX_BYTES });
+	const summary = summarizeHeartbeatLedgerPair(pair);
+	return {
+		path: canonicalPath, info, pair,
+		lastRecordedAt: lastRecordedWakeAt(summary, now),
+		itemCount: summary.itemCount,
+	};
+}
+
+function inspectCanonicalSource(entry, now, intervalMinutes) {
+	const { path: canonicalPath, info, pair } = entry;
+	const current = inspectHeartbeatLedgerPair(pair, { mode: "current", latest: true, now, ledgerPath: canonicalPath });
+	const history = inspectHeartbeatLedgerPair(pair, { mode: "history", latest: false, now, ledgerPath: canonicalPath });
+	const inventory = inspectHeartbeatLedgerPair(pair, { mode: "items", now, ledgerPath: canonicalPath });
 	return {
 		path: canonicalPath,
 		contentHash: pair.contentHash,
 		modifiedAt: pair.modifiedAt || info.mtime.toISOString(),
 		historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
 		lastRecordedAt: lastRecordedWakeAt(history, now),
-		current,
-		history,
-		inventory,
-		cadence:
-			intervalMinutes === undefined
-				? null
-				: heartbeatAuditDue(pair.fullText, { now, intervalMinutes }),
+		current, history, inventory,
+		cadence: intervalMinutes === undefined ? null : heartbeatAuditDue(pair.fullText, { now, intervalMinutes }),
 	};
+}
+
+async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
+	return inspectCanonicalSource(await readCanonicalPair(projectRoot, path, now), now, intervalMinutes);
 }
 
 /** Read and display the latest recorded heartbeat source in one trusted project root. */
@@ -91,6 +79,7 @@ export async function readProjectHeartbeat({
 	maxFiles = 2500,
 	maxDepth = 5,
 	intervalMinutes,
+	discoveryIndex,
 } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError("Project heartbeat requires an absolute project root");
@@ -112,11 +101,10 @@ export async function readProjectHeartbeat({
 		throw new TypeError("ledgerPath must be a nonblank path when configured");
 
 	const projectRoot = await realpath(resolve(root));
-	const discovery = await discoverHeartbeatLedgerSources({
-		root: projectRoot,
-		maxFiles,
-		maxDepth,
-	});
+	const discoveryOptions = { root: projectRoot, maxFiles, maxDepth };
+	const discovery = await (discoveryIndex
+		? discoveryIndex.discover(discoveryOptions)
+		: discoverHeartbeatLedgerSources(discoveryOptions));
 
 	if (ledgerPath !== undefined) {
 		const requestedPath = resolve(projectRoot, ledgerPath);
@@ -147,61 +135,62 @@ export async function readProjectHeartbeat({
 	}
 
 	const readErrors = [];
-	let readableCount = 0;
+	const entries = [];
 	let bestRecorded = null;
 	let bestInventory = null;
 	const comparePath = (a, b) => a.path.localeCompare(b.path);
 	for (const candidate of discovery.candidates) {
 		try {
-			const entry = await readCanonicalSource(
-				projectRoot,
-				candidate.path,
-				now,
-				intervalMinutes,
-				false,
-			);
-			readableCount += 1;
-			if (
-				entry.lastRecordedAt !== null &&
-				(!bestRecorded ||
-					Date.parse(entry.lastRecordedAt) >
-						Date.parse(bestRecorded.lastRecordedAt) ||
-					(Date.parse(entry.lastRecordedAt) ===
-						Date.parse(bestRecorded.lastRecordedAt) &&
-						comparePath(entry, bestRecorded) < 0))
-			)
-				bestRecorded = entry;
-			if (
-				entry.inventory.itemCount > 0 &&
-				(!bestInventory || comparePath(entry, bestInventory) < 0)
-			)
-				bestInventory = entry;
+			const entry = await readCanonicalPair(projectRoot, candidate.path, now);
+			// Keep at most two complete pair snapshots, regardless of project size.
+			const isRecorded = entry.lastRecordedAt !== null && (!bestRecorded ||
+				entry.lastRecordedAt > bestRecorded.lastRecordedAt ||
+				(entry.lastRecordedAt === bestRecorded.lastRecordedAt && comparePath(entry, bestRecorded) < 0));
+			const isInventory = entry.itemCount > 0 && (!bestInventory || comparePath(entry, bestInventory) < 0);
+			entries.push({ path: entry.path, lastRecordedAt: entry.lastRecordedAt, itemCount: entry.itemCount });
+			if (isRecorded) bestRecorded = entry;
+			if (isInventory) bestInventory = entry;
 		} catch (error) {
-			readErrors.push(
-				`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			readErrors.push(`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	entries.sort((a, b) => {
+		if (a.lastRecordedAt !== null && b.lastRecordedAt !== null)
+			return b.lastRecordedAt.localeCompare(a.lastRecordedAt) || comparePath(a, b);
+		if (a.lastRecordedAt !== null) return -1;
+		if (b.lastRecordedAt !== null) return 1;
+		if (Boolean(a.itemCount) !== Boolean(b.itemCount)) return a.itemCount ? -1 : 1;
+		return comparePath(a, b);
+	});
+	let source = null;
+	let auditFailures = 0;
+	let basis = "none";
+	for (const entry of entries) {
+		if (entry.lastRecordedAt === null && !entry.itemCount) break;
+		try {
+			const snapshot = entry.path === bestRecorded?.path ? bestRecorded :
+				entry.path === bestInventory?.path ? bestInventory :
+				await readCanonicalPair(projectRoot, entry.path, now);
+			if (snapshot.lastRecordedAt !== entry.lastRecordedAt || snapshot.itemCount !== entry.itemCount)
+				throw new Error("Heartbeat source changed while selecting a candidate");
+			source = inspectCanonicalSource(snapshot, now, intervalMinutes);
+			basis = entry.lastRecordedAt !== null ? "latest-recorded-wake" : "items-inventory";
+			break;
+		} catch (error) {
+			auditFailures += 1;
+			readErrors.push(`${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 	if (readErrors.length) {
 		discovery.complete = false;
-		discovery.reasons = [
-			...new Set([...discovery.reasons, "unreadable-file"]),
-		].sort();
+		discovery.reasons = [...new Set([...discovery.reasons, "unreadable-file"])].sort();
 	}
-	if (readableCount === 0) {
-		if (readErrors.length)
-			return resultWithoutSource(
-				discovery,
-				"error",
-				"none",
-				readErrors.join("; "),
-			);
+	if (!source) {
+		if (entries.length === auditFailures && readErrors.length)
+			return resultWithoutSource(discovery, "error", "none", readErrors.join("; "));
 		return resultWithoutSource(discovery, "none", "none");
 	}
 
-	const source = bestRecorded ?? bestInventory;
-	if (!source) return resultWithoutSource(discovery, "none", "none");
-	const basis = bestRecorded ? "latest-recorded-wake" : "items-inventory";
 	return {
 		schemaVersion: 1,
 		projectRoot,

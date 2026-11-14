@@ -10,6 +10,7 @@ import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
+import { HeartbeatDiscoveryIndex } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import type {
   CodexCdpListenerOwnership,
   CodexCdpRuntimeState,
@@ -291,7 +292,15 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
       reason: "Exercise nonblocking project summary",
       objectives: [{ id: "L1", title: "Persisted locally" }],
     });
-    await writeFile(join(root, ".codex-task-progress.json"), "{invalid-json");
+    await writeFile(
+      join(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { maxFiles: 499 } }),
+    );
+    await writeFile(
+      join(root, "heartbeat-unrelated.md"),
+      "## 2026-01-01T10:00Z wake (10-row ledger)\nthread: another-chat\n",
+    );
+    await writeFile(join(root, "heartbeat-unrelated.taskhistory.md"), "corrupt companion");
     holdNextProjectRead = true;
     HeartbeatService.prototype.projectView = function (cwd) {
       if (holdNextProjectRead) {
@@ -317,7 +326,7 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
       heartbeatPending?: boolean;
     };
     assert.equal(pendingResult.task?.title, "Local checklist");
-    assert.equal(pendingResult.taskSource, null);
+    assert.deepEqual(pendingResult.taskSource, { status: "candidates", readOnly: true });
     assert.equal(pendingResult.heartbeat, null);
     assert.equal(pendingResult.heartbeatPending, true);
     assert.equal(pending.revision, 1);
@@ -331,26 +340,30 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
       heartbeatPending?: boolean;
     };
     assert.equal(visibleError.heartbeat?.status, "error");
-    assert.match(visibleError.heartbeat?.error ?? "", /Cannot read \.codex-task-progress\.json/i);
-    assert.equal(visibleError.taskSource, null);
+    assert.match(visibleError.heartbeat?.error ?? "", /heartbeat-unrelated/i);
+    assert.deepEqual(visibleError.taskSource, { status: "candidates", readOnly: true });
+    await rm(join(root, "heartbeat-unrelated.md"));
+    await rm(join(root, "heartbeat-unrelated.taskhistory.md"));
 
-    await writeFile(
-      join(root, ".codex-task-progress.json"),
-      JSON.stringify({ heartbeat: { maxFiles: 500 } }),
-    );
     const retry = (await request("get", {})).result as {
       heartbeat: { status: string; error?: string } | null;
       heartbeatPending?: boolean;
     };
     assert.equal(retry.heartbeat?.status, "error");
     assert.equal(retry.heartbeatPending, true);
-    await refreshDone;
-    const recovered = (await request("get", {})).result as {
-      heartbeat: { status: string } | null;
-      heartbeatPending?: boolean;
-    };
-    assert.equal(recovered.heartbeat?.status, "none");
-    assert.equal(recovered.heartbeatPending, undefined);
+    let recovered:
+      | { heartbeat: { status: string } | null; heartbeatPending?: boolean; task: TaskState | null }
+      | undefined;
+    const deadline = Date.now() + 2_000;
+    for (let attempt = 0; attempt < 50 && Date.now() < deadline; attempt += 1) {
+      await refreshDone;
+      recovered = (await request("get", {})).result as typeof recovered;
+      assert.equal(recovered?.task?.title, "Local checklist");
+      if (recovered?.heartbeat?.status === "none" && recovered.heartbeatPending === undefined)
+        break;
+    }
+    assert.equal(recovered?.heartbeat?.status, "none");
+    assert.equal(recovered?.heartbeatPending, undefined);
   } finally {
     HeartbeatService.prototype.projectView = originalProjectView;
     await helper.stop();
@@ -2436,5 +2449,110 @@ test("Helper remains ready and task IPC works through stale renderer bootstrap, 
       await helper.stop();
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("task mutation forces discovery before writing a local checklist", async () => {
+  const root = await mkdtemp("/tmp/ctph-force-source-");
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, "kit"));
+  await writeFile(
+    join(root, "kit", "heartbeat-ledger-api.mjs"),
+    `export function inspectHeartbeatLedger(text,{mode}) { return {mode,certifiesCurrent:true,passed:true,wakes:[],items:[],tables:[],findings:[]}; }`,
+  );
+  await writeFile(
+    join(root, ".codex-task-progress.json"),
+    JSON.stringify({ heartbeat: { kitPath: "kit/heartbeat-ledger-api.mjs" } }),
+  );
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const original = HeartbeatService.prototype.taskProjection;
+  const originalDiscover = HeartbeatDiscoveryIndex.prototype.discover;
+  const originalGeneration = HeartbeatDiscoveryIndex.prototype.generation;
+  let holdEvents = false;
+  let staleDiscovery: Awaited<ReturnType<typeof originalDiscover>> | undefined;
+  let shadowGeneration: number | null = null;
+  HeartbeatDiscoveryIndex.prototype.discover = async function (options, context) {
+    if (holdEvents && !context?.force && staleDiscovery) return staleDiscovery;
+    const report = await originalDiscover.call(this, options, context);
+    if (!holdEvents && report.candidates.length === 0 && report.indexGeneration !== undefined) {
+      staleDiscovery = report;
+      shadowGeneration = report.indexGeneration;
+    }
+    if (holdEvents && context?.force) shadowGeneration = report.indexGeneration ?? null;
+    return report;
+  };
+  HeartbeatDiscoveryIndex.prototype.generation = function (projectRoot) {
+    return holdEvents
+      ? Promise.resolve(shadowGeneration)
+      : originalGeneration.call(this, projectRoot);
+  };
+  const forced: boolean[] = [];
+  HeartbeatService.prototype.taskProjection = function (threadId, cwd, options) {
+    forced.push(options?.forceDiscovery === true);
+    return original.call(this, threadId, cwd, options);
+  };
+  let call = 0;
+  const request = (action: "get" | "initialize" | "update", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `force-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  try {
+    await helper.start();
+    await request("initialize", {
+      requestId: "initial",
+      expectedRevision: 0,
+      title: "Local",
+      reason: "Initial local task",
+      objectives: [{ id: "I1", title: "One" }],
+    });
+    await request("get", {});
+    assert.ok(staleDiscovery);
+    holdEvents = true;
+    await writeFile(
+      join(root, "heartbeat.md"),
+      "## Items\n| id | source | item | status | evidence |\n| -- | -- | -- | -- | -- |\n| H1 | request | canonical | pending | - |\nthread: chat-A\n",
+    );
+    const cached = (await request("get", {})).result as { task: TaskState | null };
+    assert.equal(cached.task?.title, "Local");
+    await assert.rejects(
+      request("update", {
+        requestId: "blocked",
+        expectedRevision: 1,
+        reason: "Should use source",
+        changes: [{ targetId: "I1", status: "active" }],
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    assert.equal(forced.at(-1), true);
+  } finally {
+    HeartbeatService.prototype.taskProjection = original;
+    HeartbeatDiscoveryIndex.prototype.discover = originalDiscover;
+    HeartbeatDiscoveryIndex.prototype.generation = originalGeneration;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,8 +1,9 @@
+import { watch } from "node:fs";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { calculateTaskProgress } from "./task-contract.mjs";
-import { inspectHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
+import { summarizeHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
 import {
 	createProjectLedgerPathScan,
 	isProjectPathWithinRoot,
@@ -16,12 +17,14 @@ const SKIP = new Set([
 	"runtime",
 	"vendor",
 	".cache",
+	".tmp",
 ]);
 const MAX_BYTES = 8 * 1024 * 1024;
 function isHeartbeatCompanion(name) {
 	return /^taskhistory\.md$/i.test(name) || /(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(name);
 }
 function withoutFencedExamples(text) {
+	if (!/^\s{0,3}(?:`{3,}|~{3,})/m.test(text)) return text;
 	let fence = null;
 	return text
 		.split("\n")
@@ -38,7 +41,7 @@ function withoutFencedExamples(text) {
 		.join("\n");
 }
 
-function isAssociatedThread(text, threadId) {
+function associatedThread(text) {
 	const values = [];
 	for (const line of text.split("\n")) {
 		const match =
@@ -53,11 +56,11 @@ function isAssociatedThread(text, threadId) {
 		)
 			value = value.slice(1, -1);
 		// A metadata value names exactly one thread; lists, prose and placeholders are ambiguous.
-		if (!value || /\s|,|;|\|/.test(value)) return false;
+		if (!value || /\s|,|;|\|/.test(value)) return null;
 		values.push(value);
 	}
 	const unique = new Set(values);
-	return unique.size === 1 && unique.has(threadId);
+	return unique.size === 1 ? values[0] : null;
 }
 
 function priority(name) {
@@ -77,6 +80,7 @@ export async function discoverHeartbeatLedgerSources({
 	ledgerPath,
 	maxFiles = 2500,
 	maxDepth = 5,
+	collectAssociation,
 } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError(
@@ -105,20 +109,30 @@ export async function discoverHeartbeatLedgerSources({
 	const reasons = new Set();
 	let visitedFiles = 0;
 	let explicitRealPath = null;
-	const inspect = async (candidatePath, failClosed = false) => {
-		if (isHeartbeatCompanion(basename(candidatePath))) {
-			if (failClosed) throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
-			return null;
-		}
-		let path;
-		let info;
+	// Resolve and read concurrently, but commit results in traversal order. Only a
+	// bounded number of reads may be outstanding, and reservations are consumed
+	// in order so duplicate paths and maxFiles retain their serial semantics.
+	const pending = [];
+	const prepare = async (candidatePath) => {
 		try {
-			({ path, info } = await pathScan.resolve(candidatePath));
+			const { path, info } = await pathScan.resolve(candidatePath);
+			if (info.size > MAX_BYTES) return { path, oversized: true };
+			try {
+				return { path, original: await readFile(path, "utf8") };
+			} catch {
+				return { path, unreadable: true };
+			}
 		} catch (error) {
-			if (failClosed) throw error;
-			if (error?.code !== "nested-git") reasons.add("unreadable-file");
-			return null;
+			return { error };
 		}
+	};
+	const commit = (result, failClosed = false) => {
+		if (result.error) {
+			if (failClosed) throw result.error;
+			if (result.error?.code !== "nested-git") reasons.add("unreadable-file");
+			return;
+		}
+		const { path } = result;
 		if (failClosed) explicitRealPath = path;
 		if (seenFiles.has(path)) return;
 		if (visitedFiles >= maxFiles) {
@@ -127,39 +141,42 @@ export async function discoverHeartbeatLedgerSources({
 		}
 		seenFiles.add(path);
 		visitedFiles += 1;
+		if (result.oversized) { reasons.add("oversized-file"); return; }
+		if (result.unreadable) { reasons.add("unreadable-file"); return; }
 		try {
-			if (info.size > MAX_BYTES) {
-				reasons.add("oversized-file");
-				return;
-			}
-			const original = await readFile(path, "utf8");
-			const text = withoutFencedExamples(original);
-			const report = inspectHeartbeatLedger(text, { mode: "items" });
-			const hasDatedWake = report.wakes.some(
-				(wake) =>
-					typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
-			);
-			const named =
-				/heartbeat/i.test(basename(path)) ||
+			const text = withoutFencedExamples(result.original);
+			const named = /heartbeat/i.test(basename(path)) ||
 				(explicitRealPath && path === explicitRealPath);
-			// Discovery uses parsed API output as a signal, never a second ledger-format validator.
+			const report = summarizeHeartbeatLedger(text, { includeItems: Boolean(named) });
+			const hasDatedWake = report.wakes.some(
+				(wake) => typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
+			);
 			if (!hasDatedWake && !(named && report.itemCount)) return;
-			candidates.set(path, {
-				path,
-				associated: threadId ? isAssociatedThread(text, threadId) : false,
-			});
-			return path;
+			const association = associatedThread(text);
+			collectAssociation?.(path, association);
+			candidates.set(path, { path, associated: Boolean(threadId && association === threadId) });
 		} catch {
 			reasons.add("unreadable-file");
-			return null;
 		}
+	};
+	const drainOne = async () => commit(await pending.shift());
+	const enqueue = async (path) => {
+		// Never speculate past the remaining file budget: a failed resolution or
+		// duplicate releases its reservation for the next file.
+		while (pending.length && (pending.length >= 32 ||
+			visitedFiles + pending.length >= maxFiles)) await drainOne();
+		if (visitedFiles >= maxFiles) { reasons.add("file-limit"); return false; }
+		pending.push(prepare(path));
+		return true;
 	};
 
 	if (ledgerPath) {
 		if (typeof ledgerPath !== "string" || !ledgerPath.trim())
 			throw new TypeError("ledgerPath must be nonblank");
 		const explicit = resolve(projectRoot, ledgerPath);
-		await inspect(explicit, true);
+		if (isHeartbeatCompanion(basename(explicit)))
+			throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
+		commit(await prepare(explicit), true);
 	}
 
 	const scan = async (directory, depth) => {
@@ -171,15 +188,18 @@ export async function discoverHeartbeatLedgerSources({
 			return;
 		}
 		if (seenDirectories.has(canonicalDirectory)) return;
-		if (await pathScan.isNested(canonicalDirectory)) return;
-		seenDirectories.add(canonicalDirectory);
+		if (!isProjectPathWithinRoot(projectRoot, canonicalDirectory)) return;
 		let entries;
 		try {
 			entries = await readdir(canonicalDirectory, { withFileTypes: true });
 		} catch {
-			reasons.add("unreadable-directory");
+			// A nested repository is excluded even if its directory is unreadable.
+			if (!await pathScan.isNestedCanonical(canonicalDirectory))
+				reasons.add("unreadable-directory");
 			return;
 		}
+		if (await pathScan.isNestedListedCanonical(canonicalDirectory, entries)) return;
+		seenDirectories.add(canonicalDirectory);
 		entries.sort(
 			(a, b) =>
 				priority(a.name) - priority(b.name) || a.name.localeCompare(b.name),
@@ -187,20 +207,16 @@ export async function discoverHeartbeatLedgerSources({
 		for (const entry of entries) {
 			const path = resolve(canonicalDirectory, entry.name);
 			if (entry.isDirectory() && !SKIP.has(entry.name)) {
-				if (await pathScan.isNested(path)) continue;
-				if (depth + 1 > maxDepth) reasons.add("depth-limit");
-				else await scan(path, depth + 1);
+				if (depth + 1 > maxDepth) {
+					if (!await pathScan.isNested(path)) reasons.add("depth-limit");
+				} else await scan(path, depth + 1);
 			} else if (
 				entry.isFile() &&
 				entry.name.toLowerCase().endsWith(".md") &&
 				!isHeartbeatCompanion(entry.name) &&
 				!seenFiles.has(path)
 			) {
-				if (visitedFiles >= maxFiles) {
-					reasons.add("file-limit");
-					return;
-				}
-				await inspect(path);
+				if (!await enqueue(path)) return;
 			}
 		}
 	};
@@ -209,12 +225,13 @@ export async function discoverHeartbeatLedgerSources({
 	for (const directory of [".workspace", ".todolist"]) {
 		const path = resolve(projectRoot, directory);
 		if ((await lstat(path).catch(() => null))?.isDirectory()) {
-			if (await pathScan.isNested(path)) continue;
-			if (1 > maxDepth) reasons.add("depth-limit");
-			else await scan(path, 1);
+			if (1 > maxDepth) {
+				if (!await pathScan.isNested(path)) reasons.add("depth-limit");
+			} else await scan(path, 1);
 		}
 	}
 	await scan(projectRoot, 0);
+	while (pending.length) await drainOne();
 	return {
 		schemaVersion: 1,
 		root: projectRoot,
@@ -226,6 +243,151 @@ export async function discoverHeartbeatLedgerSources({
 		limits: { maxFiles, maxDepth },
 		reasons: [...reasons].sort(),
 	};
+}
+
+/** Scan-local results are reused only while a live recursive watcher protects the root. */
+export class HeartbeatDiscoveryIndex {
+	#entries = new Map();
+	#versions = new Map();
+	#sequence = 0;
+	#closed = false;
+	#watch;
+	#scan;
+	#limit;
+	constructor({ watchFactory = watch, scanFactory = discoverHeartbeatLedgerSources, maxEntries = 16 } = {}) {
+		if (!Number.isInteger(maxEntries) || maxEntries < 1) throw new TypeError("maxEntries must be positive");
+		this.#watch = watchFactory;
+		this.#scan = scanFactory;
+		this.#limit = maxEntries;
+	}
+	async generation(root) {
+		const canonical = await realpath(resolve(root));
+		return this.#versions.get(canonical) ?? null;
+	}
+	#invalidate(entry) {
+		entry.epoch++;
+		entry.value = null;
+		this.#versions.set(entry.root, ++this.#sequence);
+	}
+	#drop(key, entry) {
+		entry.active = false;
+		entry.watcher?.close();
+		this.#entries.delete(key);
+		this.#invalidate(entry);
+		if (![...this.#entries.values()].some((other) => other.root === entry.root && other.active))
+			this.#versions.delete(entry.root);
+	}
+	async discover(options, { force = false } = {}) {
+		if (this.#closed) throw new Error("Heartbeat discovery index is closed");
+		if (typeof options?.root !== "string" || !options.root.trim() || !isAbsolute(options.root))
+			throw new TypeError("Heartbeat discovery requires an absolute project root");
+		if (options.threadId !== undefined && (typeof options.threadId !== "string" || !options.threadId.trim()))
+			throw new TypeError("Heartbeat discovery requires an exact thread ID");
+		if (options.ledgerPath !== undefined && (typeof options.ledgerPath !== "string" || !options.ledgerPath.trim()))
+			throw new TypeError("ledgerPath must be nonblank");
+		if (!Number.isInteger(options.maxFiles === undefined ? 2500 : options.maxFiles) || (options.maxFiles === undefined ? 2500 : options.maxFiles) < 1 ||
+			!Number.isInteger(options.maxDepth === undefined ? 5 : options.maxDepth) || (options.maxDepth === undefined ? 5 : options.maxDepth) < 0)
+			throw new TypeError("maxFiles and maxDepth must be nonnegative bounded integers");
+		const root = await realpath(resolve(options.root));
+		const { threadId, ledgerPath, maxFiles = 2500, maxDepth = 5 } = options;
+		const explicit = ledgerPath ? resolve(root, ledgerPath) : null;
+		// Automatic discovery skips .tmp. An explicitly selected head there
+		// retains its existing behavior but is always read afresh.
+		if (explicit) {
+			const canonical = await realpath(explicit).catch(() => explicit);
+			if ([explicit, canonical].some((path) => relative(root, path).split(/[\\/]/).includes(".tmp")))
+				return this.#scan(options);
+		}
+		const key = JSON.stringify([root, explicit, maxFiles, maxDepth]);
+		let entry = this.#entries.get(key);
+		if (!entry) {
+			entry = { root, epoch: 0, value: null, pending: null, watcher: null, active: false };
+			try {
+				const current = entry;
+				const watcher = this.#watch(root, { recursive: true, persistent: false }, (_event, filename) => {
+					if (!current.active) return;
+					// Automatic scans never traverse these directories. An explicit
+					// .tmp head bypasses this index, so cache traffic stays isolated.
+					const parts = typeof filename === "string" ? filename.split(/[\\/]/) : [];
+					if (parts.includes(".tmp")) return;
+					if (parts.some((part, i) => SKIP.has(part) && i < parts.length - 1 &&
+						(part !== ".git" || i === 0))) return;
+					// Every key observes the same root. Invalidate them together before
+					// another key can serve a result while its own event is still queued.
+					for (const other of this.#entries.values())
+						if (other.root === root && other.active) this.#invalidate(other);
+				});
+				entry.watcher = watcher;
+				entry.active = true;
+				const lost = () => {
+					if (!current.active) return;
+					this.#drop(key, current);
+				};
+				watcher.on("error", lost);
+				watcher.on("close", lost);
+				if (!this.#versions.has(root)) this.#versions.set(root, ++this.#sequence);
+				this.#entries.set(key, entry);
+				while (this.#entries.size > this.#limit) {
+					const [oldKey, old] = this.#entries.entries().next().value;
+					this.#drop(oldKey, old);
+				}
+			} catch {
+				// Unsupported/unavailable recursive watch: never reuse unprotected data.
+				return this.#scan(options);
+			}
+		} else {
+			this.#entries.delete(key);
+			this.#entries.set(key, entry);
+		}
+		const derive = (record) => {
+			// The watcher may have invalidated the snapshot after a pending scan
+			// resolved but before its awaiting caller resumed.
+			if (!entry.active || entry.value !== record || this.#versions.get(root) !== record.generation)
+				throw new Error("Heartbeat discovery changed before delivery; retry required");
+			const report = { ...record.report, reasons: [...record.report.reasons], limits: { ...record.report.limits },
+				candidates: record.report.candidates.map((candidate) => ({
+					path: candidate.path, associated: Boolean(threadId && record.associations.get(candidate.path) === threadId),
+				})) };
+			Object.defineProperty(report, "indexGeneration", { value: record.generation });
+			return report;
+		};
+		if (force) {
+			// A scan already in progress may predate the mutation request.
+			// Wait for it, then start a new scan before authorizing a write.
+			if (entry.pending) await entry.pending.catch(() => {});
+			if (!entry.active) return this.#scan(options);
+			for (const other of this.#entries.values())
+				if (other.root === root && other.active) this.#invalidate(other);
+		}
+		if (entry.value && entry.active) return derive(entry.value);
+		if (!entry.pending) {
+			const current = entry;
+			const pending = (async () => {
+				for (let attempt = 0; attempt < 3; attempt++) {
+					const epoch = current.epoch;
+					const associations = new Map();
+					const report = await this.#scan({ ...options, root, threadId: undefined,
+						collectAssociation: (path, value) => associations.set(path, value) });
+					if (current.active && current.epoch === epoch) {
+						const record = { report, associations, generation: this.#versions.get(root) };
+						current.value = record;
+						return record;
+					}
+					if (!current.active) break;
+				}
+				throw new Error("Heartbeat discovery changed while scanning; retry required");
+			})();
+			current.pending = pending;
+			void pending.finally(() => { if (current.pending === pending) current.pending = null; }).catch(() => {});
+		}
+		return derive(await entry.pending);
+	}
+	close() {
+		if (this.#closed) return;
+		this.#closed = true;
+		for (const [key, entry] of this.#entries) this.#drop(key, entry);
+		this.#versions.clear();
+	}
 }
 
 /** Backward-compatible candidates-only view of the shared bounded scan. */

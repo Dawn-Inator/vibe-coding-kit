@@ -388,9 +388,13 @@ export class TaskProgressElement extends LitElement {
   }
 
   private currentHeartbeatHistoryContext(): string | null {
-    const heartbeat = this.data.heartbeat;
+    const heartbeat = this.displayHeartbeat();
     if (!this.threadId || !heartbeat?.sourcePath) return null;
     return JSON.stringify([this.threadId, heartbeat.sourcePath, heartbeat.contentHash ?? null]);
+  }
+
+  private displayHeartbeat(): TaskPanelHeartbeat | null {
+    return this.data.heartbeat;
   }
 
   private readonly outsideClick = (event: Event): void => {
@@ -720,7 +724,7 @@ export class TaskProgressElement extends LitElement {
 
   private async loadHeartbeatHistory(more = false, expectedContext?: string): Promise<void> {
     const threadId = this.threadId;
-    const heartbeat = this.data.heartbeat;
+    const heartbeat = this.displayHeartbeat();
     const sourcePath = heartbeat?.sourcePath;
     const context = expectedContext ?? this.currentHeartbeatHistoryContext();
     if (
@@ -749,7 +753,7 @@ export class TaskProgressElement extends LitElement {
       )
         return;
       const page = result.heartbeatHistory;
-      const currentHash = this.data.heartbeat?.contentHash;
+      const currentHash = this.displayHeartbeat()?.contentHash;
       const hashMismatch = Boolean(
         page?.contentHash && currentHash && page.contentHash !== currentHash,
       );
@@ -968,7 +972,7 @@ export class TaskProgressElement extends LitElement {
   }
 
   private renderHeartbeat() {
-    const heartbeat = this.data.heartbeat;
+    const heartbeat = this.displayHeartbeat();
     if (!heartbeat) {
       const pending = this.data.heartbeatPending === true;
       const statusText = pending
@@ -984,6 +988,7 @@ export class TaskProgressElement extends LitElement {
     const historyName = this.basename(heartbeat.historyPath);
     const hasAlert = Boolean(heartbeat.warning || heartbeat.findings.length);
     return html`<div class="heartbeat hb-panel">
+      ${this.data.heartbeatPending === true ? html`<p class="muted" role="status" aria-live="polite">${this.t("Refreshing the project heartbeat; showing its last verified snapshot.", "正在刷新项目心跳；当前显示最近一次已验证的快照。")}</p>` : nothing}
       ${
         sourcePath
           ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>

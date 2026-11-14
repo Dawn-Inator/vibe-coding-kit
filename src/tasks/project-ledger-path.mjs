@@ -59,6 +59,21 @@ export function createProjectLedgerPathScan(root) {
 		return nested;
 	};
 	return {
+		// A successful fresh readdir supplies the directory's own Git marker. Its
+		// ancestors still use the same scan-local canonical boundary checks.
+		async isNestedListedCanonical(directory, entries) {
+			if (!isProjectPathWithinRoot(canonicalRoot, directory)) return true;
+			if (boundaries.has(directory)) return boundaries.get(directory);
+			const nested = await nestedCanonical(dirname(directory));
+			const result = nested || entries.some((entry) => entry.name === ".git");
+			boundaries.set(directory, result);
+			return result;
+		},
+		// The caller must have just obtained this canonical path with realpath.
+		async isNestedCanonical(directory) {
+			if (!isProjectPathWithinRoot(canonicalRoot, directory)) return false;
+			return nestedCanonical(directory);
+		},
 		async isNested(directory) {
 			const canonical = await realpath(directory).catch(() => null);
 			if (!canonical || !isProjectPathWithinRoot(canonicalRoot, canonical)) return false;

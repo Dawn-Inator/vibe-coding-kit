@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { parseWakes, WAKE_HEADING_RE } from "./check-heartbeat-ledger.mjs";
-import { inspectHeartbeatLedger } from "./heartbeat-ledger-api.mjs";
+import { inspectHeartbeatLedger, summarizeHeartbeatLedger } from "./heartbeat-ledger-api.mjs";
 import {
 	resolveProjectLedgerPathSync,
 	validateProjectLedgerSidecarSync,
@@ -448,6 +448,15 @@ function auditText(pair) {
 		text: `${headLines.join("\n")}\n${wakes.map((w) => w.text).join("\n\n")}`,
 		lineSources,
 	};
+}
+
+/** Metadata for ranking: identical audit text and head inventory, without audit findings. */
+export function summarizeHeartbeatLedgerPair(pair) {
+	if (!pair || typeof pair.headText !== "string" || typeof pair.fullText !== "string")
+		throw new TypeError("A heartbeat ledger pair is required");
+	const { wakes } = summarizeHeartbeatLedger(pair.isLegacy ? pair.fullText : auditText(pair).text, { includeItems: false });
+	const { itemCount } = summarizeHeartbeatLedger(pair.headText, { includeWakes: false });
+	return { wakes, itemCount };
 }
 
 export function inspectHeartbeatLedgerPair(

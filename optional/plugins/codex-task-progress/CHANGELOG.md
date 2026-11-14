@@ -1,3 +1,8 @@
+# Task Progress 0.5.5
+
+- Keep the last valid same-scope project Heartbeat summary and history visible while refresh is pending; clear the view when a new scope has no verified snapshot.
+- Share bounded Kit discovery across chat and project display while the recursive watcher is live; force fresh scans for writes and drop cached discovery when watcher protection is lost.
+
 # Task Progress 0.5.4
 
 - Reduce bounded Kit Heartbeat discovery work by memoizing the canonical root and Git-boundary checks within one scan; discard the memo between scans.

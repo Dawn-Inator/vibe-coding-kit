@@ -228,6 +228,7 @@ export interface HeartbeatOptions {
   legacyHeartbeatRoots?: string[];
   /** Workspace-owned cache for read-only project summaries; thread state stays service-local. */
   projectViewCache?: HeartbeatProjectViewCache;
+  discoveryIndex?: import("vibe-coding-kit/src/tasks/heartbeat-task-source.mjs").HeartbeatDiscoveryIndex;
 }
 interface ProjectConfig {
   heartbeat?: {
@@ -240,6 +241,7 @@ interface ProjectConfig {
   };
 }
 interface CacheEntry {
+  generation?: number | null;
   cwd: string;
   time: number;
   value: HeartbeatView | null;
@@ -534,7 +536,7 @@ export class HeartbeatService {
           // A failed source read is not cached: another call can retry immediately.
           if (view.status !== "error") {
             this.#projectViewCache.setValue(key, resolvedRoot, epoch, {
-              time: now.getTime(),
+              time: this.#now().getTime(),
               value: view,
             });
             this.#projectViewCache.clearFailure(key, resolvedRoot, epoch);
@@ -605,7 +607,8 @@ export class HeartbeatService {
       const refresh = this.projectView(cwd);
       // Refresh failures are represented by projectView's error view; no detached rejection leaks.
       void refresh.catch(() => undefined);
-      return { view: fresh ? (cached?.value ?? null) : (failure ?? null), pending: !fresh };
+      const stale = key !== null && cached ? { ...cached.value, certifiesCurrent: false } : null;
+      return { view: fresh ? (cached?.value ?? null) : (failure ?? stale), pending: !fresh };
     } catch (error) {
       const refresh = this.projectView(cwd);
       void refresh.catch(() => undefined);
@@ -678,6 +681,7 @@ export class HeartbeatService {
       const report = await readProjectHeartbeat({
         root,
         ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
+        ...(this.#options.discoveryIndex ? { discoveryIndex: this.#options.discoveryIndex } : {}),
         now,
         ...(maxFiles === undefined ? {} : { maxFiles }),
         ...(maxDepth === undefined ? {} : { maxDepth }),
@@ -832,24 +836,73 @@ export class HeartbeatService {
     }
   }
 
-  async view(threadId: string, cwd: string): Promise<HeartbeatView | null> {
+  async view(
+    threadId: string,
+    cwd: string,
+    options: { forceDiscovery?: boolean } = {},
+  ): Promise<HeartbeatView | null> {
+    const index = this.#options.discoveryIndex;
+    const root = index ? await this.#project(cwd) : null;
+    const generation = root && index ? await index.generation(root) : null;
     const cached = this.#cache.get(threadId);
     const now = this.#now().getTime();
-    if (cached?.cwd === cwd && now - cached.time < (this.#options.refreshMs ?? 30_000))
+    if (
+      !options.forceDiscovery &&
+      cached?.cwd === cwd &&
+      (!index || (generation !== null && cached.generation === generation)) &&
+      now - cached.time < (this.#options.refreshMs ?? 30_000)
+    )
       return cached.value;
     const pending = this.#pending.get(threadId);
-    if (pending) return pending;
-    const operation = this.#read(threadId, cwd)
-      .then((value) => {
-        this.#cache.set(threadId, { cwd, time: now, value });
-        return value;
-      })
-      .finally(() => this.#pending.delete(threadId));
+    if (pending) {
+      if (!options.forceDiscovery) return pending;
+      await pending.catch(() => undefined);
+    }
+    const operation = (async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const observation: { generation: number | null } = { generation: null };
+        const value = await this.#read(
+          threadId,
+          cwd,
+          {
+            forceDiscovery: Boolean(options.forceDiscovery && attempt === 0),
+          },
+          observation,
+        );
+        const completed = root && index ? await index.generation(root) : null;
+        if (!index || (observation.generation !== null && completed === observation.generation)) {
+          const explicitTemp = Boolean(
+            root &&
+              value &&
+              [value.sourcePath, ...value.candidates.map((candidate) => candidate.path)].some(
+                (path) => path && relative(root, path).split(/[\\/]/).includes(".tmp"),
+              ),
+          );
+          if (!explicitTemp)
+            this.#cache.set(threadId, {
+              cwd,
+              time: this.#now().getTime(),
+              value,
+              generation: completed,
+            });
+          return value;
+        }
+        // An unavailable watcher cannot certify a cache hit, but the just-completed
+        // canonical scan remains usable; the next request will scan again.
+        if (observation.generation === null) return value;
+      }
+      throw new Error("Heartbeat discovery changed while reading; retry required");
+    })().finally(() => this.#pending.delete(threadId));
     this.#pending.set(threadId, operation);
     return operation;
   }
 
-  async #read(threadId: string, cwd: string): Promise<HeartbeatView | null> {
+  async #read(
+    threadId: string,
+    cwd: string,
+    options: { forceDiscovery?: boolean } = {},
+    observation?: { generation: number | null },
+  ): Promise<HeartbeatView | null> {
     await this.#restore(threadId);
     const now = this.#now().toISOString();
     const empty: HeartbeatView = {
@@ -896,13 +949,19 @@ export class HeartbeatService {
         }
       }
       const discoveryLedgerPath = storedBindingPath ?? config.heartbeat?.ledgerPath;
-      const discovery = await discoverHeartbeatLedgerSources({
+      const discoveryOptions = {
         root,
         threadId,
         ...(discoveryLedgerPath ? { ledgerPath: discoveryLedgerPath } : {}),
         ...(maxFiles === undefined ? {} : { maxFiles }),
         ...(maxDepth === undefined ? {} : { maxDepth }),
-      });
+      };
+      const discovery = await (this.#options.discoveryIndex
+        ? this.#options.discoveryIndex.discover(discoveryOptions, {
+            force: Boolean(options.forceDiscovery),
+          })
+        : discoverHeartbeatLedgerSources(discoveryOptions));
+      if (observation) observation.generation = discovery.indexGeneration ?? null;
       const candidates = discovery.candidates;
       const relation = await relations.resolve(threadId, {
         projectRoot: root,
@@ -1187,8 +1246,12 @@ export class HeartbeatService {
   }
 
   /** Returns the canonical Kit projection only for a fresh, successfully read source ledger. */
-  async taskProjection(threadId: string, cwd: string): Promise<HeartbeatTaskProjection> {
-    const view = await this.view(threadId, cwd);
+  async taskProjection(
+    threadId: string,
+    cwd: string,
+    options: { forceDiscovery?: boolean } = {},
+  ): Promise<HeartbeatTaskProjection> {
+    const view = await this.view(threadId, cwd, options);
     if (view?.status === "stale" && view.sourcePath)
       return {
         status: "stale",
@@ -1300,13 +1363,16 @@ export class HeartbeatService {
       const { discoverHeartbeatLedgerSources } = await loadHeartbeatTaskSourceApi();
       const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
       const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
-      const discovery = await discoverHeartbeatLedgerSources({
+      const discoveryOptions = {
         root,
         threadId,
         ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
         ...(maxFiles === undefined ? {} : { maxFiles }),
         ...(maxDepth === undefined ? {} : { maxDepth }),
-      });
+      };
+      const discovery = await (this.#options.discoveryIndex
+        ? this.#options.discoveryIndex.discover(discoveryOptions, { force: true })
+        : discoverHeartbeatLedgerSources(discoveryOptions));
       const candidates = discovery.candidates;
       const requestedPath = resolve(root, path);
       const absolutePath = await realpath(requestedPath).catch(() => requestedPath);
@@ -1319,7 +1385,7 @@ export class HeartbeatService {
       this.#watchers.delete(threadId);
     }
     this.#cache.delete(threadId);
-    return this.view(threadId, cwd);
+    return this.view(threadId, cwd, { forceDiscovery: true });
   }
 
   close(): void {

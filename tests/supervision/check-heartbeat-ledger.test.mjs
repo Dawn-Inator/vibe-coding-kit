@@ -584,6 +584,39 @@ test('blocked-stale matches a done unit only by explicit token, never a bare nam
   assert.match(found[0].message, /item I4 /);
 });
 
+test('blocked-stale preserves exact escaped unit-token matching for repeated checks', () => {
+  const items = itemsTable([
+    ['I1', 'report:foo.bar', 'done dotted unit', 'done', 'landed'],
+    ['I2', 'report:a+b', 'done plus unit', 'done', 'landed'],
+    ['I3', 'report:c', 'false regex match', 'blocked <- report:fooXbar', '-'],
+    ['I4', 'report:d', 'exact escaped match', 'blocked <- audit:a+b', '-'],
+    ['I5', 'report:e', 'same reason, second row', 'blocked <- audit:a+b', '-'],
+  ]);
+  const found = checkItems(items, { now: NOW });
+  assert.deepEqual(found, [
+    { rule: 'blocked-stale', message: 'item I4 (line 8): still "blocked ←" but the registry shows unit a+b is done — re-verify the blocker (it may have cleared) and update the row' },
+    { rule: 'blocked-stale', message: 'item I5 (line 9): still "blocked ←" but the registry shows unit a+b is done — re-verify the blocker (it may have cleared) and update the row' },
+  ]);
+});
+
+test('blocked-stale wake-span memoization preserves repeated-reason findings and timestamps', () => {
+  const reason = 'blocked <- shared write lock held by worker';
+  const ledger = [
+    wake('2025-12-30T08:00Z', { rows: { 3: reason } }),
+    wake('2025-12-31T09:00Z', { rows: { 3: reason } }),
+    wake('2026-01-01T09:00Z', { rows: { 3: reason } }),
+    itemsTable([
+      ['I1', 'report:a', 'first', reason, '-'],
+      ['I2', 'report:b', 'second', reason, '-'],
+    ]),
+  ].join('\n');
+  const found = checkItems(ledger, { now: NOW });
+  assert.deepEqual(found, [
+    { rule: 'blocked-stale', message: 'item I1 (line 56): blocked unchanged since 2025-12-30T08:00:00.000Z (> 24h) — re-verify the blocker is still held and update the row (add "verified <ISO>" to the evidence cell), or dispatch it' },
+    { rule: 'blocked-stale', message: 'item I2 (line 57): blocked unchanged since 2025-12-30T08:00:00.000Z (> 24h) — re-verify the blocker is still held and update the row (add "verified <ISO>" to the evidence cell), or dispatch it' },
+  ]);
+});
+
 test('an orchestrator dispatch freeze needs an expiry or recheck condition and may not outlive it', () => {
   const unbounded = itemsTable([['I1', 'sweep:load', 'no new write dispatches until the queue drains', 'dispatched orch', '-']]);
   assert.deepEqual(rules(checkItems(unbounded, { now: NOW })), ['dispatch-freeze-unbounded']);

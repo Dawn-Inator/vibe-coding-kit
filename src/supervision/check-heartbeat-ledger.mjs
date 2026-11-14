@@ -473,10 +473,23 @@ export function checkItems(text, { now = new Date() } = {}) {
   const isDone = (row) => itemKind(row.status) === 'done';
   const nowMs = now.getTime();
   const flat = rows.map((row) => ({ ...row, loc: `item ${row.id || '(no id)'} (line ${row.line})` }));
-  const wakeTimes = parseWakes(text).filter((w) => w.timeMs !== null && w.timeMs !== undefined);
+  const normalizeWakeState = (state) => String(state ?? '').replace(/\s+/g, ' ').toLowerCase();
+  const wakeTimes = parseWakes(text)
+    .filter((w) => w.timeMs !== null && w.timeMs !== undefined)
+    .map((wake) => ({ timeMs: wake.timeMs, states: wake.rows.map((row) => normalizeWakeState(row.state)) }));
+  const wakeSpans = new Map();
   const wakeSpan = (key) => {
-    const hits = wakeTimes.filter((w) => w.rows.some((r) => r.state.replace(/\s+/g, ' ').toLowerCase().includes(key)));
-    return hits.length > 0 ? { since: Math.min(...hits.map((w) => w.timeMs)), until: Math.max(...hits.map((w) => w.timeMs)) } : null;
+    if (wakeSpans.has(key)) return wakeSpans.get(key);
+    let since = Infinity;
+    let until = -Infinity;
+    for (const wake of wakeTimes) {
+      if (!wake.states.some((state) => state.includes(key))) continue;
+      since = Math.min(since, wake.timeMs);
+      until = Math.max(until, wake.timeMs);
+    }
+    const span = since === Infinity ? null : { since, until };
+    wakeSpans.set(key, span);
+    return span;
   };
   const blockedReason = (row) => (itemKind(row.status) === 'blocked' ? row.status.match(BLOCKED_RE)?.[1]?.trim() || null : null);
   for (const row of flat) {

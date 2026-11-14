@@ -1,6 +1,6 @@
 // Canonical synchronous API for Kit and consuming projects. Deprecated checker exports remain
 // low-level helpers; callers that need an audit report should use this normalized contract.
-import { checkItems, checkLedger, findStrayItemRows, ownerFindings, parseItemTables, parseItems, parseWakes } from './check-heartbeat-ledger.mjs';
+import { checkItems, checkLedger, findStrayItemRows, ownerFindings, parseItemTables, parseItems, parseWakes, WAKE_HEADING_RE } from './check-heartbeat-ledger.mjs';
 import { checkHeartbeatV2 } from './heartbeat-ledger-v2.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
 export { heartbeatAuditDue } from './heartbeat-audit-due.mjs';
@@ -9,6 +9,16 @@ const MODES = new Set(['current', 'history', 'items']);
 
 function normalizeFindings(findings) {
   return findings.map((finding) => ({ ...finding, severity: finding.severity === 'advisory' ? 'advisory' : 'error' }));
+}
+
+// This is only a negative filter. The canonical parser still decides every wake.
+const POSSIBLE_WAKE = new RegExp(WAKE_HEADING_RE.source, `${WAKE_HEADING_RE.flags}m`);
+
+/** Parse discovery metadata with the canonical parsers, without running audit checks. */
+export function summarizeHeartbeatLedger(text, { includeItems = true, includeWakes = true } = {}) {
+  const wakes = includeWakes && POSSIBLE_WAKE.test(text) ? parseWakes(text) : [];
+  const itemCount = includeItems ? parseItems(text).rows.length : 0;
+  return { wakes, itemCount };
 }
 
 /**

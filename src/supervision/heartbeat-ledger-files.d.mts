@@ -74,6 +74,8 @@ export function readHeartbeatLedgerPair(options: {
 	/** Maximum combined bytes of head and history; the backup is also bounded. */
 	maxBytes?: number;
 }): HeartbeatLedgerPair;
+/** Parse ranking metadata without certifying or auditing the pair. */
+export function summarizeHeartbeatLedgerPair(pair: HeartbeatLedgerPair): { wakes: HeartbeatWake[]; itemCount: number };
 export function inspectHeartbeatLedgerPair(
 	pair: HeartbeatLedgerPair,
 	options?: InspectHeartbeatLedgerOptions & {

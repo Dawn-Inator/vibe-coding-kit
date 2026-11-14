@@ -125,6 +125,15 @@ appendHeartbeatWake({
 当 discovery 的 `complete` 为 false 时，不能宣称候选唯一或不存在，应明确保留不确定性。只有 unfenced 文本里
 唯一、独立的 `thread:`、`thread_id:` 或 `threadId:` 字段与线程 ID 完全匹配时才自动关联。
 
+重复发现应使用 Kit `WorkspaceTaskStorage` 持有的 `HeartbeatDiscoveryIndex`，不要在插件或前端另建来源权威缓存。
+该索引按规范项目与扫描范围，在聊天服务和项目展示间共享有界候选发现，仅在递归 watcher 有效时复用；写入可请求
+强制新扫描。watcher 报错/关闭或递归监听不可用时，缓存不再受保护，后续走新扫描。自动扫描跳过 `.tmp`，显式
+指定 `.tmp` 路径仍可读取但不复用索引。候选选择使用规范摘要解析，完整审计只针对最终选中来源；文件/深度限制、
+嵌套 Git/符号链接边界和精确线程关联继续生效。规范化及 CPU 守卫为单次调用状态，缓存不保证零 I/O。
+
+项目 Heartbeat 摘要的 30 秒缓存按配置范围隔离，并从刷新完成时开始计时。同范围刷新 pending 时，可返回最近摘要用于
+展示，但必须将其标记为未认证；切换到没有已验证快照的新范围时应清空旧展示。pending 展示不改变来源权威。
+
 ## 迁移、路由与缓存
 
 旧 JSONL 事件、JSON 快照、Heartbeat 绑定 JSON 和 `workspace-storage-index.json` 都只作为兼容迁移输入，旧文件

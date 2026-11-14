@@ -156,6 +156,9 @@ export type HeartbeatAuditDueResult =
 		line: number;
 	};
 
+/** Parse metadata using the same parsers as inspection; this does not validate a ledger. */
+export function summarizeHeartbeatLedger(text: string, options?: { includeItems?: boolean; includeWakes?: boolean }): { wakes: HeartbeatWake[]; itemCount: number };
+
 /** Inspect a heartbeat ledger using the shared current, history, or Items report shape. */
 export function inspectHeartbeatLedger(
 	text: string,

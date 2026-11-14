@@ -1313,6 +1313,249 @@ test("ordinary chat task panel browser flows", async (t) => {
       },
     );
     await t.test(
+      "heartbeat notice keeps the verified project view and history through a pending refresh, then fences terminal responses",
+      async () => {
+        const { context, page, panel } = await open();
+        const sourcePath = "/workspace/shared-project/heartbeat.md";
+        const oldHistory = {
+          wakes: [
+            {
+              timeMs: Date.parse("2026-11-13T14:34:48Z"),
+              rows: [{ category: "status", state: "verified cached record" }],
+            },
+          ],
+          nextCursor: null,
+          total: 1,
+          sourcePath,
+          contentHash: "hash-a",
+        };
+        try {
+          await page.evaluate(
+            ({ value, history, sourcePath, taskValue }) => {
+              window.fixture.heartbeat = {
+                ...value,
+                status: "ready",
+                sourcePath,
+                contentHash: "hash-a",
+                wakes: history.wakes,
+                wakeCount: 1,
+                warning: "Project heartbeat refresh notice",
+              };
+              window.fixture.heartbeatHistory = history;
+              window.fixture.task = taskValue;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: heartbeat, history: oldHistory, sourcePath, taskValue: task },
+          );
+          await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
+          await panel.locator(".heartbeat-trigger").click();
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("verified cached record", { exact: true })
+            .waitFor();
+          const notice = panel.locator(".hb-alert summary");
+          await notice.click();
+          assert.equal(await panel.locator(".hb-alert").getAttribute("open"), "");
+
+          await page.evaluate(() => {
+            window.fixture.heartbeat = {
+              ...window.fixture.heartbeat,
+              certifiesCurrent: false,
+              status: "stale",
+            };
+            window.fixture.heartbeatPending = true;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel.getByText(/正在刷新项目心跳；当前显示最近一次已验证的快照/).waitFor();
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("verified cached record", { exact: true })
+            .waitFor();
+          assert.equal(await panel.locator(".hb-history .hb-count").innerText(), "1");
+          const historyCallsBeforeRefresh = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+          );
+          await panel.getByRole("button", { name: "刷新心跳历史", exact: true }).click();
+          await page.waitForFunction(
+            (count) =>
+              window.fixture.calls.filter((call) => call.method === "heartbeat-history").length ===
+              count + 1,
+            historyCallsBeforeRefresh,
+          );
+
+          await page.evaluate(
+            ({ value, sourcePath }) => {
+              window.fixture.heartbeatPending = false;
+              window.fixture.heartbeat = {
+                ...value,
+                status: "ready",
+                sourcePath,
+                contentHash: "hash-b",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:00:00Z"),
+                    rows: [{ category: "status", state: "new verified record" }],
+                  },
+                ],
+                wakeCount: 1,
+              };
+              window.fixture.heartbeatHistory = {
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:00:00Z"),
+                    rows: [{ category: "status", state: "new verified record" }],
+                  },
+                ],
+                nextCursor: null,
+                total: 1,
+                sourcePath,
+                contentHash: "hash-b",
+              };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: heartbeat, sourcePath },
+          );
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("new verified record", { exact: true })
+            .waitFor();
+          assert.equal(await panel.getByText("verified cached record", { exact: true }).count(), 0);
+
+          await page.evaluate(() => {
+            window.fixture.heartbeat = {
+              ...window.fixture.heartbeat,
+              certifiesCurrent: false,
+              status: "stale",
+            };
+            window.fixture.heartbeatPending = true;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("new verified record", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            window.fixture.heartbeat = null;
+            window.fixture.heartbeatPending = false;
+            window.fixture.taskSource = {
+              status: "error",
+              readOnly: true,
+              error: "source read failed",
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel.getByText("当前项目没有可显示的心跳来源。", { exact: true }).waitFor();
+          assert.equal(await panel.getByText("new verified record", { exact: true }).count(), 0);
+          assert.equal(await panel.getByText("verified cached record", { exact: true }).count(), 0);
+
+          await page.evaluate(
+            ({ value, sourcePath }) => {
+              window.fixture.taskSource = null;
+              window.fixture.heartbeat = {
+                ...value,
+                status: "ready",
+                sourcePath,
+                contentHash: "hash-c",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:10:00Z"),
+                    rows: [{ category: "status", state: "third verified record" }],
+                  },
+                ],
+                wakeCount: 1,
+              };
+              window.fixture.heartbeatHistory = {
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:10:00Z"),
+                    rows: [{ category: "status", state: "third verified record" }],
+                  },
+                ],
+                nextCursor: null,
+                total: 1,
+                sourcePath,
+                contentHash: "hash-c",
+              };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: heartbeat, sourcePath },
+          );
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("third verified record", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            window.fixture.heartbeat = {
+              ...window.fixture.heartbeat,
+              certifiesCurrent: false,
+              status: "stale",
+            };
+            window.fixture.heartbeatPending = true;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("third verified record", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            window.fixture.heartbeat = null;
+            window.fixture.heartbeatPending = false;
+            window.fixture.taskSource = null;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel.getByText("当前项目没有可显示的心跳来源。", { exact: true }).waitFor();
+          assert.equal(await panel.getByText("third verified record", { exact: true }).count(), 0);
+
+          await page.evaluate(
+            ({ value, sourcePath }) => {
+              window.fixture.heartbeat = {
+                ...value,
+                status: "ready",
+                sourcePath,
+                contentHash: "hash-d",
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:20:00Z"),
+                    rows: [{ category: "status", state: "fourth verified record" }],
+                  },
+                ],
+                wakeCount: 1,
+              };
+              window.fixture.heartbeatHistory = {
+                wakes: [
+                  {
+                    timeMs: Date.parse("2026-11-13T15:20:00Z"),
+                    rows: [{ category: "status", state: "fourth verified record" }],
+                  },
+                ],
+                nextCursor: null,
+                total: 1,
+                sourcePath,
+                contentHash: "hash-d",
+              };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: heartbeat, sourcePath },
+          );
+          await panel
+            .locator(".hb-record-preview")
+            .getByText("fourth verified record", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            window.fixture.heartbeat = null;
+            window.fixture.heartbeatPending = true;
+            window.fixture.taskSource = { status: "pending-selection", readOnly: true };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel.getByText("正在读取项目心跳…", { exact: true }).waitFor();
+          assert.equal(await panel.getByText("fourth verified record", { exact: true }).count(), 0);
+          assert.equal(await panel.locator(".hb-count").first().innerText(), "0");
+        } finally {
+          await context.close();
+        }
+      },
+    );
+    await t.test(
       "pending project heartbeat keeps checklist visible, loads history once, and fences same-source chat changes",
       async () => {
         const { context, page, panel } = await open();

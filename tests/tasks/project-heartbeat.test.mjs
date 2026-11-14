@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { readProjectHeartbeat } from "../../src/tasks/project-heartbeat.mjs";
+import { readHeartbeatLedgerPair, inspectHeartbeatLedgerPair, summarizeHeartbeatLedgerPair, migrateHeartbeatLedgerPair } from "../../src/supervision/heartbeat-ledger-files.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
 
 after(cleanupTempDirs);
@@ -254,4 +255,35 @@ test("configured paired source rejects oversized history before parsing the comp
 	const view = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
 	assert.equal(view.status, "error");
 	assert.match(view.error, /exceeds.*byte read limit/i);
+});
+
+
+test("ranking summary matches canonical inspections for legacy and verified paired sources", () => {
+	const root = projectRoot();
+	const path = writeLedger(root, "heartbeat.md", { wake: "2026-01-01T11:00Z" });
+	const legacy = readHeartbeatLedgerPair({ root, path, maxBytes: 8 * 1024 * 1024 });
+	const paired = migrateHeartbeatLedgerPair({ root, path, legacyWritersQuiescent: true, expectedContentHash: legacy.contentHash });
+	for (const pair of [legacy, paired]) {
+		const summary = summarizeHeartbeatLedgerPair(pair);
+		const history = inspectHeartbeatLedgerPair(pair, { mode: "history", latest: false, now: NOW });
+		const inventory = inspectHeartbeatLedgerPair(pair, { mode: "items", now: NOW });
+		assert.deepEqual(summary.wakes.map((wake) => wake.heading), history.wakes.map((wake) => wake.heading));
+		assert.equal(summary.itemCount, inventory.itemCount);
+	}
+});
+
+test("a corrupt unselected pair remains a discovery error and selected findings are retained", async () => {
+	const root = projectRoot();
+	const selected = writeLedger(root, "a-heartbeat.md", { wake: "2026-01-01T11:00Z" });
+	writeLedger(root, "z-heartbeat.md", { wake: "2026-01-01T10:00Z" });
+	writeFileSync(join(root, "z-heartbeat.taskhistory.md"), "corrupt companion");
+	const result = await readProjectHeartbeat({ root, now: NOW });
+	assert.equal(result.source.path, selected);
+	assert.equal(result.discovery.complete, false);
+	assert.ok(result.discovery.reasons.includes("unreadable-file"));
+	const pair = readHeartbeatLedgerPair({ root, path: selected, maxBytes: 8 * 1024 * 1024 });
+	for (const mode of ["current", "history", "items"]) {
+		const expected = inspectHeartbeatLedgerPair(pair, { mode, latest: mode !== "history", now: NOW, ledgerPath: selected });
+		assert.deepEqual(result.source[mode === "items" ? "inventory" : mode].findings, expected.findings);
+	}
 });
