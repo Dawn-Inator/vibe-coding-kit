@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, type Stats } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { atomicWriteFile } from "../../../packages/store/src/atomic.js";
@@ -29,12 +29,12 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
-function hasExpectedOwner(metadata: { readonly uid?: number }): boolean {
+function hasExpectedOwner(metadata: Pick<Stats, "uid">): boolean {
   const uid = process.getuid?.();
   return uid === undefined || metadata.uid === undefined || metadata.uid === uid;
 }
 
-function isSafeDirectory(metadata: Awaited<ReturnType<typeof lstat>>): boolean {
+function isSafeDirectory(metadata: Stats): boolean {
   return (
     !metadata.isSymbolicLink() &&
     metadata.isDirectory() &&
@@ -43,7 +43,7 @@ function isSafeDirectory(metadata: Awaited<ReturnType<typeof lstat>>): boolean {
   );
 }
 
-function isSafePolicyFile(metadata: Awaited<ReturnType<typeof lstat>>): boolean {
+function isSafePolicyFile(metadata: Stats): boolean {
   return (
     !metadata.isSymbolicLink() &&
     metadata.isFile() &&
@@ -96,7 +96,7 @@ export async function readCodexStartupRecoveryPolicy(
     return DEFAULT_CODEX_STARTUP_RECOVERY_POLICY;
   }
   const path = resolve(paths.preferencesRoot, policyFileName);
-  let metadata: Awaited<ReturnType<typeof lstat>>;
+  let metadata: Stats;
   try {
     metadata = await lstat(path);
   } catch (error) {
@@ -123,7 +123,7 @@ export function readCodexStartupRecoveryPolicySync(
     throw error;
   }
   const path = resolve(paths.preferencesRoot, policyFileName);
-  let metadata: ReturnType<typeof lstatSync>;
+  let metadata: Stats;
   try {
     metadata = lstatSync(path);
   } catch (error) {
