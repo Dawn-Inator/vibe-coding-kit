@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  MacosCommandName,
+  MacosCommandResult,
+} from "../../../platform/macos/src/command-protocol.js";
+import type {
+  InstallCommandDependencies,
+  MacosCommandResultFactory,
+} from "../../../platform/macos/src/install-command.js";
 import type { HelperHealthInspection } from "../../../platform/macos/src/installed-inspection.js";
 import type { MacosReleaseFile } from "../../../platform/macos/src/release.js";
 import type { GoalProgressUpdateState } from "../../contracts/src/index.js";
@@ -236,7 +244,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
   const makeDependencies = (
     releaseRoot: string,
     options: { readonly fault?: "after-current"; readonly helperReady?: boolean } = {},
-  ) => {
+  ): InstallCommandDependencies => {
     const homeDirectory = join(root, "home");
     const goalPaths = resolveGoalProgressPaths({
       root: applicationSupportRoot,
@@ -276,16 +284,28 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         return true;
       },
     };
-    return {
+    const commandResult: MacosCommandResultFactory = (
+      command: MacosCommandName,
+      value,
+    ): MacosCommandResult => ({
+      schemaVersion: 1,
+      command,
+      ok: value.ok,
+      code: value.code,
+      changed: value.changed,
+      nextStep: value.nextStep ?? null,
+      details: value.details ?? {},
+    });
+    const dependencies: InstallCommandDependencies = {
       homeDirectory,
       releaseRoot,
       goalPaths,
       launchAgent,
       cdp: {
-        async verify() {
+        async verify(_knownApp) {
           return true;
         },
-        async ensure() {
+        async ensure(_restartCodex) {
           return false;
         },
       },
@@ -311,11 +331,12 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         };
         return inspection;
       },
-      async inspectHelperReadiness() {
+      async inspectHelperReadiness(_paths, _timeoutMs) {
         return { pingOk: true, ready: true, code: null };
       },
-      async waitForHelperReady() {
-        return options.helperReady ?? true;
+      async waitForHelperReady(inspect) {
+        const readiness = await inspect(1_000);
+        return (options.helperReady ?? true) && readiness.ready;
       },
       async discoverCodex() {
         return codex;
@@ -323,23 +344,13 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
       async pluginFor() {
         return plugin;
       },
-      async restoreCdp() {
+      async restoreCdp(_restartCodex) {
         return { changed: false, scheduled: false, restartedCodex: false };
       },
       now() {
         return new Date("2026-11-14T00:00:00.000Z");
       },
-      commandResult(command: "install" | "upgrade", value: Record<string, unknown>) {
-        return {
-          schemaVersion: 1 as const,
-          command,
-          ok: value.ok === true,
-          code: String(value.code),
-          changed: value.changed === true,
-          nextStep: typeof value.nextStep === "string" ? value.nextStep : null,
-          details: (value.details ?? {}) as Readonly<Record<string, unknown>>,
-        };
-      },
+      commandResult,
       ...(options.fault
         ? {
             installFaultForTest: async (point: string) => {
@@ -348,6 +359,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
           }
         : {}),
     };
+    return dependencies;
   };
 
   try {
