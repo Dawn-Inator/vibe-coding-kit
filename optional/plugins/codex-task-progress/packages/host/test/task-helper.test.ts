@@ -2912,7 +2912,7 @@ test("native replacement proof binds listener generation, pid, deadline and fres
   for (const scenario of [
     "allowed",
     "finished",
-    "active",
+    "has-window",
     "wrong-pid",
     "stale",
     "late",
@@ -2959,7 +2959,7 @@ test("native replacement proof binds listener generation, pid, deadline and fres
             event: "startup.replacement-check",
             requestId: observed.requestId,
             pid: scenario === "wrong-pid" ? observed.pid + 1 : observed.pid,
-            allowed: scenario !== "finished" && scenario !== "active",
+            allowed: scenario !== "finished" && scenario !== "has-window",
             checkedAtMs: Date.now() - (scenario === "stale" ? 200 : 0),
             reason: scenario,
           })}\n`,

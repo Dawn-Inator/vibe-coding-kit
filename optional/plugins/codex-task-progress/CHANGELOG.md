@@ -1,7 +1,12 @@
+# Task Progress 0.5.13
+
+- Update foreground startup classification using fresh PID/process identity, positive native `!finished` confirmation, no observed task activity, verified loopback CDP, and positive proof that the target PID owns no onscreen windows. A foreground process may still be preparing before finish and remain eligible when it owns no onscreen window. Any owned onscreen window or missing/unknown window-owner metadata fails closed. The check uses public CoreGraphics owner-PID metadata only, without screenshots or window titles.
+- Retain default-off, next-launch-only opt-in behavior. If CDP cannot be verified, normal startup continues; there is no late autorestart, SIGSTOP or app-bundle edit. Clear the failure cooldown only after verified success; normal restarts under 60 seconds remain supported.
+
 # Task Progress 0.5.12
 
 - Add a persisted startup-recovery opt-in, disabled by default. Enabling it changes behavior for a later launch and does not restart the current Codex process.
-- Consider replacing a startup candidate only with fresh process identity, affirmative native lifecycle confirmation that it is neither finished nor active, no observed task activity, and verified loopback CDP. Missing, late or contradictory proof fails closed; unavailable CDP falls back to normal startup.
+- The initial replacement gate required both `!finished` and `!active`; 0.5.13 uses positive no-onscreen-window proof tied to the target PID when classifying foreground startup, alongside the native `!finished` check.
 - Clear the failure cooldown only after verified success; normal Codex restarts within 60 seconds remain supported. No late autorestart, SIGSTOP or application-bundle edits are used.
 
 # Task Progress 0.5.11

@@ -2,9 +2,9 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
-0.5.12 新增可持久保存的启动恢复选项，默认关闭。启用只影响之后的启动，不会重启当前 Codex 进程。
+0.5.13 调整前台启动候选的分类：结合目标进程“无屏幕窗口”的正向证据判断是否允许替换。
 
-启动恢复默认关闭，只有显式启用并保存后才生效。可使用 `goal-progress startup-recovery --status --json` 查看、`goal-progress startup-recovery --enable --json` 启用、`goal-progress startup-recovery --disable --json` 关闭。原始 Dock 启动通过已有的原生 AppKit will/did 启动通知识别。只有新鲜 PID 和进程身份得到确认、原生生命周期明确证明候选进程既未结束也未处于活动状态、没有观察到任务活动且 loopback CDP 已验证时，才允许考虑替换启动候选。缺失、迟到或矛盾的证据都会 fail closed；CDP 不可用时回退到正常启动，不执行延迟自动重启、SIGSTOP 或修改 Codex 应用包。失败冷却仅在验证成功后清除，正常的 60 秒内重启仍可进行。
+启动恢复默认关闭，只有显式启用并保存后才生效。可使用 `goal-progress startup-recovery --status --json` 查看、`goal-progress startup-recovery --enable --json` 启用、`goal-progress startup-recovery --disable --json` 关闭；启用只影响后续启动，不会重启当前 Codex。原始 Dock 启动通过已有的原生 AppKit will/did 通知识别。只有新鲜 PID 和进程身份得到确认、原生生命周期正向证明目标进程尚未完成启动（`isFinishedLaunching === false`）、未观察到任务活动、loopback CDP 已验证，并且公开 CoreGraphics 窗口元数据正向证明目标 PID 当前没有屏幕窗口时，才允许考虑替换启动候选。进程仍处于前台且尚未完成启动时，只要没有归属于它的屏幕窗口，仍可符合条件。发现任一归属窗口、窗口 owner 元数据缺失/未知、生命周期证据迟到或启动已完成，都会 fail closed。窗口检查只使用 owner PID 元数据，不读取截图或标题。CDP 不可用时回退到正常启动；不执行延迟自动重启、SIGSTOP 或修改 Codex 应用包。失败冷却仅在验证成功后清除，正常的 60 秒内重启仍可进行。
 
 0.5.11 只有在有界目录观测和来源 inode 身份能够证明：当前规范来源中的普通非 Markdown 文件仅发生内容变化时，才跳过项目 Heartbeat 发现缓存失效；即使该文件此前未被扫描到也适用。观测不完整或溢出、文件名/类型未知、硬链接、重命名、删除、目录、符号链接、`.git` 变化以及显式来源失效仍会使发现结果失效。
 

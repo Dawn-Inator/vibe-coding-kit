@@ -70,6 +70,10 @@ test("native AppKit listener proves the launch window and fails closed after rea
   const listenerPath = join(scratch, "goal-progress-startup-listener");
   const fixtureReadyPath = join(scratch, "ready");
   const fixtureMetadataPath = join(scratch, "fixture-metadata.json");
+  const showWindowPath = join(scratch, "show-window");
+  const windowShownPath = join(scratch, "window-shown");
+  const windowFailedPath = join(scratch, "window-failed");
+  const finishLaunchPath = join(scratch, "finish-launch");
   const bundleId = "com.codextaskprogress.startup-fixture";
   let fixturePid;
   let fixtureMetadata;
@@ -120,7 +124,7 @@ test("native AppKit listener proves the launch window and fails closed after rea
         .finally(() => clearTimeout(timeout));
     });
 
-  const fixtureSource = `import AppKit\nimport Foundation\n\nlet readyPath = CommandLine.arguments[1]\nlet metadataPath = CommandLine.arguments[2]\nlet metadata: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "executablePath": CommandLine.arguments[0], "bundlePath": Bundle.main.bundleURL.path, "bundleIdentifier": Bundle.main.bundleIdentifier ?? ""]\nif let data = try? JSONSerialization.data(withJSONObject: metadata) { try? data.write(to: URL(fileURLWithPath: metadataPath), options: .atomic) }\nfinal class FixtureDelegate: NSObject, NSApplicationDelegate {\n    func applicationWillFinishLaunching(_ notification: Notification) {\n        Thread.sleep(forTimeInterval: 1.2)\n    }\n    func applicationDidFinishLaunching(_ notification: Notification) {\n        FileManager.default.createFile(atPath: readyPath, contents: Data())\n        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { NSApp.terminate(nil) }\n    }\n}\nlet app = NSApplication.shared\nlet delegate = FixtureDelegate()\napp.delegate = delegate\napp.setActivationPolicy(.regular)\napp.run()\n`;
+  const fixtureSource = `import AppKit\nimport CoreGraphics\nimport Foundation\n\nlet readyPath = CommandLine.arguments[1]\nlet metadataPath = CommandLine.arguments[2]\nlet showWindowPath = CommandLine.arguments[3]\nlet windowShownPath = CommandLine.arguments[4]\nlet finishLaunchPath = CommandLine.arguments[5]\nlet windowFailedPath = CommandLine.arguments[6]\nlet metadata: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "executablePath": CommandLine.arguments[0], "bundlePath": Bundle.main.bundleURL.path, "bundleIdentifier": Bundle.main.bundleIdentifier ?? ""]\nif let data = try? JSONSerialization.data(withJSONObject: metadata) { try? data.write(to: URL(fileURLWithPath: metadataPath), options: .atomic) }\nfinal class FixtureDelegate: NSObject, NSApplicationDelegate {\n    private var fixtureWindow: NSWindow?\n    private func hasOnscreenWindow(for pid: Int32) -> Bool {\n        guard let rawWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID), let windows = rawWindows as? [[String: Any]] else { return false }\n        for window in windows {\n            guard let owner = window[kCGWindowOwnerPID as String] as? NSNumber else { continue }\n            if owner.int32Value == pid { return true }\n        }\n        return false\n    }\n    func applicationWillFinishLaunching(_ notification: Notification) {\n        let deadline = Date().addingTimeInterval(10)\n        while !FileManager.default.fileExists(atPath: showWindowPath) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }\n        if FileManager.default.fileExists(atPath: showWindowPath) {\n            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 240, height: 140), styleMask: [.titled], backing: .buffered, defer: false)\n            window.title = ""\n            window.makeKeyAndOrderFront(nil)\n            fixtureWindow = window\n            var windowConfirmed = false\n            let visibilityDeadline = Date().addingTimeInterval(3)\n            while !windowConfirmed && Date() < visibilityDeadline {\n                windowConfirmed = hasOnscreenWindow(for: ProcessInfo.processInfo.processIdentifier)\n                if !windowConfirmed { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }\n            }\n            if windowConfirmed {\n                FileManager.default.createFile(atPath: windowShownPath, contents: Data())\n            } else {\n                let diagnostic = "target window not visible in CGWindowListCopyWindowInfo before deadline"\n                try? diagnostic.write(toFile: windowFailedPath, atomically: true, encoding: .utf8)\n            }\n            while !FileManager.default.fileExists(atPath: finishLaunchPath) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }\n        }\n    }\n    func applicationDidFinishLaunching(_ notification: Notification) {\n        FileManager.default.createFile(atPath: readyPath, contents: Data())\n        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { NSApp.terminate(nil) }\n    }\n}\nlet app = NSApplication.shared\nlet delegate = FixtureDelegate()\napp.delegate = delegate\napp.setActivationPolicy(.regular)\napp.run()\n`;
   const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${bundleId}</string><key>CFBundleExecutable</key><string>StartupFixture</string><key>CFBundleName</key><string>StartupFixture</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><false/></dict></plist>`;
 
   try {
@@ -167,11 +171,14 @@ test("native AppKit listener proves the launch window and fails closed after rea
 
     await execFileAsync("/usr/bin/open", [
       "-n",
-      "-g",
       appPath,
       "--args",
       fixtureReadyPath,
       fixtureMetadataPath,
+      showWindowPath,
+      windowShownPath,
+      finishLaunchPath,
+      windowFailedPath,
     ]);
     const launchEvent = await withTimeout(launched, "fixture launch notification");
     assert.equal(launchEvent.event, "codex.willLaunch");
@@ -230,9 +237,42 @@ test("native AppKit listener proves the launch window and fails closed after rea
     assert.equal(unknown.allowed, false);
     assert.equal(unknown.reason, "unknown_message");
 
+    await writeFile(showWindowPath, "");
+    const windowDeadline = Date.now() + 5_000;
+    let windowShown = false;
+    while (Date.now() < windowDeadline && !windowShown) {
+      try {
+        await readFile(windowShownPath);
+        windowShown = true;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    if (!windowShown) {
+      let diagnostic = "<no fixture diagnostic written>";
+      try {
+        diagnostic = await readFile(windowFailedPath, "utf8");
+      } catch {
+        // The fixture may have failed before attempting the bounded window check.
+      }
+      assert.fail(`fixture did not confirm its own on-screen window: ${diagnostic}`);
+    }
+    const withWindow = await ask(request());
+    assert.equal(
+      withWindow.allowed,
+      false,
+      `foreground window must deny replacement: ${JSON.stringify(withWindow)}`,
+    );
+    assert.equal(
+      withWindow.reason,
+      "target_has_onscreen_window",
+      `foreground window denial must come from owner PID metadata: ${JSON.stringify(withWindow)}`,
+    );
+
     listener.stdin.write(
       `${JSON.stringify({ schemaVersion: 1, pid: fixturePid, action: "continue" })}\n`,
     );
+    await writeFile(finishLaunchPath, "");
     const didLaunchEvent = await withTimeout(
       didLaunched,
       "same-process didLaunch after willLaunch continue",

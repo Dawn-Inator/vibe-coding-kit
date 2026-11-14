@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Darwin
 import Foundation
 
@@ -49,6 +50,12 @@ private struct LaunchEdgeIdentity: Hashable {
     let appPath: String
     let executablePath: String
     let eventName: String
+}
+
+private enum OnscreenWindowPresence {
+    case none
+    case target
+    case unreadable
 }
 
 private struct StartupReady: Encodable {
@@ -182,17 +189,17 @@ private final class CodexStartupListener: NSObject {
             sendFailureReply(from: object, reason: "request_invalid")
             return
         }
-        let now = Date()
-        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         let pending = pendingLaunch
         let appLaunchDate = pending?.application.launchDate
-        let launchAge = appLaunchDate.map { now.timeIntervalSince($0) }
-        let allowed = request.schemaVersion == 1
+        let initialNow = Date()
+        let initialNowMs = Int64(initialNow.timeIntervalSince1970 * 1_000)
+        var checkedAtMs = initialNowMs
+        let identityAndFreshnessMatch = request.schemaVersion == 1
             && request.event == "startup.inspect-replacement"
             && UUID(uuidString: request.requestId) != nil
             && request.pid == pending?.pid
             && request.launchedAt == pending?.launchedAt
-            && request.deadlineAtMs >= nowMs
+            && request.deadlineAtMs >= initialNowMs
             && request.deadlineAtMs <= (pending?.deadlineAtMs ?? 0)
             && pending?.application.bundleIdentifier == bundleId
             && pending?.application.bundleURL?.path == appPath
@@ -200,39 +207,122 @@ private final class CodexStartupListener: NSObject {
             && pending?.birthDate != nil
             && appLaunchDate != nil
             && appLaunchDate == pending?.birthDate
-            && launchAge.map { $0 >= 0 && $0 <= 5 } == true
             && pending?.application.isFinishedLaunching == false
-            && pending?.application.isActive == false
             && pending?.application.isTerminated == false
-        let reason: String
-        if allowed {
-            reason = "verified"
-        } else if pending == nil || request.pid != pending?.pid {
-            reason = "pending_event_mismatch"
-        } else if request.launchedAt != pending?.launchedAt {
-            reason = "launch_timestamp_mismatch"
-        } else if appLaunchDate == nil || pending?.birthDate == nil || appLaunchDate != pending?.birthDate {
-            reason = "launch_birth_unconfirmed"
-        } else if launchAge.map({ $0 < 0 || $0 > 5 }) ?? true {
-            reason = "launch_not_fresh"
-        } else if request.deadlineAtMs < nowMs || request.deadlineAtMs > (pending?.deadlineAtMs ?? 0) {
-            reason = "deadline_invalid"
-        } else if pending?.application.isFinishedLaunching != false {
-            reason = "already_finished_launching"
-        } else if pending?.application.isActive != false {
-            reason = "application_active"
-        } else if pending?.application.isTerminated != false {
-            reason = "application_terminated"
-        } else {
-            reason = "identity_mismatch"
+        var reason = replacementFailureReason(
+            request: request,
+            pending: pending,
+            launchDate: appLaunchDate,
+            nowMs: initialNowMs
+        )
+        var allowed = false
+
+        if identityAndFreshnessMatch,
+           let pending,
+           let appLaunchDate,
+           initialNow.timeIntervalSince(appLaunchDate) >= 0,
+           initialNow.timeIntervalSince(appLaunchDate) <= 5 {
+            switch onscreenWindowPresence(for: request.pid) {
+            case .target:
+                reason = "target_has_onscreen_window"
+            case .unreadable:
+                reason = "window_snapshot_unavailable"
+            case .none:
+                let checkedAt = Date()
+                checkedAtMs = Int64(checkedAt.timeIntervalSince1970 * 1_000)
+                let currentLaunchDate = pending.application.launchDate
+                let launchAge = currentLaunchDate.map { checkedAt.timeIntervalSince($0) }
+                let nativeStateMatches = pending.application.processIdentifier == request.pid
+                    && pending.application.bundleIdentifier == bundleId
+                    && pending.application.bundleURL?.path == appPath
+                    && pending.application.executableURL?.path == executablePath
+                    && currentLaunchDate == pending.birthDate
+                    && pending.application.isFinishedLaunching == false
+                    && pending.application.isTerminated == false
+                let requestStillFresh = request.deadlineAtMs >= checkedAtMs
+                    && request.deadlineAtMs <= pending.deadlineAtMs
+                    && launchAge.map { $0 >= 0 && $0 <= 5 } == true
+                allowed = nativeStateMatches && requestStillFresh
+                if allowed {
+                    reason = "verified"
+                } else {
+                    reason = replacementFailureReason(
+                        request: request,
+                        pending: pending,
+                        launchDate: currentLaunchDate,
+                        nowMs: checkedAtMs
+                    )
+                }
+            }
         }
         _ = send(StartupReplacementReply(
             pid: request.pid,
             requestId: request.requestId,
             allowed: allowed,
-            checkedAtMs: nowMs,
+            checkedAtMs: checkedAtMs,
             reason: reason
         ))
+    }
+
+    private func replacementFailureReason(
+        request: StartupReplacementRequest,
+        pending: PendingLaunch?,
+        launchDate: Date?,
+        nowMs: Int64
+    ) -> String {
+        if pending == nil || request.pid != pending?.pid {
+            return "pending_event_mismatch"
+        }
+        if request.launchedAt != pending?.launchedAt {
+            return "launch_timestamp_mismatch"
+        }
+        if launchDate == nil || pending?.birthDate == nil || launchDate != pending?.birthDate {
+            return "launch_birth_unconfirmed"
+        }
+        let launchAge = launchDate.map { Date().timeIntervalSince($0) }
+        if launchAge.map({ $0 < 0 || $0 > 5 }) ?? true {
+            return "launch_not_fresh"
+        }
+        if request.deadlineAtMs < nowMs || request.deadlineAtMs > (pending?.deadlineAtMs ?? 0) {
+            return "deadline_invalid"
+        }
+        if pending?.application.isFinishedLaunching != false {
+            return "already_finished_launching"
+        }
+        if pending?.application.isTerminated != false {
+            return "application_terminated"
+        }
+        if pending?.application.bundleIdentifier != bundleId
+            || pending?.application.bundleURL?.path != appPath
+            || pending?.application.executableURL?.path != executablePath {
+            return "identity_mismatch"
+        }
+        return "window_or_state_unconfirmed"
+    }
+
+    private func onscreenWindowPresence(for pid: pid_t) -> OnscreenWindowPresence {
+        guard let rawWindows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ), let windows = rawWindows as? [[String: Any]] else {
+            return .unreadable
+        }
+        guard windows.count <= 4_096 else {
+            return .unreadable
+        }
+        for window in windows {
+            guard let ownerNumber = window[kCGWindowOwnerPID as String] as? NSNumber else {
+                return .unreadable
+            }
+            let ownerValue = ownerNumber.int64Value
+            guard ownerValue > 0, ownerValue <= Int64(Int32.max) else {
+                return .unreadable
+            }
+            if pid_t(ownerValue) == pid {
+                return .target
+            }
+        }
+        return .none
     }
 
     private func configureInput() {
