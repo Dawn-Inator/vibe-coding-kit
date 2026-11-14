@@ -37,12 +37,18 @@ export const MACOS_RELEASE_FILES = [
   "THIRD_PARTY_NOTICES.txt",
   "Uninstall Goal Progress.command",
   "bin/goal-progress",
+  "bin/goal-progress-launcher",
   "bin/goal-progress-startup-listener",
   "manifest.json",
   "plugin-marketplace.zip",
   "renderer/goal-progress.js",
   "renderer/goal-progress.manifest.json",
 ];
+
+const LEGACY_MACOS_RELEASE_FILES = MACOS_RELEASE_FILES.filter(
+  (path) => path !== "bin/goal-progress-launcher",
+);
+const MANAGED_LAUNCHER_RELEASE_PATH = "bin/goal-progress-launcher";
 
 function isForbiddenPath(relativePath) {
   const parts = relativePath.split(/[\\/]/u);
@@ -140,8 +146,20 @@ export async function assertReleaseTree(root, label) {
 
 export async function assertMacosReleaseTree(root) {
   await assertReleaseTree(root, "macOS release");
+  const manifest = await readJson(resolve(root, "manifest.json"));
+  const managedLauncher = manifest?.files?.dockLauncher;
+  let expected;
+  if (managedLauncher === undefined) {
+    // Older signed releases predate the separately packaged Dock launcher.
+    expected = LEGACY_MACOS_RELEASE_FILES;
+  } else {
+    if (managedLauncher?.path !== MANAGED_LAUNCHER_RELEASE_PATH) {
+      throw new Error("macOS release manifest has an invalid Dock launcher path");
+    }
+    expected = MACOS_RELEASE_FILES;
+  }
   const actual = (await walkFiles(root)).map((path) => relative(root, path)).sort();
-  const expected = [...MACOS_RELEASE_FILES].sort();
+  expected = [...expected].sort();
   for (const path of actual) {
     if (!expected.includes(path)) {
       throw new Error(`macOS release contains unexpected release file: ${path}`);

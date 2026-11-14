@@ -8,6 +8,7 @@
 - In interactive Kit setup, ask a separate default-No, one-click question before configuring Dock for a selected, already-installed launcher-capable helper; declining preserves plugin and project selection. Non-interactive saved/auto-detected preferences only reuse the installation.
 - Remove the owned launcher and Dock entry before Helper uninstall. Block Helper removal if cleanup fails or a user-edited Dock entry must be retained; preserve legacy-helper uninstall behavior.
 - Refresh cached project discovery against bounded directory and Markdown freshness before reuse, so new, modified or deleted Heartbeat files appear even if watcher delivery lags. Keep the fast path for ordinary new non-Markdown files.
+- Wait for the native startup listener's readiness before treating the Helper as ready, instead of relying on the first responsive ping.
 
 # Task Progress 0.5.13
 
