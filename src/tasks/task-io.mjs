@@ -6,6 +6,11 @@ import { basename, dirname, resolve } from "node:path";
 
 // Preserve chmod's ownership enforcement even when the mode already matches.
 // Platforms without UID semantics retain their existing mode-only behavior.
+export function effectivePermissionUid(geteuid, getuid) {
+	if (typeof geteuid === "function") return geteuid();
+	return typeof getuid === "function" ? getuid() : undefined;
+}
+
 export function privateModeNeedsChmod(info, mode, uid) {
 	return (info.mode & 0o7777) !== mode ||
 		(uid !== undefined && uid !== 0 && info.uid !== uid);
@@ -15,7 +20,7 @@ export function privateModeNeedsChmod(info, mode, uid) {
 // permissions already permit the same result as chmod.
 async function chmodIfNeeded(path, mode) {
 	const info = await stat(path);
-	if (privateModeNeedsChmod(info, mode, process.getuid?.())) await chmod(path, mode);
+	if (privateModeNeedsChmod(info, mode, effectivePermissionUid(process.geteuid, process.getuid))) await chmod(path, mode);
 }
 
 export async function ensurePrivateDirectory(path) {

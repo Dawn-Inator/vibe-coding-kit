@@ -1,3 +1,5 @@
+/** Return the effective UID, falling back to the real UID when unavailable. */
+export function effectivePermissionUid(geteuid?: () => number, getuid?: () => number): number | undefined;
 /** Whether an exact-mode private path still needs chmod for ownership enforcement. */
 export function privateModeNeedsChmod(info: { mode: number; uid?: number }, mode: number, uid?: number): boolean;
 /** Ensure a private directory exists with owner-only permissions. */

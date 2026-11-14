@@ -9,7 +9,7 @@ import { createTaskProgressSchemas } from '../../src/tasks/task-contract.mjs';
 import { TaskStore, TaskStoreError, taskMarkdownPaths } from '../../src/tasks/task-store.mjs';
 import { WorkspaceTaskStorage } from '../../src/tasks/workspace-storage.mjs';
 import { HeartbeatDiscoveryIndex, discoverHeartbeatLedgerSources } from '../../src/tasks/heartbeat-task-source.mjs';
-import { appendDurableLine, atomicCreateFile, atomicWriteFile, ensurePrivateDirectory, privateModeNeedsChmod } from '../../src/tasks/task-io.mjs';
+import { appendDurableLine, atomicCreateFile, atomicWriteFile, effectivePermissionUid, ensurePrivateDirectory, privateModeNeedsChmod } from '../../src/tasks/task-io.mjs';
 import { writeMarkdownRecords } from '../../src/tasks/markdown-records.mjs';
 
 const schemas = createTaskProgressSchemas(z);
@@ -286,4 +286,15 @@ test('private mode no-op preserves ownership checks and special permission bits'
   assert.equal(privateModeNeedsChmod(owner, 0o700, undefined), false);
   assert.equal(privateModeNeedsChmod({ ...owner, mode: 0o041700 }, 0o700, 501), true);
   assert.equal(privateModeNeedsChmod({ ...owner, mode: 0o040755 }, 0o700, 501), true);
+});
+
+
+test('private mode checks use the effective UID when real and effective identities differ', () => {
+  const foreign = { mode: 0o040700, uid: 501 };
+  assert.equal(effectivePermissionUid(() => 502, () => 0), 502);
+  assert.equal(privateModeNeedsChmod(foreign, 0o700, effectivePermissionUid(() => 502, () => 0)), true);
+  assert.equal(privateModeNeedsChmod(foreign, 0o700, effectivePermissionUid(() => 0, () => 502)), false);
+  assert.equal(privateModeNeedsChmod(foreign, 0o700, effectivePermissionUid(() => 501, () => 502)), false);
+  assert.equal(effectivePermissionUid(undefined, () => 502), 502);
+  assert.equal(effectivePermissionUid(undefined, undefined), undefined);
 });
