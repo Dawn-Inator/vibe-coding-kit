@@ -93,6 +93,13 @@ export {
   renderSha256Sums,
 } from "./release.js";
 export {
+  type CodexStartupRecoveryPolicy,
+  DEFAULT_CODEX_STARTUP_RECOVERY_POLICY,
+  readCodexStartupRecoveryPolicy,
+  type StartupRecoveryPolicyAction,
+  writeCodexStartupRecoveryPolicy,
+} from "./startup-recovery-policy.js";
+export {
   type CheckGoalProgressUpdateOptions,
   checkGoalProgressUpdateManifest,
   GOAL_PROGRESS_UPDATE_CHECK_TIMEOUT_MS,

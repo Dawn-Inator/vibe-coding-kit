@@ -5,6 +5,7 @@ import type { MacosCommandResultFactory } from "./install-command.js";
 import type { InstallationState } from "./installation-state.js";
 import type { LaunchAgentController } from "./launch-agent-controller.js";
 import { createRepairCommand } from "./repair-command.js";
+import type { CodexStartupRecoveryPolicy } from "./startup-recovery-policy.js";
 
 export interface HealthCommandDependencies {
   readonly state: () => InstallationState;
@@ -15,6 +16,7 @@ export interface HealthCommandDependencies {
     command: "install" | "upgrade",
     input: MacosCommandInput,
   ) => Promise<MacosCommandResult>;
+  readonly startupRecoveryPolicy: () => Promise<CodexStartupRecoveryPolicy>;
 }
 
 export function createHealthCommands(dependencies: HealthCommandDependencies) {

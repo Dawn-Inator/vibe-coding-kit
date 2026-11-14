@@ -21,7 +21,7 @@ import type {
   GoalProgressIpcAuthorization,
   GoalProgressIpcRequestInput,
 } from "../../ipc/src/protocol.js";
-import { resolveGoalProgressPaths } from "../../store/src/index.js";
+import { GoalProgressLogger, resolveGoalProgressPaths } from "../../store/src/index.js";
 import { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
   type TaskHistoryPage,
@@ -2173,6 +2173,46 @@ async function startupHelperFixture(options: {
   }
 }
 
+test("startup handoff dispatch does not wait for observational log persistence", async () => {
+  let dispatch!: () => void;
+  const dispatched = new Promise<void>((resolveDispatch) => {
+    dispatch = resolveDispatch;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const fixture = await startupHelperFixture({
+    verify: async (pid, command) => {
+      dispatch();
+      return startupOwnership(pid, command);
+    },
+  });
+  const originalWrite = GoalProgressLogger.prototype.write;
+  let observationBlocked = false;
+  GoalProgressLogger.prototype.write = async function (input) {
+    if (input.event === "startup.event") {
+      observationBlocked = true;
+      await gate;
+    }
+    return originalWrite.call(this, input);
+  };
+  let response: Promise<MacosCodexStartupResponse> | undefined;
+  try {
+    response = fixture.fire();
+    await dispatched;
+    assert.equal(observationBlocked, true);
+  } finally {
+    release();
+    GoalProgressLogger.prototype.write = originalWrite;
+    try {
+      await response;
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+
 test("Helper retries delayed CDP and reconnects visible targets", async () => {
   let attempts = 0;
   let targetReads = 0;
@@ -2480,6 +2520,7 @@ test("Helper remains ready and task IPC works through stale renderer bootstrap, 
         },
         health: () => ({ running: true, ready: true, pid: 1, pendingPid: null }),
         isPending: () => false,
+        canReplaceStartingApp: async () => false,
         waitUntilReady: async () => true,
         stop: async () => undefined,
       },
@@ -2659,5 +2700,269 @@ test("task mutation forces discovery before writing a local checklist", async ()
     HeartbeatDiscoveryIndex.prototype.generation = originalGeneration;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two fresh ordinary launches within cooldown each hand off once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  let originalAlive = true;
+  let originalPid = 4242;
+  let launches = 0;
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    const options: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {
+      inspectTargetProcess: async (pid) => {
+        if (pid === originalPid && !originalAlive) throw new Error("exited");
+        return startupProcessSnapshot(pid, pid === originalPid ? startupExecutablePath : command);
+      },
+      signalProcess: (_pid, signal) => {
+        if (signal === "SIGTERM") originalAlive = false;
+      },
+      launchWithCdp: async () => {
+        launches += 1;
+        return { pid: originalPid + 1, processStartedAt: startupStartedAt, command } as never;
+      },
+      waitForOwnership: async () => startupOwnership(originalPid + 1, command),
+      createRuntimeState: () =>
+        ({
+          mainPid: originalPid + 1,
+          port: startupPort,
+          launchId: "00000000-0000-4000-8000-000000000001",
+        }) as CodexCdpRuntimeState,
+    };
+    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
+    const context = {
+      isPending: () => true,
+      allowRestart: true,
+      canReplaceStartingApp: async () => true,
+    };
+    const first = startupController(root, options);
+    assert.equal(
+      (await first.instance.handle(event, true, context)).code,
+      "STARTUP_HANDOFF_COMPLETE",
+    );
+    assert.equal(
+      (await first.instance.handle(event, true, context)).code,
+      "STARTUP_HANDOFF_COMPLETE",
+    );
+    originalPid = 4244;
+    originalAlive = true;
+    const second = startupController(root, options);
+    assert.equal(
+      (await second.instance.handle({ ...event, pid: originalPid }, true, context)).code,
+      "STARTUP_HANDOFF_COMPLETE",
+    );
+    assert.equal(launches, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("denied native proof releases only its own reservation for next fresh launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  let alive = true;
+  let launches = 0;
+  try {
+    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
+    const options: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {
+      inspectTargetProcess: async (pid) => {
+        if (pid === 4244 && !alive) throw new Error("exited");
+        return startupProcessSnapshot(pid, pid === 4245 ? command : startupExecutablePath);
+      },
+      signalProcess: (_pid, signal) => {
+        if (signal === "SIGTERM") alive = false;
+      },
+      launchWithCdp: async () => {
+        launches += 1;
+        return { pid: 4245, processStartedAt: startupStartedAt, command } as never;
+      },
+      waitForOwnership: async () => startupOwnership(4245, command),
+      createRuntimeState: () =>
+        ({
+          mainPid: 4245,
+          port: startupPort,
+          launchId: "00000000-0000-4000-8000-000000000001",
+        }) as CodexCdpRuntimeState,
+    };
+    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
+    const first = startupController(root, options);
+    assert.equal(
+      (
+        await first.instance.handle(event, true, {
+          isPending: () => true,
+          allowRestart: true,
+          canReplaceStartingApp: async () => false,
+        })
+      ).code,
+      "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED",
+    );
+    assert.equal(launches, 0);
+    const second = startupController(root, options);
+    assert.equal(
+      (
+        await second.instance.handle({ ...event, pid: 4244 }, true, {
+          isPending: () => true,
+          allowRestart: true,
+          canReplaceStartingApp: async () => true,
+        })
+      ).code,
+      "STARTUP_HANDOFF_COMPLETE",
+    );
+    assert.equal(launches, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic recovery rejects late, synthetic, active, disabled, and changed processes", async () => {
+  for (const scenario of ["late", "will-launch", "activity", "disabled", "changed"] as const) {
+    const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+    let inspections = 0;
+    try {
+      const setup = startupController(root, {
+        now: () => Date.parse(startupStartedAt) + (scenario === "late" ? 6_000 : 1),
+        inspectTargetProcess: async (pid) =>
+          startupProcessSnapshot(
+            pid,
+            scenario === "changed" && ++inspections > 1
+              ? `${startupExecutablePath} --new-argument`
+              : startupExecutablePath,
+          ),
+      });
+      const event = {
+        ...startupEvent(startupExecutablePath),
+        event:
+          scenario === "will-launch" ? ("codex.willLaunch" as const) : ("codex.didLaunch" as const),
+      };
+      const response = await setup.instance.handle(event, true, {
+        isPending: () => true,
+        allowRestart: true,
+        restartStillAllowed: async () => scenario !== "disabled",
+        hasObservedTaskActivity: () => scenario === "activity",
+      });
+      assert.ok(
+        [
+          "STARTUP_RECOVERY_EXPIRED",
+          "STARTUP_RECOVERY_ACTIVITY",
+          "STARTUP_RECOVERY_DISABLED",
+          "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED",
+          "STARTUP_EVENT_PROCESS_MISMATCH",
+        ].includes(response.code),
+        `${scenario}: ${response.code}`,
+      );
+      assert.equal(setup.counts().signals, 0, scenario);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("failed automatic launch restores normal Codex and blocks immediate repeat", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
+  let originalAlive = true;
+  let normalLaunches = 0;
+  try {
+    const setup = startupController(root, {
+      inspectTargetProcess: async (pid) => {
+        if (!originalAlive) throw new Error("exited");
+        return startupProcessSnapshot(pid, startupExecutablePath);
+      },
+      signalProcess: (_pid, signal) => {
+        if (signal === "SIGTERM") originalAlive = false;
+      },
+      launchNormal: async () => {
+        normalLaunches += 1;
+      },
+    });
+    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
+    assert.equal(
+      (
+        await setup.instance.handle(event, true, {
+          isPending: () => true,
+          allowRestart: true,
+          canReplaceStartingApp: async () => true,
+        })
+      ).code,
+      "STARTUP_HANDOFF_FALLBACK_NORMAL",
+    );
+    assert.equal(normalLaunches, 1);
+    const next = startupController(root);
+    assert.equal(
+      (
+        await next.instance.handle({ ...event, pid: 4244 }, true, {
+          isPending: () => true,
+          allowRestart: true,
+        })
+      ).code,
+      "STARTUP_RECOVERY_COOLDOWN",
+    );
+    assert.equal(next.counts().signals, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native replacement proof binds listener generation, pid, deadline and fresh acknowledgement", async () => {
+  for (const scenario of [
+    "allowed",
+    "finished",
+    "active",
+    "wrong-pid",
+    "stale",
+    "late",
+    "child-restart",
+  ] as const) {
+    const fake = legacyListenerChild();
+    let inspect: { requestId: string; pid: number; deadlineAtMs: number } | undefined;
+    fake.child.stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        const message = JSON.parse(chunk.toString());
+        if (message.event === "startup.inspect-replacement") inspect = message;
+        callback();
+      },
+    });
+    const supervisor = new MacosStartupListenerSupervisor({
+      executablePath: "/fake/listener",
+      bundleId: "com.openai.codex",
+      appPath: startupAppPath,
+      appExecutablePath: startupExecutablePath,
+      spawnProcess: (() => fake.child) as never,
+      restartDelaysMs: [],
+    });
+    let result: boolean | undefined;
+    supervisor.start(async (event) => {
+      result = await supervisor.canReplaceStartingApp(event);
+      return { schemaVersion: 1, pid: event.pid, action: "continue", code: "TEST" };
+    });
+    try {
+      fake.ready();
+      await waitForStartupTest(() => supervisor.health().ready);
+      fake.launch(Date.now() + 2_000);
+      await waitForStartupTest(() => inspect !== undefined);
+      if (scenario === "child-restart") {
+        fake.child.emit("close");
+      } else {
+        const observed = inspect as
+          | { requestId: string; pid: number; deadlineAtMs: number }
+          | undefined;
+        assert.ok(observed);
+        if (scenario === "late") await new Promise((resolveDelay) => setTimeout(resolveDelay, 320));
+        fake.child.stdout.write(
+          `${JSON.stringify({
+            schemaVersion: 1,
+            event: "startup.replacement-check",
+            requestId: observed.requestId,
+            pid: scenario === "wrong-pid" ? observed.pid + 1 : observed.pid,
+            allowed: scenario !== "finished" && scenario !== "active",
+            checkedAtMs: Date.now() - (scenario === "stale" ? 200 : 0),
+            reason: scenario,
+          })}\n`,
+        );
+      }
+      await waitForStartupTest(() => result !== undefined);
+      assert.equal(result, scenario === "allowed", scenario);
+    } finally {
+      await supervisor.stop();
+    }
   }
 });

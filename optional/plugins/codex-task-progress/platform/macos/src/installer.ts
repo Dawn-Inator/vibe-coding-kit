@@ -34,6 +34,10 @@ import {
   type PluginController,
   resolveVerifiedCodexCli,
 } from "./plugin-controller.js";
+import {
+  readCodexStartupRecoveryPolicy,
+  writeCodexStartupRecoveryPolicy,
+} from "./startup-recovery-policy.js";
 import type { CodexInstallIdentity } from "./verified-release.js";
 
 export {
@@ -182,6 +186,7 @@ export function createMacosCommandHandlers(
     cdp,
     commandResult,
     installOrUpgrade,
+    startupRecoveryPolicy: () => readCodexStartupRecoveryPolicy(goalPaths),
   });
   const maintenance = createMaintenanceCommands({
     homeDirectory: options.homeDirectory,
@@ -197,6 +202,29 @@ export function createMacosCommandHandlers(
     install: (input: MacosCommandInput) => installOrUpgrade("install", input),
     doctor: health.doctor,
     "emergency-disable": maintenance.emergencyDisable,
+    "startup-recovery": async (input: MacosCommandInput) => {
+      const action = input.startupRecoveryAction;
+      if (action === null) throw new Error("GOAL_PROGRESS_STARTUP_RECOVERY_ACTION_INVALID");
+      const previous = await readCodexStartupRecoveryPolicy(goalPaths);
+      const policy =
+        action === "status"
+          ? await readCodexStartupRecoveryPolicy(goalPaths)
+          : await writeCodexStartupRecoveryPolicy(goalPaths, action);
+      return commandResult("startup-recovery", {
+        ok: true,
+        code: action === "status" ? "STARTUP_RECOVERY_STATUS" : "STARTUP_RECOVERY_UPDATED",
+        changed: action !== "status" && previous.autoPrepareOnLaunch !== policy.autoPrepareOnLaunch,
+        details: {
+          configured: policy.autoPrepareOnLaunch ? "enabled" : "disabled",
+          autoPrepareOnLaunch: policy.autoPrepareOnLaunch,
+          action,
+          nextLaunchBehavior: policy.autoPrepareOnLaunch
+            ? "The original Codex launch will prepare the Dock entry on the next launch."
+            : "Automatic startup recovery is off.",
+          currentCodex: "The already-running Codex app is not changed by this setting.",
+        },
+      });
+    },
     repair: health.repair,
     verify: health.verify,
     restore: maintenance.restore,

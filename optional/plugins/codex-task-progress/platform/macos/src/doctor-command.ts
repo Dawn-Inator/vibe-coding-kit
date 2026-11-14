@@ -7,10 +7,38 @@ import {
   inspectHelperDiagnosticFailure,
 } from "./installed-inspection.js";
 import { inspectOperationalHealth, type OperationalHealthFailure } from "./operational-health.js";
+import type { CodexStartupRecoveryPolicy } from "./startup-recovery-policy.js";
 
 export interface DoctorCommandDependencies {
   readonly state: () => InstallationState;
   readonly commandResult: MacosCommandResultFactory;
+  readonly startupRecoveryPolicy: () => Promise<CodexStartupRecoveryPolicy>;
+}
+
+async function startupRecoveryDiagnostic(
+  dependencies: DoctorCommandDependencies,
+): Promise<Readonly<Record<string, unknown>>> {
+  try {
+    const policy = await dependencies.startupRecoveryPolicy();
+    return {
+      startupRecovery: {
+        configured: policy.autoPrepareOnLaunch ? "enabled" : "disabled",
+        autoPrepareOnLaunch: policy.autoPrepareOnLaunch,
+        nextLaunchBehavior: policy.autoPrepareOnLaunch
+          ? "The original Codex launch will prepare the Dock entry on the next launch."
+          : "Automatic startup recovery is off.",
+      },
+    };
+  } catch {
+    return {
+      startupRecovery: {
+        configured: "invalid",
+        autoPrepareOnLaunch: null,
+        nextLaunchBehavior:
+          "Fix or remove startup-recovery.json before enabling automatic recovery.",
+      },
+    };
+  }
 }
 
 const doctorHookCodes = {
@@ -174,17 +202,25 @@ function createHealthInspectionCommand(
                 },
         });
       }
+      const startupPolicyDetails =
+        command === "doctor" ? await startupRecoveryDiagnostic(dependencies) : {};
+      const startupRecoveryEnabled =
+        (startupPolicyDetails.startupRecovery as { configured?: string } | undefined)
+          ?.configured === "enabled";
       return dependencies.commandResult(command, {
         ok: false,
         code: `${prefix}_CDP_NOT_READY`,
         changed: false,
         nextStep:
           command === "doctor"
-            ? "After the user confirms a Codex restart, run install --json --restart-codex."
+            ? startupRecoveryEnabled
+              ? "Automatic preparation is set for Codex's next launch; the currently running Codex app still requires a separate explicit repair or restart."
+              : "After the user confirms a Codex restart, run install --json --restart-codex."
             : "Restart Codex through install --json --restart-codex.",
         details:
           command === "doctor"
             ? {
+                ...startupPolicyDetails,
                 helperJobLoaded: facts.helperJobLoaded,
                 helper: facts.helper,
                 pluginInstalled: true,
@@ -247,6 +283,7 @@ function createHealthInspectionCommand(
       code: verification.currentDisplay === "fail" ? "DOCTOR_DISPLAY_MISSING" : "DOCTOR_OK",
       changed: false,
       details: {
+        ...(await startupRecoveryDiagnostic(dependencies)),
         verification,
         releaseVersion: facts.installed.releaseVersion,
         helperJobLoaded: facts.helperJobLoaded,

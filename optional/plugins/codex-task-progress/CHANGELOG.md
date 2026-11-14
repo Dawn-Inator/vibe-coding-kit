@@ -1,3 +1,9 @@
+# Task Progress 0.5.12
+
+- Add a persisted startup-recovery opt-in, disabled by default. Enabling it changes behavior for a later launch and does not restart the current Codex process.
+- Consider replacing a startup candidate only with fresh process identity, affirmative native lifecycle confirmation that it is neither finished nor active, no observed task activity, and verified loopback CDP. Missing, late or contradictory proof fails closed; unavailable CDP falls back to normal startup.
+- Clear the failure cooldown only after verified success; normal Codex restarts within 60 seconds remain supported. No late autorestart, SIGSTOP or application-bundle edits are used.
+
 # Task Progress 0.5.11
 
 - For watched project Heartbeat discovery, skip invalidation only when bounded directory observations and source inode identities prove a content-only change to a current canonical regular non-Markdown file, including one not previously visited. Incomplete or overflowing observations, unknown filename/type, hard links, rename/delete, directories, symlinks, `.git` changes and explicit source invalidations still invalidate discovery.

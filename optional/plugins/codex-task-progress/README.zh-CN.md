@@ -2,6 +2,10 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
+0.5.12 新增可持久保存的启动恢复选项，默认关闭。启用只影响之后的启动，不会重启当前 Codex 进程。
+
+启动恢复默认关闭，只有显式启用并保存后才生效。可使用 `goal-progress startup-recovery --status --json` 查看、`goal-progress startup-recovery --enable --json` 启用、`goal-progress startup-recovery --disable --json` 关闭。原始 Dock 启动通过已有的原生 AppKit will/did 启动通知识别。只有新鲜 PID 和进程身份得到确认、原生生命周期明确证明候选进程既未结束也未处于活动状态、没有观察到任务活动且 loopback CDP 已验证时，才允许考虑替换启动候选。缺失、迟到或矛盾的证据都会 fail closed；CDP 不可用时回退到正常启动，不执行延迟自动重启、SIGSTOP 或修改 Codex 应用包。失败冷却仅在验证成功后清除，正常的 60 秒内重启仍可进行。
+
 0.5.11 只有在有界目录观测和来源 inode 身份能够证明：当前规范来源中的普通非 Markdown 文件仅发生内容变化时，才跳过项目 Heartbeat 发现缓存失效；即使该文件此前未被扫描到也适用。观测不完整或溢出、文件名/类型未知、硬链接、重命名、删除、目录、符号链接、`.git` 变化以及显式来源失效仍会使发现结果失效。
 
 0.5.10 对已有已保存的 Heartbeat 绑定使用一次 Kit 规范绑定来源查询进行校验，仍保留路径、内容哈希、任务关联和自定义 inspector 校验。新聊天、未绑定来源以及强制写入前的发现仍执行完整项目扫描；不完整扫描不会被当作完整扫描或“没有来源”的证明。

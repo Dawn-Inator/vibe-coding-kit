@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { CodexAppServerClient } from "../src/index.js";
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -169,29 +169,51 @@ test("stream decoder preserves UTF-8 characters split across child writes", asyn
 });
 
 test("late response after timeout is ignored and a later response still resolves", async () => {
+  const notifications = new Map<string, () => void>();
+  const waitForNotification = (method: string) =>
+    new Promise<void>((resolve) => notifications.set(method, resolve));
+  const firstRequestReceived = waitForNotification("test/first-request-received");
+  const lateResponseSent = waitForNotification("test/late-response-sent");
   const script = responderScript(`
     let count = 0;
+    let timedOutRequest;
     input.on("line", (line) => {
       const request = JSON.parse(line);
       if (request.method !== "thread/turns/list") return;
       count += 1;
       if (count === 1) {
-        setTimeout(
-          () => process.stdout.write(JSON.stringify({ id: request.id, result: { data: [] } }) + "\\n"),
-          400,
-        );
+        timedOutRequest = request;
+        process.stdout.write(JSON.stringify({ method: "test/first-request-received" }) + "\\n");
       } else {
         process.stdout.write(JSON.stringify({ id: request.id, result: { data: [{ id: "turn-b" }] } }) + "\\n");
+        setTimeout(() => {
+          process.stdout.write(JSON.stringify({ id: timedOutRequest.id, result: { data: [] } }) + "\\n");
+          process.stdout.write(JSON.stringify({ method: "test/late-response-sent" }) + "\\n");
+        }, 25);
       }
     });
   `);
-  const client = await clientFor(script, { outputMode: "stream", requestTimeoutMs: 150 });
+  const client = await CodexAppServerClient.connect({
+    command: process.execPath,
+    args: ["-e", script],
+    outputMode: "stream",
+    onNotification: (notification) => notifications.get(notification.method)?.(),
+  });
+  let fakeTimersEnabled = false;
   try {
-    await assert.rejects(client.listTurnIds("thread-a"), /GOAL_PROGRESS_APP_SERVER_TIMEOUT/);
+    // Initialization uses the real default timeout. Fake time begins only after
+    // the child confirms the targeted request is in flight.
+    mock.timers.enable({ apis: ["setTimeout"] });
+    fakeTimersEnabled = true;
+    const firstRequest = client.listTurnIds("thread-a");
+    await firstRequestReceived;
+    mock.timers.tick(10_000);
+    await assert.rejects(firstRequest, /GOAL_PROGRESS_APP_SERVER_TIMEOUT/);
     assert.deepEqual(await client.listTurnIds("thread-a"), ["turn-b"]);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await lateResponseSent;
     assert.equal(client.failed, undefined);
   } finally {
+    if (fakeTimersEnabled) mock.timers.reset();
     await client.close();
   }
 });

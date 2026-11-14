@@ -4,12 +4,39 @@ import Foundation
 
 private struct StartupEvent: Encodable {
     let schemaVersion = 1
-    let event = "codex.didLaunch"
+    let event: String
     let pid: Int32
     let bundleId: String
     let appPath: String
     let executablePath: String
     let launchedAt: String
+    let deadlineAtMs: Int64
+}
+
+private struct StartupReplacementRequest: Decodable {
+    let schemaVersion: Int
+    let event: String
+    let pid: Int32
+    let requestId: String
+    let launchedAt: String
+    let deadlineAtMs: Int64
+}
+
+private struct StartupReplacementReply: Encodable {
+    let schemaVersion = 1
+    let event = "startup.replacement-check"
+    let pid: Int32
+    let requestId: String
+    let allowed: Bool
+    let checkedAtMs: Int64
+    let reason: String
+}
+
+private struct PendingLaunch {
+    let application: NSRunningApplication
+    let pid: pid_t
+    let launchedAt: String
+    let birthDate: Date?
     let deadlineAtMs: Int64
 }
 
@@ -31,7 +58,9 @@ private final class CodexStartupListener: NSObject {
     private let executablePath: String
     private let formatter = ISO8601DateFormatter()
     private var inputBuffer = Data()
-    private var pendingPid: pid_t?
+    private var pendingLaunch: PendingLaunch?
+    private var recentlyEmittedPids: [pid_t] = []
+    private var discardingOversizedLine = false
     private var safetyTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
 
@@ -45,13 +74,13 @@ private final class CodexStartupListener: NSObject {
     private func clearPendingProcess() {
         safetyTimeout?.cancel()
         safetyTimeout = nil
-        pendingPid = nil
+        pendingLaunch = nil
     }
 
     private func handleResponseLine(_ line: Data) {
         guard let response = try? JSONDecoder().decode(StartupResponse.self, from: line),
               response.schemaVersion == 1,
-              response.pid == pendingPid else {
+              response.pid == pendingLaunch?.pid else {
             return
         }
         guard response.action == "continue" || response.action == "complete" else {
@@ -60,18 +89,128 @@ private final class CodexStartupListener: NSObject {
         }
         safetyTimeout?.cancel()
         safetyTimeout = nil
-        pendingPid = nil
+        pendingLaunch = nil
     }
 
     private func consumeInput(_ data: Data) {
-        inputBuffer.append(data)
-        while let newline = inputBuffer.firstIndex(of: 0x0A) {
-            let line = inputBuffer[..<newline]
-            inputBuffer.removeSubrange(...newline)
-            if !line.isEmpty {
-                handleResponseLine(Data(line))
+        let boundedInput = data.prefix(16_384)
+        for byte in boundedInput {
+            if discardingOversizedLine {
+                if byte == 0x0A {
+                    discardingOversizedLine = false
+                }
+                continue
+            }
+            if byte == 0x0A {
+                let line = inputBuffer
+                inputBuffer.removeAll(keepingCapacity: true)
+                if !line.isEmpty {
+                    handleInputLine(line)
+                }
+            } else if inputBuffer.count >= 4_096 || inputBuffer.count >= 16_384 {
+                inputBuffer.removeAll(keepingCapacity: true)
+                discardingOversizedLine = true
+            } else {
+                inputBuffer.append(byte)
             }
         }
+        if data.count > 16_384 {
+            inputBuffer.removeAll(keepingCapacity: true)
+            discardingOversizedLine = !data.dropFirst(16_384).contains(0x0A)
+        }
+    }
+
+    private func handleInputLine(_ line: Data) {
+        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+            return
+        }
+        if object["event"] as? String == "startup.inspect-replacement" {
+            handleReplacementRequest(line)
+            return
+        }
+        if object["event"] != nil {
+            sendFailureReply(from: object, reason: "unknown_message")
+            return
+        }
+        handleResponseLine(line)
+    }
+
+    private func sendFailureReply(from object: [String: Any], reason: String) {
+        guard let pidValue = object["pid"] as? Int,
+              let pid = Int32(exactly: pidValue),
+              let requestId = object["requestId"] as? String else {
+            return
+        }
+        _ = send(StartupReplacementReply(
+            pid: pid,
+            requestId: requestId,
+            allowed: false,
+            checkedAtMs: Int64(Date().timeIntervalSince1970 * 1_000),
+            reason: reason
+        ))
+    }
+
+    private func handleReplacementRequest(_ line: Data) {
+        let request = try? JSONDecoder().decode(StartupReplacementRequest.self, from: line)
+        guard let request else {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  object["event"] as? String == "startup.inspect-replacement" else {
+                return
+            }
+            sendFailureReply(from: object, reason: "request_invalid")
+            return
+        }
+        let now = Date()
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        let pending = pendingLaunch
+        let appLaunchDate = pending?.application.launchDate
+        let launchAge = appLaunchDate.map { now.timeIntervalSince($0) }
+        let allowed = request.schemaVersion == 1
+            && request.event == "startup.inspect-replacement"
+            && UUID(uuidString: request.requestId) != nil
+            && request.pid == pending?.pid
+            && request.launchedAt == pending?.launchedAt
+            && request.deadlineAtMs >= nowMs
+            && request.deadlineAtMs <= (pending?.deadlineAtMs ?? 0)
+            && pending?.application.bundleIdentifier == bundleId
+            && pending?.application.bundleURL?.path == appPath
+            && pending?.application.executableURL?.path == executablePath
+            && pending?.birthDate != nil
+            && appLaunchDate != nil
+            && appLaunchDate == pending?.birthDate
+            && launchAge.map { $0 >= 0 && $0 <= 5 } == true
+            && pending?.application.isFinishedLaunching == false
+            && pending?.application.isActive == false
+            && pending?.application.isTerminated == false
+        let reason: String
+        if allowed {
+            reason = "verified"
+        } else if pending == nil || request.pid != pending?.pid {
+            reason = "pending_event_mismatch"
+        } else if request.launchedAt != pending?.launchedAt {
+            reason = "launch_timestamp_mismatch"
+        } else if appLaunchDate == nil || pending?.birthDate == nil || appLaunchDate != pending?.birthDate {
+            reason = "launch_birth_unconfirmed"
+        } else if launchAge.map({ $0 < 0 || $0 > 5 }) ?? true {
+            reason = "launch_not_fresh"
+        } else if request.deadlineAtMs < nowMs || request.deadlineAtMs > (pending?.deadlineAtMs ?? 0) {
+            reason = "deadline_invalid"
+        } else if pending?.application.isFinishedLaunching != false {
+            reason = "already_finished_launching"
+        } else if pending?.application.isActive != false {
+            reason = "application_active"
+        } else if pending?.application.isTerminated != false {
+            reason = "application_terminated"
+        } else {
+            reason = "identity_mismatch"
+        }
+        _ = send(StartupReplacementReply(
+            pid: request.pid,
+            requestId: request.requestId,
+            allowed: allowed,
+            checkedAtMs: nowMs,
+            reason: reason
+        ))
     }
 
     private func configureInput() {
@@ -117,8 +256,9 @@ private final class CodexStartupListener: NSObject {
         }
     }
 
-    private func handleDidLaunch(_ application: NSRunningApplication) {
-        guard pendingPid == nil,
+    private func handleLaunch(_ application: NSRunningApplication, eventName: String) {
+        guard pendingLaunch == nil,
+              !recentlyEmittedPids.contains(application.processIdentifier),
               application.bundleIdentifier == bundleId,
               application.bundleURL?.path == appPath,
               application.executableURL?.path == executablePath else {
@@ -126,19 +266,32 @@ private final class CodexStartupListener: NSObject {
         }
 
         let pid = application.processIdentifier
-        pendingPid = pid
-        let launchedAt = formatter.string(from: application.launchDate ?? Date())
+        let observationTime = Date()
+        let launchedAt = formatter.string(from: application.launchDate ?? observationTime)
+        let deadlineAtMs = Int64(observationTime.timeIntervalSince1970 * 1_000) + 20_000
+        pendingLaunch = PendingLaunch(
+            application: application,
+            pid: pid,
+            launchedAt: launchedAt,
+            birthDate: application.launchDate,
+            deadlineAtMs: deadlineAtMs
+        )
         let event = StartupEvent(
+            event: eventName,
             pid: pid,
             bundleId: bundleId,
             appPath: appPath,
             executablePath: executablePath,
             launchedAt: launchedAt,
-            deadlineAtMs: Int64(Date().timeIntervalSince1970 * 1_000) + 20_000
+            deadlineAtMs: deadlineAtMs
         )
         guard send(event) else {
             clearPendingProcess()
             return
+        }
+        recentlyEmittedPids.append(pid)
+        if recentlyEmittedPids.count > 64 {
+            recentlyEmittedPids.removeFirst(recentlyEmittedPids.count - 64)
         }
 
         let timeout = DispatchWorkItem { [weak self] in
@@ -152,6 +305,18 @@ private final class CodexStartupListener: NSObject {
         configureInput()
         configureSignals()
         NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[
+                NSWorkspace.applicationUserInfoKey
+            ] as? NSRunningApplication else {
+                return
+            }
+            self?.handleLaunch(application, eventName: "codex.willLaunch")
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
@@ -161,7 +326,7 @@ private final class CodexStartupListener: NSObject {
             ] as? NSRunningApplication else {
                 return
             }
-            self?.handleDidLaunch(application)
+            self?.handleLaunch(application, eventName: "codex.didLaunch")
         }
         guard send(StartupReady(pid: getpid())) else {
             exit(1)

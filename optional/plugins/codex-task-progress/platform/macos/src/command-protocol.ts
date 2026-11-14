@@ -7,6 +7,7 @@ export const MACOS_COMMAND_NAMES = [
   "upgrade",
   "emergency-disable",
   "repair",
+  "startup-recovery",
 ] as const;
 
 export type MacosCommandName = (typeof MACOS_COMMAND_NAMES)[number];
@@ -18,6 +19,7 @@ export interface MacosCommandInput {
   readonly verbose: boolean;
   readonly restartCodex: boolean;
   readonly preserveHistory: boolean;
+  readonly startupRecoveryAction: "status" | "enable" | "disable" | null;
 }
 
 export interface MacosCommandResult {
@@ -59,10 +61,43 @@ function isCommandName(value: string | undefined): value is MacosCommandName {
   return value !== undefined && (MACOS_COMMAND_NAMES as readonly string[]).includes(value);
 }
 
+function parseStartupRecoveryCommand(flags: readonly string[]): ParseMacosCommandResult {
+  const actions = flags.filter((flag) =>
+    (["--status", "--enable", "--disable"] as readonly string[]).includes(flag),
+  );
+  const outputModes = flags.filter((flag) => flag === "--json" || flag === "--human");
+  const unsupported = flags.find(
+    (flag) => !["--status", "--enable", "--disable", "--json", "--human"].includes(flag),
+  );
+  if (unsupported) return invalidCommand(`Unsupported flag: ${unsupported}`);
+  if (actions.length !== 1)
+    return invalidCommand("Choose exactly one of --status, --enable, or --disable");
+  if (outputModes.length !== 1 || outputModes[0] !== "--json") {
+    return invalidCommand("startup-recovery requires exactly one output mode: --json");
+  }
+  const action =
+    actions[0] === "--status" ? "status" : actions[0] === "--enable" ? "enable" : "disable";
+  return {
+    ok: true,
+    input: {
+      command: "startup-recovery",
+      json: true,
+      human: false,
+      verbose: false,
+      restartCodex: false,
+      preserveHistory: true,
+      startupRecoveryAction: action,
+    },
+  };
+}
+
 export function parseMacosCommand(argv: readonly string[]): ParseMacosCommandResult {
   const [commandValue, ...flags] = argv;
   if (!isCommandName(commandValue)) {
     return invalidCommand("Unknown or missing command");
+  }
+  if (commandValue === "startup-recovery") {
+    return parseStartupRecoveryCommand(flags);
   }
   const outputFlags = flags.filter((flag) => flag === "--json" || flag === "--human");
   if (outputFlags.length !== 1) {
@@ -100,6 +135,7 @@ export function parseMacosCommand(argv: readonly string[]): ParseMacosCommandRes
       verbose: flags.includes("--verbose"),
       restartCodex: flags.includes("--restart-codex"),
       preserveHistory: !flags.includes("--delete-history"),
+      startupRecoveryAction: null,
     },
   };
 }

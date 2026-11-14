@@ -34,6 +34,125 @@ test("an unconfigured Kit release channel reports manual updates without network
   assert.equal(result?.lastErrorCode, "GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
 });
 
+test("startup recovery policy defaults off without creating preferences and persists explicit settings", async () => {
+  const { mkdtemp, readFile, lstat, rm, symlink, writeFile, chmod } = await import(
+    "node:fs/promises"
+  );
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { resolveGoalProgressPaths } = await import("../../store/src/paths.js");
+  const { readCodexStartupRecoveryPolicy, writeCodexStartupRecoveryPolicy } = await import(
+    "../../../platform/macos/src/startup-recovery-policy.js"
+  );
+  const root = await mkdtemp(join(tmpdir(), "ctp-startup-policy-"));
+  const paths = resolveGoalProgressPaths({ platform: "darwin", homeDirectory: root });
+  try {
+    assert.deepEqual(await readCodexStartupRecoveryPolicy(paths), {
+      schemaVersion: 1,
+      autoPrepareOnLaunch: false,
+    });
+    await assert.rejects(lstat(paths.preferencesRoot), { code: "ENOENT" });
+
+    await writeCodexStartupRecoveryPolicy(paths, "enable");
+    assert.deepEqual(await readCodexStartupRecoveryPolicy(paths), {
+      schemaVersion: 1,
+      autoPrepareOnLaunch: true,
+    });
+    const policyPath = join(paths.preferencesRoot, "startup-recovery.json");
+    const firstBytes = await readFile(policyPath, "utf8");
+    await writeCodexStartupRecoveryPolicy(paths, "enable");
+    assert.equal(await readFile(policyPath, "utf8"), firstBytes);
+    await writeCodexStartupRecoveryPolicy(paths, "disable");
+    assert.equal((await readCodexStartupRecoveryPolicy(paths)).autoPrepareOnLaunch, false);
+
+    await writeFile(policyPath, '{"schemaVersion":2,"autoPrepareOnLaunch":true}\n', {
+      mode: 0o600,
+    });
+    await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    await writeFile(
+      policyPath,
+      `${JSON.stringify({ schemaVersion: 1, autoPrepareOnLaunch: true, extra: true })}\n`,
+      {
+        mode: 0o600,
+      },
+    );
+    await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    await writeFile(policyPath, `${"x".repeat(4097)}\n`, { mode: 0o600 });
+    await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    await rm(policyPath);
+    const target = join(root, "target.json");
+    await writeFile(target, '{"schemaVersion":1,"autoPrepareOnLaunch":true}\n', { mode: 0o600 });
+    await symlink(target, policyPath);
+    await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    await assert.rejects(writeCodexStartupRecoveryPolicy(paths, "enable"), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+    await rm(policyPath);
+    await writeFile(policyPath, '{"schemaVersion":1,"autoPrepareOnLaunch":false}\n');
+    await chmod(policyPath, 0o644);
+    await assert.rejects(readCodexStartupRecoveryPolicy(paths), {
+      message: "GOAL_PROGRESS_STARTUP_RECOVERY_CONFIG_INVALID",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery CLI accepts one explicit action and configuration only writes policy", async () => {
+  const { mkdtemp, rm, lstat } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { parseMacosCommand, executeMacosCommand } = await import(
+    "../../../platform/macos/src/command-protocol.js"
+  );
+  const { createMacosCommandHandlers } = await import("../../../platform/macos/src/installer.js");
+  const root = await mkdtemp(join(tmpdir(), "ctp-startup-cli-"));
+  const home = join(root, "home");
+  const releaseRoot = join(root, "release");
+  try {
+    assert.equal(parseMacosCommand(["startup-recovery", "--status", "--json"]).ok, true);
+    assert.equal(
+      parseMacosCommand(["startup-recovery", "--enable", "--disable", "--json"]).ok,
+      false,
+    );
+    assert.equal(
+      parseMacosCommand(["startup-recovery", "--enable", "--json", "--unknown"]).ok,
+      false,
+    );
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(home));
+    const handlers = createMacosCommandHandlers({ homeDirectory: home, releaseRoot });
+    const status = await executeMacosCommand(["startup-recovery", "--status", "--json"], handlers);
+    assert.equal(status.ok, true);
+    assert.equal(status.details.configured, "disabled");
+    const preferencesPath = join(
+      home,
+      "Library",
+      "Application Support",
+      "CodexTaskProgress",
+      "preferences",
+      "v1",
+    );
+    await assert.rejects(lstat(preferencesPath), { code: "ENOENT" });
+    const enabled = await executeMacosCommand(["startup-recovery", "--enable", "--json"], handlers);
+    assert.equal(enabled.ok, true);
+    assert.equal(enabled.details.autoPrepareOnLaunch, true);
+    assert.equal(
+      enabled.details.currentCodex,
+      "The already-running Codex app is not changed by this setting.",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("stable helper copy verifies content and restores old bytes after transaction failure", async () => {
   const { mkdtemp, writeFile, readFile, lstat, symlink, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
@@ -378,6 +497,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         verbose: false,
         restartCodex: false,
         preserveHistory: true,
+        startupRecoveryAction: null,
       });
 
     const initialInstall = await invoke(installV1, "install");

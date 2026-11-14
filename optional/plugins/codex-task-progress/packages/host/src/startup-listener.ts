@@ -23,10 +23,11 @@ import {
   writeCodexCdpRuntimeState,
 } from "../../../platform/macos/src/index.js";
 import { GoalContractSchema, GoalContractV1Schema } from "../../contracts/src/index.js";
-import type { GoalProgressPaths } from "../../store/src/index.js";
+import { atomicWriteFile, type GoalProgressPaths } from "../../store/src/index.js";
 
 const STARTUP_EVENT_MAX_CLOCK_SKEW_MS = 5_000;
 const STARTUP_PROCESS_EXIT_TIMEOUT_MS = 5_000;
+const STARTUP_ATTEMPT_COOLDOWN_MS = 60_000;
 const STARTUP_EVENT_DEDUP_LIMIT = 128;
 const STARTUP_LISTENER_RESTART_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 const STARTUP_LISTENER_READY_TIMEOUT_MS = 1_000;
@@ -93,6 +94,7 @@ export interface GoalProgressStartupListener {
   start(handler: (event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>): void;
   health(): GoalProgressStartupListenerHealth;
   isPending(pid: number): boolean;
+  canReplaceStartingApp(event: MacosCodexStartupEvent): Promise<boolean>;
   waitUntilReady(timeoutMs?: number): Promise<boolean>;
   stop(): Promise<void>;
 }
@@ -121,6 +123,9 @@ export interface MacosStartupHandoffContext {
   readonly isStopped?: () => boolean;
   /** Explicit authorization for replacing the current Codex process. Defaults to false. */
   readonly allowRestart?: boolean;
+  readonly restartStillAllowed?: () => Promise<boolean>;
+  readonly hasObservedTaskActivity?: () => boolean;
+  readonly canReplaceStartingApp?: () => Promise<boolean>;
 }
 
 export interface RecoverableTaskDetector {
@@ -276,6 +281,7 @@ export class MacosStartupHandoffController {
   readonly #retryIdentities = new Map<string, string>();
   #operationSequence = 0;
   #runtimeWriteTail: Promise<void> = Promise.resolve();
+  #attemptGuardTail: Promise<void> = Promise.resolve();
 
   constructor(options: MacosStartupHandoffControllerOptions) {
     this.#paths = options.paths;
@@ -501,6 +507,92 @@ export class MacosStartupHandoffController {
     return written;
   }
 
+  async #withAttemptGuard<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.#attemptGuardTail;
+    let release!: () => void;
+    this.#attemptGuardTail = new Promise<void>((resolveRelease) => {
+      release = resolveRelease;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+
+  async #reserveAttempt(
+    event: MacosCodexStartupEvent,
+    token: string,
+  ): Promise<"reserved" | "cooldown" | "invalid"> {
+    return this.#withAttemptGuard(async () => {
+      const path = resolve(this.#paths.runtimeRoot, "startup-recovery-attempt.json");
+      try {
+        const guard = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+        if (
+          guard.schemaVersion !== 1 ||
+          typeof guard.attemptedAt !== "number" ||
+          !Number.isFinite(guard.attemptedAt) ||
+          (guard.status !== undefined &&
+            !["reserved", "failed", "completed"].includes(String(guard.status)))
+        )
+          return "invalid";
+        // Legacy entries have no status and remain blocking for their original cooldown.
+        if (
+          guard.status !== "completed" &&
+          this.#now() - guard.attemptedAt < STARTUP_ATTEMPT_COOLDOWN_MS
+        )
+          return "cooldown";
+      } catch (error) {
+        if (
+          !(
+            error instanceof Error &&
+            "code" in error &&
+            (error as NodeJS.ErrnoException).code === "ENOENT"
+          )
+        )
+          return "invalid";
+      }
+      await atomicWriteFile(
+        path,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          status: "reserved",
+          token,
+          pid: event.pid,
+          launchedAt: event.launchedAt,
+          executablePath: event.executablePath,
+          attemptedAt: this.#now(),
+        })}\n`,
+      );
+      return "reserved";
+    });
+  }
+
+  async #finishAttempt(
+    event: MacosCodexStartupEvent,
+    token: string,
+    failed: boolean,
+  ): Promise<void> {
+    await this.#withAttemptGuard(async () => {
+      const path = resolve(this.#paths.runtimeRoot, "startup-recovery-attempt.json");
+      const guard = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+      if (
+        guard.schemaVersion !== 1 ||
+        guard.status !== "reserved" ||
+        guard.token !== token ||
+        guard.pid !== event.pid ||
+        guard.launchedAt !== event.launchedAt ||
+        guard.executablePath !== event.executablePath
+      )
+        return;
+      await atomicWriteFile(
+        path,
+        `${JSON.stringify({ ...guard, status: failed ? "failed" : "completed" })}\n`,
+      );
+    });
+  }
+
   async #stopOwnedLaunch(
     app: CodexMacosAppIdentity,
     launched: Awaited<ReturnType<typeof launchCodexWithCdp>>,
@@ -579,7 +671,11 @@ export class MacosStartupHandoffController {
     }
     if (
       retry &&
-      (duplicate?.code !== "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE" || !context.isPending())
+      (![
+        "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE",
+        "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE",
+      ].includes(duplicate?.code ?? "") ||
+        !context.isPending())
     ) {
       return eventResponse(event, "continue", "STARTUP_EVENT_RELEASED");
     }
@@ -635,9 +731,6 @@ export class MacosStartupHandoffController {
       return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_HELPER_LAUNCH"));
     }
     const alreadyCdp = commandHasCdp(original.command);
-    if (retry && !alreadyCdp) {
-      return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
-    }
     if (!alreadyCdp && original.command !== event.executablePath) {
       return this.#remember(key, {
         ...eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
@@ -703,6 +796,13 @@ export class MacosStartupHandoffController {
       return this.#remember(key, existingInstance);
     }
 
+    if (retry) {
+      return this.#remember(
+        key,
+        eventResponse(event, "continue", "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE"),
+      );
+    }
+
     if (context.allowRestart !== true) {
       return this.#remember(
         key,
@@ -710,8 +810,28 @@ export class MacosStartupHandoffController {
       );
     }
 
+    // A fresh launch notification and a positive native pre-interactivity proof
+    // are both required; reconnects above are read-only.
+    const fresh = () => {
+      const now = this.#now();
+      return (
+        now - eventLaunchedAt >= -1_000 &&
+        now - eventLaunchedAt <= STARTUP_EVENT_MAX_CLOCK_SKEW_MS &&
+        now - processStartedAt >= 0 &&
+        now - processStartedAt <= STARTUP_EVENT_MAX_CLOCK_SKEW_MS &&
+        canStart()
+      );
+    };
+    if (!fresh())
+      return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
+    if (context.hasObservedTaskActivity?.())
+      return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
+
     let launched: Awaited<ReturnType<typeof launchCodexWithCdp>> | undefined;
     let port: number | undefined;
+    let reservation: string | undefined;
+    let signalled = false;
+    let handoffSucceeded = false;
     try {
       port = await this.#allocatePort();
       if (this.#now() >= event.deadlineAtMs) {
@@ -720,8 +840,53 @@ export class MacosStartupHandoffController {
       if (!canStart()) {
         return this.#remember(key, eventResponse(event, "continue", "STARTUP_EVENT_RELEASED"));
       }
+      // Reserve durably before signalling. The unique token prevents an older
+      // operation from releasing a later operation's reservation.
+      const token = randomUUID();
+      const reserved = await this.#reserveAttempt(event, token);
+      if (reserved !== "reserved")
+        return this.#remember(
+          key,
+          eventResponse(
+            event,
+            "continue",
+            reserved === "cooldown"
+              ? "STARTUP_RECOVERY_COOLDOWN"
+              : "STARTUP_RECOVERY_GUARD_INVALID",
+          ),
+        );
+      reservation = token;
+      if (context.restartStillAllowed && !(await context.restartStillAllowed())) {
+        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_DISABLED"));
+      }
+      const current = await this.#inspectTargetProcess(event.pid);
+      if (
+        this.#processIdentity(current) !== identity ||
+        current.parentPid !== original.parentPid ||
+        current.command !== event.executablePath
+      ) {
+        return this.#remember(
+          key,
+          eventResponse(event, "continue", "STARTUP_EVENT_PROCESS_MISMATCH"),
+        );
+      }
+      if (!fresh())
+        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
+      if (context.hasObservedTaskActivity?.())
+        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
+      if (!context.canReplaceStartingApp || !(await context.canReplaceStartingApp())) {
+        return this.#remember(
+          key,
+          eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED"),
+        );
+      }
+      // No asynchronous work is permitted between native proof and signalling.
+      if (!fresh())
+        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_EXPIRED"));
+      if (context.hasObservedTaskActivity?.())
+        return this.#remember(key, eventResponse(event, "continue", "STARTUP_RECOVERY_ACTIVITY"));
       this.#signalProcess(event.pid, "SIGTERM");
-      this.#signalProcess(event.pid, "SIGCONT");
+      signalled = true;
       if (!(await waitForProcessExit(event.pid, this.#inspectTargetProcess, this.#sleep))) {
         throw new Error("GOAL_PROGRESS_CODEX_CURRENT_PROCESS_STOP_TIMEOUT");
       }
@@ -730,6 +895,7 @@ export class MacosStartupHandoffController {
       }
       const concurrentInstance = await this.#existingInstanceResponse(event, app, canFinish);
       if (concurrentInstance) {
+        handoffSucceeded = concurrentInstance.code === "STARTUP_EVENT_EXISTING_CDP";
         return this.#remember(key, concurrentInstance);
       }
       if (!canFinish()) {
@@ -750,6 +916,9 @@ export class MacosStartupHandoffController {
         await this.#stopOwnedLaunch(app, launched, port, isSuperseded() && !isStopped());
         return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
       }
+      // A verified, published managed process is a success even if a newer
+      // observation supersedes the response immediately afterwards.
+      handoffSucceeded = true;
       if (!canFinish()) {
         return this.#remember(key, eventResponse(event, "complete", "STARTUP_EVENT_RELEASED"));
       }
@@ -799,6 +968,14 @@ export class MacosStartupHandoffController {
       } catch {
         return this.#remember(key, eventResponse(event, "continue", "STARTUP_HANDOFF_FAILED"));
       }
+    } finally {
+      if (reservation) {
+        // Retain failures after SIGTERM, but release successful and pre-signal attempts.
+        // If persistence fails, the reserved record safely retains its cooldown.
+        await this.#finishAttempt(event, reservation, signalled && !handoffSucceeded).catch(
+          () => undefined,
+        );
+      }
     }
   }
 }
@@ -815,6 +992,7 @@ export interface CreateMacosStartupListenerOptions {
 
 interface PendingStartupEvent {
   readonly pid: number;
+  readonly event: MacosCodexStartupEvent;
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
@@ -831,6 +1009,16 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
   #listenerPid: number | null = null;
   #pending: PendingStartupEvent | undefined;
   readonly #readyWaiters = new Set<(ready: boolean) => void>();
+  #replacementCheck:
+    | {
+        readonly child: ChildProcessWithoutNullStreams;
+        readonly event: MacosCodexStartupEvent;
+        readonly requestId: string;
+        readonly requestedAtMs: number;
+        readonly deadlineAtMs: number;
+        readonly finish: (allowed: boolean) => void;
+      }
+    | undefined;
 
   constructor(options: CreateMacosStartupListenerOptions) {
     this.#options = options;
@@ -862,6 +1050,57 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
     return this.#pending?.pid === pid;
   }
 
+  async canReplaceStartingApp(event: MacosCodexStartupEvent): Promise<boolean> {
+    const child = this.#child;
+    const pending = this.#pending;
+    const now = Date.now();
+    const deadlineAtMs = Math.min(event.deadlineAtMs, now + 300);
+    if (
+      !child ||
+      !this.#ready ||
+      !pending ||
+      this.#replacementCheck ||
+      deadlineAtMs <= now ||
+      pending.event.pid !== event.pid ||
+      pending.event.launchedAt !== event.launchedAt ||
+      pending.event.appPath !== event.appPath ||
+      pending.event.executablePath !== event.executablePath ||
+      pending.event.bundleId !== event.bundleId ||
+      pending.event.deadlineAtMs !== event.deadlineAtMs ||
+      pending.event.event !== event.event
+    )
+      return false;
+    return new Promise<boolean>((resolveCheck) => {
+      const requestId = randomUUID();
+      const finish = (allowed: boolean) => {
+        if (this.#replacementCheck?.requestId !== requestId) return;
+        clearTimeout(timer);
+        this.#replacementCheck = undefined;
+        resolveCheck(allowed);
+      };
+      const timer = setTimeout(() => finish(false), deadlineAtMs - now);
+      timer.unref?.();
+      this.#replacementCheck = {
+        child,
+        event,
+        requestId,
+        requestedAtMs: now,
+        deadlineAtMs,
+        finish,
+      };
+      try {
+        child.stdin.write(
+          `${JSON.stringify({ schemaVersion: 1, event: "startup.inspect-replacement", pid: event.pid, requestId, launchedAt: event.launchedAt, deadlineAtMs })}\n`,
+          (error) => {
+            if (error) finish(false);
+          },
+        );
+      } catch {
+        finish(false);
+      }
+    });
+  }
+
   async waitUntilReady(timeoutMs = STARTUP_LISTENER_READY_TIMEOUT_MS): Promise<boolean> {
     if (this.#ready) {
       return true;
@@ -888,6 +1127,7 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
       return false;
     }
     const pending = this.#pending;
+    this.#replacementCheck?.finish(false);
     this.#pending = undefined;
     clearTimeout(pending.timer);
     return true;
@@ -939,7 +1179,7 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
       this.#writeResponse(child, eventResponse(event, "continue", "STARTUP_HANDLER_TIMEOUT"));
     }, delay);
     timer.unref?.();
-    this.#pending = { pid: event.pid, timer };
+    this.#pending = { pid: event.pid, event, timer };
     return true;
   }
 
@@ -967,6 +1207,39 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
       try {
         input = JSON.parse(line);
       } catch {
+        return;
+      }
+      const check = z
+        .object({
+          schemaVersion: z.literal(1),
+          event: z.literal("startup.replacement-check"),
+          pid: z.number().int().positive(),
+          requestId: z.string().uuid(),
+          allowed: z.boolean(),
+          checkedAtMs: z.number().int().positive(),
+          reason: z.string().min(1).max(256),
+        })
+        .strict()
+        .safeParse(input);
+      if (check.success) {
+        const request = this.#replacementCheck;
+        if (
+          request &&
+          request.child === child &&
+          child === this.#child &&
+          request.requestId === check.data.requestId
+        ) {
+          const now = Date.now();
+          request.finish(
+            check.data.allowed &&
+              check.data.pid === request.event.pid &&
+              this.#pending?.event === request.event &&
+              now <= request.deadlineAtMs &&
+              check.data.checkedAtMs >= request.requestedAtMs &&
+              check.data.checkedAtMs <= now &&
+              now - check.data.checkedAtMs <= 100,
+          );
+        }
         return;
       }
       const ready = MacosStartupListenerReadySchema.safeParse(input);
@@ -1005,6 +1278,9 @@ export class MacosStartupListenerSupervisor implements GoalProgressStartupListen
     });
     child.once("error", () => {
       this.#invalidateChild(child);
+    });
+    lines.once("close", () => {
+      if (this.#replacementCheck?.child === child) this.#replacementCheck.finish(false);
     });
     child.once("close", () => {
       if (child !== this.#child) {

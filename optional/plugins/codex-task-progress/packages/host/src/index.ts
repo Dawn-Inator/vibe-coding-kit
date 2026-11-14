@@ -18,6 +18,7 @@ import {
   requireSingleCodexMacosApp,
 } from "../../../platform/macos/src/index.js";
 import { resolveVerifiedCodexCli } from "../../../platform/macos/src/plugin-controller.js";
+import { readCodexStartupRecoveryPolicy } from "../../../platform/macos/src/startup-recovery-policy.js";
 import {
   type CodexAppServerRuntime,
   createCodexAppServerRuntime,
@@ -382,6 +383,7 @@ export class GoalProgressHelper {
   readonly #startupReattachDelaysMs: readonly number[];
   #startupReattachTimer: ReturnType<typeof setTimeout> | undefined;
   #startupEventSequence = 0;
+  #lastObservedTaskActivityAt = 0;
   readonly #goalUsage = new Map<string, GoalUsageSnapshot>();
   readonly #preparingObjectives = new Map<string, string>();
   readonly #visibleThreadOrderByTarget = new Map<string, VisibleThreadOrder>();
@@ -517,7 +519,7 @@ export class GoalProgressHelper {
     const sequence = ++this.#startupEventSequence;
     if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
     this.#startupReattachTimer = undefined;
-    await this.#log({
+    void this.#log({
       level: "info",
       event: "startup.event",
       pid: event.pid,
@@ -533,15 +535,48 @@ export class GoalProgressHelper {
           code: "STARTUP_HANDLER_UNAVAILABLE",
         };
       } else {
+        let autoPrepare = false;
+        try {
+          autoPrepare = (await readCodexStartupRecoveryPolicy(this.paths)).autoPrepareOnLaunch;
+          if (!autoPrepare)
+            void this.#log({
+              level: "info",
+              event: "startup.recovery",
+              pid: event.pid,
+              code: "STARTUP_RECOVERY_DISABLED",
+            });
+        } catch {
+          void this.#log({
+            level: "warn",
+            event: "startup.recovery",
+            pid: event.pid,
+            code: "STARTUP_RECOVERY_POLICY_INVALID",
+          });
+        }
         response = await this.#startupHandoff.handle(
           event,
-          await hasRecoverableStartupProgress(this.paths, this.#workspaceStorage),
+          autoPrepare || (await hasRecoverableStartupProgress(this.paths, this.#workspaceStorage)),
           {
             isPending: () => this.#startupListener?.isPending(event.pid) === true,
             isStopped: () => this.#server === undefined,
+            allowRestart: autoPrepare,
+            restartStillAllowed: async () => {
+              try {
+                return (await readCodexStartupRecoveryPolicy(this.paths)).autoPrepareOnLaunch;
+              } catch {
+                return false;
+              }
+            },
+            hasObservedTaskActivity: () =>
+              this.#lastObservedTaskActivityAt >= Date.parse(event.launchedAt),
+            canReplaceStartingApp: () =>
+              this.#startupListener?.canReplaceStartingApp?.(event) ?? Promise.resolve(false),
           },
         );
-        if (response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE") {
+        if (
+          response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE" ||
+          response.code === "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE"
+        ) {
           this.#scheduleStartupReattach(event, sequence, 0);
         }
         if (
@@ -2395,6 +2430,7 @@ export class GoalProgressHelper {
   }
 
   async #handleTaskIpc(request: HelperTaskIpcRequest): Promise<GoalProgressIpcHandlerResult> {
+    if (request.method === "task.request") this.#lastObservedTaskActivityAt = Date.now();
     const action = request.params.action;
     const diagnosticStartedAt = performance.now();
     const stageDurations: Partial<Record<TaskDiagnosticStage, number>> = {};
