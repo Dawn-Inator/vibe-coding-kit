@@ -392,6 +392,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
       readonly fault?: "after-current";
       readonly helperReady?: boolean;
       readonly cdpReady?: boolean;
+      readonly lateListener?: boolean;
     } = {},
   ): InstallCommandDependencies => {
     const homeDirectory = join(root, "home");
@@ -445,6 +446,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
       nextStep: value.nextStep ?? null,
       details: value.details ?? {},
     });
+    let readinessCalls = 0;
     const dependencies: InstallCommandDependencies = {
       homeDirectory,
       releaseRoot,
@@ -459,6 +461,8 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         },
       },
       async inspectHelper() {
+        if (options.lateListener)
+          assert.ok(readinessCalls >= 3, "doctor ran before listener readiness");
         const inspection: HelperHealthInspection = {
           ok: true,
           socketPathExists: true,
@@ -481,11 +485,28 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         return inspection;
       },
       async inspectHelperReadiness(_paths, _timeoutMs) {
-        return { pingOk: true, ready: true, code: null };
+        readinessCalls += 1;
+        const { evaluateHelperReadiness } = await import(
+          "../../../platform/macos/src/installed-inspection.js"
+        );
+        const { GOAL_PROGRESS_IPC_PROTOCOL_VERSION } = await import("../../ipc/src/index.js");
+        return evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, {
+          status: "ok",
+          pid: 123,
+          ready: true,
+          startupListener: { running: true, ready: !options.lateListener || readinessCalls >= 3 },
+        });
       },
       async waitForHelperReady(inspect) {
-        const readiness = await inspect(1_000);
-        return (options.helperReady ?? true) && readiness.ready;
+        if (options.helperReady === false) return false;
+        const { waitForHelperReady } = await import("../../../platform/macos/src/helper-wait.js");
+        let now = 0;
+        return waitForHelperReady(inspect, {
+          now: () => now,
+          wait: async (ms) => {
+            now += ms;
+          },
+        });
       },
       async discoverCodex() {
         return codex;
@@ -532,7 +553,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
         startupRecoveryAction: null,
       });
 
-    const noCdp = makeDependencies(v1.releaseRoot, { cdpReady: false });
+    const noCdp = makeDependencies(v1.releaseRoot, { cdpReady: false, lateListener: true });
     const legacyPending = await invoke(noCdp, "install");
     assert.equal(legacyPending.code, "INSTALL_RESTART_REQUIRED");
     const freshLayout = resolveMacosInstallationLayout({
@@ -587,6 +608,7 @@ test("stable installer rolls back transaction faults and upgrades in place", asy
     );
     assert.equal(doctorFailure.ok, false);
     assert.equal(doctorFailure.code, "INSTALL_ROLLED_BACK");
+    assert.ok((doctorFailure.details.doctorFailedChecks as string[]).includes("helperReady"));
     await assert.rejects(fs.lstat(layout.stableHelperPath), { code: "ENOENT" });
     assert.equal(await fs.readlink(layout.currentReleasePath), layout.programReleaseRoot);
     assert.equal(await fs.readFile(layout.launchAgentPath, "utf8"), oldPlist);

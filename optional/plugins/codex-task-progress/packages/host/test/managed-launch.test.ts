@@ -83,6 +83,7 @@ async function fixture(
       events.push("normal");
     },
     ready: async () => ready,
+    alive: async () => false,
     waitReady: async () => {
       events.push("wait");
       return true;
@@ -397,4 +398,71 @@ test("uninstall cleans the owned launcher before plugin and Helper, and preserve
       await rm(home, { recursive: true, force: true });
     }
   }
+});
+
+test("alive Helper with a late listener is awaited without churn", async () =>
+  fixture(async ({ input, events, setReady, running }) => {
+    setReady(false);
+    running.push(processSnapshot);
+    const result = await managedLaunch({
+      ...input,
+      dependencies: { ...input.dependencies, alive: async () => true },
+    });
+    assert.equal(result.changed, false);
+    assert.deepEqual(events, ["wait", "activate"]);
+  }));
+
+test("readiness waits for listener and supports old or listener-free Helper pings", async () => {
+  const { evaluateHelperReadiness } = await import(
+    "../../../platform/macos/src/installed-inspection.js"
+  );
+  const { waitForHelperReady, HELPER_READY_TIMEOUT_MS } = await import(
+    "../../../platform/macos/src/helper-wait.js"
+  );
+  const { GOAL_PROGRESS_IPC_PROTOCOL_VERSION } = await import("../../ipc/src/index.js");
+  const ping = { status: "ok", pid: 10, ready: true };
+  assert.equal(evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, ping).ready, true);
+  assert.equal(
+    evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, {
+      ...ping,
+      startupListener: { running: false, ready: true },
+    }).ready,
+    false,
+  );
+  assert.equal(
+    evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, {
+      ...ping,
+      startupListener: { running: true, ready: false },
+    }).ready,
+    false,
+  );
+  let now = 0,
+    calls = 0;
+  const clock = {
+    now: () => now,
+    wait: async (ms: number) => {
+      now += ms;
+    },
+  };
+  const delayed = await waitForHelperReady(
+    async () =>
+      evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, {
+        ...ping,
+        startupListener: { running: true, ready: ++calls >= 3 },
+      }),
+    clock,
+  );
+  assert.equal(delayed, true);
+  assert.equal(calls, 3);
+  now = 0;
+  const never = await waitForHelperReady(
+    async () =>
+      evaluateHelperReadiness(GOAL_PROGRESS_IPC_PROTOCOL_VERSION, {
+        ...ping,
+        startupListener: { running: true, ready: false },
+      }),
+    clock,
+  );
+  assert.equal(never, false);
+  assert.equal(now, HELPER_READY_TIMEOUT_MS);
 });

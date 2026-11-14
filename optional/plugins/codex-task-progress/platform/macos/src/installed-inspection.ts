@@ -55,6 +55,33 @@ export interface InstalledHookInspection {
   readonly embeddedTrustStateAbsent: boolean;
 }
 
+export function evaluateHelperReadiness(
+  protocolVersion: number,
+  value: unknown,
+): HelperReadinessInspection {
+  const result =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const pingOk =
+    protocolVersion === GOAL_PROGRESS_IPC_PROTOCOL_VERSION &&
+    result.status === "ok" &&
+    Number.isInteger(result.pid);
+  const listener = result.startupListener;
+  const listenerReady =
+    listener === undefined ||
+    (listener !== null &&
+      typeof listener === "object" &&
+      !Array.isArray(listener) &&
+      (listener as Record<string, unknown>).running === true &&
+      (listener as Record<string, unknown>).ready === true);
+  return {
+    pingOk,
+    ready: pingOk && result.ready === true && listenerReady,
+    code: !pingOk ? "HELPER_PING_INVALID" : !listenerReady ? "STARTUP_LISTENER_NOT_READY" : null,
+  };
+}
+
 export async function inspectInstalledHelperReadiness(
   paths: GoalProgressPaths,
   timeoutMs = 1_000,
@@ -65,19 +92,7 @@ export async function inspectInstalledHelperReadiness(
   });
   try {
     const ping = await client.request({ method: "ping", params: {} });
-    const result =
-      ping.result !== null && typeof ping.result === "object"
-        ? (ping.result as Record<string, unknown>)
-        : {};
-    const pingOk =
-      ping.protocolVersion === GOAL_PROGRESS_IPC_PROTOCOL_VERSION &&
-      result.status === "ok" &&
-      Number.isInteger(result.pid);
-    return {
-      pingOk,
-      ready: pingOk && result.ready === true,
-      code: pingOk ? null : "HELPER_PING_INVALID",
-    };
+    return evaluateHelperReadiness(ping.protocolVersion, ping.result);
   } catch (error) {
     return {
       pingOk: false,

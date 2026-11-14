@@ -3092,3 +3092,42 @@ test("failed willLaunch observation does not suppress didLaunch CDP reattachment
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("cheap Helper ping follows late startup listener readiness without requiring CDP", async () => {
+  const { inspectInstalledHelperReadiness } = await import(
+    "../../../platform/macos/src/installed-inspection.js"
+  );
+  const root = await mkdtemp("/tmp/ctph-listener-readiness-");
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  let listenerReady = false;
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    startupListener: {
+      start: () => undefined,
+      health: () => ({ running: true, ready: listenerReady, pid: 42, pendingPid: null }),
+      isPending: () => false,
+      canReplaceStartingApp: async () => false,
+      waitUntilReady: async () => false,
+      stop: async () => undefined,
+    },
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "doctor" });
+  try {
+    await helper.start();
+    const pending = await client.request({ method: "ping", params: {} });
+    assert.deepEqual((pending.result as { startupListener: unknown }).startupListener, {
+      running: true,
+      ready: false,
+    });
+    assert.equal((await inspectInstalledHelperReadiness(paths)).ready, false);
+    listenerReady = true;
+    const ready = await inspectInstalledHelperReadiness(paths);
+    assert.equal(ready.pingOk, true);
+    assert.equal(ready.ready, true);
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});

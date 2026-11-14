@@ -1611,6 +1611,7 @@ export class GoalProgressHelper {
 
   async #handleSystemIpc(request: HelperSystemIpcRequest): Promise<GoalProgressIpcHandlerResult> {
     if (request.method === "ping") {
+      const listener = this.#startupListener?.health();
       return {
         revision: null,
         result: {
@@ -1618,6 +1619,9 @@ export class GoalProgressHelper {
           pid: this.#lock?.identity.pid ?? process.pid,
           instanceId: this.#lock?.identity.instanceId ?? null,
           ready: this.#ready,
+          ...(listener
+            ? { startupListener: { running: listener.running, ready: listener.ready } }
+            : {}),
         },
       };
     }

@@ -39,6 +39,7 @@ export interface ManagedLaunchDependencies {
   readonly activate: (app: CodexMacosAppIdentity) => Promise<void>;
   readonly normal: typeof launchCodexNormally;
   readonly ready: () => Promise<boolean>;
+  readonly alive: () => Promise<boolean>;
   readonly waitReady: () => Promise<boolean>;
   readonly kickstart: (label: string) => Promise<void>;
 }
@@ -74,6 +75,7 @@ export async function managedLaunch(input: {
     },
     normal: launchCodexNormally,
     ready: async () => (await inspectInstalledHelperReadiness(paths)).ready,
+    alive: async () => (await inspectInstalledHelperReadiness(paths)).pingOk,
     waitReady: () =>
       waitForHelperReady((timeout) => inspectInstalledHelperReadiness(paths, timeout)),
     kickstart: async (label) => {
@@ -116,10 +118,12 @@ export async function managedLaunch(input: {
       throw new Error("GOAL_PROGRESS_CODEX_IDENTITY_MISMATCH");
     let changed = false;
     if (!(await deps.ready())) {
-      if (await input.launchAgent.isLoaded(layout.launchAgentLabel))
-        await deps.kickstart(layout.launchAgentLabel);
-      else await input.launchAgent.ensure(layout.launchAgentLabel, layout.launchAgentPath, false);
-      changed = true;
+      if (!(await deps.alive())) {
+        if (await input.launchAgent.isLoaded(layout.launchAgentLabel))
+          await deps.kickstart(layout.launchAgentLabel);
+        else await input.launchAgent.ensure(layout.launchAgentLabel, layout.launchAgentPath, false);
+        changed = true;
+      }
       if (!(await deps.waitReady())) throw new Error("GOAL_PROGRESS_HELPER_NOT_READY");
     }
     const running = await deps.list(app);

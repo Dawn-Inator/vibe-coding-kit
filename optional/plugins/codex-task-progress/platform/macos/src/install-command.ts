@@ -250,6 +250,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
     const releaseBackupPath = `${layout.programReleaseRoot}.rollback-${randomUUID()}`;
     let releaseBackupCreated = false;
     let cdpIdentitySnapshot: FileSnapshot | undefined;
+    let doctorFailedChecks: readonly string[] = [];
     try {
       const cdpInitiallyReady = await dependencies.cdp.verify();
       const cdpChanged = await transaction.step(
@@ -509,20 +510,20 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
             inspectInstalledHook(dependencies.homeDirectory, installManifest),
             dependencies.cdp.verify(),
           ]);
-          if (
-            !jobLoaded ||
-            !helper?.ok ||
-            !helper.startupListenerRunning ||
-            !helper.startupListenerReady ||
-            !pluginInstalled ||
-            !hook.hashMatchesManifest ||
-            !hook.stableCommand ||
-            !hook.userLevelHookAbsent ||
-            !hook.embeddedTrustStateAbsent ||
-            (!cdpReadyNow && !connectionRebuildPending)
-          ) {
-            throw new Error("GOAL_PROGRESS_INSTALL_DOCTOR_FAILED");
-          }
+          doctorFailedChecks = [
+            ...(!jobLoaded ? ["launchAgentLoaded"] : []),
+            ...(!helperReady ? ["helperReady"] : []),
+            ...(!helper?.ok ? ["helperHealth"] : []),
+            ...(!helper?.startupListenerRunning ? ["startupListenerRunning"] : []),
+            ...(!helper?.startupListenerReady ? ["startupListenerReady"] : []),
+            ...(!pluginInstalled ? ["pluginInstalled"] : []),
+            ...(!hook.hashMatchesManifest ? ["hookHash"] : []),
+            ...(!hook.stableCommand ? ["hookCommand"] : []),
+            ...(!hook.userLevelHookAbsent ? ["userHookAbsent"] : []),
+            ...(!hook.embeddedTrustStateAbsent ? ["embeddedTrustAbsent"] : []),
+            ...(!cdpReadyNow && !connectionRebuildPending ? ["cdpReady"] : []),
+          ];
+          if (doctorFailedChecks.length > 0) throw new Error("GOAL_PROGRESS_INSTALL_DOCTOR_FAILED");
           return { changed: false, value: undefined };
         },
         async () => undefined,
@@ -646,6 +647,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
           : `Run goal-progress restore --json --restart-codex, then inspect ${layout.installRoot}.`,
         details: {
           errorCode: stableErrorCode(error),
+          ...(doctorFailedChecks.length > 0 ? { doctorFailedChecks } : {}),
           partialState,
           rollback,
           previousRelease: currentTarget,
