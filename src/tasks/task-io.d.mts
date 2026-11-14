@@ -1,3 +1,5 @@
+/** Whether an exact-mode private path still needs chmod for ownership enforcement. */
+export function privateModeNeedsChmod(info: { mode: number; uid?: number }, mode: number, uid?: number): boolean;
 /** Ensure a private directory exists with owner-only permissions. */
 export function ensurePrivateDirectory(path: string): Promise<void>;
 /** Atomically replace a file with private, durable contents. */

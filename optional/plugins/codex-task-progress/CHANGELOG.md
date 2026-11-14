@@ -1,3 +1,7 @@
+# Task Progress 0.5.6
+
+- Avoid redundant permission updates for private directories that already have the expected ownership and mode, preventing unnecessary filesystem watcher events; mismatched permissions are repaired and operating-system ownership checks remain enforced.
+
 # Task Progress 0.5.5
 
 - Keep the last valid same-scope project Heartbeat summary and history visible while refresh is pending; clear the view when a new scope has no verified snapshot.

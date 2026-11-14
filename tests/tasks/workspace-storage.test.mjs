@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { createTaskProgressSchemas } from '../../src/tasks/task-contract.mjs';
 import { TaskStore, TaskStoreError, taskMarkdownPaths } from '../../src/tasks/task-store.mjs';
 import { WorkspaceTaskStorage } from '../../src/tasks/workspace-storage.mjs';
+import { HeartbeatDiscoveryIndex, discoverHeartbeatLedgerSources } from '../../src/tasks/heartbeat-task-source.mjs';
+import { appendDurableLine, atomicCreateFile, atomicWriteFile, ensurePrivateDirectory, privateModeNeedsChmod } from '../../src/tasks/task-io.mjs';
 import { writeMarkdownRecords } from '../../src/tasks/markdown-records.mjs';
 
 const schemas = createTaskProgressSchemas(z);
@@ -219,4 +221,69 @@ test('recovery rejects mismatched app directory hashes and duplicate managed pay
   const valid = await readFile(paths.history, 'utf8');
   await writeFile(paths.history, `${valid}\n${valid}`);
   assert.equal(await manager(app).hasRecoverableTasks(), false);
+});
+
+
+test('private permission helpers leave exact modes unchanged and repair incorrect modes', async () => {
+  const { root } = await setup();
+  const dir = resolve(root, 'private');
+  const file = resolve(dir, 'existing');
+  await ensurePrivateDirectory(dir);
+  await writeFile(file, 'original', { mode: 0o600 });
+  const beforeDir = await stat(dir, { bigint: true });
+  const beforeFile = await stat(file, { bigint: true });
+  await ensurePrivateDirectory(dir);
+  assert.equal(await atomicCreateFile(file, 'replacement'), false);
+  assert.equal((await stat(dir, { bigint: true })).ctimeNs, beforeDir.ctimeNs);
+  assert.equal((await stat(file, { bigint: true })).ctimeNs, beforeFile.ctimeNs);
+  assert.equal(await readFile(file, 'utf8'), 'original');
+  for (const mode of [0o755, 0o1700]) {
+    await chmod(dir, mode);
+    await ensurePrivateDirectory(dir);
+    assert.equal((await stat(dir)).mode & 0o7777, 0o700);
+  }
+  await chmod(file, 0o644);
+  await appendDurableLine(file, 'line');
+  assert.equal((await stat(file)).mode & 0o7777, 0o600);
+  await atomicWriteFile(file, 'replacement');
+  assert.equal((await stat(file)).mode & 0o7777, 0o600);
+});
+
+test('reopening existing chat contexts does not invalidate the shared discovery index', async () => {
+  const { cwd, app } = await setup();
+  const first = manager(app);
+  const a = await first.forThread('chat-a', cwd);
+  const b = await first.forThread('chat-b', cwd);
+  await a.ensureWritable(); await b.ensureWritable();
+  await initialize(a.taskStore, 'chat-a', 'A');
+  await initialize(b.taskStore, 'chat-b', 'B');
+  first.close();
+  let scans = 0;
+  const index = new HeartbeatDiscoveryIndex({
+    async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
+  });
+  try {
+    await index.discover({ root: cwd, threadId: 'chat-a' });
+    const before = await index.generation(cwd);
+    if (before === null) return; // Recursive watch is unavailable on this platform.
+    const resumed = manager(app);
+    await resumed.forThread('chat-a', cwd);
+    await resumed.forThread('chat-b', cwd);
+    // Give the native watcher an opportunity to deliver metadata events.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await index.discover({ root: cwd, threadId: 'chat-b' });
+    assert.equal(await index.generation(cwd), before);
+    assert.equal(scans, 1);
+  } finally { index.close(); }
+});
+
+
+test('private mode no-op preserves ownership checks and special permission bits', () => {
+  const owner = { mode: 0o040700, uid: 501 };
+  assert.equal(privateModeNeedsChmod(owner, 0o700, 501), false);
+  assert.equal(privateModeNeedsChmod(owner, 0o700, 502), true);
+  assert.equal(privateModeNeedsChmod(owner, 0o700, 0), false);
+  assert.equal(privateModeNeedsChmod(owner, 0o700, undefined), false);
+  assert.equal(privateModeNeedsChmod({ ...owner, mode: 0o041700 }, 0o700, 501), true);
+  assert.equal(privateModeNeedsChmod({ ...owner, mode: 0o040755 }, 0o700, 501), true);
 });

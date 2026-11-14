@@ -1,12 +1,26 @@
 // Adapted from https://github.com/Dawn-Inator/codex-task-progress; see src/tasks/LICENSE.
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
+import { chmod, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
+// Preserve chmod's ownership enforcement even when the mode already matches.
+// Platforms without UID semantics retain their existing mode-only behavior.
+export function privateModeNeedsChmod(info, mode, uid) {
+	return (info.mode & 0o7777) !== mode ||
+		(uid !== undefined && uid !== 0 && info.uid !== uid);
+}
+
+// Avoid changing ctime or emitting filesystem events only when ownership and
+// permissions already permit the same result as chmod.
+async function chmodIfNeeded(path, mode) {
+	const info = await stat(path);
+	if (privateModeNeedsChmod(info, mode, process.getuid?.())) await chmod(path, mode);
+}
+
 export async function ensurePrivateDirectory(path) {
 	const firstCreated = await mkdir(path, { recursive: true, mode: 0o700 });
-	await chmod(path, 0o700);
+	await chmodIfNeeded(path, 0o700);
 	if (firstCreated) {
 		const firstCreatedPath = resolve(firstCreated);
 		let current = resolve(path);
@@ -57,7 +71,7 @@ export async function atomicWriteFile(path, contents, faults = {}) {
 		}
 		await faults.beforeRename?.();
 		await rename(temporaryPath, path);
-		await chmod(path, 0o600);
+		await chmodIfNeeded(path, 0o600);
 		await syncDirectory(directory);
 	} catch (error) {
 		await unlink(temporaryPath).catch(() => undefined);
@@ -158,7 +172,7 @@ export async function appendDurableLine(path, line) {
 		file = await open(path, "a", 0o600);
 	}
 	try {
-		await chmod(path, 0o600);
+		await chmodIfNeeded(path, 0o600);
 		if (created) {
 			await file.sync();
 			await syncDirectory(directory);

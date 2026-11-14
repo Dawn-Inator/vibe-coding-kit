@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Task Progress 0.5.5 is in progress; it is not an official Codex extension API.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Version 0.5.5 is installed locally; the next release is 0.5.6. This is not an official Codex extension API.
 
 The 44px capsule stays docked and centered at the top of the chat, reserves layout space, and shows progress along its lower curved edge. Click it to expand the real task's modules (`objectives`), then click a module to inspect its nodes (`items`), statuses and evidence. Each module has its own progress bar. Clicking a module does not add a black outline, while keyboard focus remains available. The two 40px round buttons open task History and the project's read-only Heartbeat; only one panel opens at a time. History and Heartbeat records retain their paginated data sources. Unfinished tasks appear in reverse original checklist-addition order at the top; completed tasks remain in stable order at the bottom. These display choices do not rewrite records. The panel does not allow horizontal scrolling or dragging; any saved floating-placement preference from an older version is ignored. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
 
@@ -14,7 +14,9 @@ While the same-scope project Heartbeat refresh is pending, the panel keeps its l
 
 Kit's `WorkspaceTaskStorage` owns the `HeartbeatDiscoveryIndex` shared across chat services and project display. The index reuses bounded discovery by canonical project and scan scope only while its recursive watcher is live. Writes can force a fresh scan; watcher errors/closure or unsupported recursive watching drop protected discovery and fall back to a fresh scan. Automatic discovery skips `.tmp`; explicit `.tmp` sources are read fresh. Candidate selection uses canonical summary parsing, with full audit only on the selected candidate. File/depth limits, nested-Git and symlink boundaries, and exact-thread association are preserved. Normalization and CPU guarding remain call-local; shared cache state does not guarantee zero I/O.
 
-Cold source validation can still take seconds; no 0.5.5 live MCP timing is recorded yet.
+Cold source validation can still take seconds.
+
+Version 0.5.6 avoids redundant permission updates when private directories already have the expected ownership and mode, reducing unnecessary filesystem watcher events. Mismatched permissions are repaired, and operating-system ownership checks remain enforced.
 
 Bounded Kit Heartbeat discovery memoizes the canonical project root and Git-boundary checks for one scan, then discards that memo before the next scan. Configured file/depth limits, nested-Git and symlink boundaries, and exact-thread association behavior are preserved.
 
