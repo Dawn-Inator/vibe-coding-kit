@@ -723,18 +723,81 @@ export async function evaluateGoalProgressPageBundle(
   bundleInput: GoalProgressRendererBundle,
 ): Promise<void> {
   const bundle = assertGoalProgressRendererBundle(bundleInput);
-  await sender.send("Runtime.evaluate", {
+  const evaluated = await sender.send("Runtime.evaluate", {
     expression: bundle.source,
     awaitPromise: true,
     returnByValue: true,
   });
+  // Runtime.evaluate can succeed at the protocol level while JavaScript throws.
+  // Only fixed classifications and numeric positions may enter logs: exception
+  // descriptions can contain arbitrary application or conversation content.
+  const exception = z
+    .object({
+      exceptionDetails: z
+        .object({
+          lineNumber: z.number().int().min(0).max(999999).optional(),
+          columnNumber: z.number().int().min(0).max(999999).optional(),
+          exception: z
+            .object({ className: z.string().optional(), description: z.string().optional() })
+            .passthrough()
+            .optional(),
+        })
+        .passthrough(),
+    })
+    .passthrough()
+    .safeParse(evaluated);
+  if (exception.success) {
+    const details = exception.data.exceptionDetails;
+    const className = details.exception?.className ?? "";
+    const knownClass = [
+      "TypeError",
+      "ReferenceError",
+      "SyntaxError",
+      "RangeError",
+      "NotSupportedError",
+      "Error",
+    ].includes(className)
+      ? className.toUpperCase()
+      : "OTHER";
+    const description = details.exception?.description ?? "";
+    const category = /already (?:been )?(?:registered|defined)/iu.test(description)
+      ? "ALREADY_REGISTERED"
+      : "REDACTED";
+    throw new GoalProgressPageError(
+      `GOAL_PROGRESS_PAGE_BUNDLE_EXCEPTION_${knownClass}_${category}_L${details.lineNumber ?? 0}_C${details.columnNumber ?? 0}`,
+    );
+  }
+  if (evaluated && typeof evaluated === "object" && "exceptionDetails" in evaluated) {
+    throw new GoalProgressPageError("GOAL_PROGRESS_PAGE_BUNDLE_EXCEPTION_OTHER_REDACTED");
+  }
   const installed = await sender.send("Runtime.evaluate", {
     expression: `globalThis.__CODEX_GOAL_PROGRESS__?.version === ${GOAL_PROGRESS_PAGE_HOST_VERSION} && globalThis.__CODEX_GOAL_PROGRESS__?.releaseVersion === ${JSON.stringify(GOAL_PROGRESS_RELEASE_VERSION)}`,
     awaitPromise: true,
     returnByValue: true,
   });
   if (!GoalProgressBundleInstalledSchema.safeParse(installed).success) {
-    throw new GoalProgressPageError("GOAL_PROGRESS_PAGE_BUNDLE_UNAVAILABLE");
+    // Report only an owned host's bounded numeric versions. Never stringify a
+    // foreign global or call its methods while diagnosing a failed install.
+    const proof = await sender
+      .send("Runtime.evaluate", {
+        expression: `(() => { const g = globalThis.__CODEX_GOAL_PROGRESS__; if (!g) return "ABSENT"; if (g.namespace !== "codex-task-progress") return "FOREIGN"; const v = Number.isSafeInteger(g.version) && g.version > 0 && g.version < 1000000 ? String(g.version) : "UNKNOWN"; const r = typeof g.releaseVersion === "string" && /^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/.test(g.releaseVersion) ? g.releaseVersion.replaceAll(".", "_") : "UNKNOWN"; return "OWNED_V" + v + "_R" + r; })()`,
+        returnByValue: true,
+      })
+      .catch(() => null);
+    const parsed = z
+      .object({
+        result: z.object({
+          value: z
+            .string()
+            .regex(
+              /^(?:ABSENT|FOREIGN|OWNED_V(?:[0-9]{1,6}|UNKNOWN)_R(?:[0-9]{1,3}_[0-9]{1,3}_[0-9]{1,3}|UNKNOWN))$/u,
+            ),
+        }),
+      })
+      .safeParse(proof);
+    throw new GoalProgressPageError(
+      `GOAL_PROGRESS_PAGE_BUNDLE_UNAVAILABLE_${parsed.success ? parsed.data.result.value : "PROOF_FAILED"}`,
+    );
   }
 }
 

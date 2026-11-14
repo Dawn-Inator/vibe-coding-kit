@@ -14,8 +14,12 @@ import rendererBundlePolicy from "../../contracts/src/renderer-bundle-policy.jso
 import { inspectGoalProgressRuntime } from "../../host/src/helper-doctor.js";
 import { RendererTargetManager } from "../../host/src/renderer-target-manager.js";
 import { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../ipc/src/index.js";
-import { discoverCodexCdp, isCodexRendererPageUrl } from "../src/cdp.js";
-import { GOAL_PROGRESS_PAGE_HOST_VERSION } from "../src/page-host.js";
+import {
+  discoverCodexCdp,
+  evaluateGoalProgressPageBundle,
+  isCodexRendererPageUrl,
+} from "../src/cdp.js";
+import { GOAL_PROGRESS_PAGE_HOST_VERSION, installGoalProgressPageHost } from "../src/page-host.js";
 import {
   GoalProgressRendererBridge,
   TASK_PROGRESS_RENDERER_DELIVERY_MARGIN_MS,
@@ -619,5 +623,170 @@ test("target doctor reports bounded per-window task diagnostics without changing
     await assert.rejects(manager.doctor(), /private path/);
   } finally {
     await manager.close();
+  }
+});
+
+test("bundle evaluation reports bounded exceptions and never leaks page text", async () => {
+  const source = "/* diagnostic test */";
+  const bundle = createGoalProgressRendererBundle(source, {
+    schemaVersion: 1,
+    releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
+    pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION,
+    file: "goal-progress.js",
+    bytes: Buffer.byteLength(source),
+    sha256: createHash("sha256").update(source).digest("hex"),
+  });
+  for (const [response, expected] of [
+    [
+      {
+        exceptionDetails: {
+          lineNumber: 7,
+          columnNumber: 9,
+          exception: { className: "TypeError", description: "private chat content" },
+        },
+      },
+      "GOAL_PROGRESS_PAGE_BUNDLE_EXCEPTION_TYPEERROR_REDACTED_L7_C9",
+    ],
+    [
+      {
+        exceptionDetails: {
+          lineNumber: 1,
+          columnNumber: 2,
+          exception: {
+            className: "NotSupportedError",
+            description: "already been registered private chat content",
+          },
+        },
+      },
+      "GOAL_PROGRESS_PAGE_BUNDLE_EXCEPTION_NOTSUPPORTEDERROR_ALREADY_REGISTERED_L1_C2",
+    ],
+    [
+      { exceptionDetails: { lineNumber: -1 } },
+      "GOAL_PROGRESS_PAGE_BUNDLE_EXCEPTION_OTHER_REDACTED",
+    ],
+  ] as const) {
+    await assert.rejects(
+      evaluateGoalProgressPageBundle(
+        {
+          async send() {
+            return response;
+          },
+        },
+        bundle,
+      ),
+      (error: Error) => {
+        assert.equal(error.message, expected);
+        assert.ok(!error.message.includes("private"));
+        return true;
+      },
+    );
+  }
+});
+
+test("bundle version mismatch reports only bounded owned identity", async () => {
+  const source = "/* diagnostic mismatch */";
+  const bundle = createGoalProgressRendererBundle(source, {
+    schemaVersion: 1,
+    releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
+    pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION,
+    file: "goal-progress.js",
+    bytes: Buffer.byteLength(source),
+    sha256: createHash("sha256").update(source).digest("hex"),
+  });
+  for (const [proof, suffix] of [
+    ["OWNED_V72_R0_5_4", "OWNED_V72_R0_5_4"],
+    ["FOREIGN", "FOREIGN"],
+    ["private chat content", "PROOF_FAILED"],
+  ] as const) {
+    let calls = 0;
+    await assert.rejects(
+      evaluateGoalProgressPageBundle(
+        {
+          async send() {
+            calls++;
+            return { result: { value: calls === 2 ? false : calls === 3 ? proof : undefined } };
+          },
+        },
+        bundle,
+      ),
+      new RegExp(`^GoalProgressPageError: GOAL_PROGRESS_PAGE_BUNDLE_UNAVAILABLE_${suffix}$`),
+    );
+  }
+});
+
+test("owned legacy goal host is unmounted once and replaced while foreign and newer hosts remain untouched", () => {
+  let unmounts = 0;
+  const old = {
+    namespace: "codex-task-progress",
+    version: GOAL_PROGRESS_PAGE_HOST_VERSION - 1,
+    releaseVersion: "0.5.4",
+    unmount() {
+      unmounts++;
+    },
+  };
+  const target = { document: {}, __CODEX_GOAL_PROGRESS__: old } as unknown as Parameters<
+    typeof installGoalProgressPageHost
+  >[0];
+  const replacement = installGoalProgressPageHost(target);
+  assert.equal(unmounts, 1);
+  assert.equal(replacement?.version, GOAL_PROGRESS_PAGE_HOST_VERSION);
+  assert.equal(replacement?.releaseVersion, GOAL_PROGRESS_RELEASE_VERSION);
+  assert.equal(target.__CODEX_GOAL_PROGRESS__, replacement);
+  assert.equal(installGoalProgressPageHost(target), replacement);
+  assert.equal(unmounts, 1);
+
+  for (const protectedHost of [
+    { ...old, namespace: "foreign" },
+    { ...old, version: GOAL_PROGRESS_PAGE_HOST_VERSION + 1 },
+  ]) {
+    const protectedTarget = {
+      document: {},
+      __CODEX_GOAL_PROGRESS__: protectedHost,
+    } as unknown as Parameters<typeof installGoalProgressPageHost>[0];
+    assert.equal(installGoalProgressPageHost(protectedTarget), null);
+    assert.equal(protectedTarget.__CODEX_GOAL_PROGRESS__, protectedHost);
+  }
+  assert.equal(unmounts, 1);
+});
+
+test("mismatch proof expression identifies a legacy owned host without exposing foreign data", async () => {
+  const source = "/* proof expression test */";
+  const bundle = createGoalProgressRendererBundle(source, {
+    schemaVersion: 1,
+    releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
+    pageHostVersion: GOAL_PROGRESS_PAGE_HOST_VERSION,
+    file: "goal-progress.js",
+    bytes: Buffer.byteLength(source),
+    sha256: createHash("sha256").update(source).digest("hex"),
+  });
+  for (const [host, suffix] of [
+    [
+      { namespace: "codex-task-progress", version: 72, releaseVersion: "0.5.4" },
+      "OWNED_V72_R0_5_4",
+    ],
+    [{ namespace: "foreign", version: 72, releaseVersion: "private chat" }, "FOREIGN"],
+    [
+      { namespace: "codex-task-progress", version: 72, releaseVersion: "private chat" },
+      "OWNED_V72_RUNKNOWN",
+    ],
+  ] as const) {
+    let calls = 0;
+    await assert.rejects(
+      evaluateGoalProgressPageBundle(
+        {
+          async send(_method, params) {
+            calls++;
+            if (calls === 1) return { result: { value: undefined } };
+            const expression = (params as { expression: string }).expression;
+            return {
+              result: { value: runInNewContext(expression, { __CODEX_GOAL_PROGRESS__: host }) },
+            };
+          },
+        },
+        bundle,
+      ),
+      new RegExp(`^GoalProgressPageError: GOAL_PROGRESS_PAGE_BUNDLE_UNAVAILABLE_${suffix}$`),
+    );
+    assert.equal(calls, 3);
   }
 });
