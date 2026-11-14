@@ -1,3 +1,7 @@
+# Task Progress 0.5.8
+
+- Use the release-bundled Kit task and Heartbeat APIs by default instead of implicitly loading a personal Kit checkout. Explicit project Kit paths/pins and configured fallback paths remain supported; this changes API resolution only, not task or Heartbeat storage formats.
+
 # Task Progress 0.5.7
 
 - Restrict background startup recovery checks to Helper-owned recoverability hints. A hint only authorizes attempting recovery; after trusted chat identity is established, canonical task files are read and validated normally.

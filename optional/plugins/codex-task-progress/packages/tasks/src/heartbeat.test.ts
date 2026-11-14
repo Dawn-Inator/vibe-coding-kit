@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -11,7 +12,8 @@ import {
   truncate,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -897,6 +899,71 @@ test("associated ledger projects a read-only Kit task without changing source te
     assert.equal(projected.task?.objectives[0]?.status, "blocked");
     assert.equal(await readFile(f.source, "utf8"), original);
   } finally {
+    await f.close();
+  }
+});
+
+test("fresh projects use bundled inspection without probing a developer checkout", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "bundled-inspection"), { refreshMs: 0 });
+  const developerRoot = resolve(homedir(), "Workspace/Project/vibe-coding-kit");
+  const originalStat = fs.promises.stat;
+  const probes: string[] = [];
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    fs.promises.stat = (async (...args: unknown[]) => {
+      if (typeof args[0] === "string" && args[0].startsWith(developerRoot)) probes.push(args[0]);
+      return Reflect.apply(originalStat, fs.promises, args);
+    }) as typeof originalStat;
+    syncBuiltinESMExports();
+    const view = await service.view("chat-A", f.project);
+    assert.equal(view?.status, "ready");
+    assert.equal(view?.items[0]?.item, "test");
+    assert.deepEqual(probes, []);
+  } finally {
+    fs.promises.stat = originalStat;
+    syncBuiltinESMExports();
+    service.close();
+    await f.close();
+  }
+});
+
+test("project-configured and explicit fallback inspectors retain priority over the bundle", async () => {
+  const f = await fixture();
+  const project = new HeartbeatService(resolve(f.root, "project-inspection"), { refreshMs: 0 });
+  const fallback = new HeartbeatService(resolve(f.root, "fallback-inspection"), {
+    fallbackKitPath: f.kitPath,
+    refreshMs: 0,
+  });
+  const pinned = new HeartbeatService(resolve(f.root, "pinned-project-inspection"), {
+    refreshMs: 0,
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    await writeFile(
+      resolve(f.project, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { kitPath: f.kitPath } }),
+    );
+    const selected = await project.view("chat-A", f.project);
+    assert.equal(selected?.status, "ready");
+    assert.equal(selected?.items[0]?.item, "test item");
+    await rm(resolve(f.project, ".codex-task-progress.json"));
+    const explicit = await fallback.view("chat-A", f.project);
+    assert.equal(explicit?.status, "ready");
+    assert.equal(explicit?.items[0]?.item, "test item");
+    const pinnedPath = resolve(
+      f.project,
+      ".vibe-coding/kit/src/supervision/heartbeat-ledger-api.mjs",
+    );
+    await mkdir(resolve(pinnedPath, ".."), { recursive: true });
+    await writeFile(pinnedPath, await readFile(f.kitPath, "utf8"));
+    const pinnedView = await pinned.view("chat-A", f.project);
+    assert.equal(pinnedView?.status, "ready");
+    assert.equal(pinnedView?.items[0]?.item, "test item");
+  } finally {
+    project.close();
+    fallback.close();
+    pinned.close();
     await f.close();
   }
 });

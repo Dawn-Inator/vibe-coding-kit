@@ -9,6 +9,7 @@ import type {
   HeartbeatWake,
   InspectHeartbeatLedgerOptions,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import { inspectHeartbeatLedger as bundledHeartbeatInspector } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type { HeartbeatTaskState } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { z } from "zod";
@@ -795,18 +796,11 @@ export class HeartbeatService {
   }
 
   async #inspector(root: string, config: ProjectConfig): Promise<Inspector> {
-    const fallback =
-      this.#options.fallbackKitPath === undefined
-        ? resolve(
-            homedir(),
-            "Workspace/Project/vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs",
-          )
-        : this.#options.fallbackKitPath;
     const paths = [
       this.#options.kitPath,
       config.heartbeat?.kitPath && resolve(root, config.heartbeat.kitPath),
       resolve(root, ".vibe-coding/kit/src/supervision/heartbeat-ledger-api.mjs"),
-      fallback,
+      this.#options.fallbackKitPath,
     ].filter((p): p is string => Boolean(p));
     for (const path of paths) {
       const info = await stat(path).catch(() => null);
@@ -818,6 +812,7 @@ export class HeartbeatService {
       if (typeof module.inspectHeartbeatLedger === "function")
         return module.inspectHeartbeatLedger as Inspector;
     }
+    if (this.#options.fallbackKitPath === undefined) return bundledHeartbeatInspector;
     throw new Error(
       "Kit heartbeat API unavailable. Configure heartbeat.kitPath in .codex-task-progress.json.",
     );

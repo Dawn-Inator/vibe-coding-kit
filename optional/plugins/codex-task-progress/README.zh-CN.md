@@ -2,6 +2,8 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
+0.5.8 默认使用发布包内置的 Kit 任务与 Heartbeat API，不会隐式探测个人全局 Kit checkout。明确配置的项目 Kit 路径/固定版本或 fallback 路径仍可覆盖默认值；`fallbackKitPath: null` 可禁用 fallback。此改动仅影响 API 解析，不改变任务或 Heartbeat 存储格式。
+
 0.5.6 避免对所有权和权限已符合要求的私有目录重复设置权限，从而减少不必要的文件系统 watcher 事件。权限不匹配时仍会修复，操作系统所有权检查仍会执行。
 
 0.5.7 后台启动检查只读取 Helper 自有的可恢复性提示；提示仅决定是否尝试恢复，不提供任务内容或权威来源。建立可信聊天身份后，恢复流程仍通过 Kit 正常读取和校验该聊天的规范任务文件。不会扫描任意工作区，也不会用提示代替文件校验。Kit 会复用已安装的 Task Progress，不询问签名或重装；需新安装时，交互式流程只请求一次对合格本地证书的明确确认，非交互流程则返回 `setup-required` 和操作命令。`--check` 只读展示签名状态与证书候选；`--configure-signing --identity <指纹>` 会验证并仅私下保存选择，不构建、不签名、不安装、不重启 Codex。以后本地构建复用保存的身份，但不保证 macOS 对受保护目录的授权跨版本继承；TCC 可能按可执行文件的物理版本路径保存授权，跨升级继承尚未验证。此流程不创建证书、不导出私钥或授予隐私权限。macOS 本地构建可优先通过 `GOAL_PROGRESS_CODESIGN_IDENTITY` 指定签名身份，或使用应用支持目录下符合 `{ "schemaVersion": 1, "identity": "..." }` 的 `release-signing.json`；`GOAL_PROGRESS_CODESIGN_CONFIG` 可指定绝对配置路径，显式配置无效时必须失败关闭。未配置身份时保留 ad-hoc 签名并提示 macOS 可能重复询问权限。Apple Development 签名仅用于本地开发，并非 Developer ID 或公开公证发布。首次访问受 macOS 保护的目录需要用户批准；不自动授权、不修改或重置 TCC 数据库，也不默认要求 Full Disk Access。Helper 和 listener 标识固定为 `com.codextaskprogress.helper`、`com.codextaskprogress.listener`。

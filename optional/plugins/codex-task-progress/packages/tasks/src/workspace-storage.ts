@@ -1,5 +1,4 @@
 import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveTaskProgressStorage } from "vibe-coding-kit/src/contracts/task-progress-storage.mjs";
@@ -68,7 +67,6 @@ export class WorkspaceTaskStorage {
       const contractCandidates = this.#options.kitPaths ?? [
         resolve(cwd, ".vibe-coding/kit"),
         ...(configured ? [configured] : []),
-        resolve(homedir(), "Workspace/Project/vibe-coding-kit"),
       ];
       for (const candidate of contractCandidates) {
         const absolute = resolve(cwd, candidate);

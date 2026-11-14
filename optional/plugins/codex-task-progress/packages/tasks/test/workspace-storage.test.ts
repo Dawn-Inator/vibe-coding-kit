@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -11,7 +12,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, test } from "node:test";
 import { TaskStore, TaskStoreError } from "../src/task-store.js";
@@ -265,4 +267,26 @@ test("default Kit resolver honors project-local Kit and configured heartbeat kit
     (await router.forThread("configured-kit-chat", configuredKitCwd)).storage.contractSource,
     canonicalConfiguredContract,
   );
+});
+
+test("default workspace contract uses bundled Kit without probing a developer checkout", async () => {
+  const { cwd, legacy } = await setup();
+  const developerRoot = resolve(homedir(), "Workspace/Project/vibe-coding-kit");
+  const originalStat = fs.promises.stat;
+  const probes: string[] = [];
+  const router = new WorkspaceTaskStorage(legacy);
+  managers.push(router);
+  try {
+    fs.promises.stat = (async (...args: unknown[]) => {
+      if (typeof args[0] === "string" && args[0].startsWith(developerRoot)) probes.push(args[0]);
+      return Reflect.apply(originalStat, fs.promises, args);
+    }) as typeof originalStat;
+    syncBuiltinESMExports();
+    const context = await router.forThread("fresh", cwd);
+    assert.equal(context.storage.contractSource, "pinned-vibe-coding-kit");
+    assert.deepEqual(probes, []);
+  } finally {
+    fs.promises.stat = originalStat;
+    syncBuiltinESMExports();
+  }
 });
