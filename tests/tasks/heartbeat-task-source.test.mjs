@@ -921,7 +921,7 @@ test("bound-only discovery enforces symlink, nested Git, companion, and exact as
 });
 
 
-test("watch filtering ignores unrelated regular code content, including untracked files and pending scans", async () => {
+test("watch filtering ignores unrelated regular code content but retries conservatively during replacement scans", async () => {
 	const root = projectRoot();
 	const code = join(root, "source.ts");
 	writeFileSync(code, "first");
@@ -935,7 +935,10 @@ test("watch filtering ignores unrelated regular code content, including untracke
 		async scanFactory(options) {
 			scans++;
 			const operation = discoverHeartbeatLedgerSources(options);
-			if (inject) queueMicrotask(() => { writeFileSync(code, "updated"); changed("change", "source.ts"); });
+			if (inject) {
+				inject = false;
+				queueMicrotask(() => { writeFileSync(code, "updated"); changed("change", "source.ts"); });
+			}
 			return operation;
 		},
 	});
@@ -956,14 +959,14 @@ test("watch filtering ignores unrelated regular code content, including untracke
 		assert.equal(scans, 1);
 		inject = true;
 		await index.discover({ root, threadId: THREAD }, { force: true });
-		assert.equal(scans, 2, "unrelated pending content changes must not restart the scan");
+		assert.equal(scans, 3, "replacement scans cannot rely on the invalidated snapshot's proof");
 		inject = false;
 		changed("rename", "source.ts");
 		await index.discover({ root });
-		assert.equal(scans, 3, "rename remains conservative");
+		assert.equal(scans, 4, "rename remains conservative");
 		changed("change", null);
 		await index.discover({ root });
-		assert.equal(scans, 4, "unknown filenames remain conservative");
+		assert.equal(scans, 5, "unknown filenames remain conservative");
 	} finally { index.close(); }
 });
 
@@ -1044,4 +1047,45 @@ test("watch filtering fails closed when scan metadata is unavailable", async () 
 		await index.discover({ root });
 		assert.equal(scans, 2);
 	} finally { index.close(); }
+});
+
+
+test("new Markdown hardlink changed through its non-Markdown alias invalidates an in-flight replacement scan", async () => {
+	const root = projectRoot();
+	const alias = join(root, "alias.ts");
+	const head = join(root, "heartbeat.md");
+	const content = `${ledger([["I", "source", "one", "done", "", "[]"]])}\nthread: ${THREAD}\n`;
+	writeFileSync(alias, content);
+	let changed;
+	let scans = 0;
+	let holdNext = false;
+	let markScanned;
+	let releaseScan;
+	const scanned = new Promise((resolve) => { markScanned = resolve; });
+	const release = new Promise((resolve) => { releaseScan = resolve; });
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			scans++;
+			const report = await discoverHeartbeatLedgerSources(options);
+			if (holdNext) { holdNext = false; markScanned(); await release; }
+			return report;
+		},
+	});
+	try {
+		assert.equal((await index.discover({ root, threadId: THREAD })).candidates.length, 0);
+		linkSync(alias, head);
+		changed("rename", "heartbeat.md");
+		holdNext = true;
+		const pending = index.discover({ root, threadId: THREAD });
+		await scanned;
+		writeFileSync(alias, content.replace(THREAD, "other-thread"));
+		changed("change", "alias.ts");
+		releaseScan();
+		const result = await pending;
+		assert.equal(scans, 3);
+		assert.equal(result.candidates[0]?.path, head);
+		assert.equal(result.candidates[0]?.associated, false);
+	} finally { releaseScan(); index.close(); }
 });

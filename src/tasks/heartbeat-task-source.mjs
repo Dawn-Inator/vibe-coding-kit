@@ -313,6 +313,11 @@ export class HeartbeatDiscoveryIndex {
 	#invalidate(entry) {
 		entry.epoch++;
 		entry.value = null;
+		// Filtering proof describes the previous snapshot only. A new source
+		// can appear while a replacement scan is in flight, so no prior inode or
+		// directory evidence may suppress events until that scan commits.
+		entry.observedDirectories = null;
+		entry.sourceIdentities = null;
 		this.#versions.set(entry.root, ++this.#sequence);
 	}
 	#drop(key, entry) {
