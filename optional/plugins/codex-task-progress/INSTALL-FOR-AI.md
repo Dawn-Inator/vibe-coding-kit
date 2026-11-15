@@ -1,6 +1,6 @@
 # Install Task Progress 0.7.5
 
-Version 0.7.5 gives source discovery a 200 ms GET response budget. A pending response does not expose a local task, and subsequent requests share ongoing discovery. The native panel uses bounded, non-overlapping follow-ups to pick up the result and stops them when hidden or disposed. Writes still perform the full source-authority check; internal host reads reuse the verified session identity. Verify first-content behavior in the actual host: cold projects cannot be guaranteed to display within one second.
+In version 0.7.5, a response while source discovery is pending does not expose a local task, and subsequent requests share ongoing discovery. The native panel uses bounded, non-overlapping follow-ups to pick up the result and stops them when hidden or disposed. Writes still perform the full source-authority check; internal host reads reuse the verified session identity. Verify first-content behavior in the actual host: cold projects cannot be guaranteed to display within one second.
 
 This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 

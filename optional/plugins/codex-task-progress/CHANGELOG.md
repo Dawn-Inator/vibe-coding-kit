@@ -1,6 +1,6 @@
 # Task Progress 0.7.5
 
-- GET gives source discovery a 200 ms response budget. If discovery remains pending, it does not expose a local task; ongoing discovery is shared across requests rather than restarted. Writes continue to perform the full source-authority check.
+- While source discovery is pending, GET does not expose a local task; ongoing discovery is shared across requests rather than restarted. Writes continue to perform the full source-authority check.
 - During a pending native panel load, retry with bounded follow-ups at 150, 250, 500 and 1000 ms, then every 5 seconds. Requests do not overlap, and retries stop when the panel is hidden or disposed.
 - Reuse the verified session identity in the internal host to avoid a second app-server read; authentication information logging no longer blocks the response.
 - Preserve compatible older Heartbeat resource addresses, exact session identity checks and existing storage formats.

@@ -1400,7 +1400,7 @@ export class GoalProgressHelper {
     let heartbeatPending = false;
     if (action === "get")
       sourceTask = await measureStage("task-projection", () =>
-        heartbeatService.taskProjection(threadId, cwd, { maxWaitMs: 200 }),
+        heartbeatService.taskProjection(threadId, cwd),
       );
     else {
       [sourceTask, heartbeat] = await Promise.all([
@@ -1508,15 +1508,11 @@ export class GoalProgressHelper {
       );
     } else {
       if (action === "get") {
-        if (sourceTask.status === "pending") {
-          heartbeatPending = true;
-        } else {
-          const snapshot = await measureStage("project-view-snapshot", () =>
-            heartbeatService.projectViewSnapshot(cwd),
-          );
-          heartbeat = snapshot.view;
-          heartbeatPending = snapshot.pending;
-        }
+        const snapshot = await measureStage("project-view-snapshot", () =>
+          heartbeatService.projectViewSnapshot(cwd),
+        );
+        heartbeat = snapshot.view;
+        heartbeatPending = snapshot.pending;
       }
       localTaskRead = !(
         sourceTask.sourcePath ||
