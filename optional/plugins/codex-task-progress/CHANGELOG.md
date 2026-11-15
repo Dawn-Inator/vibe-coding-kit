@@ -1,3 +1,7 @@
+# Task Progress 0.7.2
+
+- Reuse the History description row in the Heartbeat header, with the same shared padding and title spacing plus breathing room below the heading.
+
 # Task Progress 0.7.1
 
 - Unify header padding, title-to-content spacing, and typography across the Task, History, and Heartbeat views.

@@ -204,6 +204,83 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       }
       await context.close();
     });
+    await t.test(
+      "History and Heartbeat keep matching title-to-content breathing room in both locales",
+      async () => {
+        await mkdir(".playwright-img", { recursive: true });
+        for (const width of [1100, 390]) {
+          for (const { locale, expected } of [
+            {
+              locale: "en-US",
+              expected: {
+                history: "Task changes and their recorded evidence.",
+                heartbeat: "Agent activity and tasks that need attention.",
+              },
+            },
+            {
+              locale: "zh-CN",
+              expected: {
+                history: "任务变更与已记录的依据。",
+                heartbeat: "Agent 活动与需要关注的任务。",
+              },
+            },
+          ]) {
+            const { context, page, panel } = await open("", {
+              viewport: { width, height: 850 },
+              locale,
+              reducedMotion: "reduce",
+            });
+            await page.evaluate(
+              (value) => {
+                window.fixture.task = value.task;
+                window.fixture.heartbeat = value.heartbeat;
+                return window.__CODEX_TASK_PROGRESS__.refresh();
+              },
+              { task, heartbeat },
+            );
+            const distances = {};
+            for (const view of ["history", "heartbeat"]) {
+              const trigger = panel.locator(
+                view === "history" ? ".history-trigger" : ".heartbeat-trigger",
+              );
+              if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+              const subtitle = panel.locator(".panel-head .panel-subtitle");
+              await subtitle.waitFor();
+              assert.equal(await subtitle.innerText(), expected[view]);
+              const layout = await panel.evaluate((element) => {
+                const root = element.shadowRoot;
+                const title = root.querySelector(".panel-title").getBoundingClientRect();
+                const subtitleRect = root.querySelector(".panel-subtitle").getBoundingClientRect();
+                const content = root
+                  .querySelector(".scroll")
+                  .firstElementChild.getBoundingClientRect();
+                return {
+                  titleBottom: title.bottom,
+                  subtitleBottom: subtitleRect.bottom,
+                  subtitleHeight: subtitleRect.height,
+                  contentTop: content.top,
+                };
+              });
+              assert.ok(layout.subtitleHeight > 0, `${view} description is visible at ${width}px`);
+              assert.ok(
+                layout.subtitleBottom <= layout.contentTop,
+                `${view} content starts after its full description at ${width}px`,
+              );
+              distances[view] = layout.contentTop - layout.titleBottom;
+              assert.ok(distances[view] > 0, `${view} has space after its title at ${width}px`);
+              await panel.locator(".body").screenshot({
+                path: `.playwright-img/${view}-header-${locale}-${width}.png`,
+              });
+            }
+            assert.ok(
+              Math.abs(distances.history - distances.heartbeat) <= 1,
+              `History and Heartbeat title-to-content spacing should match at ${width}px (${locale}): ${JSON.stringify(distances)}`,
+            );
+            await context.close();
+          }
+        }
+      },
+    );
     await t.test("view headers and content regions share spacing at both widths", async () => {
       for (const width of [1100, 390]) {
         const { context, page, panel } = await open("", { viewport: { width, height: 850 } });

@@ -1,4 +1,4 @@
-# Install Task Progress 0.7.1
+# Install Task Progress 0.7.2
 
 This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 
@@ -24,8 +24,9 @@ heartbeat writer; installation and the read-only panel create no parallel record
 
 The signed production Helper embeds its matching panel asset, including when a chat retains an older launcher
 root. Source runtime uses its pinned runtime assets; embedding is for the production SEA only. After upgrading,
-close and reopen the Task Progress tab to load the new panel, without restarting Codex. Verify actual panel
-visibility and data independently of `doctor` or `verify`.
+if the native view looks stale, reopen the affected chat or switch to another chat and back to let the host
+refresh its MCP catalog/resource. Closing and reopening the panel tab alone may not refresh it. Do not restart
+Codex. Verify actual panel visibility and data independently of `doctor` or `verify`.
 
 ## Build and checks
 
@@ -39,7 +40,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.7.1`. The native UI resource URI is versioned from the release version constant. The signed production Helper retains its embedded matching panel asset, including when a chat uses an older launcher root; the source runtime continues to use its pinned runtime assets. The strict read-only resource template accepts compatible older Heartbeat panel addresses from 0.5.16 through the current release and resolves them to the current embedded HTML; only the current release URI is advertised. If the host still shows the old registered resource, close and reopen or Retry the ordinary Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Actual native host compatibility still needs verification. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.7.2`. The native UI resource URI is versioned from the release version constant. The signed production Helper retains its embedded matching panel asset, including when a chat uses an older launcher root; the source runtime continues to use its pinned runtime assets. The strict read-only resource template accepts compatible older Heartbeat panel addresses from 0.5.16 through the current release and resolves them to the current embedded HTML; only the current release URI is advertised. If the host still shows the old registered resource or stale layout, reopen the affected chat or switch away to another chat and return so the host can refresh its MCP catalog/resource. Closing and reopening the panel tab alone may not refresh it. Do not restart Codex. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Actual native host compatibility still needs verification.
 
 ## Signing and protected folders
 

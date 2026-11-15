@@ -1,8 +1,8 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.7.1. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.7.2. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
 
-Version 0.6.2 introduced immutable MCP UI resources with versioned URIs derived from the release version constant. Since 0.6.7, compatible older Heartbeat panel addresses, including the legacy `panel-v1` and 0.6.3 address, resolve to the same current embedded HTML asset; only the current release URI is advertised. If the host still shows the old registered panel, close and reopen or Retry the Task Progress tab; do not restart Codex. These resource changes do not alter authentication, task authority, canonical data formats or Kit APIs.
+Version 0.6.2 introduced immutable MCP UI resources with versioned URIs derived from the release version constant. Since 0.6.7, compatible older Heartbeat panel addresses, including the legacy `panel-v1` and 0.6.3 address, resolve to the same current embedded HTML asset; only the current release URI is advertised. If the native view still looks stale after an update, reopen the chat or switch to another chat and back so the host can refresh its MCP catalog/resource. Closing and reopening the panel tab alone may not refresh it. Do not restart Codex. These resource changes do not alter authentication, task authority, canonical data formats or Kit APIs.
 
 ## Native panel
 
@@ -21,8 +21,10 @@ heartbeat writer, and the plugin only reads them.
 
 In 0.7.0, a strict read-only resource template accepts compatible Heartbeat panel addresses from releases
 0.5.16 through the current release and serves the current matching panel HTML, while advertising only the
-current release URI. If the host retains an older URI after upgrade, close and reopen or Retry the ordinary
-panel tab; do not restart Codex. Actual native host acceptance still needs verification.
+current release URI. If the host retains an older URI or displays stale panel spacing after upgrade, reopen
+the chat or switch away to another chat and return so the host can refresh its MCP catalog/resource; closing
+and reopening the panel tab alone may not refresh it. Do not restart Codex. Actual native host acceptance
+still needs verification.
 
 In 0.6.6, the project Heartbeat summary uses two outlined white timecards. The left card contains the latest
 recorded date; the next-time card shows the actual time or “Not recorded” when the value is unknown. The
@@ -31,8 +33,9 @@ panels.
 
 The 0.6.5 signed production Helper uses its embedded matching panel asset even when an older chat launcher
 root remains in use. The source runtime continues to use its pinned runtime assets; embedding applies to the
-production SEA. After upgrading, close and reopen the Task Progress tab to load the new panel; do not restart
-Codex. Verify actual panel visibility and data separately from Helper health.
+production SEA. If the native panel appears stale after an update, use the chat refresh guidance above;
+closing and reopening the panel tab alone may not refresh the host. Do not restart Codex. Verify actual panel
+visibility and data separately from Helper health.
 
 ## Installation and validation
 
