@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   GOAL_NATIVE_OBJECTIVE_MAX_LENGTH,
@@ -34,6 +35,7 @@ import {
 } from "../../tasks/src/task-types.js";
 import { completeInitialization, GoalProgressInitializeBusinessSchema } from "./initialization.js";
 import {
+  isCompatibleTaskProgressPanelResourceUri,
   loadNativePanelHtml,
   type NativePanelHtmlLoader,
   TASK_PROGRESS_PANEL_RESOURCE_URI,
@@ -661,38 +663,51 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     return ipcClient;
   };
   const loadPanelHtml = options.nativePanelHtmlLoader ?? loadNativePanelHtml;
+  const readPanelResource = async (uri: URL) => ({
+    contents: [
+      {
+        uri: uri.href,
+        mimeType: "text/html;profile=mcp-app",
+        text: await loadPanelHtml(),
+        _meta: {
+          ui: {
+            csp: {
+              connectDomains: [],
+              resourceDomains: [],
+              baseUriDomains: [],
+              frameDomains: [],
+            },
+            permissions: {},
+          },
+          "openai/ui": {
+            availableDisplayModes: ["inline", "fullscreen"],
+            preferredDisplayMode: "fullscreen",
+          },
+        },
+      },
+    ],
+  });
+  const panelResourceMetadata = {
+    title: "Task Progress Panel",
+    description: "Static, packaged UI for the current chat's task progress.",
+    mimeType: "text/html;profile=mcp-app",
+  };
   server.registerResource(
     "task-progress-panel",
     TASK_PROGRESS_PANEL_RESOURCE_URI,
-    {
-      title: "Task Progress Panel",
-      description: "Static, packaged UI for the current chat's task progress.",
-      mimeType: "text/html;profile=mcp-app",
+    panelResourceMetadata,
+    readPanelResource,
+  );
+  server.registerResource(
+    "task-progress-panel-compatibility",
+    new ResourceTemplate("ui://codex-task-progress/{panel}.html", { list: undefined }),
+    panelResourceMetadata,
+    async (uri) => {
+      if (!isCompatibleTaskProgressPanelResourceUri(uri.href)) {
+        throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
+      }
+      return readPanelResource(uri);
     },
-    async (uri) => ({
-      contents: [
-        {
-          uri: uri.href,
-          mimeType: "text/html;profile=mcp-app",
-          text: await loadPanelHtml(),
-          _meta: {
-            ui: {
-              csp: {
-                connectDomains: [],
-                resourceDomains: [],
-                baseUriDomains: [],
-                frameDomains: [],
-              },
-              permissions: {},
-            },
-            "openai/ui": {
-              availableDisplayModes: ["inline", "fullscreen"],
-              preferredDisplayMode: "fullscreen",
-            },
-          },
-        },
-      ],
-    }),
   );
   const resolveToolIdentity = (
     toolName: string,

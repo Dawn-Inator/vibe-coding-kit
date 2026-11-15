@@ -1,3 +1,7 @@
+# Task Progress 0.6.7
+
+- Keep native panel requests working when a host retains a compatible older resource URI: the strict read-only resource template accepts Heartbeat panel addresses from releases 0.5.16 through the current release and resolves them to the current embedded panel HTML, while only the current release URI is advertised. After upgrading, close and reopen or Retry the ordinary panel tab if needed; do not restart Codex. Actual host acceptance remains to be verified.
+
 # Task Progress 0.6.6
 
 - Present project Heartbeat summaries as two outlined white timecards: the latest recorded date appears inside the left card, and the next time shows its actual value or “Not recorded” when unknown. Remove the filename footer and shared gray background; retain theme adaptation, RTL layout, and narrow-panel compatibility.

@@ -14,6 +14,7 @@ import {
 import { createGoalProgressMcpServer } from "./index.js";
 import {
   createTaskProgressPanelResourceUri,
+  isCompatibleTaskProgressPanelResourceUri,
   loadNativePanelHtml,
   TASK_PROGRESS_PANEL_RESOURCE_URI,
 } from "./native-panel-resource.js";
@@ -100,14 +101,27 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.deepEqual(initializeMetadata?.ui?.visibility, ["model"]);
     assert.equal(initializeMetadata?.["openai/widgetAccessible"], undefined);
     const resources = await client.listResources();
-    assert.ok(
-      resources.resources.some((resource) => resource.uri === TASK_PROGRESS_PANEL_RESOURCE_URI),
+    assert.deepEqual(
+      resources.resources.map((resource) => resource.uri),
+      [TASK_PROGRESS_PANEL_RESOURCE_URI],
+      "only the current panel URI is listed; compatibility aliases stay hidden",
+    );
+    const resourceTemplates = await client.listResourceTemplates();
+    assert.deepEqual(
+      resourceTemplates.resourceTemplates,
+      [],
+      "the compatibility resource template is not listed to clients",
     );
     const panelResource = await client.readResource({
       uri: TASK_PROGRESS_PANEL_RESOURCE_URI,
     });
     assert.equal(panelResource.contents[0]?.mimeType, "text/html;profile=mcp-app");
     assert.ok(panelResource.contents[0] && "text" in panelResource.contents[0]);
+    const currentPanelHtml =
+      panelResource.contents[0] && "text" in panelResource.contents[0]
+        ? panelResource.contents[0].text
+        : undefined;
+    assert.ok(currentPanelHtml);
     if (panelResource.contents[0] && "text" in panelResource.contents[0]) {
       assert.match(panelResource.contents[0].text, /Task Progress Panel/);
       const contentMetadata = panelResource.contents[0]._meta as
@@ -135,6 +149,31 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       assert.equal(contentMetadata?.["openai/ui"]?.preferredDisplayMode, "fullscreen");
       assert.equal(contentMetadata?.["openai/ui"]?.entrypoints, undefined);
       assert.equal(contentMetadata?.["openai/ui"]?.displayModes, undefined);
+    }
+    const compatiblePanelUris = [
+      "ui://codex-task-progress/panel-0.6.3.html",
+      "ui://codex-task-progress/panel-0.6.1.html",
+      "ui://codex-task-progress/panel-v1.html",
+    ];
+    for (const uri of compatiblePanelUris) {
+      const compatiblePanel = await client.readResource({ uri });
+      assert.equal(compatiblePanel.contents.length, 1);
+      const content = compatiblePanel.contents[0];
+      assert.ok(content && "text" in content);
+      if (!content || !("text" in content)) continue;
+      assert.equal(content.uri, uri, "the requested compatibility URI is preserved");
+      assert.equal(content.mimeType, "text/html;profile=mcp-app");
+      assert.equal(content.text, currentPanelHtml, "compatibility reads serve current HTML");
+      const compatibilityMetadata = content._meta as
+        | { ui?: { csp?: Record<string, unknown>; permissions?: Record<string, unknown> } }
+        | undefined;
+      assert.deepEqual(compatibilityMetadata?.ui?.csp, {
+        connectDomains: [],
+        resourceDomains: [],
+        baseUriDomains: [],
+        frameDomains: [],
+      });
+      assert.deepEqual(compatibilityMetadata?.ui?.permissions, {});
     }
     assert.ok(initialize);
     assert.equal(initialize.inputSchema.additionalProperties, false);
@@ -398,6 +437,54 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("native panel resource URI compatibility accepts only shipped same-origin versions", () => {
+  const [major, minor, patch] = GOAL_PROGRESS_RELEASE_VERSION.split(".").map(Number);
+  assert.ok(Number.isInteger(major) && Number.isInteger(minor) && Number.isInteger(patch));
+  const futureVersion = `${major}.${minor}.${patch + 1}`;
+  const accepted = [
+    "ui://codex-task-progress/panel-v1.html",
+    "ui://codex-task-progress/panel-0.5.16.html",
+    "ui://codex-task-progress/panel-0.6.1.html",
+    "ui://codex-task-progress/panel-0.6.3.html",
+    TASK_PROGRESS_PANEL_RESOURCE_URI,
+  ];
+  for (const uri of accepted) {
+    assert.equal(isCompatibleTaskProgressPanelResourceUri(uri), true, uri);
+  }
+
+  const rejected = [
+    "ui://other-host/panel-0.6.3.html",
+    "ui://codex-task-progress/other-0.6.3.html",
+    "ui://codex-task-progress/panel-0.6.3.html?query=1",
+    "ui://codex-task-progress/panel-0.6.3.html#fragment",
+    "ui://codex-task-progress/panel-0.6.3.0.html",
+    "ui://codex-task-progress/panel-0.06.3.html",
+    "ui://codex-task-progress/panel-0.6.03.html",
+    "ui://codex-task-progress/panel-0.5.15.html",
+    `ui://codex-task-progress/panel-${futureVersion}.html`,
+    "ui://codex-task-progress/panel-0.6.3-beta.1.html",
+    "ui://codex-task-progress/panel-0.6.3.html/extra",
+    "ui://codex-task-progress/panel-0.6.3.html%2Fextra",
+    "ui://codex-task-progress/../codex-task-progress/panel-0.6.3.html",
+  ];
+  for (const uri of rejected) {
+    assert.equal(isCompatibleTaskProgressPanelResourceUri(uri), false, uri);
+  }
+  assert.equal(
+    isCompatibleTaskProgressPanelResourceUri(
+      "ui://codex-task-progress/panel-0.6.3.html",
+      "0.6.6-rc.1",
+    ),
+    false,
+    "invalid current versions fail closed",
+  );
+  assert.equal(
+    isCompatibleTaskProgressPanelResourceUri("ui://codex-task-progress/panel-0.6.3.html", "0.06.6"),
+    false,
+    "zero-padded current versions fail closed",
+  );
 });
 
 test("native identity never downgrades partial Hook or turn metadata", () => {
