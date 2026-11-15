@@ -481,23 +481,27 @@ test("SEA native panel loader uses the embedded release asset and fails closed",
     process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT = source;
     const sea = {
       isSea: () => true,
-      getAsset: (key: string) => {
+      getAsset: (key: string, encoding: "utf8") => {
         assert.equal(key, "task-progress-panel.html");
-        return Buffer.from("embedded-0.6.5");
+        assert.equal(encoding, "utf8");
+        return "embedded-0.6.5";
       },
     };
     assert.equal(await loadNativePanelHtml(stalePlugin, sea), "embedded-0.6.5");
     await assert.rejects(
       loadNativePanelHtml(stalePlugin, {
         isSea: () => true,
-        getAsset: () => {
+        getAsset: (_key: string, _encoding: "utf8") => {
           throw new Error("asset missing");
         },
       }),
       /asset missing/u,
     );
     assert.equal(
-      await loadNativePanelHtml(stalePlugin, { isSea: () => false, getAsset: () => "unused" }),
+      await loadNativePanelHtml(stalePlugin, {
+        isSea: () => false,
+        getAsset: () => "unused",
+      }),
       "source-runtime",
     );
   } finally {

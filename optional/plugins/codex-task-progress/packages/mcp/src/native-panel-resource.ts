@@ -19,12 +19,13 @@ export type NativePanelHtmlLoader = () => Promise<string>;
 
 export interface NativePanelSeaRuntime {
   isSea(): boolean;
-  getAsset(key: string): Buffer | string;
+  getAsset(key: string, encoding: "utf8"): string;
 }
 
 /**
- * Read the packaged static panel document. The root is supplied by the plugin
- * launcher; no MCP request argument can select a filesystem path.
+ * SEA helpers read the exact release asset embedded at build time. Outside SEA,
+ * the plugin launcher or source runtime supplies the asset root; no MCP request
+ * argument can select a filesystem path.
  */
 export async function loadNativePanelHtml(
   pluginRoot = process.env.GOAL_PROGRESS_PLUGIN_ROOT,
@@ -33,8 +34,7 @@ export async function loadNativePanelHtml(
   if (seaRuntime.isSea()) {
     // A packaged helper must serve the exact panel shipped with its release.
     // Never fall back to a host plugin tree that may belong to another version.
-    const embedded = seaRuntime.getAsset(TASK_PROGRESS_PANEL_SEA_ASSET_KEY);
-    return Buffer.isBuffer(embedded) ? embedded.toString("utf8") : embedded;
+    return seaRuntime.getAsset(TASK_PROGRESS_PANEL_SEA_ASSET_KEY, "utf8");
   }
   const sourceRuntimeRoot = process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
   const resourcePath = sourceRuntimeRoot
