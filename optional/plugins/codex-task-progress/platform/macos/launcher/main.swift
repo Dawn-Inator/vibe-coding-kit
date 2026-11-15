@@ -429,6 +429,29 @@ private struct DockRestorePlan {
   }
 }
 
+private enum CommittedInstallState {
+  case notApplicable
+  case intact
+  case userEdited
+}
+
+// Repeated installs must recognize only a committed canonical installation.
+// Validate its recorded managed tiles through the same restore comparison used
+// by uninstall, while leaving unrelated vendor pins outside that ownership set.
+private func committedInstallState(before: [[String: Any]], managedPath: String, receipt: [String: Any]?) -> CommittedInstallState {
+  guard URL(fileURLWithPath: managedPath).lastPathComponent == "Codex.app",
+        let receipt,
+        receipt["managedAppPath"] as? String == managedPath,
+        receipt["pendingMigration"] == nil,
+        receipt["pendingTransaction"] == nil else { return .notApplicable }
+  guard receipt["schemaVersion"] as? Int == 1,
+        let installed = receipt["installedEntries"] as? [[String: Any]], !installed.isEmpty,
+        receipt["installedPositions"] is [Int] else { return .userEdited }
+  let managedNow = before.filter { isTile($0, bundle: managedBundleID, path: managedPath) }
+  guard !managedNow.isEmpty else { return .userEdited }
+  return DockRestorePlan(before: before, managedPath: managedPath, receipt: receipt).keepManagedApp ? .userEdited : .intact
+}
+
 private func comparableManagedTile(_ entry: [String: Any], managedPath: String) -> [String: Any] {
   var clone = entry
   guard var tile = tileData(entry) else { return clone }
@@ -725,6 +748,14 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
       catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
     emit(["ok": true, "code": "DOCK_MIGRATED", "changed": true, "dockConfigured": true])
   }
+  switch committedInstallState(before: before, managedPath: managedPath, receipt: existingReceipt) {
+  case .intact:
+    emit(["ok": true, "code": "DOCK_ALREADY_CONFIGURED", "changed": false, "dockConfigured": true])
+  case .userEdited:
+    error("DOCK_USER_EDIT_PRESERVED", "The committed managed Dock tile changed; install left the Dock and receipt untouched.")
+  case .notApplicable:
+    break
+  }
   if before.contains(where: { isTile($0, bundle: managedBundleID, path: legacyPath) }) && legacyPath != managedPath {
     error("DOCK_RECEIPT_INVALID", "Legacy managed tile requires its original migration receipt.")
   }
@@ -884,19 +915,27 @@ private func dockFixtureTransaction(_ options: [String: String]) -> Never {
     after = plan.entries
     finalReceipt = plan.receipt
   } else if operation == "install" {
-    let plan = DockInstallPlan(before: current, originalPath: original, managedPath: managed)
-    after = plan.entries
-    if receipt == nil || !plan.originalEntries.isEmpty {
-      let installedPairs = after.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: managed) }
-      let oldOriginals = receipt?["originalEntries"] as? [[String: Any]] ?? []
-      let oldPositions = receipt?["originalPositions"] as? [Int] ?? []
-      finalReceipt = [
-        "schemaVersion": 1, "originalEntries": oldOriginals + plan.originalEntries,
-        "originalPositions": oldPositions + plan.originalPositions,
-        "installedEntries": (receipt?["installedEntries"] as? [[String: Any]] ?? []) + (receipt == nil ? installedPairs.map(\.element) : plan.originalPositions.map { after[$0] }),
-        "installedPositions": (receipt?["installedPositions"] as? [Int] ?? []) + (receipt == nil ? installedPairs.map(\.offset) : plan.originalPositions),
-        "managedAppPath": managed,
-      ]
+    switch committedInstallState(before: current, managedPath: managed, receipt: receipt) {
+    case .intact:
+      after = current
+      finalReceipt = receipt
+    case .userEdited:
+      error("DOCK_USER_EDIT_PRESERVED", "The committed managed Dock tile changed; install left the Dock and receipt untouched.")
+    case .notApplicable:
+      let plan = DockInstallPlan(before: current, originalPath: original, managedPath: managed)
+      after = plan.entries
+      if receipt == nil || !plan.originalEntries.isEmpty {
+        let installedPairs = after.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: managed) }
+        let oldOriginals = receipt?["originalEntries"] as? [[String: Any]] ?? []
+        let oldPositions = receipt?["originalPositions"] as? [Int] ?? []
+        finalReceipt = [
+          "schemaVersion": 1, "originalEntries": oldOriginals + plan.originalEntries,
+          "originalPositions": oldPositions + plan.originalPositions,
+          "installedEntries": (receipt?["installedEntries"] as? [[String: Any]] ?? []) + (receipt == nil ? installedPairs.map(\.element) : plan.originalPositions.map { after[$0] }),
+          "installedPositions": (receipt?["installedPositions"] as? [Int] ?? []) + (receipt == nil ? installedPairs.map(\.offset) : plan.originalPositions),
+          "managedAppPath": managed,
+        ]
+      }
     }
   } else if operation == "remove" {
     guard let receipt, receipt["managedAppPath"] as? String == managed else { error("DOCK_RECEIPT_INVALID") }

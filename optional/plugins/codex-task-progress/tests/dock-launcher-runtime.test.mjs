@@ -1196,6 +1196,75 @@ test("shared native Dock transaction fixture resumes each interruption without d
       "a completed install retry must not churn Dock preferences",
     );
 
+    const vendorRepinned = join(root, "Completed install with vendor repinned.plist");
+    const repinVendor = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture",
+        "--plist",
+        completedDock,
+        "--original-app",
+        originalApp,
+        "--managed-app",
+        managedApp,
+        "--output-plist",
+        vendorRepinned,
+        "--append-original",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(repinVendor, "repin the vendor app beside the completed managed app");
+    const beforeOwnedInstallRetry = inspectDockFixture(
+      nativeBinary,
+      vendorRepinned,
+      "inspect vendor repin before completed install retry",
+    );
+    const ownedInstallRetryDock = join(root, "Completed install vendor repin retry.plist");
+    const ownedInstallRetryReceipt = join(
+      root,
+      "Completed install vendor repin retry receipt.plist",
+    );
+    const ownedInstallRetry = transaction(
+      "install",
+      vendorRepinned,
+      completedReceipt,
+      ownedInstallRetryDock,
+      ownedInstallRetryReceipt,
+    );
+    assertNativeSuccess(
+      ownedInstallRetry.result,
+      "retry intact completed managed install with vendor repinned",
+    );
+    assert.equal(ownedInstallRetry.value.ok, true);
+    assert.equal(ownedInstallRetry.value.reloadCount, 0);
+    assert.equal(ownedInstallRetry.value.receiptRetained, true);
+    const afterOwnedInstallRetry = inspectDockFixture(
+      nativeBinary,
+      ownedInstallRetryDock,
+      "inspect vendor repin after completed install retry",
+    );
+    assert.deepEqual(
+      afterOwnedInstallRetry,
+      beforeOwnedInstallRetry,
+      "an intact committed install receipt must preserve an extra vendor Dock pin",
+    );
+    assert.equal(
+      afterOwnedInstallRetry.persistentApps.filter(
+        (entry) => entry.bundleId === "com.codextaskprogress.codexlauncher",
+      ).length,
+      beforeOwnedInstallRetry.persistentApps.filter(
+        (entry) => entry.bundleId === "com.codextaskprogress.codexlauncher",
+      ).length,
+      "a completed install retry must not add duplicate managed tiles",
+    );
+    assert.equal(
+      afterOwnedInstallRetry.persistentApps.filter((entry) => entry.bookmarkPath === originalApp)
+        .length,
+      1,
+      "the user-repinned vendor app should remain in the Dock",
+    );
+
     const pendingDock = join(root, "User edit pending Dock.plist");
     const pendingReceipt = join(root, "User edit pending receipt.plist");
     const stage = transaction("install", seed, null, pendingDock, pendingReceipt, ["--dock-only"]);
