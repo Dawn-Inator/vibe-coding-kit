@@ -208,11 +208,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       for (const width of [1100, 390]) {
         const { context, page, panel } = await open("", { viewport: { width, height: 850 } });
         await page.emulateMedia({ reducedMotion: "reduce" });
-        await page.evaluate(({ task, heartbeat }) => {
-          window.fixture.task = task;
-          window.fixture.heartbeat = heartbeat;
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        }, { task, heartbeat });
+        await page.evaluate(
+          ({ task, heartbeat }) => {
+            window.fixture.task = task;
+            window.fixture.heartbeat = heartbeat;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { task, heartbeat },
+        );
         const measurements = [];
         for (const view of ["tasks", "history", "heartbeat"]) {
           await showView(panel, view);
@@ -224,32 +227,44 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             });
             assert.deepEqual(style, { margin: "0px 0px 8px", radius: "999px" });
           }
-          measurements.push(await panel.evaluate((element) => {
-            const root = element.shadowRoot;
-            const head = root.querySelector(".panel-head");
-            const kicker = root.querySelector(".panel-kicker");
-            const heading = root.querySelector(".panel-heading");
-            const title = root.querySelector(".panel-title");
-            const scroll = root.querySelector(".scroll");
-            const first = scroll.firstElementChild;
-            const body = root.querySelector(".body");
-            const headStyle = getComputedStyle(head);
-            return {
-              padding: [headStyle.paddingTop, headStyle.paddingRight, headStyle.paddingBottom, headStyle.paddingLeft],
-              kickerGap: getComputedStyle(kicker).gap,
-              kickerBottom: getComputedStyle(kicker).marginBottom,
-              headingGap: getComputedStyle(heading).gap,
-              titleSize: getComputedStyle(title).fontSize,
-              kickerInset: kicker.getBoundingClientRect().left - body.getBoundingClientRect().left,
-              titleInset: title.getBoundingClientRect().left - body.getBoundingClientRect().left,
-              contentInset: first.getBoundingClientRect().left - body.getBoundingClientRect().left,
-              contentGap: first.getBoundingClientRect().top - head.getBoundingClientRect().bottom,
-            };
-          }));
+          measurements.push(
+            await panel.evaluate((element) => {
+              const root = element.shadowRoot;
+              const head = root.querySelector(".panel-head");
+              const kicker = root.querySelector(".panel-kicker");
+              const heading = root.querySelector(".panel-heading");
+              const title = root.querySelector(".panel-title");
+              const scroll = root.querySelector(".scroll");
+              const first = scroll.firstElementChild;
+              const body = root.querySelector(".body");
+              const headStyle = getComputedStyle(head);
+              return {
+                padding: [
+                  headStyle.paddingTop,
+                  headStyle.paddingRight,
+                  headStyle.paddingBottom,
+                  headStyle.paddingLeft,
+                ],
+                kickerGap: getComputedStyle(kicker).gap,
+                kickerBottom: getComputedStyle(kicker).marginBottom,
+                headingGap: getComputedStyle(heading).gap,
+                titleSize: getComputedStyle(title).fontSize,
+                kickerInset:
+                  kicker.getBoundingClientRect().left - body.getBoundingClientRect().left,
+                titleInset: title.getBoundingClientRect().left - body.getBoundingClientRect().left,
+                contentInset:
+                  first.getBoundingClientRect().left - body.getBoundingClientRect().left,
+                contentGap: first.getBoundingClientRect().top - head.getBoundingClientRect().bottom,
+              };
+            }),
+          );
         }
         assert.deepEqual(measurements[1], measurements[0], `history spacing at ${width}px`);
         assert.deepEqual(measurements[2], measurements[0], `heartbeat spacing at ${width}px`);
-        assert.deepEqual(measurements[0].padding, width > 450 ? ["19px", "20px", "14px", "20px"] : ["16px", "15px", "13px", "15px"]);
+        assert.deepEqual(
+          measurements[0].padding,
+          width > 450 ? ["19px", "20px", "14px", "20px"] : ["16px", "15px", "13px", "15px"],
+        );
         assert.equal(measurements[0].titleSize, width > 450 ? "17px" : "15px");
         assert.equal(measurements[0].kickerGap, "7px");
         assert.equal(measurements[0].kickerBottom, "9px");
