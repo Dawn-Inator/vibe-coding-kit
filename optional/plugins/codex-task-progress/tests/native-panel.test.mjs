@@ -211,7 +211,7 @@ test("native panel MCP Apps integration", async (t) => {
               accent: (() => {
                 const probe = document.createElement("span");
                 probe.style.color = "var(--ctp-accent)";
-                element.append(probe);
+                element.shadowRoot.append(probe);
                 const color = getComputedStyle(probe).color;
                 probe.remove();
                 return color;
@@ -248,10 +248,16 @@ test("native panel MCP Apps integration", async (t) => {
           await frame.locator(".hb-status[data-status=ready]").waitFor();
           const heartbeatColor = await frame.locator("codex-task-panel").evaluate((element) => {
             const status = element.shadowRoot.querySelector(".hb-status[data-status='ready']");
-            return getComputedStyle(status).color;
+            return {
+              status: getComputedStyle(status).color,
+              muted: getComputedStyle(element.shadowRoot.querySelector(".hb-refresh")).color,
+              certification: status.getAttribute("data-certification"),
+            };
           });
           assert.equal(historyColor, taskColors.percent);
-          assert.equal(heartbeatColor, taskColors.percent);
+          assert.equal(heartbeatColor.certification, "current-unknown");
+          assert.equal(heartbeatColor.status, heartbeatColor.muted);
+          assert.notEqual(heartbeatColor.status, "rgb(0, 128, 0)");
         }, `?theme=${theme}`);
       }
     });
@@ -283,7 +289,7 @@ test("native panel MCP Apps integration", async (t) => {
                   accent: (() => {
                     const probe = document.createElement("span");
                     probe.style.color = "var(--ctp-accent)";
-                    element.append(probe);
+                    element.shadowRoot.append(probe);
                     const color = getComputedStyle(probe).color;
                     probe.remove();
                     return color;

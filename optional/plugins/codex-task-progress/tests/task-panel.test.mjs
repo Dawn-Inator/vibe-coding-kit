@@ -365,10 +365,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await panel.getByRole("button", { name: "加载更早心跳" }).click();
           await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 4);
           const historyError = panel
-            .locator(".hb-history details.diagnostic")
+            .locator(".hb-history .info-card-error")
             .filter({ hasText: "心跳历史错误" });
           await historyError.waitFor();
-          await historyError.locator(":scope > summary").click();
+          assert.equal(await historyError.locator(".diagnostic-text").isVisible(), true);
           assert.match(await historyError.innerText(), /source changed; refresh project/);
           assert.match(await panel.locator(".hb-history").innerText(), /history hash B/);
           assert.doesNotMatch(await panel.locator(".hb-history").innerText(), /error page bad row/);
@@ -559,9 +559,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .locator(".hb-record-preview")
             .getByText("verified cached record", { exact: true })
             .waitFor();
-          const notice = panel.locator(".hb-alert summary");
-          await notice.click();
-          assert.equal(await panel.locator(".hb-alert").getAttribute("open"), "");
+          assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
+          assert.match(
+            await panel.locator(".hb-alert").innerText(),
+            /Project heartbeat refresh notice/,
+          );
 
           await page.evaluate(() => {
             window.fixture.heartbeat = {
@@ -987,10 +989,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await panel.getByRole("progressbar").count(), 0);
         await panel.locator(".summary .main").click();
         await panel
-          .locator(".scroll details.heartbeat summary")
+          .locator(".scroll .info-card")
           .filter({ hasText: "只读 Kit 任务来源" })
-          .click();
-        await panel.locator(".scroll details.diagnostic summary").click();
+          .waitFor();
         await panel.getByText("台账文件已删除", { exact: true }).waitFor();
 
         await page.evaluate(() => {
@@ -1063,11 +1064,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
-        const sourceDetails = panel
-          .locator("details.heartbeat")
-          .filter({ hasText: "只读 Kit 任务来源" });
-        if ((await sourceDetails.getAttribute("open")) === null)
-          await sourceDetails.locator("summary").click();
+        await panel.locator(".info-card").filter({ hasText: "只读 Kit 任务来源" }).waitFor();
         await panel.getByText(/P1: missing child C1/).waitFor();
         await panel.getByText(/P1: done · C1: blocked/).waitFor();
         await context.close();
@@ -1137,17 +1134,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
         }
         const scroll = panel.locator(".scroll");
-        await scroll
-          .locator("details.heartbeat summary")
-          .filter({ hasText: "只读 Kit 任务来源" })
-          .click();
-        await scroll
-          .locator("details.diagnostic summary")
-          .filter({ hasText: "来源错误详情" })
-          .click();
         const sourceDiagnostic = scroll
-          .locator("details.diagnostic")
-          .filter({ hasText: "来源错误详情" });
+          .locator(".info-card")
+          .filter({ hasText: "只读 Kit 任务来源" });
+        assert.equal(await sourceDiagnostic.evaluate((element) => element.tagName), "SECTION");
+        assert.equal(await sourceDiagnostic.locator("details").count(), 0);
+        assert.equal(await sourceDiagnostic.locator(".diagnostic-text").isVisible(), true);
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.ok((await scroll.locator(".path-value").textContent()).includes(longPath));
         assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
@@ -1182,12 +1174,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /I9: missing linked item|very-long-unbroken/,
         );
         const connectionDetails = scroll
-          .locator("details.diagnostic summary")
+          .locator(".info-card-title")
           .filter({ hasText: "连接错误详情" });
         await connectionDetails.click();
         const connectionDiagnostic = scroll
-          .locator("details.diagnostic")
+          .locator(".info-card")
           .filter({ hasText: "连接错误详情" });
+        assert.equal(await connectionDiagnostic.evaluate((element) => element.tagName), "SECTION");
+        assert.equal(await connectionDiagnostic.locator("details").count(), 0);
         assert.equal(
           await connectionDiagnostic.locator(".diagnostic-text").textContent(),
           String(new Error(longError)),
@@ -1215,14 +1209,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { longError, projectHeartbeat: heartbeat },
         );
         await showView(panel, "heartbeat");
-        const projectError = scroll
-          .locator("details.diagnostic summary")
-          .filter({ hasText: "项目心跳错误" });
+        const projectError = scroll.locator(".info-card-title").filter({ hasText: "项目心跳错误" });
         await projectError.waitFor();
         await projectError.click();
-        const projectDiagnostic = scroll
-          .locator("details.diagnostic")
-          .filter({ hasText: "项目心跳错误" });
+        const projectDiagnostic = scroll.locator(".info-card").filter({ hasText: "项目心跳错误" });
         assert.equal(await projectDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
 
@@ -1244,12 +1234,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
 
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         const historyError = scroll
-          .locator("details.diagnostic summary")
+          .locator(".info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await historyError.waitFor();
         await historyError.click();
         const historyDiagnostic = scroll
-          .locator("details.diagnostic")
+          .locator(".info-card")
           .filter({ hasText: "台账历史不可用" });
         assert.equal(await historyDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
@@ -1425,9 +1415,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const { context, page, panel } = await open();
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.setViewportSize({ width: 390, height: 400 });
-        await page
-          .locator("#messages, #composer")
-          .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+        await page.locator("#messages, #composer").evaluateAll((nodes) => {
+          for (const node of nodes) node.remove();
+        });
         const title = "长标题".repeat(300);
         const reference = `/workspace/${"long-unbroken-evidence-reference-".repeat(25)}acceptance.md`;
         await page.evaluate(
@@ -1556,13 +1546,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         const historyError = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-error")
           .filter({ hasText: "历史记录不可用" });
         await historyError.waitFor();
+        assert.equal(await historyError.locator(".diagnostic-text").isVisible(), true);
         await historyError.click();
         assert.equal(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "历史记录不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -1752,13 +1743,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { headPath, historyPath },
         );
         const mismatchDetails = scroll
-          .locator("details.diagnostic summary")
+          .locator(".info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await mismatchDetails.waitFor();
         await mismatchDetails.click();
         assert.match(
           await scroll
-            .locator("details.diagnostic")
+            .locator(".info-card")
             .filter({ hasText: "台账历史不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -1808,13 +1799,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         const historyError = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await historyError.waitFor();
         await historyError.click();
         assert.match(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "台账历史不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -1853,13 +1844,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: "任务进度", exact: false }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         const mismatchDetails = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await mismatchDetails.waitFor();
         await mismatchDetails.click();
         assert.match(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "台账历史不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -1887,13 +1878,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         const unresolvedDetails = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await unresolvedDetails.waitFor();
         await unresolvedDetails.click();
         assert.equal(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "台账历史不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -1948,17 +1939,17 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         await panel.locator(".summary .main").click();
         await panel
-          .locator(".scroll details.heartbeat summary")
+          .locator(".scroll .info-card")
           .filter({ hasText: "只读 Kit 任务来源" })
-          .click();
+          .waitFor();
         const sourceError = panel
-          .locator(".scroll details.diagnostic summary")
-          .filter({ hasText: "来源错误详情" });
-        await sourceError.click();
+          .locator(".scroll .info-card-error")
+          .filter({ hasText: "来源错误" });
+        await sourceError.waitFor();
         assert.equal(
           await panel
-            .locator(".scroll details.diagnostic")
-            .filter({ hasText: "来源错误详情" })
+            .locator(".scroll .info-card")
+            .filter({ hasText: "来源错误" })
             .locator(".diagnostic-text")
             .textContent(),
           "current Items projection invalid",
@@ -2021,13 +2012,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         const staleDetails = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-error")
           .filter({ hasText: "台账历史不可用" });
         await staleDetails.waitFor();
         await staleDetails.click();
         assert.equal(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "台账历史不可用" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -2566,11 +2557,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await panel.locator(".hb-wake").first().locator(".hb-wake-count").innerText(),
             /10/,
           );
-          assert.equal(await panel.locator(".hb-alert > summary").count(), 1);
-          assert.equal(await panel.locator(".hb-alert > summary").isVisible(), true);
-          await panel.locator(".hb-alert > summary").click();
+          assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
+          assert.equal(await panel.locator(".hb-alert .info-card-title").isVisible(), true);
           assert.match(await panel.locator(".hb-alert").innerText(), /旧记录存在校验提示/);
-          await panel.locator(".hb-alert > summary").click();
           assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
           assert.match(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
           assert.match(
@@ -2687,9 +2676,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
 
           await page.setViewportSize({ width: 320, height: 380 });
-          await page
-            .locator("#messages, #composer")
-            .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+          await page.locator("#messages, #composer").evaluateAll((nodes) => {
+            for (const node of nodes) node.remove();
+          });
           await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
           const narrow = await panel.locator(".body").boundingBox();
           assert.ok(narrow && narrow.x >= 0 && narrow.x + narrow.width <= 320);
@@ -2741,10 +2730,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await panel.evaluate(
               (element) =>
                 element.shadowRoot.activeElement ===
-                element.shadowRoot.querySelector(".heartbeat-trigger"),
+                element.shadowRoot.querySelector(".hb-source summary"),
             ),
             true,
-            "Escape leaves the standalone panel mounted",
+            "Escape keeps keyboard focus on the persistent source control",
           );
           assert.deepEqual(pageErrors, []);
           assert.deepEqual(consoleErrors, []);
@@ -2797,7 +2786,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             certifiesCurrent: false,
             discoveryComplete: false,
             discoveryReasons: ["depth-limit", "file-limit"],
-            warning: "Incomplete discovery (depth-limit, file-limit); best available source",
+            warning:
+              "Project heartbeat discovery was incomplete (depth-limit, file-limit); the displayed record is the best available result.",
+            findings: [],
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
@@ -2806,11 +2797,38 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "limited-source",
         );
         assert.match(await panel.locator(".hb-status").innerText(), /来源不完整/);
-        await panel.locator(".hb-alert > summary").click();
-        assert.match(
-          await panel.locator(".hb-alert").innerText(),
-          /Incomplete discovery \(depth-limit, file-limit\); best available source/,
+        assert.notEqual(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "certified",
         );
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
+        await panel.locator(".hb-items > summary").click();
+        assert.match(await panel.locator(".hb-items").innerText(), /处理阻塞/);
+        assert.ok((await panel.locator(".hb-wake").count()) > 0);
+        await panel.locator(".hb-source > summary").click();
+        assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
+        assert.match(
+          await panel.locator(".hb-source").innerText(),
+          /Project heartbeat discovery was incomplete/,
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: false,
+            discoveryComplete: false,
+            discoveryReasons: ["depth-limit", "file-limit"],
+            warning:
+              "Project heartbeat discovery was incomplete (depth-limit, file-limit); the displayed record is the best available result.",
+            findings: [
+              { severity: "error", rule: "ledger-format", message: "Ledger format invalid" },
+            ],
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await panel.locator(".hb-alert .info-card-title").waitFor();
+        assert.match(await panel.locator(".hb-alert").innerText(), /Ledger format invalid/);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -2898,13 +2916,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         });
         assert.match(await panel.locator("section.panel").innerText(), /已过期/);
         const projectError = panel
-          .locator(".scroll details.diagnostic summary")
+          .locator(".scroll .info-card-title")
           .filter({ hasText: "项目心跳错误" });
         await projectError.waitFor();
         await projectError.click();
         assert.equal(
           await panel
-            .locator(".scroll details.diagnostic")
+            .locator(".scroll .info-card")
             .filter({ hasText: "项目心跳错误" })
             .locator(".diagnostic-text")
             .textContent(),
@@ -3080,13 +3098,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         return window.__CODEX_TASK_PROGRESS__.refresh();
       }, task);
       assert.match(await panel.locator("section.panel").innerText(), /普通聊天界面/);
+      const lightBackground = await panel
+        .locator(".body")
+        .evaluate((element) => getComputedStyle(element).backgroundColor);
       await page.evaluate(() => {
         document.documentElement.classList.add("dark");
       });
       await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+      const darkBody = panel.locator(".body");
+      const darkBackground = await darkBody.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      );
+      assert.notEqual(darkBackground, lightBackground, "panel surface follows the host theme");
       assert.equal(
-        await panel.evaluate((element) => element.style.getPropertyValue("--ctp-surface")),
-        "#252525",
+        await darkBody.evaluate((element) => getComputedStyle(element).color),
+        await page.locator("#composer").evaluate((element) => getComputedStyle(element).color),
+        "panel foreground follows the native host token",
       );
       await context.close();
     });

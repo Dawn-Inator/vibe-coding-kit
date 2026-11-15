@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   CalendarDays,
-  ChevronDown,
   ChevronRight,
   FileText,
   Layers3,
@@ -74,6 +73,7 @@ export interface TaskPanelHeartbeat {
   certifiesCurrent: boolean;
   passed: boolean;
   discoveryComplete?: boolean;
+  discoveryReasons?: readonly string[];
   items: readonly Record<string, unknown>[];
   wakes: readonly Record<string, unknown>[];
   itemCount?: number;
@@ -684,13 +684,10 @@ export class TaskProgressElement extends LitElement {
         : history?.error;
     const wakes = history?.wakes ?? [...heartbeat.wakes].reverse();
     const count = history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length;
-    return html`<section class="hb-history" aria-label=${this.t("Heartbeat history", "巡检记录")}>
-      <header class="hb-history-head">
-        <h3>${this.lucideIcon(List)}<span>${this.t("Heartbeat history", "巡检记录")}</span><span class="hb-count">${count}</span></h3>
-        <button class="hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} ?disabled=${this.heartbeatBusy || !heartbeat.sourcePath} @click=${() => void this.loadHeartbeatHistory()}>
-          ${this.lucideIcon(RefreshCw)}<span>${this.heartbeatBusy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</span>
-        </button>
-      </header>
+    const refreshAction = html`<button class="info-card-action hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} ?disabled=${this.heartbeatBusy || !heartbeat.sourcePath} @click=${() => void this.loadHeartbeatHistory()}>
+      ${this.lucideIcon(RefreshCw)}<span>${this.heartbeatBusy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</span>
+    </button>`;
+    const body = html`
       ${
         !heartbeat.sourcePath
           ? html`<p class="empty">${this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p>`
@@ -772,11 +769,16 @@ export class TaskProgressElement extends LitElement {
           </div>
         </details>`;
       })}
-      ${historyError ? this.diagnostic(this.t("Heartbeat history error", "心跳历史错误"), historyError) : nothing}
+      ${historyError ? html`<div class="info-card-error"><strong>${this.t("Heartbeat history error", "心跳历史错误")}</strong><pre class="diagnostic-text">${historyError}</pre></div>` : nothing}
       ${history?.nextCursor ? html`<button class="hb-older" ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
       ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
       ${!wakes.length && !historyError && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
-    </section>`;
+    `;
+    return this.framedCard(this.t("Heartbeat history", "巡检记录"), List, body, {
+      count,
+      action: refreshAction,
+      className: "hb-history",
+    });
   }
 
   private evidence(items: readonly TaskPanelEvidence[]) {
@@ -863,12 +865,17 @@ export class TaskProgressElement extends LitElement {
             "No current project heartbeat source is available.",
             "当前项目没有可显示的心跳来源。",
           );
-      return html`<div class="heartbeat hb-panel"><p class="empty" role="status" aria-live="polite">${statusText}</p><section class="hb-history" aria-label=${this.t("Heartbeat history", "巡检记录")}><header class="hb-history-head"><h3>${this.lucideIcon(List)}<span>${this.t("Heartbeat history", "巡检记录")}</span><span class="hb-count">0</span></h3><button class="hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} disabled>${this.lucideIcon(RefreshCw)}<span>${this.t("Refresh", "刷新")}</span></button></header><p class="empty">${pending ? this.t("Waiting for the heartbeat source before loading history.", "等待心跳来源后再读取历史。") : this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p></section></div>`;
+      const unavailableBody = html`<p class="empty">${pending ? this.t("Waiting for the heartbeat source before loading history.", "等待心跳来源后再读取历史。") : this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p>`;
+      const historyAction = html`<button class="info-card-action hb-refresh" aria-label=${this.t("Refresh heartbeat history", "刷新心跳历史")} disabled>${this.lucideIcon(RefreshCw)}<span>${this.t("Refresh", "刷新")}</span></button>`;
+      return html`<div class="heartbeat hb-panel"><p class="empty" role="status" aria-live="polite">${statusText}</p>${this.framedCard(this.t("Heartbeat history", "巡检记录"), List, unavailableBody, { count: 0, action: historyAction, className: "hb-history" })}</div>`;
     }
     const sourcePath = heartbeat.sourcePath;
     const sourceName = this.basename(sourcePath);
     const historyName = this.basename(heartbeat.historyPath);
-    const hasAlert = Boolean(heartbeat.warning || heartbeat.findings.length);
+    const incompleteDiscoveryOnly = this.isIncompleteDiscoveryOnly(heartbeat);
+    const hasAlert = Boolean(
+      (heartbeat.warning && !incompleteDiscoveryOnly) || heartbeat.findings.length,
+    );
     return html`<div class="heartbeat hb-panel">
       ${this.data.heartbeatPending === true ? html`<p class="muted" role="status" aria-live="polite">${this.t("Refreshing the project heartbeat; showing its last verified snapshot.", "正在刷新项目心跳；当前显示最近一次已验证的快照。")}</p>` : nothing}
       ${
@@ -879,7 +886,16 @@ export class TaskProgressElement extends LitElement {
       </section>`
           : html`<p class="empty">${this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`
       }
-      ${hasAlert ? html`<details class="hb-alert"><summary>${this.lucideIcon(AlertTriangle)}<span>${this.t("Validation notice", "校验提示")}</span>${this.lucideIcon(ChevronDown, "hb-alert-chevron")}</summary>${heartbeat.warning ? html`<p>${heartbeat.warning}</p>` : nothing}${heartbeat.findings.map((finding) => html`<p><strong>${finding.severity}</strong>${finding.rule ? ` · ${finding.rule}` : ""} · ${finding.message}</p>`)}</details>` : nothing}
+      ${
+        hasAlert
+          ? this.framedCard(
+              this.t("Validation notice", "校验提示"),
+              AlertTriangle,
+              html`${heartbeat.warning && !incompleteDiscoveryOnly ? html`<p>${heartbeat.warning}</p>` : nothing}${heartbeat.findings.map((finding) => html`<p><strong>${finding.severity}</strong>${finding.rule ? ` · ${finding.rule}` : ""} · ${finding.message}</p>`)}`,
+              { tone: "warning", className: "hb-alert" },
+            )
+          : nothing
+      }
       ${heartbeat.error ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
       <details class="hb-items"><summary>${this.lucideIcon(Layers3)}<span>${this.t("Items and blockers", "登记项与阻塞")}</span><span class="hb-count">${heartbeat.itemCount ?? heartbeat.items.length}</span>${this.lucideIcon(ChevronRight, "hb-disclosure-chevron")}</summary><div class="hb-items-body">${heartbeat.items.map((item) => html`<article class="hb-item"><div><span class="status">${String(item.status ?? "")}</span> <strong>${String(item.item ?? item.id ?? "")}</strong></div>${item.evidence !== undefined ? html`<p>${String(item.evidence)}</p>` : nothing}</article>`)}</div></details>
       ${this.renderHeartbeatHistory(heartbeat)}
@@ -888,6 +904,7 @@ export class TaskProgressElement extends LitElement {
         ${heartbeat.historyPath && heartbeat.historyPath !== sourcePath ? html`<div><span>${this.t("History", "历史")}</span><code>${heartbeat.historyPath}</code></div>` : nothing}
         <div><span>${this.t("Access", "访问方式")}</span><span>${this.t("Read only", "只读")}</span></div>
         ${heartbeat.basis ? html`<div><span>${this.t("Source basis", "来源依据")}</span><span>${this.heartbeatBasisLabel(heartbeat.basis)}</span></div>` : nothing}
+        ${heartbeat.discoveryComplete === false ? html`<div><span>${this.t("Source discovery", "来源扫描")}</span><span>${this.t("Incomplete", "未完成")}${heartbeat.discoveryReasons?.length ? ` · ${heartbeat.discoveryReasons.join(", ")}` : ""}</span></div>` : nothing}
         <div><span>${this.t("Latest record", "最近记录")}</span><span>${this.date(heartbeat.lastWakeAt)}</span></div>
         ${heartbeat.nextWakeAt ? html`<div><span>${this.t("Next audit", "下次巡检")}</span><span>${this.date(heartbeat.nextWakeAt)}</span></div>` : nothing}
         <div><span>${this.t("Ledger modified", "台账更新时间")}</span><span>${this.date(heartbeat.modifiedAt)}</span></div>
@@ -904,6 +921,20 @@ export class TaskProgressElement extends LitElement {
         ${heartbeat.findings.map((finding) => html`<div><span>${finding.severity}</span><span>${finding.rule ? `${finding.rule} · ` : ""}${finding.message}</span></div>`)}
       </div></details>
     </div>`;
+  }
+
+  private isIncompleteDiscoveryOnly(heartbeat: TaskPanelHeartbeat): boolean {
+    if (
+      heartbeat.discoveryComplete !== false ||
+      heartbeat.findings.length !== 0 ||
+      !heartbeat.warning
+    )
+      return false;
+    const reasonText = heartbeat.discoveryReasons?.join(", ") || "scan limit";
+    return (
+      heartbeat.warning ===
+      `Project heartbeat discovery was incomplete (${reasonText}); the displayed record is the best available result.`
+    );
   }
 
   private heartbeatCertification(heartbeat: TaskPanelHeartbeat): {
@@ -977,15 +1008,15 @@ export class TaskProgressElement extends LitElement {
             : null));
       const historyPath = sourceHistory?.source.historyPath ?? source.historyPath;
       const pairedHistoryPath = historyPath ?? null;
-      return html`${
+      const body = html`${
         source?.path
           ? pairedHistoryPath
             ? html`<p class="muted">${this.t("Read-only heartbeat source", "只读心跳来源")}: ${source.path}</p><p class="muted">${this.t("History ledger", "历史台账")}: ${pairedHistoryPath}</p>`
             : html`<p class="muted">${this.t("Read-only ledger", "只读台账")}: ${source.path}</p>`
           : nothing
-      }${sourceHistory ? html`<p class="muted">${this.t("Ledger records", "台账记录")}: ${sourceHistory.total}</p>` : nothing}${
+      }${
         sourceError
-          ? this.diagnostic(this.t("Ledger history unavailable", "台账历史不可用"), sourceError)
+          ? html`<div class="info-card-error"><strong>${this.t("Ledger history unavailable", "台账历史不可用")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>`
           : wakes.length
             ? wakes.map(
                 (wake) =>
@@ -1007,11 +1038,19 @@ export class TaskProgressElement extends LitElement {
             : sourceHistory
               ? html`<p class="empty">${this.t("No recorded wake audits in this ledger.", "此台账暂无已记录的心跳巡检。")}</p>`
               : html`<p class="empty">${this.busy ? this.t("Loading ledger history…", "正在加载台账历史…") : this.t("Waiting for ledger history…", "等待台账历史…")}</p>`
-      }${sourceHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh ledger history", "刷新台账历史")}</button>`;
+      }${sourceHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}`;
+      return this.framedCard(this.t("Task history", "任务历史"), List, body, {
+        ...(sourceHistory ? { count: sourceHistory.total } : {}),
+        action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
+      });
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    return html`${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error ? this.diagnostic(this.t("History unavailable", "历史记录不可用"), localHistory.error) : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}<button ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.t("Refresh", "刷新")}</button>`;
+    const localBody = html`${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
+    return this.framedCard(this.t("Task history", "任务历史"), List, localBody, {
+      ...(localHistory ? { count: localHistory.events.length } : {}),
+      action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
+    });
   }
 
   private historyEvent(event: Record<string, unknown>, canonicalHistoryPath?: string) {
@@ -1078,8 +1117,33 @@ export class TaskProgressElement extends LitElement {
       : `${counts}${source ? ` · ${source}` : ""}`;
   }
 
+  private framedCard(
+    title: string,
+    icon: LucideIconData,
+    body: unknown,
+    options: {
+      count?: number;
+      action?: unknown;
+      tone?: "neutral" | "warning" | "error";
+      className?: string;
+    } = {},
+  ) {
+    const className = options.className ? `info-card ${options.className}` : "info-card";
+    const headerClass =
+      options.className === "hb-history" ? "info-card-head hb-history-head" : "info-card-head";
+    return html`<section class=${className} data-tone=${options.tone ?? "neutral"} aria-label=${title}>
+      <header class=${headerClass}><h3 class="info-card-title">${this.lucideIcon(icon)}<span>${title}</span>${options.count !== undefined ? html`<span class="info-card-count hb-count">${options.count}</span>` : nothing}</h3>${options.action ?? nothing}</header>
+      <div class="info-card-body">${body}</div>
+    </section>`;
+  }
+
   private diagnostic(label: string, content: string) {
-    return html`<details class="diagnostic"><summary>${label}</summary><pre class="diagnostic-text">${content}</pre></details>`;
+    return this.framedCard(
+      label,
+      AlertTriangle,
+      html`<pre class="diagnostic-text">${content}</pre>`,
+      { tone: "error" },
+    );
   }
 
   private renderTaskSource() {
@@ -1090,9 +1154,16 @@ export class TaskProgressElement extends LitElement {
     const statuses = source?.itemStatuses ?? sourceInfo?.itemStatuses;
     const risks = source?.linkRisks ?? [];
     const presentation = source?.presentation;
-    return html`<details class="heartbeat"><summary>${this.t("Read-only Kit task source", "只读 Kit 任务来源")}</summary>
-      ${path ? html`<p class="muted path-value">${path}</p>` : nothing}
-      ${sourceInfo?.status === "stale" || sourceInfo?.status === "error" || sourceInfo?.status === "pending-selection" ? this.diagnostic(this.t("Source error details", "来源错误详情"), sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。")) : nothing}
+    const sourceError =
+      sourceInfo?.status === "stale" ||
+      sourceInfo?.status === "error" ||
+      sourceInfo?.status === "pending-selection"
+        ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
+        : source?.error;
+    const sourceCount =
+      presentation?.sourceItemCount ?? source?.itemStatusCount ?? sourceInfo?.itemStatusCount;
+    const body = html`${path ? html`<p class="muted path-value"><strong>${this.t("Source", "来源")}</strong> · <code>${path}</code></p>` : nothing}
+      ${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
       ${presentation?.truncated ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("source items. Progress counts the full source.", "个来源项；进度按全部来源项计算。")}</p>` : nothing}
       ${
         statuses
@@ -1105,8 +1176,16 @@ export class TaskProgressElement extends LitElement {
               )}${presentation?.itemStatusesTruncated ? ` · ${this.t("status list truncated", "状态列表已截断")}` : nothing}</dd></dl>`
           : nothing
       }
-      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}: ${risks.join(" · ")}${presentation?.linkRisksTruncated ? ` · ${this.t("more link risks omitted", "其余关联风险已省略")}` : nothing}</div>` : nothing}
-    </details>`;
+      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}: ${risks.join(" · ")}${presentation?.linkRisksTruncated ? ` · ${this.t("more link risks omitted", "其余关联风险已省略")}` : nothing}</div>` : nothing}`;
+    return this.framedCard(
+      this.t("Read-only Kit task source", "只读 Kit 任务来源"),
+      FileText,
+      body,
+      {
+        ...(sourceCount !== undefined ? { count: sourceCount } : {}),
+        tone: sourceError ? "error" : "neutral",
+      },
+    );
   }
 
   protected override render() {
