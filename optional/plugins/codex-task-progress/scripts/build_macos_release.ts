@@ -5,8 +5,8 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { writePluginTreeManifest } from "../platform/macos/src/plugin-integrity.js";
 import { TASK_PROGRESS_PANEL_SEA_ASSET_KEY } from "../packages/mcp/src/native-panel-resource.js";
+import { writePluginTreeManifest } from "../platform/macos/src/plugin-integrity.js";
 import {
   createReleaseMarketplaceManifest,
   createReleasePluginManifest,
