@@ -23,6 +23,7 @@ function compareReleaseVersions(left: string, right: string): number {
   for (let index = 0; index < 3; index += 1) {
     const a = leftParts[index];
     const b = rightParts[index];
+    if (a === undefined || b === undefined) throw new Error("Invalid release version");
     if (a.length !== b.length) return a.length < b.length ? -1 : 1;
     if (a !== b) return a < b ? -1 : 1;
   }
@@ -31,14 +32,17 @@ function compareReleaseVersions(left: string, right: string): number {
 
 export function isCompatibleTaskProgressPanelResourceUri(
   uri: string,
-  currentVersion = GOAL_PROGRESS_RELEASE_VERSION,
+  currentVersion: string = GOAL_PROGRESS_RELEASE_VERSION,
 ): boolean {
   if (uri === "ui://codex-task-progress/panel-v1.html") return true;
   const match =
     /^ui:\/\/codex-task-progress\/panel-((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\.html$/.exec(
       uri,
     );
-  if (!match || !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(currentVersion)) {
+  if (
+    !match?.[1] ||
+    !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(currentVersion)
+  ) {
     return false;
   }
   return (

@@ -108,9 +108,9 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     );
     const resourceTemplates = await client.listResourceTemplates();
     assert.deepEqual(
-      resourceTemplates.resourceTemplates,
-      [],
-      "the compatibility resource template is not listed to clients",
+      resourceTemplates.resourceTemplates.map((resource) => resource.uriTemplate),
+      ["ui://codex-task-progress/{panel}.html"],
+      "the standard resource template is listed once, without duplicate aliases",
     );
     const panelResource = await client.readResource({
       uri: TASK_PROGRESS_PANEL_RESOURCE_URI,
@@ -440,9 +440,8 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
 });
 
 test("native panel resource URI compatibility accepts only shipped same-origin versions", () => {
-  const [major, minor, patch] = GOAL_PROGRESS_RELEASE_VERSION.split(".").map(Number);
-  assert.ok(Number.isInteger(major) && Number.isInteger(minor) && Number.isInteger(patch));
-  const futureVersion = `${major}.${minor}.${patch + 1}`;
+  const [major = "0", minor = "0", patch = "0"] = GOAL_PROGRESS_RELEASE_VERSION.split(".");
+  const futureVersion = `${Number(major)}.${Number(minor)}.${Number(patch) + 1}`;
   const accepted = [
     "ui://codex-task-progress/panel-v1.html",
     "ui://codex-task-progress/panel-0.5.16.html",
