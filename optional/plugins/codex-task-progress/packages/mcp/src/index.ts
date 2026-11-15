@@ -42,6 +42,7 @@ import {
 import {
   type GoalProgressMcpRequestExtra,
   type RuntimeIdentityErrorCode,
+  resolveNativeReadIdentity,
   resolveTrustedToolAuthorization,
   type TrustedToolAuthorization,
 } from "./runtime-identity.js";
@@ -826,6 +827,40 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         },
       },
       async (input, extra) => {
+        const nativeIdentity = resolveNativeReadIdentity(tool.action, input, extra);
+        if (nativeIdentity !== undefined) {
+          if (!nativeIdentity.ok) return runtimeContextError(nativeIdentity.code);
+          const business = tool.schema.safeParse(businessInput(input));
+          if (!business.success) return inputError(inputRejection(business.error));
+          try {
+            const client = getIpcClient();
+            const request = {
+              method: "task.native-read",
+              params: {
+                threadId: nativeIdentity.threadId,
+                action: nativeIdentity.action,
+                input: business.data,
+              },
+            } satisfies GoalProgressIpcRequestInput;
+            if (goalProgressIpcRequestBytes(request) > GOAL_PROGRESS_IPC_MAX_MESSAGE_BYTES) {
+              return inputError(IPC_MESSAGE_TOO_LARGE_REJECTION);
+            }
+            const response = await client.request(request, {
+              timeoutMs: TASK_PROGRESS_REQUEST_TIMEOUT_MS,
+            });
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ ok: true, result: response.result }),
+                },
+              ],
+              _meta: { "codex-task-progress/threadId": nativeIdentity.threadId },
+            };
+          } catch (error) {
+            return requestError(error);
+          }
+        }
         // The panel is a presentation entrypoint for the existing read-only get operation.
         // Reuse its allow-listed identity tool name rather than widening the auth contract.
         const identity = resolveToolIdentity(

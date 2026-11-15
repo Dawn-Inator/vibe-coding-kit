@@ -16,10 +16,15 @@ import type {
   CodexCdpRuntimeState,
 } from "../../../platform/macos/src/index.js";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
-import { GoalProgressIpcClient, GoalProgressIpcClientError } from "../../ipc/src/index.js";
-import type {
-  GoalProgressIpcAuthorization,
-  GoalProgressIpcRequestInput,
+import {
+  GoalProgressIpcClient,
+  GoalProgressIpcClientError,
+  TASK_PROGRESS_REQUEST_TIMEOUT_MS,
+} from "../../ipc/src/index.js";
+import {
+  type GoalProgressIpcAuthorization,
+  type GoalProgressIpcRequestInput,
+  GoalProgressIpcRequestSchema,
 } from "../../ipc/src/protocol.js";
 import { GoalProgressLogger, resolveGoalProgressPaths } from "../../store/src/index.js";
 import { HeartbeatService } from "../../tasks/src/heartbeat.js";
@@ -722,6 +727,179 @@ test("Helper rejects mismatched tool identity, mismatched exact chat record and 
       client.request({ method: "task.view", params: { action: "get", threadId: "ordinary-chat" } }),
       hasCode("IPC_METHOD_FORBIDDEN"),
     );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native read IPC stays read-only and resolves each exact user chat independently", async () => {
+  const root = await mkdtemp("/tmp/ctph-native-read-");
+  const firstCwd = join(root, "first");
+  const secondCwd = join(root, "second");
+  await Promise.all([
+    mkdir(join(firstCwd, ".git"), { recursive: true }),
+    mkdir(join(secondCwd, ".git"), { recursive: true }),
+  ]);
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const mocked = runtime(firstCwd);
+  mocked.readThreadIdentity = async (threadId) => {
+    if (threadId === "unknown-chat") throw new Error("thread not found");
+    const cwd = threadId === "second-chat" ? secondCwd : firstCwd;
+    return {
+      ...identity(threadId, cwd),
+      ...(threadId === "worker-chat" ? { agentRole: "worker" } : {}),
+      ...(threadId === "ephemeral-chat" ? { ephemeral: true } : {}),
+      ...(threadId === "conflicting-chat" ? { sessionId: "other-session" } : {}),
+      ...(threadId === "wrong-id-chat" ? { id: "different-chat" } : {}),
+      ...(threadId === "non-user-chat" ? { threadSource: "system" } : {}),
+    };
+  };
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const cdp = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "cdp" });
+  let call = 0;
+  const initialize = (threadId: string, title: string) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action: "initialize",
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_initialize",
+          identity: {
+            threadId,
+            sessionId: threadId,
+            turnId: "turn-1",
+            callId: `native-init-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: threadId === "second-chat" ? secondCwd : firstCwd,
+          },
+        },
+        input: {
+          requestId: `native-init-${threadId}`,
+          expectedRevision: 0,
+          title,
+          reason: "Seed exact thread read isolation",
+          objectives: [{ id: "N1", title: "Read only" }],
+        },
+      },
+    });
+  const nativeRead = (threadId: string, action: "get" | "history" | "heartbeat-history") =>
+    client.request({
+      method: "task.native-read",
+      params: {
+        threadId,
+        action,
+        input: action === "get" ? {} : { limit: 1 },
+      },
+    });
+  try {
+    await helper.start();
+    await initialize("first-chat", "First exact task");
+    await initialize("second-chat", "Second exact task");
+
+    const first = (await nativeRead("first-chat", "get")).result as { task: TaskState };
+    const second = (await nativeRead("second-chat", "get")).result as { task: TaskState };
+    const firstHistory = (await nativeRead("first-chat", "history")).result as {
+      history: { events: unknown[] };
+    };
+    const secondHeartbeatHistory = (await nativeRead("second-chat", "heartbeat-history"))
+      .result as {
+      heartbeatHistory: { wakes: unknown[] };
+    };
+    const firstHistoryAgain = (await nativeRead("first-chat", "history")).result as {
+      history: { events: unknown[] };
+    };
+    assert.equal(first.task.title, "First exact task");
+    assert.equal(second.task.title, "Second exact task");
+    assert.ok(firstHistory.history.events.length > 0);
+    assert.deepEqual(firstHistoryAgain.history.events, firstHistory.history.events);
+    assert.ok(Array.isArray(secondHeartbeatHistory.heartbeatHistory.wakes));
+
+    for (const threadId of [
+      "unknown-chat",
+      "worker-chat",
+      "ephemeral-chat",
+      "conflicting-chat",
+      "wrong-id-chat",
+      "non-user-chat",
+    ])
+      await assert.rejects(nativeRead(threadId, "get"));
+    await assert.rejects(
+      cdp.request({
+        method: "task.native-read",
+        params: { threadId: "first-chat", action: "get", input: {} },
+      }),
+      hasCode("IPC_METHOD_FORBIDDEN"),
+    );
+    for (const action of ["initialize", "update", "rescope", "bind-heartbeat"])
+      assert.equal(
+        GoalProgressIpcRequestSchema.safeParse({
+          protocolVersion: 4,
+          requestId: "native-write-rejected",
+          method: "task.native-read",
+          params: { threadId: "first-chat", action, input: {} },
+        }).success,
+        false,
+      );
+    assert.equal(
+      GoalProgressIpcRequestSchema.safeParse({
+        protocolVersion: 4,
+        requestId: "native-input-required",
+        method: "task.native-read",
+        params: { threadId: "first-chat", action: "get" },
+      }).success,
+      false,
+    );
+    assert.equal(
+      GoalProgressIpcRequestSchema.safeParse({
+        protocolVersion: 4,
+        requestId: "task-request-proof-required",
+        method: "task.request",
+        params: { action: "get", input: {} },
+      }).success,
+      false,
+    );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native task IPC reads retain the shared 30-second socket deadline", async () => {
+  const root = await mkdtemp("/tmp/ctph-native-read-deadline-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const mocked = runtime(root);
+  mocked.readThreadIdentity = async (threadId) => {
+    if (threadId === "slow-native-chat")
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_200));
+    return identity(threadId, root);
+  };
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    await helper.start();
+    const response = await client.request(
+      {
+        method: "task.native-read",
+        params: { threadId: "slow-native-chat", action: "get", input: {} },
+      },
+      { timeoutMs: TASK_PROGRESS_REQUEST_TIMEOUT_MS },
+    );
+    assert.equal((response.result as { task: unknown }).task, null);
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });
@@ -1876,6 +2054,53 @@ test("Helper startup handler admits a real ordinary task without restarting Code
     assert.ok(startupHandler);
     const response = await startupHandler(startupEvent(startupExecutablePath));
     assert.equal(response.code, "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE");
+    assert.equal(response.action, "continue");
+    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native task reads count as startup activity and cannot trigger automatic recovery", async () => {
+  const root = await mkdtemp("/tmp/ctph-native-startup-activity-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const { writeCodexStartupRecoveryPolicy } = await import(
+    "../../../platform/macos/src/startup-recovery-policy.js"
+  );
+  await writeCodexStartupRecoveryPolicy(paths, "enable");
+  let startupHandler:
+    | ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>)
+    | undefined;
+  const startupListener = {
+    start(handler: typeof startupHandler) {
+      startupHandler = handler;
+    },
+    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
+    isPending: (pid: number) => pid === 4242,
+    waitUntilReady: async () => true,
+    stop: async () => undefined,
+  };
+  const setup = startupController(paths.root);
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+    visibleThreadRecoveryDelaysMs: [],
+    startupListener: startupListener as never,
+    startupHandoff: setup.instance,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    await helper.start();
+    await client.request({
+      method: "task.native-read",
+      params: { threadId: "active-native-chat", action: "get", input: {} },
+    });
+    assert.ok(startupHandler);
+    const response = await startupHandler(startupEvent(startupExecutablePath));
+    assert.equal(response.code, "STARTUP_RECOVERY_ACTIVITY");
     assert.equal(response.action, "continue");
     assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
   } finally {

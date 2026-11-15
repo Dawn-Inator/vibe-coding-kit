@@ -200,6 +200,22 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
   z
     .object({
       ...RequestEnvelopeFields,
+      method: z.literal("task.native-read"),
+      params: z
+        .object({
+          threadId: z.string().trim().min(1).max(512),
+          action: z.enum(["get", "history", "heartbeat-history"]),
+          input: z.unknown(),
+        })
+        .strict()
+        .refine((params) => Object.hasOwn(params, "input"), {
+          message: "Native task read input is required",
+        }),
+    })
+    .strict(),
+  z
+    .object({
+      ...RequestEnvelopeFields,
       method: z.literal("hello"),
       params: z
         .object({

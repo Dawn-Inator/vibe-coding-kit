@@ -2438,9 +2438,22 @@ export class GoalProgressHelper {
     };
   }
 
-  async #handleTaskIpc(request: HelperTaskIpcRequest): Promise<GoalProgressIpcHandlerResult> {
-    if (request.method === "task.request") this.#lastObservedTaskActivityAt = Date.now();
+  async #handleTaskIpc(
+    request: HelperTaskIpcRequest,
+    context: GoalProgressIpcConnectionContext,
+  ): Promise<GoalProgressIpcHandlerResult> {
+    if (request.method === "task.request" || request.method === "task.native-read")
+      this.#lastObservedTaskActivityAt = Date.now();
     const action = request.params.action;
+    const nativeRead = request.method === "task.native-read";
+    if (
+      nativeRead &&
+      (context.clientKind !== "mcp" || !["get", "history", "heartbeat-history"].includes(action))
+    )
+      throw new GoalProgressIpcHandlerError(
+        "IPC_METHOD_FORBIDDEN",
+        "Native task reads are available only to MCP clients",
+      );
     const diagnosticStartedAt = performance.now();
     const stageDurations: Partial<Record<TaskDiagnosticStage, number>> = {};
     const measureStage = async <T>(stage: TaskDiagnosticStage, work: () => Promise<T>) => {
@@ -2503,6 +2516,25 @@ export class GoalProgressHelper {
           .then((thread) => thread.status)
           .catch(() => undefined),
       );
+    } else if (request.method === "task.native-read") {
+      threadId = request.params.threadId;
+      const identity = await measureStage("native-identity", () =>
+        this.#runtime.readThreadIdentity(threadId),
+      );
+      if (
+        identity.id !== threadId ||
+        identity.sessionId !== threadId ||
+        identity.threadSource !== "user" ||
+        identity.ephemeral ||
+        identity.agentRole !== null
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_THREAD_UNTRUSTED",
+          "Native task read requires a verified user chat",
+        );
+      cwd = identity.cwd;
+      nativeStatus = identity.status;
+      input = request.params.input;
     } else {
       threadId = request.params.threadId;
       const identity = await measureStage("native-identity", () =>
@@ -2768,7 +2800,7 @@ export class GoalProgressHelper {
   #handler(): GoalProgressIpcHandler {
     return new HelperIpcRouter({
       routes: {
-        task: (request) => this.#handleTaskIpc(request),
+        task: (request, context) => this.#handleTaskIpc(request, context),
         system: (request) => this.#handleSystemIpc(request),
         hook: (request) => this.#handleHookIpc(request),
         activation: (request) => this.#handleActivationIpc(request),

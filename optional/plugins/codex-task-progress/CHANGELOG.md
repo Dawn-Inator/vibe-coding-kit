@@ -1,3 +1,9 @@
+# Task Progress 0.5.18
+
+- Add a dedicated read-only native MCP App that resolves the current audited Codex Desktop host identity on each call, including its `threadId` aliases, then asks Helper for the exact user, non-subagent, non-ephemeral thread's existing Kit task, Heartbeat and history data. Mutating task operations continue to require the full Hook and turn proof.
+- Keep the MCP Apps native panel independent of CDP and the managed launcher. The existing CDP panel and launcher remain available as legacy paths; no generic cross-host identity guarantee is made.
+- Native panel data was blocked before this fix despite the entry being visible in 0.5.17. Visibility and live data behavior still require validation in the actual supported host.
+
 # Task Progress 0.5.15
 
 - Run the managed launcher's real `.app` through the AppKit application event loop and start the Helper asynchronously so slow Helper startup does not block the launcher's event loop.

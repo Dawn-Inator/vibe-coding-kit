@@ -86,6 +86,54 @@ export interface RuntimeIdentityResolverDependencies {
   readonly recordDiagnostic?: (diagnostic: RuntimeIdentityDiagnostic) => void;
 }
 
+export type NativeReadAction = "get" | "history" | "heartbeat-history";
+
+export type NativeReadIdentity =
+  | { readonly ok: true; readonly threadId: string; readonly action: NativeReadAction }
+  | { readonly ok: false; readonly code: RuntimeIdentityErrorCode };
+
+/**
+ * Resolve the limited identity envelope emitted by Codex's native panel host.
+ * This deliberately grants no model/write authorization and does not construct
+ * a CodexRequestIdentity, since the native envelope has no turn or call proof.
+ */
+export function resolveNativeReadIdentity(
+  action: string,
+  input: { readonly _runtimeContext?: unknown; readonly _runtimeProof?: unknown },
+  extra: GoalProgressMcpRequestExtra,
+): NativeReadIdentity | undefined {
+  const meta = record(extra._meta);
+  if (
+    input._runtimeContext !== undefined ||
+    input._runtimeProof !== undefined ||
+    (meta !== null && Object.hasOwn(meta, "x-codex-turn-metadata"))
+  ) {
+    return undefined;
+  }
+  if (action !== "get" && action !== "history" && action !== "heartbeat-history") {
+    return undefined;
+  }
+  if (!meta) return { ok: false, code: "CODEX_REQUEST_METADATA_REQUIRED" };
+  const threadId = boundedId.safeParse(meta.threadId);
+  const thread_id = boundedId.safeParse(meta.thread_id);
+  const pluginId = meta.plugin_id === undefined ? undefined : boundedId.safeParse(meta.plugin_id);
+  if (
+    !threadId.success ||
+    !thread_id.success ||
+    threadId.data !== thread_id.data ||
+    (pluginId !== undefined && (!pluginId.success || pluginId.data !== EXPECTED_PLUGIN_ID))
+  ) {
+    return {
+      ok: false,
+      code:
+        threadId.success && thread_id.success
+          ? "CODEX_REQUEST_IDENTITY_CONFLICT"
+          : "CODEX_REQUEST_METADATA_REQUIRED",
+    };
+  }
+  return { ok: true, threadId: threadId.data, action };
+}
+
 type ParsedRequestMetadata =
   | {
       readonly ok: true;

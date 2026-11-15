@@ -38,7 +38,7 @@ export type HelperUpdateIpcRequest = Extract<
 >;
 export type HelperTaskIpcRequest = Extract<
   HelperIpcRequest,
-  { method: "task.request" | "task.view" }
+  { method: "task.request" | "task.view" | "task.native-read" }
 >;
 export type HelperDoctorIpcRequest = Extract<HelperIpcRequest, { method: "doctor" }>;
 
@@ -91,6 +91,7 @@ type HelperIpcRoute = keyof HelperIpcRoutes;
 const ROUTE_BY_METHOD: Record<HelperIpcMethod, HelperIpcRoute> = {
   "task.request": "task",
   "task.view": "task",
+  "task.native-read": "task",
   ping: "system",
   "runtime-proof.issue": "system",
   "runtime-proof.consume": "system",
@@ -117,6 +118,7 @@ const ALLOWED_METHODS: Record<
   hook: ["runtime-proof.issue", "hook.audit", "activation.resume"],
   mcp: [
     "task.request",
+    "task.native-read",
     "runtime-proof.consume",
     "activation.plan",
     "store.load",

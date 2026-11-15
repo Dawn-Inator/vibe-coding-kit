@@ -12,13 +12,21 @@ import {
 } from "../../ipc/src/index.js";
 import { createGoalProgressMcpServer } from "./index.js";
 import { loadNativePanelHtml } from "./native-panel-resource.js";
+import { resolveNativeReadIdentity, resolveTrustedToolAuthorization } from "./runtime-identity.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
   const directory = await mkdtemp(join(tmpdir(), "task-mcp-"));
   const received: GoalProgressIpcRequest[] = [];
   const helper = new GoalProgressIpcServer(join(directory, "helper.sock"), async (request) => {
     received.push(request);
-    return { revision: 1, result: { task: null, received: request.method } };
+    return {
+      revision: 1,
+      result: {
+        task: null,
+        received: request.method,
+        ...(request.method === "task.native-read" ? { threadId: request.params.threadId } : {}),
+      },
+    };
   });
   await helper.start();
   const server = createGoalProgressMcpServer({
@@ -170,6 +178,159 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     });
     assert.notEqual(historyResult.isError, true);
     assert.equal(historyResult._meta?.["codex-task-progress/threadId"], "chat-1");
+    const nativeMeta = { threadId: "native-chat", thread_id: "native-chat" };
+    const nativePanel = await client.callTool({
+      name: "task_progress_panel",
+      arguments: {},
+      _meta: nativeMeta,
+    });
+    assert.notEqual(nativePanel.isError, true);
+    assert.equal(nativePanel._meta?.["codex-task-progress/threadId"], "native-chat");
+    const nativePanelRequest = received.at(-1);
+    assert.equal(nativePanelRequest?.method, "task.native-read");
+    if (nativePanelRequest?.method === "task.native-read") {
+      assert.deepEqual(nativePanelRequest.params, {
+        threadId: "native-chat",
+        action: "get",
+        input: {},
+      });
+    }
+    const nativeHistory = await client.callTool({
+      name: "task_progress_history",
+      arguments: { limit: 3 },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.notEqual(nativeHistory.isError, true);
+    assert.equal(nativeHistory._meta?.["codex-task-progress/threadId"], "native-chat");
+    const nativeHistoryRequest = received.at(-1);
+    assert.equal(nativeHistoryRequest?.method, "task.native-read");
+    if (nativeHistoryRequest?.method === "task.native-read") {
+      assert.deepEqual(nativeHistoryRequest.params, {
+        threadId: "native-chat",
+        action: "history",
+        input: { limit: 3 },
+      });
+    }
+    const nativeHeartbeatHistory = await client.callTool({
+      name: "task_progress_heartbeat_history",
+      arguments: { limit: 2 },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.notEqual(nativeHeartbeatHistory.isError, true);
+    const nativeHeartbeatRequest = received.at(-1);
+    assert.equal(nativeHeartbeatRequest?.method, "task.native-read");
+    if (nativeHeartbeatRequest?.method === "task.native-read") {
+      assert.deepEqual(nativeHeartbeatRequest.params, {
+        threadId: "native-chat",
+        action: "heartbeat-history",
+        input: { limit: 2 },
+      });
+    }
+
+    const interleaved = await Promise.all(
+      ["native-a", "native-b"].map((threadId) =>
+        client.callTool({
+          name: "task_progress_get",
+          arguments: {},
+          _meta: { threadId, thread_id: threadId },
+        }),
+      ),
+    );
+    for (const [index, threadId] of ["native-a", "native-b"].entries()) {
+      const result = interleaved[index];
+      assert.ok(result);
+      assert.notEqual(result.isError, true);
+      assert.equal(result._meta?.["codex-task-progress/threadId"], threadId);
+      assert.ok(Array.isArray(result.content));
+      const content: unknown = result.content[0];
+      assert.ok(
+        content &&
+          typeof content === "object" &&
+          "type" in content &&
+          content.type === "text" &&
+          "text" in content &&
+          typeof content.text === "string",
+      );
+      if (
+        content &&
+        typeof content === "object" &&
+        "type" in content &&
+        content.type === "text" &&
+        "text" in content &&
+        typeof content.text === "string"
+      ) {
+        assert.match(content.text, new RegExp(`\\"threadId\\":\\"${threadId}\\"`));
+      }
+    }
+
+    const afterValidReads = received.length;
+    for (const malformed of [
+      { threadId: "native-chat" },
+      { thread_id: "native-chat" },
+      { threadId: "", thread_id: "" },
+      { threadId: "native-chat", thread_id: "other-chat" },
+      { threadId: "x".repeat(513), thread_id: "x".repeat(513) },
+      { threadId: "native-chat", thread_id: "native-chat", plugin_id: "other-plugin" },
+    ]) {
+      const rejected = await client.callTool({
+        name: "task_progress_panel",
+        arguments: {},
+        _meta: malformed,
+      });
+      assert.equal(rejected.isError, true);
+      assert.equal(rejected._meta?.["codex-task-progress/threadId"], undefined);
+    }
+    const businessId = await client.callTool({
+      name: "task_progress_panel",
+      arguments: { threadId: "business-chat" },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.equal(businessId.isError, true);
+    const partialHook = await client.callTool({
+      name: "task_progress_panel",
+      arguments: { _runtimeContext: {} },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.equal(partialHook.isError, true);
+    const invalidTurnMetadata = await client.callTool({
+      name: "task_progress_panel",
+      arguments: {},
+      _meta: {
+        threadId: "native-chat",
+        thread_id: "native-chat",
+        "x-codex-turn-metadata": { thread_id: "native-chat" },
+      },
+    });
+    assert.equal(invalidTurnMetadata.isError, true);
+    const writeWithoutProof = await client.callTool({
+      name: "task_progress_initialize",
+      arguments: {
+        requestId: "native-write",
+        expectedRevision: 0,
+        title: "Native write must stay denied",
+        reason: "Regression test",
+        objectives: [],
+      },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.equal(writeWithoutProof.isError, true);
+    const writeError: unknown = writeWithoutProof.structuredContent;
+    assert.ok(
+      writeError &&
+        typeof writeError === "object" &&
+        "code" in writeError &&
+        typeof writeError.code === "string",
+    );
+    if (writeError && typeof writeError === "object" && "code" in writeError) {
+      assert.equal(writeError.code, "CODEX_REQUEST_METADATA_REQUIRED");
+    }
+    const bindWithoutProof = await client.callTool({
+      name: "task_progress_bind_heartbeat",
+      arguments: { path: null },
+      _meta: { threadId: "native-chat", thread_id: "native-chat" },
+    });
+    assert.equal(bindWithoutProof.isError, true);
+    assert.equal(received.length, afterValidReads);
     const callsAfterPanel = received.length;
     const missingIdentity = await client.callTool({ name: "task_progress_panel", arguments: {} });
     assert.equal(missingIdentity.isError, true);
@@ -207,6 +368,35 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("native identity never downgrades partial Hook or turn metadata", () => {
+  const validNativeMeta = { threadId: "native-chat", thread_id: "native-chat" };
+  assert.equal(
+    resolveNativeReadIdentity("get", { _runtimeContext: undefined }, { _meta: validNativeMeta })
+      ?.ok,
+    true,
+  );
+  assert.equal(
+    resolveNativeReadIdentity("get", { _runtimeProof: {} }, { _meta: validNativeMeta }),
+    undefined,
+  );
+  for (const turnMetadata of [null, undefined, { thread_id: "native-chat" }]) {
+    const extra = {
+      _meta: { ...validNativeMeta, "x-codex-turn-metadata": turnMetadata },
+    } as Parameters<typeof resolveNativeReadIdentity>[2];
+    assert.equal(resolveNativeReadIdentity("get", {}, extra), undefined);
+    assert.equal(resolveTrustedToolAuthorization("task_progress_get", {}, extra).ok, false);
+  }
+  const malformedAlias = resolveNativeReadIdentity(
+    "get",
+    {},
+    { _meta: { threadId: 17, thread_id: "native-chat" } },
+  );
+  assert.deepEqual(malformedAlias, {
+    ok: false,
+    code: "CODEX_REQUEST_METADATA_REQUIRED",
+  });
 });
 
 test("native panel loader selects packaged and source-runtime assets", async () => {
