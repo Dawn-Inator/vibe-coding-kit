@@ -227,3 +227,23 @@ test('orchestration metadata keeps observed zero distinct from unknown and rejec
   assert.deepEqual(ordered.blockedTasks.map((task) => task.id), ['24', '1', '2', '0']);
   assert.throws(() => projectHeartbeatOrchestration({ ...snapshot, blockedTasks: Array.from({ length: 130 }, (_, i) => ({ id: String(i), title: '字'.repeat(500), reason: '字'.repeat(500), requiresOwner: false })) }));
 });
+
+
+test('orchestration JSON rejects duplicate keys at every nesting level', async () => {
+  const { parseWakes } = await import('../../src/supervision/check-heartbeat-ledger.mjs');
+  const prefix = '## 2026-01-01T10:00Z wake (10-row ledger)\norchestration: ';
+  const base = '{"scope":"task","before":null,"after":null,"blockedTasks":null,"blockersEvidence":null}';
+  const repeated = [
+    base.replace('"blockedTasks":null', '"blockedTasks":null,"blockedTasks":[]'),
+    base.replace('"blockedTasks":null', '"blockedTasks":null,"blocked\\u0054asks":[]'),
+    base.replace('"blockedTasks":null', '"blockedTasks":[{"id":"1","title":"t","reason":"r","requiresOwner":true,"requiresOwner":false}]').replace('"blockersEvidence":null', '"blockersEvidence":"receipt"'),
+    base.replace('"before":null', '"before":{"activeAgents":0,"activeAgents":1,"observedAt":"2026-01-01T10:00:00Z","evidence":"receipt"}'),
+  ];
+  for (const raw of repeated) {
+    const wake = parseWakes(prefix + raw)[0];
+    assert.equal(wake.orchestration, null);
+    assert.equal(wake.orchestrationError, 'invalid orchestration metadata');
+  }
+  const valid = base.replace('"before":null,"after":null', '"before":{"activeAgents":0,"observedAt":"2026-01-01T10:00:00Z","evidence":"a"},"after":{"activeAgents":1,"observedAt":"2026-01-01T10:01:00Z","evidence":"b"}');
+  assert.equal(parseWakes(prefix + valid)[0].orchestration.after.activeAgents, 1);
+});

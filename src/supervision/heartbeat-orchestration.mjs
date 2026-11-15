@@ -23,6 +23,50 @@ export function validateHeartbeatOrchestration(value) {
   return JSON.parse(json);
 }
 
+// JSON.parse accepts repeated member names, including escaped equivalents. Walk the
+// already-valid JSON separately so ambiguous metadata cannot certify a healthy state.
+function rejectDuplicateMembers(raw) {
+  let i = 0;
+  const whitespace = () => { while (/\s/.test(raw[i] ?? '') && i < raw.length) i += 1; };
+  const string = () => {
+    const start = i++;
+    while (i < raw.length) {
+      if (raw[i] === '\\') { i += 2; continue; }
+      if (raw[i++] === '"') return JSON.parse(raw.slice(start, i));
+    }
+    throw new SyntaxError('Unterminated JSON string');
+  };
+  const value = () => {
+    whitespace();
+    if (raw[i] === '"') { string(); return; }
+    if (raw[i] === '{') {
+      i += 1;
+      const seen = new Set();
+      whitespace();
+      if (raw[i] === '}') { i += 1; return; }
+      while (i < raw.length) {
+        whitespace();
+        const key = string();
+        if (seen.has(key)) throw new SyntaxError('Duplicate JSON member');
+        seen.add(key);
+        whitespace(); i += 1; // colon, guaranteed by JSON.parse
+        value(); whitespace();
+        if (raw[i++] === '}') return;
+      }
+    } else if (raw[i] === '[') {
+      i += 1; whitespace();
+      if (raw[i] === ']') { i += 1; return; }
+      while (i < raw.length) {
+        value(); whitespace();
+        if (raw[i++] === ']') return;
+      }
+    } else {
+      while (i < raw.length && !/[\s,\]}]/.test(raw[i])) i += 1;
+    }
+  };
+  value();
+}
+
 export function parseHeartbeatOrchestrationLines(lines) {
   const matches = lines.filter((line) => /^\s*orchestration\s*:/i.test(line));
   if (!matches.length) return { orchestration: null, orchestrationError: null };
@@ -30,7 +74,9 @@ export function parseHeartbeatOrchestrationLines(lines) {
   try {
     const raw = matches[0].replace(/^\s*orchestration\s*:\s*/i, '');
     if (Buffer.byteLength(raw, 'utf8') > MAX_JSON) throw new Error('size');
-    return { orchestration: validateHeartbeatOrchestration(JSON.parse(raw)), orchestrationError: null };
+    const parsed = JSON.parse(raw);
+    rejectDuplicateMembers(raw);
+    return { orchestration: validateHeartbeatOrchestration(parsed), orchestrationError: null };
   } catch { return { orchestration: null, orchestrationError: 'invalid orchestration metadata' }; }
 }
 
