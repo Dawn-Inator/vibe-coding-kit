@@ -1,9 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 
 export const TASK_PROGRESS_PANEL_TOOL_NAME = "task_progress_panel";
-export const TASK_PROGRESS_PANEL_RESOURCE_URI = "ui://codex-task-progress/panel-v1.html";
+
+export function createTaskProgressPanelResourceUri(releaseVersion: string): string {
+  return `ui://codex-task-progress/panel-${encodeURIComponent(releaseVersion.trim())}.html`;
+}
+
+export const TASK_PROGRESS_PANEL_RESOURCE_URI = createTaskProgressPanelResourceUri(
+  GOAL_PROGRESS_RELEASE_VERSION,
+);
 
 export type NativePanelHtmlLoader = () => Promise<string>;
 

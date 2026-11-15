@@ -5,16 +5,29 @@ import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 import {
   GoalProgressIpcClient,
   type GoalProgressIpcRequest,
   GoalProgressIpcServer,
 } from "../../ipc/src/index.js";
 import { createGoalProgressMcpServer } from "./index.js";
-import { loadNativePanelHtml } from "./native-panel-resource.js";
+import {
+  createTaskProgressPanelResourceUri,
+  loadNativePanelHtml,
+  TASK_PROGRESS_PANEL_RESOURCE_URI,
+} from "./native-panel-resource.js";
 import { resolveNativeReadIdentity, resolveTrustedToolAuthorization } from "./runtime-identity.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
+  assert.equal(
+    TASK_PROGRESS_PANEL_RESOURCE_URI,
+    createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
+  );
+  assert.notEqual(
+    createTaskProgressPanelResourceUri("0.6.0"),
+    createTaskProgressPanelResourceUri("0.6.1"),
+  );
   const directory = await mkdtemp(join(tmpdir(), "task-mcp-"));
   const received: GoalProgressIpcRequest[] = [];
   const helper = new GoalProgressIpcServer(join(directory, "helper.sock"), async (request) => {
@@ -52,7 +65,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
           "openai/ui"?: { entrypoints?: unknown[]; displayModes?: unknown[] };
         }
       | undefined;
-    assert.equal(panelMetadata?.ui?.resourceUri, "ui://codex-task-progress/panel-v1.html");
+    assert.equal(panelMetadata?.ui?.resourceUri, TASK_PROGRESS_PANEL_RESOURCE_URI);
     assert.deepEqual(panelMetadata?.ui?.visibility, ["model", "app"]);
     assert.equal(panelMetadata?.["ui/resourceUri"], panelMetadata?.ui?.resourceUri);
     assert.equal(panelMetadata?.["openai/outputTemplate"], panelMetadata?.ui?.resourceUri);
@@ -89,11 +102,11 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     const resources = await client.listResources();
     assert.ok(
       resources.resources.some(
-        (resource) => resource.uri === "ui://codex-task-progress/panel-v1.html",
+        (resource) => resource.uri === TASK_PROGRESS_PANEL_RESOURCE_URI,
       ),
     );
     const panelResource = await client.readResource({
-      uri: "ui://codex-task-progress/panel-v1.html",
+      uri: TASK_PROGRESS_PANEL_RESOURCE_URI,
     });
     assert.equal(panelResource.contents[0]?.mimeType, "text/html;profile=mcp-app");
     assert.ok(panelResource.contents[0] && "text" in panelResource.contents[0]);

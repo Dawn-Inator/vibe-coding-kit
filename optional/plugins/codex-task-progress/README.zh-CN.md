@@ -1,6 +1,8 @@
 # Codex Task Progress
 
-这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。0.6.0 是一次不兼容的原生专用版本：受支持界面为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
+这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.6.1。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
+
+0.6.1 修复宿主复用旧原生面板 HTML 的缓存问题：每个不可变 MCP UI resource 都使用由唯一发布版本常量生成的版本化 URI。如果宿主仍注册旧 UI 标签，请关闭并重新打开 Task Progress 标签以加载新 resource；不要重启 Codex。此缓存修复不改变认证、任务权限、规范数据格式或 Kit API。
 
 ## 原生面板
 

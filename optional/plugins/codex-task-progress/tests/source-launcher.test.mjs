@@ -99,7 +99,10 @@ test("source launcher builds and refreshes the native MCP resource without prebu
           tools.tools.some((tool) => tool.name === "task_progress_panel"),
           "native panel tool missing",
         );
-        const result = await client.readResource({ uri: "ui://codex-task-progress/panel-v1.html" });
+        const panelTool = tools.tools.find((tool) => tool.name === "task_progress_panel");
+        const resourceUri = panelTool?._meta?.ui?.resourceUri;
+        assert.equal(typeof resourceUri, "string", "native panel resource URI missing");
+        const result = await client.readResource({ uri: resourceUri });
         return result.contents[0].text;
       } catch (error) {
         const log = await readFile(resolve(data, "source-runtime/bootstrap.log"), "utf8").catch(

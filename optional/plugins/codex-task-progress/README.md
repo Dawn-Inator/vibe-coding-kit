@@ -1,6 +1,8 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Version 0.6.0 is a breaking native-only release: the supported interface is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them have been retired. A legacy installation must be removed safely with its old installer before installing this version. The new installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.1. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+
+Version 0.6.1 fixes host reuse of stale native panel HTML by assigning each immutable MCP UI resource a versioned URI from the release version constant. If a host still has the old UI tab registered, close and reopen the Task Progress tab to load the new resource. Do not restart Codex. This cache fix changes no authentication, task authority, canonical data format or Kit API.
 
 ## Native panel
 

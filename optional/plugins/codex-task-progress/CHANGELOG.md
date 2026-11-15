@@ -1,3 +1,9 @@
+# Task Progress 0.6.1
+
+- Fix native UI resource cache reuse by versioning the UI resource URI from the single release version constant. Each release now publishes an immutable, versioned resource so a host cache cannot keep serving old panel HTML after an update.
+- No task authority, authentication, canonical data format, or Kit API changes.
+- Native UI resource updates may require closing and reopening the Task Progress tab so the host loads the new resource registration. Never restart Codex for this cache refresh.
+
 # Task Progress 0.6.0
 
 - Breaking native-only release: retire the CDP injected panel, custom Dock launcher, and their management/recovery commands. The supported UI is the native read-only MCP App.
