@@ -108,6 +108,19 @@ function parseNativeResult(stdout: string): Record<string, unknown> {
   throw new Error("DOCK_LAUNCHER_NATIVE_RESPONSE_INVALID");
 }
 
+function dockFailureReason(dock: { readonly stderr: string; readonly stdout: string }): string {
+  const stderr = dock.stderr.trim();
+  if (stderr) return stderr.slice(0, 240);
+  try {
+    const native = parseNativeResult(dock.stdout);
+    const code = typeof native.code === "string" ? native.code : "";
+    const detail = typeof native.detail === "string" ? native.detail : "";
+    return [code, detail].filter(Boolean).join(": ").slice(0, 240);
+  } catch {
+    return "";
+  }
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -329,7 +342,7 @@ export async function manageCodexDockLauncher(
         appPath,
         launcherInstalled,
         false,
-        { reason: dock.stderr.trim().slice(0, 240) },
+        { reason: dockFailureReason(dock) },
       );
     const dockConfigured = Boolean(parseNativeResult(dock.stdout).dockConfigured);
     return result(
@@ -372,7 +385,7 @@ export async function manageCodexDockLauncher(
       ]);
       if (dock.code !== 0)
         return result(false, "DOCK_LAUNCHER_DOCK_RESTORE_FAILED", false, appPath, owned, true, {
-          reason: dock.stderr.trim().slice(0, 240),
+          reason: dockFailureReason(dock),
         });
       const native = parseNativeResult(dock.stdout);
       dockConfigured = Boolean(native.dockConfigured);
@@ -387,7 +400,7 @@ export async function manageCodexDockLauncher(
       ]);
       if (dock.code !== 0)
         return result(false, "DOCK_LAUNCHER_DOCK_STATUS_FAILED", false, appPath, true, false, {
-          reason: dock.stderr.trim().slice(0, 240),
+          reason: dockFailureReason(dock),
         });
       dockConfigured = Boolean(parseNativeResult(dock.stdout).dockConfigured);
       if (dockConfigured && !input.configureDock)
@@ -468,7 +481,7 @@ export async function manageCodexDockLauncher(
       ]);
       if (dock.code !== 0)
         return result(false, "DOCK_LAUNCHER_DOCK_CONFIGURE_FAILED", false, appPath, true, false, {
-          reason: dock.stderr.trim().slice(0, 240),
+          reason: dockFailureReason(dock),
         });
       const native = parseNativeResult(dock.stdout);
       dockConfigured = Boolean(native.dockConfigured);
@@ -610,7 +623,7 @@ export async function manageCodexDockLauncher(
     ]);
     if (dock.code !== 0)
       return result(false, "DOCK_LAUNCHER_DOCK_CONFIGURE_FAILED", changed, appPath, true, false, {
-        reason: dock.stderr.trim().slice(0, 240),
+        reason: dockFailureReason(dock),
       });
     const native = parseNativeResult(dock.stdout);
     dockConfigured = Boolean(native.dockConfigured);

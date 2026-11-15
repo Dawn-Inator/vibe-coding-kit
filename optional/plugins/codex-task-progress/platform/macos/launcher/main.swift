@@ -432,6 +432,14 @@ private struct DockRestorePlan {
 private func comparableManagedTile(_ entry: [String: Any], managedPath: String) -> [String: Any] {
   var clone = entry
   guard var tile = tileData(entry) else { return clone }
+  // macOS refreshes this legacy app's label from its bundle filename. Treat
+  // only the two known plugin labels as equivalent during legacy migration;
+  // any other label remains evidence of a user edit.
+  if URL(fileURLWithPath: managedPath).lastPathComponent == "Codex Task Progress.app",
+     let label = tile["file-label"] as? String,
+     ["Codex", "Codex Task Progress"].contains(label) {
+    tile["file-label"] = "Codex"
+  }
   for key in ["book", "file-mod-date", "parent-mod-date"] { tile.removeValue(forKey: key) }
   if var fileData = tile["file-data"] as? [String: Any] {
     for key in ["book", "file-mod-date", "parent-mod-date"] { fileData.removeValue(forKey: key) }

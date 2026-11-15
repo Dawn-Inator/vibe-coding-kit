@@ -263,8 +263,9 @@ test("native Dock removal failure keeps the owned app and receipts and does not 
       if (args[0] === "dock-remove")
         return {
           code: 1,
-          stdout: '{"ok":false,"code":"DOCK_RELOAD_FAILED"}\n',
-          stderr: "Dock reload failed",
+          stdout:
+            '{"ok":false,"code":"DOCK_RELOAD_FAILED","details":{"domain":"Dock","message":"reload refused"}}\n',
+          stderr: "",
         };
       if (args[0] === "dock-status")
         return { code: 0, stdout: JSON.stringify({ ok: true, dockConfigured: true }), stderr: "" };
@@ -283,6 +284,8 @@ test("native Dock removal failure keeps the owned app and receipts and does not 
 
     assert.equal(removed.ok, false);
     assert.equal(removed.code, "DOCK_LAUNCHER_DOCK_RESTORE_FAILED");
+    assert.match(String(removed.details.reason), /DOCK_RELOAD_FAILED/);
+    assert.match(String(removed.details.reason), /reload refused/);
     assert.equal((await lstat(paths.launcherAppPath)).isDirectory(), true);
     assert.equal(await readFile(paths.dockReceiptPath, "utf8"), "fixture Dock receipt");
     assert.equal(await readFile(paths.appInstallReceiptPath, "utf8"), "fixture app receipt");

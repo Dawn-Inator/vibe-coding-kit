@@ -712,6 +712,84 @@ test("native Dock fixture preserves unknown preferences and removes bookmarks fo
     assertNativeSuccess(cacheRestore, "restore Dock metadata fixture");
     assert.equal(JSON.parse(cacheRestore.stdout).keepManagedApp, false);
 
+    const legacyAlias = join(root, "Dock with legacy OS label.plist");
+    const legacyAliasReceipt = join(root, "Dock with legacy OS label receipt.plist");
+    const aliasPlan = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture",
+        "--plist",
+        fixture,
+        "--original-app",
+        original,
+        "--managed-app",
+        managed,
+        "--output-plist",
+        legacyAlias,
+        "--receipt-output",
+        legacyAliasReceipt,
+        "--customize-managed-label",
+        "Codex Task Progress",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(aliasPlan, "simulate macOS legacy Dock label rewrite");
+    const aliasMigrated = join(root, "Dock migrated from legacy OS label.plist");
+    const aliasMigratedReceipt = join(root, "Dock migrated from legacy OS label receipt.plist");
+    const aliasMigration = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture-migrate",
+        "--plist",
+        legacyAlias,
+        "--original-app",
+        managed,
+        "--managed-app",
+        renamed,
+        "--receipt",
+        legacyAliasReceipt,
+        "--output-plist",
+        aliasMigrated,
+        "--receipt-output",
+        aliasMigratedReceipt,
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(aliasMigration, "migrate known legacy OS label alias");
+    for (const entry of inspectDockFixture(
+      nativeBinary,
+      aliasMigrated,
+      "inspect legacy alias migration",
+    ).persistentApps.filter((item) => item.bundleId === "com.codextaskprogress.codexlauncher")) {
+      assert.equal(entry.fileLabel, "Codex");
+      assert.equal(entry.bookmarkPath, renamed);
+    }
+    const aliasRestored = join(root, "Dock restored after legacy OS label migration.plist");
+    const aliasRestore = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture-remove",
+        "--plist",
+        aliasMigrated,
+        "--managed-app",
+        renamed,
+        "--receipt",
+        aliasMigratedReceipt,
+        "--output-plist",
+        aliasRestored,
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(aliasRestore, "restore pre-plugin Dock entries after alias migration");
+    assert.deepEqual(
+      inspectDockFixture(nativeBinary, aliasRestored, "inspect alias migration restore")
+        .persistentApps,
+      restoredEntries,
+    );
+
     const customize = spawnSync(
       nativeBinary,
       [
