@@ -1697,6 +1697,7 @@ test("project snapshot retains same-config verified view only for retryable inva
     const recovered = await service.projectViewSnapshot(f.project);
     assert.equal(recovered.pending, false);
     assert.equal(recovered.view?.status, "ready");
+    await writeFile(resolve(f.project, "other.md"), ledger("other-chat"));
     await writeFile(
       resolve(f.project, ".codex-task-progress.json"),
       JSON.stringify({ heartbeat: { ledgerPath: "other.md" } }),

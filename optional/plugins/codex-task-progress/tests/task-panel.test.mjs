@@ -212,6 +212,24 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         await page.evaluate(() => {
           window.fixture.heartbeatPending = false;
+          window.fixture.taskSourcePending = true;
+          window.fixture.taskSource = {
+            status: "pending",
+            retryable: true,
+            readOnly: true,
+            error: "temporary source failure",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await panel.locator(".scroll").innerText(), /Refreshing task source/);
+        assert.doesNotMatch(await panel.locator(".scroll").innerText(), /temporary source failure/);
+        await panel.getByRole("button", { name: "History", exact: true }).click();
+        assert.match(await panel.locator(".scroll").innerText(), /Refreshing task source/);
+        assert.equal(await panel.locator(".info-card-error").count(), 0);
+        await panel.locator(".summary .main").click();
+        await page.evaluate(() => {
+          window.fixture.heartbeatPending = false;
+          window.fixture.taskSourcePending = true;
           window.fixture.taskSource = { status: "error", readOnly: true, error: "source failed" };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
@@ -222,6 +240,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await panel.locator(".scroll").innerText(), /source failed/);
         await page.evaluate((value) => {
           window.fixture.taskSource = null;
+          window.fixture.taskSourcePending = false;
           window.fixture.task = structuredClone(value);
           window.fixture.task.objectives[0].items[0].status = "active";
           window.fixture.task.objectives[0].items[1].status = "blocked";
@@ -3212,7 +3231,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { value: heartbeat, sourcePath },
         );
         await showView(panel, "heartbeat");
-        await panel.getByText("verified wake", { exact: true }).waitFor();
+        await panel
+          .locator(".hb-wake > summary")
+          .getByText("verified wake", { exact: true })
+          .waitFor();
         await page.evaluate(() => {
           window.fixture.heartbeatHistory = {
             retryable: true,
@@ -3224,7 +3246,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         });
         await panel.getByRole("button", { name: "刷新心跳历史" }).click();
         await panel.getByText(/心跳历史正在刷新/).waitFor();
-        assert.equal(await panel.getByText("verified wake", { exact: true }).count(), 1);
+        assert.equal(
+          await panel
+            .locator(".hb-wake > summary")
+            .getByText("verified wake", { exact: true })
+            .count(),
+          1,
+        );
         assert.equal(await panel.locator(".hb-history .info-card-error").count(), 0);
         await page.evaluate(
           ({ sourcePath }) => {
@@ -3239,8 +3267,17 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { sourcePath },
         );
         await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-        await panel.getByText("recovered wake", { exact: true }).waitFor();
-        assert.equal(await panel.getByText("verified wake", { exact: true }).count(), 0);
+        await panel
+          .locator(".hb-wake > summary")
+          .getByText("recovered wake", { exact: true })
+          .waitFor();
+        assert.equal(
+          await panel
+            .locator(".hb-wake > summary")
+            .getByText("verified wake", { exact: true })
+            .count(),
+          0,
+        );
         await page.evaluate(
           ({ value, sourcePath }) => {
             window.fixture.task = {

@@ -11,6 +11,7 @@ import {
   HeartbeatDiscoveryIndex,
   HeartbeatDiscoveryInvalidatedError,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import { TaskStore as KitTaskStore } from "vibe-coding-kit/src/tasks/task-store.mjs";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import {
   GoalProgressIpcClient,
@@ -2136,6 +2137,12 @@ test("retryable discovery blocks writes and exposes pending reads until recovery
     return original.apply(this, args);
   };
   let call = 0;
+  const toolNames = {
+    get: "task_progress_get",
+    initialize: "task_progress_initialize",
+    history: "task_progress_history",
+    "heartbeat-history": "task_progress_heartbeat_history",
+  } as const;
   const request = (
     action: "get" | "initialize" | "history" | "heartbeat-history",
     input: unknown = {},
@@ -2147,7 +2154,7 @@ test("retryable discovery blocks writes and exposes pending reads until recovery
         input,
         auth: {
           kind: "codex-request",
-          toolName: `task_progress_${action.replaceAll("-", "_")}`,
+          toolName: toolNames[action],
           identity: {
             threadId: "chat-A",
             sessionId: "chat-A",
@@ -2200,6 +2207,94 @@ test("retryable discovery blocks writes and exposes pending reads until recovery
     assert.equal(recovered.taskSource, null);
   } finally {
     HeartbeatDiscoveryIndex.prototype.discover = original;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pending history uses first resolution and the next request resolves ordinary history", async (t) => {
+  const root = await mkdtemp("/tmp/ctph-history-invalidation-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const discover = HeartbeatDiscoveryIndex.prototype.discover;
+  const heartbeatHistory = HeartbeatService.prototype.history;
+  const localHistory = t.mock.method(KitTaskStore.prototype, "history");
+  let invalidate = true;
+  let heartbeatReads = 0;
+  HeartbeatDiscoveryIndex.prototype.discover = async function (options, context) {
+    if (options.threadId && invalidate) {
+      invalidate = false;
+      throw new HeartbeatDiscoveryInvalidatedError();
+    }
+    return discover.call(this, options, context);
+  };
+  HeartbeatService.prototype.history = function (...args) {
+    heartbeatReads++;
+    return heartbeatHistory.apply(this, args);
+  };
+  let call = 0;
+  const request = (input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action: "history",
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_history",
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `history-race-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  try {
+    await helper.start();
+    const pending = (await request({ limit: 25 })).result as {
+      taskSourcePending?: boolean;
+      history: {
+        events: unknown[];
+        source: { path: string | null; readOnly: boolean; retryable?: boolean; error?: string };
+      };
+    };
+    assert.equal(pending.taskSourcePending, true);
+    assert.deepEqual(pending.history.events, []);
+    assert.equal(pending.history.source.path, null);
+    assert.equal(pending.history.source.readOnly, true);
+    assert.equal(pending.history.source.retryable, true);
+    assert.equal(pending.history.source.error, undefined);
+    assert.equal(heartbeatReads, 0);
+    assert.equal(localHistory.mock.callCount(), 0);
+    invalidate = true;
+    await assert.rejects(request({ limit: 101 }));
+    invalidate = true;
+    await assert.rejects(request({ cursor: 123 }));
+    assert.equal(heartbeatReads, 0);
+    assert.equal(localHistory.mock.callCount(), 0);
+    const recovered = (await request({ limit: 25 })).result as {
+      taskSourcePending?: boolean;
+      history: { events: unknown[]; source?: unknown };
+    };
+    assert.equal(recovered.taskSourcePending, undefined);
+    assert.deepEqual(recovered.history.events, []);
+    assert.equal(recovered.history.source, undefined);
+    assert.equal(heartbeatReads, 0);
+    assert.equal(localHistory.mock.callCount(), 1);
+  } finally {
+    HeartbeatDiscoveryIndex.prototype.discover = discover;
+    HeartbeatService.prototype.history = heartbeatHistory;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

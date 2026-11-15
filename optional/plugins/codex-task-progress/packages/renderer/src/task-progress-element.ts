@@ -771,7 +771,9 @@ export class TaskProgressElement extends LitElement {
   }
 
   private taskSourceIsPending(): boolean {
-    return this.data.taskSourcePending === true || this.data.taskSource?.status === "pending";
+    const source = this.data.taskSource;
+    if (source?.status === "error" && !source.retryable) return false;
+    return this.data.taskSourcePending === true || source?.status === "pending";
   }
 
   private renderHeartbeatHistory(heartbeat: TaskPanelHeartbeat) {
@@ -979,7 +981,7 @@ export class TaskProgressElement extends LitElement {
       (heartbeat.warning && !incompleteDiscoveryOnly) || heartbeat.findings.length,
     );
     return html`<div class="heartbeat hb-panel">
-      ${this.data.heartbeatPending === true || heartbeat.status === "pending" || heartbeat.retryable ? html`<p class="muted" role="status" aria-live="polite">${this.t("Refreshing the project heartbeat…", "正在刷新项目心跳…")}</p>` : nothing}
+      ${this.data.heartbeatPending === true || heartbeat.status === "pending" || heartbeat.retryable ? html`<p class="muted" role="status" aria-live="polite">${heartbeat.sourcePath && !(heartbeat.status === "error" && !heartbeat.retryable) ? this.t("Refreshing the project heartbeat; showing its last verified snapshot.", "正在刷新项目心跳；当前显示最近一次已验证的快照。") : this.t("Refreshing the project heartbeat…", "正在刷新项目心跳…")}</p>` : nothing}
       ${
         sourcePath
           ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>
@@ -1051,7 +1053,7 @@ export class TaskProgressElement extends LitElement {
       this.busy = false;
     }
     const source = this.historySource();
-    if (!source && this.taskSourceIsPending()) {
+    if (this.taskSourceIsPending() && !source?.path) {
       return this.framedCard(
         this.t("Ledger records", "台账记录"),
         List,
@@ -1117,7 +1119,7 @@ export class TaskProgressElement extends LitElement {
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    const localBody = html`${this.historyRetryContext === context ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
+    const localBody = html`${this.historyRetryContext === context ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
     return this.framedCard(this.t("History", "历史记录"), List, localBody, {
       ...(localHistory && !localHistory.error ? { count: localHistory.events.length } : {}),
       action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,

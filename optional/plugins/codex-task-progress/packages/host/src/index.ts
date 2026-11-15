@@ -1493,53 +1493,68 @@ export class GoalProgressHelper {
           : localTaskState;
       const history =
         action === "history"
-          ? sourceTask.sourcePath ||
-            sourceTask.status === "error" ||
-            sourceTask.status === "pending" ||
-            sourceTask.status === "pending-selection"
-            ? await (async () => {
-                const options = z
-                  .object({
-                    cursor: z.string().optional(),
-                    limit: z.number().int().min(1).max(10).optional(),
-                  })
-                  .parse(input ?? {});
-                const page = await heartbeatService.history(threadId, cwd, {
-                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-                  ...(options.limit === undefined ? {} : { limit: options.limit }),
-                });
+          ? sourceTask.status === "pending"
+            ? (() => {
+                // Until the initial source resolution succeeds, neither a second scan nor a
+                // local-history read can determine which authority owns this request.
+                z.object({
+                  cursor: z.string().optional(),
+                  limit: z.number().int().min(1).max(100).optional(),
+                }).parse(input ?? {});
                 return {
                   events: [],
-                  nextCursor: page.nextCursor,
-                  wakes: page.wakes,
-                  total: page.total,
-                  source: {
-                    kind: "kit-heartbeat",
-                    path: page.sourcePath,
-                    readOnly: true,
-                    ...(page.historyPath ? { historyPath: page.historyPath } : {}),
-                    ...(page.contentHash ? { contentHash: page.contentHash } : {}),
-                    ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
-                    ...(page.error ? { error: page.error } : {}),
-                    ...(page.retryable ? { retryable: true } : {}),
-                  },
+                  nextCursor: null,
+                  wakes: [],
+                  total: 0,
+                  source: { kind: "kit-heartbeat", path: null, readOnly: true, retryable: true },
                 };
               })()
-            : await taskStore.history(
-                threadId,
-                (() => {
+            : sourceTask.sourcePath ||
+                sourceTask.status === "error" ||
+                sourceTask.status === "pending-selection"
+              ? await (async () => {
                   const options = z
                     .object({
                       cursor: z.string().optional(),
-                      limit: z.number().int().min(1).max(100).optional(),
+                      limit: z.number().int().min(1).max(10).optional(),
                     })
                     .parse(input ?? {});
-                  return {
+                  const page = await heartbeatService.history(threadId, cwd, {
                     ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
                     ...(options.limit === undefined ? {} : { limit: options.limit }),
+                  });
+                  return {
+                    events: [],
+                    nextCursor: page.nextCursor,
+                    wakes: page.wakes,
+                    total: page.total,
+                    source: {
+                      kind: "kit-heartbeat",
+                      path: page.sourcePath,
+                      readOnly: true,
+                      ...(page.historyPath ? { historyPath: page.historyPath } : {}),
+                      ...(page.contentHash ? { contentHash: page.contentHash } : {}),
+                      ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
+                      ...(page.error ? { error: page.error } : {}),
+                      ...(page.retryable ? { retryable: true } : {}),
+                    },
                   };
-                })(),
-              )
+                })()
+              : await taskStore.history(
+                  threadId,
+                  (() => {
+                    const options = z
+                      .object({
+                        cursor: z.string().optional(),
+                        limit: z.number().int().min(1).max(100).optional(),
+                      })
+                      .parse(input ?? {});
+                    return {
+                      ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                      ...(options.limit === undefined ? {} : { limit: options.limit }),
+                    };
+                  })(),
+                )
           : undefined;
       const heartbeatHistory =
         action === "heartbeat-history"
