@@ -1044,7 +1044,7 @@ export class TaskProgressElement extends LitElement {
       }${sourceHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}`;
       return this.framedCard(this.t("Ledger records", "台账记录"), List, body, {
         ...(sourceHistory && !sourceError ? { count: sourceHistory.total } : {}),
-        action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
+        action: html`<button class="info-card-action" aria-label=${this.t("Refresh ledger history", "刷新台账历史")} ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
       });
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
