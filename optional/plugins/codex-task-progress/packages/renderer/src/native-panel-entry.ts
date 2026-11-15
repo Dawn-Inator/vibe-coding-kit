@@ -129,6 +129,7 @@ let connected = false;
 let disposed = false;
 let refreshSequence = 0;
 let identityGeneration = 0;
+let requiresFreshRead = false;
 let busy = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 const pendingDelays = [150, 250, 500, 1_000];
@@ -196,6 +197,7 @@ function clearPresentationAttributes(): void {
   element.removeAttribute("data-presentation-updated-at");
 }
 function invalidateIdentity(): void {
+  requiresFreshRead = true;
   clearPresentationAttributes();
   retained.clear();
   invalidatePendingRefresh();
@@ -323,6 +325,7 @@ function taskVersion(response: TaskPanelResponse): string {
 function applyVerifiedResponse(response: TaskPanelResponse, threadId: string): void {
   const scope = scopeOf(response);
   if (response.enabled === false) {
+    requiresFreshRead = true;
     retained.clear();
     invalidatePendingRefresh();
     for (const active of activeToolControllers) active.abort();
@@ -441,6 +444,7 @@ async function refresh(): Promise<void> {
       schedule(element.data);
       return;
     }
+    if (response.enabled !== false) requiresFreshRead = false;
     applyVerifiedResponse(response, threadId);
     schedule(response);
   } catch (error) {
@@ -534,6 +538,10 @@ app.ontoolresult = (result) => {
         "Trusted conversation identity was not returned or did not match. Reload the current task to retry.";
       showError(element.connectionError);
       schedule();
+      return;
+    }
+    if (requiresFreshRead && parsed.result.enabled !== false) {
+      void refresh();
       return;
     }
     const scope = scopeOf(parsed.result);

@@ -3329,7 +3329,7 @@ test("helper stop drains an active presentation read before closing workspace st
   }
 });
 
-test("disabling a project fences a model read that finishes after re-enabling", async () => {
+test("disabling a project fences an in-flight model read and its response", async () => {
   const root = await mkdtemp("/tmp/ctph-cache-disable-race-");
   await mkdir(join(root, ".git"));
   await mkdir(join(root, ".vibe-coding"));
@@ -3386,9 +3386,9 @@ test("disabling a project fences a model read that finishes after re-enabling", 
     await running;
     await writeFile(config, JSON.stringify({ optional: { "task-progress": false } }));
     assert.deepEqual((await native()).result, { enabled: false, task: null, heartbeat: null });
-    await writeFile(config, JSON.stringify({ optional: { "task-progress": true } }));
     release();
-    await model;
+    assert.deepEqual((await model).result, { enabled: false, task: null, heartbeat: null });
+    await writeFile(config, JSON.stringify({ optional: { "task-progress": true } }));
     const after = (await native()).result as {
       presentation: { cached: boolean; pending: boolean };
     };

@@ -396,13 +396,14 @@ test("native panel MCP Apps integration", async (t) => {
                 .getElementById("app")
                 .contentWindow.document.querySelector("codex-task-panel").data.enabled === false,
           );
-          await page.evaluate(() =>
-            window.deliverToolResult(window.currentThreadId, {
+          await page.evaluate(() => {
+            window.currentResponse = {
               task: null,
               heartbeat: null,
               presentation: { scope: "project-a", pending: true, cached: false, updatedAt: null },
-            }),
-          );
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
           await page.waitForFunction(
             () =>
               document
@@ -416,6 +417,76 @@ test("native panel MCP Apps integration", async (t) => {
             .getByText(/Trusted conversation identity/)
             .waitFor();
         }),
+    );
+
+    await t.test("disabled panel rejects late enabled pushes until a fresh native read", () =>
+      scenario(async (page, frame) => {
+        await frame.locator(".summary .main").waitFor();
+        await page.evaluate(() => {
+          window.currentResponse = {
+            ...window.currentResponse,
+            presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+          };
+          window.deliverToolResult(window.currentThreadId, window.currentResponse);
+        });
+        await page.waitForFunction(
+          () =>
+            document.getElementById("app").contentWindow.document.querySelector("codex-task-panel")
+              .data.presentation?.scope === "project-a",
+        );
+        await page.evaluate(() =>
+          window.deliverToolResult(window.currentThreadId, {
+            enabled: false,
+            task: null,
+            heartbeat: null,
+          }),
+        );
+        await page.waitForFunction(
+          () =>
+            document.getElementById("app").contentWindow.document.querySelector("codex-task-panel")
+              .data.enabled === false,
+        );
+        await page.evaluate(() => {
+          window.holdGet = true;
+          window.deliverToolResult(window.currentThreadId, {
+            ...window.currentResponse,
+            history: { events: [], nextCursor: null },
+          });
+        });
+        await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+        assert.equal(
+          await frame.locator("codex-task-panel").evaluate((panel) => panel.data.enabled),
+          false,
+        );
+        assert.equal(await frame.getByRole("heading", { name: "Native task panel" }).count(), 0);
+        await page.evaluate(() => {
+          window.holdGet = false;
+          window.releaseHeldGet();
+        });
+        await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
+        await page.evaluate(() => {
+          window.deliverToolResult(null, window.currentResponse);
+          window.holdGet = true;
+          window.releaseHeldGet = null;
+        });
+        await frame
+          .getByRole("alert")
+          .getByText(/Trusted conversation identity/)
+          .waitFor();
+        await page.evaluate(() =>
+          window.deliverToolResult(window.currentThreadId, {
+            ...window.currentResponse,
+            history: { events: [], nextCursor: null },
+          }),
+        );
+        await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+        assert.equal(await frame.getByRole("heading", { name: "Native task panel" }).count(), 0);
+        await page.evaluate(() => {
+          window.holdGet = false;
+          window.releaseHeldGet();
+        });
+        await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
+      }),
     );
 
     await t.test("identity failure codes clear snapshots even with neutral summaries", () =>

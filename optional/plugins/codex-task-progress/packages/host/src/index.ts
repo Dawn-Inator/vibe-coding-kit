@@ -1826,6 +1826,15 @@ export class GoalProgressHelper {
     const readEpoch = this.#taskPresentationEpoch;
     const beforeRead = this.#taskPresentation.peek(scope).value;
     const canonical = await canonicalRead();
+    if (
+      readEpoch !== this.#taskPresentationEpoch &&
+      ["get", "history", "heartbeat-history", "archive"].includes(action) &&
+      readOptionalGroupPreference(project.root, "task-progress") === false
+    ) {
+      this.#taskPresentationEpoch++;
+      this.#taskPresentation.delete(scope);
+      return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
+    }
     if (action === "get") {
       if (readEpoch === this.#taskPresentationEpoch) this.#taskPresentation.set(scope, canonical);
     } else if (["initialize", "update", "rescope", "complete"].includes(action)) {
