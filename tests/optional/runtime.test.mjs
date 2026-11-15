@@ -48,7 +48,7 @@ test('probe errors and malformed output are errors rather than missing', async (
   assert.equal((await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner: failed })).status, 'error');
 });
 
-test('valid doctor JSON confirms installed plugin even when doctor exits nonzero', async (t) => {
+test('valid doctor JSON confirms installed plugin without probing launcher state', async (t) => {
   const f = fixture(t, 'codex-task-progress');
   const helper = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', 'current', 'bin', 'goal-progress');
   mkdirSync(join(helper, '..'), { recursive: true });
@@ -63,10 +63,10 @@ test('valid doctor JSON confirms installed plugin even when doctor exits nonzero
   assert.equal(result.source, 'stable-install');
   assert.match(result.message, /plugin remains installed/);
   assert.equal(result.diagnostic.details.pluginInstalled, true);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
-test('fixed physical helper wins over the legacy current helper and reports launcher status', async (t) => {
+test('fixed physical helper wins over the legacy current helper without launcher probes', async (t) => {
   const f = fixture(t, 'codex-task-progress');
   const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
   const fixed = join(installRoot, 'bin', 'goal-progress');
@@ -83,10 +83,9 @@ test('fixed physical helper wins over the legacy current helper and reports laun
   };
   const result = await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
   assert.equal(result.status, 'installed');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal(calls[0].options.cwd, join(installRoot, 'bin'));
   assert.deepEqual(calls[0].args, ['doctor', '--json']);
-  assert.deepEqual(calls[1].args, ['launcher', '--status', '--json']);
   assert.equal(readFileSync(legacy, 'utf8'), 'legacy helper retained');
 });
 
@@ -167,11 +166,10 @@ test('legacy current helper remains usable when the fixed helper is absent', asy
   };
   const result = await inspectOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
   assert.equal(result.status, 'installed');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal(calls[0].command, legacy);
   assert.equal(calls[0].options.cwd, join(legacy, '..'));
   assert.deepEqual(calls[0].args, ['doctor', '--json']);
-  assert.deepEqual(calls[1].args, ['launcher', '--status', '--json']);
 });
 
 test('missing lark-cli uses the documented package, then reprobes before success', async (t) => {
@@ -211,105 +209,54 @@ function existingTaskProgressFixture(t) {
   return { ...f, helper };
 }
 
-function doctorAndLauncherStatus(document) {
-  return async (command, args) => {
-    if (args[0] === 'doctor') return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
-    if (args[0] === 'launcher' && args[1] === '--status') return response(0, JSON.stringify(document));
-    return response(1, '', 'unexpected command');
-  };
-}
-
-test('explicit managed Dock setup configures the launcher without restarting Codex or launching it', async (t) => {
-  const f = existingTaskProgressFixture(t), calls = [];
-  const runner = async (command, args, options) => {
-    calls.push({ command, args, options });
-    if (args[0] === 'doctor') return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
-    if (args[0] === 'launcher' && args[1] === '--status') return response(0, JSON.stringify({ launcherInstalled: false, dockConfigured: false }));
-    if (args[0] === 'launcher' && args[1] === '--install') return response(0, JSON.stringify({ ok: true, details: { launcherInstalled: true, dockConfigured: true, launcherAppPath: '/Applications/Goal Progress.app' } }));
-    return response(1, '', 'unexpected command');
-  };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner, managedDock: true });
-  assert.equal(result.status, 'installed');
-  assert.equal(result.pluginInstalled, true);
-  assert.equal(result.launcherInstalled, true);
-  assert.equal(result.dockConfigured, true);
-  assert.equal(result.launcherAppPath, '/Applications/Goal Progress.app');
-  assert.equal(calls.some(({ args }) => args.includes('--restart-codex') || (args[0] === 'launch' && args.includes('--json'))), false);
-  assert.deepEqual(calls.filter(({ args }) => args[0] === 'launcher').map(({ args }) => args), [
-    ['launcher', '--status', '--json'], ['launcher', '--install', '--dock', '--json'],
-  ]);
-});
-
-test('fresh managed Dock opt-in defers Codex connection and configures the launcher after backend install', async (t) => {
+test('native plugin installation uses the standard installer and never launches or restarts Codex', async (t) => {
   const f = fixture(t, 'codex-task-progress');
   const helperScript = join(f.kitRoot, f.component.path, 'scripts', 'install-from-kit.mjs');
   mkdirSync(join(helperScript, '..'), { recursive: true });
   writeFileSync(helperScript, 'fixture installer');
   const installedHelper = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', 'bin', 'goal-progress');
   const calls = [];
+  const identity = '0123456789abcdef0123456789abcdef01234567';
+  const signing = {
+    status: 'ready', candidates: [{ identity, name: 'Developer ID Application: Fixture' }],
+    configPath: join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'release-signing.json'), identity,
+  };
   const runner = async (command, args) => {
     calls.push({ command, args });
     if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
     if (command === 'node' && args[0] === helperScript && args[1] === '--check') {
-      return response(0, JSON.stringify({ signing: { status: 'ready', candidates: [] } }));
+      return response(0, JSON.stringify({ status: 'ready-to-build', signing }));
     }
-    if (command === 'node' && args[0] === helperScript && args[1] === '--defer-connection') {
+    if (command === 'node' && args[0] === helperScript) {
       mkdirSync(join(installedHelper, '..'), { recursive: true });
       writeFileSync(installedHelper, 'fixture installed helper');
-      return response(0, JSON.stringify({ status: 'installed', code: 'INSTALL_OK', connectionPending: true }));
+      return response(0, JSON.stringify({ status: 'installed', code: 'INSTALL_OK' }));
     }
     if (command === installedHelper && args[0] === 'doctor') return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
-    if (command === installedHelper && args[0] === 'launcher' && args[1] === '--status') return response(0, JSON.stringify({ launcherInstalled: false, dockConfigured: false }));
-    if (command === installedHelper && args[0] === 'launcher' && args[1] === '--install') return response(0, JSON.stringify({ ok: true, details: { launcherInstalled: true, dockConfigured: true, launcherAppPath: '/Applications/Goal Progress.app' } }));
     return response(1, '', 'unexpected command');
   };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner, managedDock: true });
+  const result = await installOptionalComponent({ ...f, env: { HOME: f.home, GOAL_PROGRESS_CODESIGN_IDENTITY: identity }, platform: 'darwin', arch: 'arm64', runner });
   assert.equal(result.status, 'installed');
   assert.equal(result.pluginInstalled, true);
-  assert.equal(result.dockConfigured, true);
-  assert.deepEqual(calls.find(({ command, args }) => command === 'node' && args[0] === helperScript && args.includes('--defer-connection'))?.args, [helperScript, '--defer-connection']);
+  assert.deepEqual(calls.filter(({ command, args }) => command === 'node' && args[0] === helperScript).map(({ args }) => args), [
+    [helperScript, '--check'], [helperScript],
+  ]);
+  assert.equal(calls.some(({ args }) => args.some((arg) => /debug-port|cdp|launcher|dock|defer-connection|restart-codex/i.test(arg))), false);
   assert.equal(calls.some(({ args }) => args.includes('--restart-codex') || args[0] === 'launch'), false);
 });
 
-test('already configured managed Dock launcher is reused idempotently', async (t) => {
-  const f = existingTaskProgressFixture(t), calls = [];
-  const runner = async (command, args, options) => {
-    calls.push({ command, args, options });
-    return doctorAndLauncherStatus({ launcherInstalled: true, dockConfigured: true, launcherAppPath: '/Applications/Goal Progress.app' })(command, args, options);
-  };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner, managedDock: true });
-  assert.equal(result.status, 'installed');
-  assert.equal(result.dockConfigured, true);
-  assert.equal(calls.some(({ args }) => args[1] === '--install'), false);
-});
-
-test('old helper without launcher support reports setup-required and is not rebuilt or upgraded', async (t) => {
+test('already installed native plugin is reused without upgrade or launcher commands', async (t) => {
   const f = existingTaskProgressFixture(t), calls = [];
   const runner = async (command, args) => {
     calls.push({ command, args });
     if (args[0] === 'doctor') return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
-    if (args[0] === 'launcher') return response(2, '', 'unknown command');
     return response(1);
   };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner, managedDock: true });
-  assert.equal(result.status, 'setup-required');
-  assert.match(result.message, /does not support managed Dock launchers/);
-  assert.equal(calls.some(({ args }) => args[0] === 'install-from-kit.mjs' || args.includes('--restart-codex')), false);
-});
-
-test('installed plugin opt-out leaves an unconfigured Dock launcher untouched', async (t) => {
-  const f = existingTaskProgressFixture(t), calls = [];
-  const runner = async (command, args, options) => {
-    calls.push({ command, args, options });
-    if (args[0] === 'doctor') return response(0, JSON.stringify({ ok: true, details: { pluginInstalled: true } }));
-    if (args[0] === 'launcher' && args[1] === '--status') return response(0, JSON.stringify({ launcherInstalled: false, dockConfigured: false }));
-    return response(1);
-  };
-  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner, managedDock: false });
+  const result = await installOptionalComponent({ ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64', runner });
   assert.equal(result.status, 'installed');
   assert.equal(result.pluginInstalled, true);
-  assert.equal(result.launcherInstalled, false);
-  assert.equal(calls.some(({ args }) => args[1] === '--install' || args[0] === 'launch'), false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls.some(({ args }) => args.some((arg) => /launcher|dock|upgrade/i.test(arg))), false);
 });
 
 test('versioned requirements reject unknown versions and retain argv boundaries', async (t) => {
@@ -358,22 +305,28 @@ test('registered Task Progress plugin is reused at any version', async (t) => {
   assert.equal(calls.flat(2).some((value) => typeof value === 'string' && value.includes('restart')), false);
 });
 
-test('Task Progress installer restart-required JSON becomes setup-required without restarting Codex', async (t) => {
+test('Task Progress installer restart request violates native-only contract and never restarts Codex', async (t) => {
   const component = realComponent('codex-task-progress'), calls = [];
   const home = mkdtempSync(join(tmpdir(), 'kit-optional-plugin-home-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
+  const identity = '0123456789abcdef0123456789abcdef01234567';
+  const signing = {
+    status: 'ready', candidates: [{ identity, name: 'Developer ID Application: Fixture' }],
+    configPath: join(home, 'Library', 'Application Support', 'CodexTaskProgress', 'release-signing.json'), identity,
+  };
   const runner = async (command, args) => {
     calls.push([command, args]);
     if (command === 'codex') return response(0, JSON.stringify({ installed: [] }));
-    if (command === 'node' && args[1] === '--check') return response(0, JSON.stringify({ signing: { status: 'ready', candidates: [] } }));
-    if (command === 'node') return response(1, JSON.stringify({ status: 'setup-required', reason: 'Installation is pending a Codex restart.' }));
+    if (command === 'node' && args[1] === '--check') return response(0, JSON.stringify({ status: 'ready-to-build', signing }));
+    if (command === 'node') return response(1, JSON.stringify({ status: 'setup-required', code: 'INSTALL_RESTART_REQUIRED', reason: 'Installation is pending a Codex restart.' }));
     return response(1);
   };
-  const result = await installOptionalComponent({ kitRoot: realKitRoot, component, env: { HOME: home }, platform: 'darwin', arch: 'arm64', runner });
-  assert.equal(result.status, 'setup-required');
-  assert.match(result.message, /Installation is pending a Codex restart/);
-  assert.equal(calls[1][0], 'node');
-  assert.equal(calls[1][1][0], join(realKitRoot, component.installation.script));
+  const result = await installOptionalComponent({ kitRoot: realKitRoot, component, env: { HOME: home, GOAL_PROGRESS_CODESIGN_IDENTITY: identity }, platform: 'darwin', arch: 'arm64', runner });
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /native-only installer contract forbids application restarts/);
+  assert.deepEqual(calls.filter(([command, args]) => command === 'node' && args[0] === join(realKitRoot, component.installation.script)).map(([, args]) => args), [
+    [join(realKitRoot, component.installation.script), '--check'], [join(realKitRoot, component.installation.script)],
+  ]);
   assert.equal(calls.some(([command, args]) => command === 'codex' && args.join(' ').includes('restart')), false);
 });
 

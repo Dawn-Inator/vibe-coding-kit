@@ -81,11 +81,6 @@ export function launchAgentPlist(
     environment: {
       GOAL_PROGRESS_ROOT: layout.applicationSupportRoot,
       GOAL_PROGRESS_CODEX_APP_PATH: codex.realAppPath,
-      GOAL_PROGRESS_STARTUP_LISTENER: resolve(
-        layout.currentReleasePath,
-        "bin/goal-progress-startup-listener",
-      ),
-      GOAL_PROGRESS_RENDERER_BUNDLE_DIR: resolve(layout.currentReleasePath, "renderer"),
     },
     runAtLoad: true,
     keepAlive: true,

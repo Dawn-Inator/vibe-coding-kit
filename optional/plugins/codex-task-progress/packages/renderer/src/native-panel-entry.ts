@@ -70,6 +70,9 @@ function applyContext(context: McpUiHostContext | undefined): void {
   if (context.theme) applyDocumentTheme(context.theme);
   if (context.styles?.variables) applyHostStyleVariables(context.styles.variables);
   if (context.styles?.css?.fonts) applyHostFonts(context.styles.css.fonts);
+  // Keep the panel's progress tone on its foreground token even if the host
+  // includes a branded --ctp-accent in its style variables.
+  element.style.setProperty("--ctp-accent", "var(--ctp-text)");
   const shell = document.getElementById("native-panel-shell");
   if (shell && context.safeAreaInsets) {
     shell.style.setProperty("--safe-top", `${context.safeAreaInsets.top}px`);

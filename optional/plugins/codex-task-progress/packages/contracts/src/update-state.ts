@@ -1,17 +1,11 @@
 import { z } from "zod";
-import { GoalContractIdSchema } from "./goal-contract.js";
 import {
-  GOAL_PROGRESS_UPDATE_INTENT_PROTOCOL_VERSION,
   type GOAL_PROGRESS_UPDATE_STATE_SCHEMA_VERSION,
   isGoalProgressUpdateVersion,
-  parseGoalProgressUpdateIntent,
   parseGoalProgressUpdateState,
 } from "./update-state-runtime.js";
 
 export {
-  GOAL_PROGRESS_UPDATE_INTENT_EVENT,
-  GOAL_PROGRESS_UPDATE_INTENT_MAX_BYTES,
-  GOAL_PROGRESS_UPDATE_INTENT_PROTOCOL_VERSION,
   GOAL_PROGRESS_UPDATE_STATE_SCHEMA_VERSION,
   isGoalProgressUpdateVersion,
 } from "./update-state-runtime.js";
@@ -50,14 +44,6 @@ export interface GoalProgressUpdateState {
   readonly nextStep: GoalProgressUpdateNextStep;
   readonly updatedAt: string;
 }
-
-export type GoalProgressUpdateIntent =
-  | { readonly type: "check" }
-  | { readonly type: "start"; readonly version: string }
-  | { readonly type: "retry"; readonly version: string }
-  | { readonly type: "restart-now"; readonly version: string }
-  | { readonly type: "restart-later"; readonly version: string }
-  | { readonly type: "open-release"; readonly version: string };
 
 export const StrictSemverSchema = z.custom<string>(isGoalProgressUpdateVersion);
 
@@ -129,26 +115,6 @@ export function classifyGoalProgressUpdateState(
   throw new Error(GOAL_PROGRESS_UPDATE_STATE_REVISION_CONFLICT);
 }
 
-export const GoalProgressUpdateIntentSchema = z.custom<GoalProgressUpdateIntent>(
-  (value) => parseGoalProgressUpdateIntent(value) !== null,
-);
-
-export const GoalProgressUpdateIntentEnvelopeSchema = z
-  .object({
-    protocolVersion: z.literal(GOAL_PROGRESS_UPDATE_INTENT_PROTOCOL_VERSION),
-    intentKind: z.literal("update"),
-    bridgeNonce: z.string().regex(/^[A-Za-z0-9_-]{32}$/u),
-    contractId: GoalContractIdSchema,
-    threadId: z.string().trim().min(1).max(256),
-    userActivated: z.boolean(),
-    intent: GoalProgressUpdateIntentSchema,
-  })
-  .strict();
-
-export type GoalProgressUpdateIntentEnvelope = z.infer<
-  typeof GoalProgressUpdateIntentEnvelopeSchema
->;
-
 export const GoalProgressUpdateWorkerResultSchema = z
   .object({
     operationId: z.string().uuid(),
@@ -174,29 +140,3 @@ export const GoalProgressUpdateWorkerResultSchema = z
   });
 
 export type GoalProgressUpdateWorkerResult = z.infer<typeof GoalProgressUpdateWorkerResultSchema>;
-
-export const GoalProgressUpdateRestartResultSchema = z
-  .object({
-    operationId: z.string().uuid(),
-    targetVersion: StrictSemverSchema,
-    status: z.enum(["launched", "failed"]),
-    errorCode: z
-      .string()
-      .regex(/^[A-Z][A-Z0-9_]{2,127}$/u)
-      .nullable(),
-    finishedAt: z.string().datetime({ offset: true }),
-  })
-  .strict()
-  .superRefine((result, context) => {
-    if (
-      (result.status === "launched" && result.errorCode !== null) ||
-      (result.status === "failed" && result.errorCode === null)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Update restart result errorCode does not match status",
-      });
-    }
-  });
-
-export type GoalProgressUpdateRestartResult = z.infer<typeof GoalProgressUpdateRestartResultSchema>;

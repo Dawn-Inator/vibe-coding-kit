@@ -97,6 +97,21 @@ export interface TaskHistoryPage {
 	events: TaskEvent[];
 	nextCursor: string | null;
 }
+/** Bounded presentation of an event; the complete record stays in the journal. */
+export interface TaskHistorySummary {
+	revision: number;
+	kind: TaskEvent["kind"];
+	occurredAt: string;
+	reason: string;
+	reasonTruncated: boolean;
+	before: TaskProgress | null;
+	after: TaskProgress;
+}
+export interface TaskHistorySummaryPage {
+	events: TaskHistorySummary[];
+	nextCursor: string | null;
+	canonicalHistoryPath: string;
+}
 export interface TaskProgressSchemas {
 	TaskStatusSchema: z.ZodType<TaskStatus>;
 	TaskEvidenceSchema: z.ZodType<TaskEvidence>;

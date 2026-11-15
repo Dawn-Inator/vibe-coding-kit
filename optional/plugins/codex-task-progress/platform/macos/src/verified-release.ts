@@ -41,10 +41,6 @@ export interface ParsedReleaseManifest {
   };
   readonly files: {
     readonly helper: MacosReleaseFile;
-    readonly startupListener: MacosReleaseFile;
-    readonly dockLauncher?: MacosReleaseFile;
-    readonly renderer: MacosReleaseFile;
-    readonly rendererManifest: MacosReleaseFile;
     readonly pluginArchive: MacosReleaseFile;
     readonly license: MacosReleaseFile;
     readonly nodeLicense: MacosReleaseFile;
@@ -118,9 +114,6 @@ function parseReleaseManifest(input: unknown): ParsedReleaseManifest {
     input.files === null ||
     typeof input.files !== "object" ||
     !("helper" in input.files) ||
-    !("startupListener" in input.files) ||
-    !("renderer" in input.files) ||
-    !("rendererManifest" in input.files) ||
     !("pluginArchive" in input.files) ||
     !("license" in input.files) ||
     !("nodeLicense" in input.files) ||
@@ -135,10 +128,6 @@ function parseReleaseManifest(input: unknown): ParsedReleaseManifest {
     throw new Error("GOAL_PROGRESS_RELEASE_MANIFEST_INVALID");
   }
   assertReleaseFile(input.files.helper);
-  assertReleaseFile(input.files.startupListener);
-  if ("dockLauncher" in input.files) assertReleaseFile(input.files.dockLauncher);
-  assertReleaseFile(input.files.renderer);
-  assertReleaseFile(input.files.rendererManifest);
   assertReleaseFile(input.files.pluginArchive);
   assertReleaseFile(input.files.license);
   assertReleaseFile(input.files.nodeLicense);
@@ -282,8 +271,6 @@ export async function copyRelease(
     await chmod(
       destination,
       file.path === manifest.files.helper.path ||
-        file.path === manifest.files.startupListener.path ||
-        file.path === manifest.files.dockLauncher?.path ||
         file.path === manifest.files.installCommand.path ||
         file.path === manifest.files.repairCommand.path ||
         file.path === manifest.files.disableCommand.path ||

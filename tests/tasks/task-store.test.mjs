@@ -42,6 +42,44 @@ function hasCode(code) {
 	return (error) => error instanceof TaskStoreError && error.code === code;
 }
 
+test("summary history bounds wide events, traverses every revision and preserves raw records", async () => {
+	const { root, store } = await setup();
+	await store.initialize("thread", {
+		requestId: "init", expectedRevision: 0, reason: "Initial", title: "Wide",
+		objectives: Array.from({ length: 90 }, (_, i) => ({
+			id: `objective-${i}`, title: "Wide objective ".repeat(40),
+			items: Array.from({ length: 20 }, (_, j) => ({ id: `item-${i}-${j}`, title: "Wide item ".repeat(40) })),
+		})),
+	});
+	const raw = await store.history("thread");
+	const path = (await import("../../src/tasks/task-store.mjs")).taskMarkdownPaths(root, "thread").history;
+	const canonicalBefore = await readFile(path, "utf8");
+	const event = raw.events[0];
+	const many = Array.from({ length: 100 }, (_, i) => ({ ...event, revision: i + 1, reason: "\u0001".repeat(3000) }));
+	const replay = store.replay;
+	store.replay = async () => many;
+	let cursor;
+	const revisions = [];
+	do {
+		const page = await store.history("thread", { projection: "summary", limit: 100, ...(cursor ? { cursor } : {}) });
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 512 * 1024);
+		assert.equal(page.canonicalHistoryPath, path);
+		for (const summary of page.events) {
+			assert.equal("state" in summary, false);
+			assert.equal(summary.reasonTruncated, true);
+			assert.deepEqual(summary.after, event.after);
+			revisions.push(summary.revision);
+		}
+		cursor = page.nextCursor;
+	} while (cursor);
+	assert.deepEqual(revisions, Array.from({ length: 100 }, (_, i) => 100 - i));
+	assert.equal(many[0].reason.length, 3000);
+	store.replay = replay;
+	assert.deepEqual(await store.history("thread"), raw);
+	assert.equal(await readFile(path, "utf8"), canonicalBefore);
+	assert.deepEqual((await store.history("absent", { projection: "summary" })).events, []);
+});
+
 test("ordinary task reaches 100%, then rescope regresses and captures before/after", async () => {
 	const { store } = await setup();
 	assert.equal(await store.get("thread"), null);

@@ -27,18 +27,9 @@ export type HelperStoreIpcRequest = Extract<
   HelperIpcRequest,
   { method: "store.load" | "store.initialize" | "store.apply" }
 >;
-export type HelperRendererIpcRequest = Extract<
-  HelperIpcRequest,
-  { method: "renderer.visible-thread" | "renderer.disconnected" | "view.get" }
->;
-export type HelperUiIpcRequest = Extract<HelperIpcRequest, { method: "ui.intent" }>;
-export type HelperUpdateIpcRequest = Extract<
-  HelperIpcRequest,
-  { method: "update.intent" | "update.worker-result" | "update.restart-result" }
->;
 export type HelperTaskIpcRequest = Extract<
   HelperIpcRequest,
-  { method: "task.request" | "task.view" | "task.native-read" }
+  { method: "task.request" | "task.native-read" }
 >;
 export type HelperDoctorIpcRequest = Extract<HelperIpcRequest, { method: "doctor" }>;
 
@@ -63,18 +54,6 @@ export interface HelperIpcRoutes {
     request: HelperStoreIpcRequest,
     context: GoalProgressIpcConnectionContext,
   ) => Promise<GoalProgressIpcHandlerResult>;
-  readonly renderer: (
-    request: HelperRendererIpcRequest,
-    context: GoalProgressIpcConnectionContext,
-  ) => Promise<GoalProgressIpcHandlerResult>;
-  readonly ui: (
-    request: HelperUiIpcRequest,
-    context: GoalProgressIpcConnectionContext,
-  ) => Promise<GoalProgressIpcHandlerResult>;
-  readonly update: (
-    request: HelperUpdateIpcRequest,
-    context: GoalProgressIpcConnectionContext,
-  ) => Promise<GoalProgressIpcHandlerResult>;
   readonly doctor: (
     request: HelperDoctorIpcRequest,
     context: GoalProgressIpcConnectionContext,
@@ -90,7 +69,6 @@ type HelperIpcRoute = keyof HelperIpcRoutes;
 
 const ROUTE_BY_METHOD: Record<HelperIpcMethod, HelperIpcRoute> = {
   "task.request": "task",
-  "task.view": "task",
   "task.native-read": "task",
   ping: "system",
   "runtime-proof.issue": "system",
@@ -101,13 +79,6 @@ const ROUTE_BY_METHOD: Record<HelperIpcMethod, HelperIpcRoute> = {
   "store.load": "store",
   "store.initialize": "store",
   "store.apply": "store",
-  "renderer.visible-thread": "renderer",
-  "renderer.disconnected": "renderer",
-  "view.get": "renderer",
-  "ui.intent": "ui",
-  "update.intent": "update",
-  "update.worker-result": "update",
-  "update.restart-result": "update",
   doctor: "doctor",
 };
 
@@ -125,16 +96,7 @@ const ALLOWED_METHODS: Record<
     "store.initialize",
     "store.apply",
   ],
-  cdp: [
-    "task.view",
-    "view.get",
-    "renderer.disconnected",
-    "renderer.visible-thread",
-    "ui.intent",
-    "update.intent",
-  ],
   doctor: ["doctor"],
-  updater: ["update.worker-result", "update.restart-result"],
 };
 
 function methodIsAllowed(
@@ -160,12 +122,6 @@ async function dispatch(
       return routes.activation(request as HelperActivationIpcRequest, context);
     case "store":
       return routes.store(request as HelperStoreIpcRequest, context);
-    case "renderer":
-      return routes.renderer(request as HelperRendererIpcRequest, context);
-    case "ui":
-      return routes.ui(request as HelperUiIpcRequest, context);
-    case "update":
-      return routes.update(request as HelperUpdateIpcRequest, context);
     case "doctor":
       return routes.doctor(request as HelperDoctorIpcRequest, context);
   }

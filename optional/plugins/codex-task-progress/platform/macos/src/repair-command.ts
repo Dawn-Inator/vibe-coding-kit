@@ -1,5 +1,4 @@
 import { resolve } from "node:path";
-import type { CdpController } from "./cdp-controller.js";
 import type { MacosCommandInput, MacosCommandResult } from "./command-protocol.js";
 import type { MacosCommandResultFactory } from "./install-command.js";
 import type { InstallationState } from "./installation-state.js";
@@ -14,7 +13,6 @@ import { replaceCurrentReleaseLink } from "./verified-release.js";
 export interface RepairCommandDependencies {
   readonly state: () => InstallationState;
   readonly launchAgent: LaunchAgentController;
-  readonly cdp: CdpController;
   readonly commandResult: MacosCommandResultFactory;
   readonly installOrUpgrade: (
     command: "install" | "upgrade",
@@ -127,27 +125,6 @@ export function createRepairCommand(dependencies: RepairCommandDependencies) {
               tokenPreserved: true,
             },
           });
-        } else if (current.code === "DOCTOR_CDP_NOT_READY") {
-          if (!input.restartCodex) {
-            return dependencies.commandResult("repair", {
-              ok: true,
-              code: "REPAIR_RESTART_REQUIRED",
-              changed,
-              nextStep:
-                "After the user confirms a Codex restart, run repair --json --restart-codex.",
-              details: { doctorCodes },
-            });
-          }
-          actionChanged = await dependencies.cdp.ensure(true);
-          if (!(await dependencies.cdp.verify())) {
-            return dependencies.commandResult("repair", {
-              ok: true,
-              code: "REPAIR_RESTART_PENDING",
-              changed: changed || actionChanged,
-              nextStep: "After Codex reopens, run repair --json again.",
-              details: { doctorCodes },
-            });
-          }
         } else {
           return dependencies.commandResult("repair", {
             ok: false,

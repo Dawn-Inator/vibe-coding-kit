@@ -5,7 +5,6 @@ export const GOAL_PROGRESS_INSTALL_COMMAND_PATH = "Install Goal Progress.command
 export const GOAL_PROGRESS_REPAIR_COMMAND_PATH = "Repair Goal Progress.command" as const;
 export const GOAL_PROGRESS_DISABLE_COMMAND_PATH = "Disable Goal Progress.command" as const;
 export const GOAL_PROGRESS_UNINSTALL_COMMAND_PATH = "Uninstall Goal Progress.command" as const;
-export const GOAL_PROGRESS_DOCK_LAUNCHER_PATH = "bin/goal-progress-launcher" as const;
 
 export interface MacosReleaseFile {
   readonly path: string;
@@ -39,14 +38,9 @@ export function assertReleaseBinaryHygiene(
 
 export interface CreateMacosReleaseManifestInput {
   readonly releaseVersion: string;
-  readonly rendererReleaseVersion: string;
   readonly nodeVersion: string;
   readonly pluginTreeManifestSha256: string;
   readonly helper: MacosReleaseFile;
-  readonly startupListener: MacosReleaseFile;
-  readonly dockLauncher: MacosReleaseFile;
-  readonly renderer: MacosReleaseFile;
-  readonly rendererManifest: MacosReleaseFile;
   readonly pluginArchive: MacosReleaseFile;
   readonly license: MacosReleaseFile;
   readonly nodeLicense: MacosReleaseFile;
@@ -71,7 +65,7 @@ function assertReleaseFile(file: MacosReleaseFile): void {
 }
 
 export function createMacosReleaseManifest(input: CreateMacosReleaseManifestInput) {
-  if (!input.releaseVersion || input.releaseVersion !== input.rendererReleaseVersion) {
+  if (!input.releaseVersion) {
     throw new Error("GOAL_PROGRESS_RELEASE_VERSION_MISMATCH");
   }
   if (!/^[0-9a-f]{64}$/u.test(input.pluginTreeManifestSha256)) {
@@ -79,10 +73,6 @@ export function createMacosReleaseManifest(input: CreateMacosReleaseManifestInpu
   }
   for (const file of [
     input.helper,
-    input.startupListener,
-    input.dockLauncher,
-    input.renderer,
-    input.rendererManifest,
     input.pluginArchive,
     input.license,
     input.nodeLicense,
@@ -108,10 +98,6 @@ export function createMacosReleaseManifest(input: CreateMacosReleaseManifestInpu
     pluginTreeManifestSha256: input.pluginTreeManifestSha256,
     files: {
       helper: input.helper,
-      startupListener: input.startupListener,
-      dockLauncher: input.dockLauncher,
-      renderer: input.renderer,
-      rendererManifest: input.rendererManifest,
       pluginArchive: input.pluginArchive,
       license: input.license,
       nodeLicense: input.nodeLicense,

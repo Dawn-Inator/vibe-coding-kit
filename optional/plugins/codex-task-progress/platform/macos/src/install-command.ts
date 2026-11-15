@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, cp, lstat, readFile, readlink, rename, rm, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { GoalProgressUpdateCoordinator } from "../../../packages/host/src/update-coordinator.js";
 import { atomicWriteFile, type GoalProgressPaths } from "../../../packages/store/src/index.js";
-import type { CdpController, RestoreCdpResult } from "./cdp-controller.js";
-import { readCodexCdpRuntimeState, writeCodexCdpRuntimeState } from "./cdp-runtime.js";
 import type {
   MacosCommandInput,
   MacosCommandName,
@@ -21,7 +18,12 @@ import {
   launchAgentPlist,
   writeIfChanged,
 } from "./launch-agent-controller.js";
+import { assertLegacyLauncherRemoved } from "./legacy-cleanup-preflight.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
+import {
+  type NativeMcpFeatureStatus,
+  retireLegacyControlFiles,
+} from "./native-install-prerequisites.js";
 import type { PluginController } from "./plugin-controller.js";
 import {
   captureStableHelper,
@@ -29,7 +31,6 @@ import {
   restoreStableHelper,
   stableHelperMatches,
 } from "./stable-helper.js";
-import { MacosGoalProgressUpdateStateStore } from "./update-state-store.js";
 import {
   type CodexInstallIdentity,
   copyRelease,
@@ -64,7 +65,6 @@ export interface InstallCommandDependencies {
   readonly homeDirectory: string;
   readonly releaseRoot: string;
   readonly launchAgent: LaunchAgentController;
-  readonly cdp: CdpController;
   readonly inspectHelper: (paths: GoalProgressPaths) => Promise<HelperHealthInspection>;
   readonly inspectHelperReadiness: (
     paths: GoalProgressPaths,
@@ -75,13 +75,14 @@ export interface InstallCommandDependencies {
   ) => Promise<boolean>;
   readonly goalPaths: GoalProgressPaths;
   readonly discoverCodex: () => Promise<CodexInstallIdentity>;
+  readonly inspectNativeMcpFeature: (
+    codex: CodexInstallIdentity,
+  ) => Promise<NativeMcpFeatureStatus>;
   readonly pluginFor: (codex: CodexInstallIdentity) => Promise<PluginController>;
-  readonly restoreCdp: (restartCodex: boolean) => Promise<RestoreCdpResult>;
   readonly now: () => Date;
   readonly commandResult: MacosCommandResultFactory;
   readonly installFaultForTest?: (
     point:
-      | "after-cdp"
       | "after-copy-release"
       | "after-plist"
       | "after-plugin"
@@ -166,18 +167,31 @@ async function restoreLink(path: string, target: string | null): Promise<void> {
 export function createInstallCommand(dependencies: InstallCommandDependencies) {
   return async (
     command: "install" | "upgrade",
-    input: MacosCommandInput,
+    _input: MacosCommandInput,
   ): Promise<MacosCommandResult> => {
-    if (input.deferConnection && (command !== "install" || input.restartCodex || !input.json))
-      throw new Error("GOAL_PROGRESS_DEFER_CONNECTION_INVALID");
+    await assertLegacyLauncherRemoved(dependencies.homeDirectory);
     const release = await readVerifiedRelease(dependencies.releaseRoot);
     const layout = resolveMacosInstallationLayout({
       homeDirectory: dependencies.homeDirectory,
       releaseVersion: release.releaseVersion,
     });
-    const cleanupBeforeInstall = await cleanupOrphanReleaseBackups(layout.programReleasesRoot);
     const codex = await dependencies.discoverCodex();
     validateCodexIdentity(codex);
+    const nativeMcpFeature = await dependencies
+      .inspectNativeMcpFeature(codex)
+      .catch(() => "unknown" as const);
+    if (nativeMcpFeature !== "enabled")
+      return dependencies.commandResult(command, {
+        ok: false,
+        code: "NATIVE_MCP_SETUP_REQUIRED",
+        changed: false,
+        nextStep:
+          nativeMcpFeature === "disabled"
+            ? "Enable native MCP Apps with codex features enable enable_mcp_apps, then retry installation."
+            : "Check that the installed Codex CLI supports native MCP Apps and that codex features list reports enable_mcp_apps as true, then retry.",
+        details: { nativeMcpFeature },
+      });
+    const cleanupBeforeInstall = await cleanupOrphanReleaseBackups(layout.programReleasesRoot);
     const plugin = await dependencies.pluginFor(codex);
     const installed = await readInstalledManifest(layout.installManifestPath);
     const installedRelease = installed
@@ -195,44 +209,6 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       layout.stableHelperPath,
       release.files.helper.sha256,
     );
-    if (input.restartCodex && alreadyCurrent && stableAlreadyCurrent) {
-      const store = new MacosGoalProgressUpdateStateStore(dependencies.goalPaths);
-      const update = await store.read();
-      if (
-        (update?.phase === "restart-required" || update?.phase === "restarting") &&
-        update.latestVersion === release.releaseVersion
-      ) {
-        const coordinator = new GoalProgressUpdateCoordinator({
-          store,
-          paths: dependencies.goalPaths,
-          currentVersion: release.releaseVersion,
-        });
-        try {
-          const confirmation = await coordinator.handleIntent({
-            type: "restart-now",
-            version: release.releaseVersion,
-          });
-          await confirmation.afterResponse?.();
-          const pending = await coordinator.reconcilePersistedUpdateState();
-          return dependencies.commandResult(command, {
-            ok: pending.phase === "restarting",
-            changed: pending.phase === "restarting",
-            code:
-              pending.phase === "restarting"
-                ? "INSTALL_RESTART_PENDING"
-                : (pending.lastErrorCode ?? "GOAL_PROGRESS_UPDATE_RESTART_FAILED"),
-            nextStep: "After Codex reopens, run verify --json.",
-            details: {
-              releaseVersion: release.releaseVersion,
-              restartScheduled: pending.phase === "restarting",
-              states: [pending.phase],
-            },
-          });
-        } finally {
-          await coordinator.stop();
-        }
-      }
-    }
     const currentTarget = await captureLink(layout.currentReleasePath);
     const stableSnapshot = await captureStableHelper(layout.stableHelperPath);
     const plistSnapshot = await captureFile(layout.launchAgentPath);
@@ -249,56 +225,8 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       installedRelease?.pluginTreeManifestSha256 !== release.pluginTreeManifestSha256;
     const releaseBackupPath = `${layout.programReleaseRoot}.rollback-${randomUUID()}`;
     let releaseBackupCreated = false;
-    let cdpIdentitySnapshot: FileSnapshot | undefined;
     let doctorFailedChecks: readonly string[] = [];
     try {
-      const cdpInitiallyReady = await dependencies.cdp.verify();
-      const cdpChanged = await transaction.step(
-        "ensure-cdp",
-        async () => {
-          if (cdpInitiallyReady || !input.restartCodex) {
-            return { changed: false, value: false };
-          }
-          const changed = await dependencies.cdp.ensure(true);
-          await dependencies.installFaultForTest?.("after-cdp");
-          return { changed, value: changed };
-        },
-        async () => {
-          if (dependencies.cdp.rollback) {
-            await dependencies.cdp.rollback();
-            return;
-          }
-          const restored = await dependencies.restoreCdp(true);
-          if (restored.scheduled) {
-            throw new Error("GOAL_PROGRESS_CDP_ROLLBACK_PENDING");
-          }
-        },
-      );
-      const cdpReady = await dependencies.cdp.verify();
-      const connectionRebuildPending =
-        !cdpReady &&
-        !input.restartCodex &&
-        ((command === "install" && input.deferConnection === true) ||
-          (command === "upgrade" && installed !== null && installedRelease !== null));
-      if (!cdpReady && !connectionRebuildPending) {
-        transaction.commit();
-        return dependencies.commandResult(command, {
-          ok: true,
-          code: input.restartCodex ? "INSTALL_RESTART_PENDING" : "INSTALL_RESTART_REQUIRED",
-          changed: cdpChanged,
-          nextStep: input.restartCodex
-            ? "After Codex reopens, run install --json again."
-            : `After the user confirms a Codex restart, run ${command} --json --restart-codex.`,
-          details: {
-            releaseVersion: release.releaseVersion,
-            cdpReady: false,
-            restartScheduled: cdpChanged,
-            states: ["pending_restart"],
-            partialState: transaction.partialState,
-          },
-        });
-      }
-
       await transaction.step(
         "copy-release",
         async () => {
@@ -423,27 +351,6 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
       );
 
       await transaction.step(
-        "write-cdp-identity",
-        async () => {
-          if (!cdpReady) return { changed: false, value: undefined };
-          const snapshot = await captureFile(dependencies.goalPaths.cdpRuntimePath);
-          if (!snapshot.exists) return { changed: false, value: undefined };
-          const state = await readCodexCdpRuntimeState(dependencies.goalPaths.cdpRuntimePath);
-          if (JSON.parse(snapshot.contents ?? "{}").processStartedAt === state.processStartedAt) {
-            return { changed: false, value: undefined };
-          }
-          cdpIdentitySnapshot = snapshot;
-          await writeCodexCdpRuntimeState(dependencies.goalPaths.cdpRuntimePath, state);
-          return { changed: true, value: undefined };
-        },
-        async () => {
-          if (cdpIdentitySnapshot) {
-            await restoreFile(dependencies.goalPaths.cdpRuntimePath, cdpIdentitySnapshot);
-          }
-        },
-      );
-
-      await transaction.step(
         "start-helper",
         async () => {
           const changed = await dependencies.launchAgent.ensure(
@@ -504,24 +411,20 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
           const helper = helperReady
             ? await dependencies.inspectHelper(dependencies.goalPaths)
             : null;
-          const [jobLoaded, pluginInstalled, hook, cdpReadyNow] = await Promise.all([
+          const [jobLoaded, pluginInstalled, hook] = await Promise.all([
             dependencies.launchAgent.isLoaded(layout.launchAgentLabel),
             plugin.verify(release.releaseVersion, release.pluginTreeManifestSha256),
             inspectInstalledHook(dependencies.homeDirectory, installManifest),
-            dependencies.cdp.verify(),
           ]);
           doctorFailedChecks = [
             ...(!jobLoaded ? ["launchAgentLoaded"] : []),
             ...(!helperReady ? ["helperReady"] : []),
             ...(!helper?.ok ? ["helperHealth"] : []),
-            ...(!helper?.startupListenerRunning ? ["startupListenerRunning"] : []),
-            ...(!helper?.startupListenerReady ? ["startupListenerReady"] : []),
             ...(!pluginInstalled ? ["pluginInstalled"] : []),
             ...(!hook.hashMatchesManifest ? ["hookHash"] : []),
             ...(!hook.stableCommand ? ["hookCommand"] : []),
             ...(!hook.userLevelHookAbsent ? ["userHookAbsent"] : []),
             ...(!hook.embeddedTrustStateAbsent ? ["embeddedTrustAbsent"] : []),
-            ...(!cdpReadyNow && !connectionRebuildPending ? ["cdpReady"] : []),
           ];
           if (doctorFailedChecks.length > 0) throw new Error("GOAL_PROGRESS_INSTALL_DOCTOR_FAILED");
           return { changed: false, value: undefined };
@@ -536,10 +439,6 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
           if (
             ((await stat(layout.launchAgentPath)).mode & 0o777) !== 0o600 ||
             ((await stat(resolve(layout.programReleaseRoot, release.files.helper.path))).mode &
-              0o777) !==
-              0o700 ||
-            ((await stat(resolve(layout.programReleaseRoot, release.files.startupListener.path)))
-              .mode &
               0o777) !==
               0o700
           ) {
@@ -583,10 +482,23 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
         () => (releaseBackupCreated ? [basename(releaseBackupPath)] : []),
       );
       const cleanupPending = cleanupBackups.length > 0;
+      let retiredLegacyControls: readonly string[];
+      try {
+        retiredLegacyControls = await retireLegacyControlFiles(layout.applicationSupportRoot);
+      } catch (error) {
+        return dependencies.commandResult(command, {
+          ok: false,
+          code: "INSTALL_LEGACY_CONTROL_CLEANUP_REQUIRED",
+          changed: true,
+          nextStep: "Inspect the plugin's legacy control paths and retry installation.",
+          details: { errorCode: stableErrorCode(error), nativeMcpFeature },
+        });
+      }
       const changed =
         transaction.partialState.changedSteps.length > 0 ||
         cleanupBeforeInstall.removed.length > 0 ||
-        prunedReleases.removed.length > 0;
+        prunedReleases.removed.length > 0 ||
+        retiredLegacyControls.length > 0;
       const codexSessionReconnectRequired =
         changed &&
         transaction.partialState.changedSteps.some(
@@ -603,24 +515,19 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
               ? "UPGRADE_OK"
               : "UPGRADE_ALREADY_CURRENT",
         changed,
-        nextStep: connectionRebuildPending
-          ? command === "install" && input.deferConnection
-            ? "Install the managed Codex launcher, then use it after Codex is fully closed to rebuild the connection."
-            : "After the user confirms a Codex restart, run install --json --restart-codex with the installed release to rebuild connection identity, or use the update restart action."
-          : codexSessionReconnectRequired
-            ? "Close and reopen the current Codex session so MCP loads this release."
-            : null,
+        nextStep: codexSessionReconnectRequired
+          ? "Open a new Codex session to load the installed MCP app."
+          : null,
         details: {
           releaseVersion: release.releaseVersion,
           applicationSupportRoot: layout.applicationSupportRoot,
           launchAgentLabel: layout.launchAgentLabel,
           codexAppPath: codex.realAppPath,
           pluginInstalled: true,
+          nativeMcpFeature,
+          retiredLegacyControls,
           codexSessionReconnectRequired,
           hookSha256,
-          cdpReady,
-          connectionRebuildPending,
-          restartScheduled: false,
           cleanupPending,
           cleanupBackups,
           prunedReleases: prunedReleases.removed,
@@ -644,7 +551,7 @@ export function createInstallCommand(dependencies: InstallCommandDependencies) {
         changed: !rollbackOk,
         nextStep: rollbackOk
           ? `Fix ${stableErrorCode(error)}, then retry ${command} --json.`
-          : `Run goal-progress restore --json --restart-codex, then inspect ${layout.installRoot}.`,
+          : `Inspect ${layout.installRoot}, then retry install --json.`,
         details: {
           errorCode: stableErrorCode(error),
           ...(doctorFailedChecks.length > 0 ? { doctorFailedChecks } : {}),

@@ -14,35 +14,7 @@ export {
   requireSingleCodexMacosApp,
   runSystemCommand,
 } from "./app-discovery.js";
-export {
-  allocateRandomLoopbackPort,
-  type CodexCdpLaunchServicesInvocation,
-  type CodexCdpListener,
-  type CodexCdpListenerOwnership,
-  CodexCdpPostSpawnCleanupError,
-  type CodexCdpProcessSnapshot,
-  type CodexCdpRuntimeState,
-  commandBelongsToExecutable,
-  createCodexCdpLaunchServicesInvocation,
-  createCodexCdpRuntimeState,
-  inspectProcess,
-  type LaunchCodexCdpOptions,
-  type LaunchCodexNormallyOptions,
-  type LaunchedCodexCdpProcess,
-  launchCodexNormally,
-  launchCodexWithCdp,
-  listCodexMainProcesses,
-  type ProcessSignalSender,
-  type RestoreCodexCdpResult,
-  readCodexCdpRuntimeState,
-  type StopCodexCdpOptions,
-  stopCodexCdpRuntime,
-  stopLaunchedCodexCdpProcess,
-  verifyCodexCdpListenerOwnership,
-  verifyCodexCdpRuntimeIdentity,
-  waitForCodexCdpListenerOwnership,
-  writeCodexCdpRuntimeState,
-} from "./cdp-runtime.js";
+
 export {
   executeMacosCommand,
   MACOS_COMMAND_NAMES,
@@ -56,18 +28,7 @@ export {
   serializeMacosCommandResult,
   serializeMacosCommandResultHuman,
 } from "./command-protocol.js";
-export {
-  CODEX_MANAGED_LAUNCHER_APP_NAME,
-  CODEX_MANAGED_LAUNCHER_BUNDLE_ID,
-  CODEX_MANAGED_LAUNCHER_MARKER,
-  type CodexDockLauncherPaths,
-  createDockLauncherInfoPlist,
-  type DockLauncherRunner,
-  type ManageCodexDockLauncherInput,
-  type ManageCodexDockLauncherResult,
-  manageCodexDockLauncher,
-  resolveCodexDockLauncherPaths,
-} from "./dock-launcher.js";
+
 export {
   ensureMacosInstallationDirectories,
   GOAL_PROGRESS_LAUNCH_AGENT_LABEL,
@@ -83,9 +44,7 @@ export {
   InstallTransaction,
 } from "./install-transaction.js";
 export {
-  type CdpController,
   type CreateMacosCommandHandlersOptions,
-  createCdpController,
   createLaunchAgentController,
   createMacosCommandHandlers,
   createPluginController,
@@ -104,14 +63,7 @@ export {
   type MacosReleaseFile,
   renderSha256Sums,
 } from "./release.js";
-export {
-  type CodexStartupRecoveryPolicy,
-  DEFAULT_CODEX_STARTUP_RECOVERY_POLICY,
-  readCodexStartupRecoveryPolicy,
-  readCodexStartupRecoveryPolicySync,
-  type StartupRecoveryPolicyAction,
-  writeCodexStartupRecoveryPolicy,
-} from "./startup-recovery-policy.js";
+
 export {
   type CheckGoalProgressUpdateOptions,
   checkGoalProgressUpdateManifest,
@@ -133,20 +85,7 @@ export {
   type PrepareGoalProgressUpdateOptions,
   prepareGoalProgressUpdate,
 } from "./update-downloader.js";
-export {
-  type CreateUpdateInstallHandoffInvocationInput,
-  createUpdateInstallHandoffInvocation,
-  GOAL_PROGRESS_UPDATE_INSTALL_HANDOFF_COMMAND,
-  GOAL_PROGRESS_UPDATE_WORKER_MAX_OUTPUT_BYTES,
-  GOAL_PROGRESS_UPDATE_WORKER_TIMEOUT_MS,
-  type RunUpdateInstallHandoffOptions,
-  runUpdateInstallHandoff,
-  runUpdateInstallHandoffFromEnvironment,
-  submitUpdateInstallHandoff,
-  type UpdateWorkerProgramExecutor,
-  type UpdateWorkerProgramOptions,
-  type UpdateWorkerProgramResult,
-} from "./update-install-handoff.js";
+
 export {
   compareGoalProgressVersions,
   GOAL_PROGRESS_MACOS_UPDATE_ASSET,
@@ -158,7 +97,6 @@ export {
 } from "./update-manifest.js";
 export {
   GOAL_PROGRESS_UPDATE_INSTALL_WORKER_LEASE_MS,
-  GOAL_PROGRESS_UPDATE_RESTART_WORKER_LEASE_MS,
   type GoalProgressUpdateOperation,
   type GoalProgressUpdateOperationResult,
   GoalProgressUpdateOperationResultSchema,
@@ -174,16 +112,7 @@ export {
   type MacosReleaseOpener,
   openMacosGoalProgressRelease,
 } from "./update-release.js";
-export {
-  type CreateUpdateRestartHandoffInvocationInput,
-  createUpdateRestartHandoffInvocation,
-  GOAL_PROGRESS_UPDATE_RESTART_HANDOFF_COMMAND,
-  type RunUpdateRestartHandoffOptions,
-  runUpdateRestartHandoff,
-  runUpdateRestartHandoffFromEnvironment,
-  submitUpdateRestartHandoff,
-  type UpdateRestartHandoffResult,
-} from "./update-restart-handoff.js";
+
 export {
   type GoalProgressUpdateStateStore,
   MacosGoalProgressUpdateStateStore,

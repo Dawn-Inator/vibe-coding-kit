@@ -2,9 +2,6 @@ import { z } from "zod";
 import {
   GoalContractInitializationSchema,
   GoalProgressCommandSchema,
-  GoalProgressUpdateIntentSchema,
-  GoalProgressUpdateRestartResultSchema,
-  GoalProgressUpdateWorkerResultSchema,
   GoalProgressViewModelSchema,
   RuntimeContextSchema,
   RuntimeProofSchema,
@@ -13,10 +10,6 @@ import {
 export const GOAL_PROGRESS_IPC_PROTOCOL_VERSION = 4 as const;
 export const GOAL_PROGRESS_IPC_MAX_MESSAGE_BYTES = 1_048_576;
 export { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../contracts/src/task-request-policy.js";
-export const GoalProgressRendererTargetIdSchema = z
-  .string()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u);
-
 export const CodexRequestIdentitySchema = z
   .object({
     threadId: z.string().trim().min(1).max(512),
@@ -185,21 +178,6 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
   z
     .object({
       ...RequestEnvelopeFields,
-      method: z.literal("task.view"),
-      params: z
-        .object({
-          threadId: z.string().trim().min(1).max(512),
-          action: z.enum(["get", "history", "heartbeat-history", "bind-heartbeat"]),
-          cursor: z.string().max(512).optional(),
-          limit: z.number().int().min(1).max(100).optional(),
-          path: z.string().min(1).max(4096).nullable().optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
       method: z.literal("task.native-read"),
       params: z
         .object({
@@ -219,7 +197,7 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
       method: z.literal("hello"),
       params: z
         .object({
-          clientKind: z.enum(["hook", "mcp", "cdp", "doctor", "updater"]),
+          clientKind: z.enum(["hook", "mcp", "doctor"]),
           clientVersion: z.string().trim().min(1).max(64),
         })
         .strict(),
@@ -320,89 +298,6 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
       ...RequestEnvelopeFields,
       method: z.literal("store.apply"),
       params: StoreApplyParamsSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("view.get"),
-      params: z.object({ sessionId: z.string().trim().min(1).max(256) }).strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("renderer.visible-thread"),
-      params: z
-        .object({
-          targetId: GoalProgressRendererTargetIdSchema,
-          threadId: z
-            .string()
-            .trim()
-            .min(1)
-            .max(256)
-            .refine((value) => !value.startsWith("client-new-thread:"))
-            .nullable(),
-          sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
-          lifecycleId: z
-            .string()
-            .regex(/^[A-Za-z0-9_-]{32}$/u)
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("renderer.disconnected"),
-      params: z
-        .object({
-          targetId: GoalProgressRendererTargetIdSchema,
-          code: z
-            .string()
-            .trim()
-            .regex(/^[A-Z][A-Z0-9_]{2,127}$/u),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("ui.intent"),
-      params: z
-        .object({
-          sessionId: z.string().trim().min(1).max(256),
-          intent: z.unknown(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("update.intent"),
-      params: z
-        .object({
-          sessionId: z.string().trim().min(1).max(256),
-          intent: GoalProgressUpdateIntentSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("update.worker-result"),
-      params: GoalProgressUpdateWorkerResultSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...RequestEnvelopeFields,
-      method: z.literal("update.restart-result"),
-      params: GoalProgressUpdateRestartResultSchema,
     })
     .strict(),
   z

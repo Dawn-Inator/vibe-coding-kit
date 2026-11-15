@@ -21,7 +21,7 @@
       ]
     },
     "task-progress": {
-      "question": "是否使用任务进度插件，并创建同名同图标的一键 Dock 启动入口？",
+      "question": "是否使用原生 Codex 任务进度插件？",
       "components": [
         "codex-task-progress"
       ]

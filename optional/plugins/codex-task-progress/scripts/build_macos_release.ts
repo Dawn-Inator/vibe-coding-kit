@@ -18,7 +18,6 @@ import {
   createMacosReleaseManifest,
   createNodeSeaConfig,
   GOAL_PROGRESS_DISABLE_COMMAND_PATH,
-  GOAL_PROGRESS_DOCK_LAUNCHER_PATH,
   GOAL_PROGRESS_INSTALL_COMMAND_PATH,
   GOAL_PROGRESS_MACOS_RELEASE_NODE_VERSION,
   GOAL_PROGRESS_REPAIR_COMMAND_PATH,
@@ -34,9 +33,7 @@ import { generateThirdPartyNotices } from "./generate_third_party_notices.js";
 import { kitRoot } from "./kit_root.mjs";
 import {
   createCodesignArgs,
-  GOAL_PROGRESS_DOCK_LAUNCHER_SIGNING_IDENTIFIER,
   GOAL_PROGRESS_HELPER_SIGNING_IDENTIFIER,
-  GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER,
   resolveReleaseSigning,
 } from "./release-signing.mjs";
 
@@ -58,14 +55,7 @@ const outputRoot = resolve(
   process.env.GOAL_PROGRESS_RELEASE_OUTPUT ?? resolve(root, "dist/release/macos-arm64"),
 );
 const nodeBinary = process.env.GOAL_PROGRESS_NODE_BINARY;
-const rendererSourceRoot = resolve(root, "dist/renderer");
-const rendererBundleSource = resolve(rendererSourceRoot, "goal-progress.js");
-const rendererManifestSource = resolve(rendererSourceRoot, "goal-progress.manifest.json");
 const helperRelativePath = "bin/goal-progress";
-const startupListenerRelativePath = "bin/goal-progress-startup-listener";
-const dockLauncherRelativePath = GOAL_PROGRESS_DOCK_LAUNCHER_PATH;
-const rendererRelativePath = "renderer/goal-progress.js";
-const rendererManifestRelativePath = "renderer/goal-progress.manifest.json";
 const pluginArchiveRelativePath = "plugin-marketplace.zip";
 const installCommandPath = resolve(outputRoot, GOAL_PROGRESS_INSTALL_COMMAND_PATH);
 const repairCommandPath = resolve(outputRoot, GOAL_PROGRESS_REPAIR_COMMAND_PATH);
@@ -141,69 +131,15 @@ async function main(): Promise<void> {
   if (!packageJson.version) {
     throw new Error("GOAL_PROGRESS_RELEASE_VERSION_MISSING");
   }
-  const rendererManifest = JSON.parse(await readFile(rendererManifestSource, "utf8")) as {
-    releaseVersion?: string;
-  };
 
   await rm(outputRoot, { recursive: true, force: true });
   const workRoot = resolve(outputRoot, ".build");
   const helperPath = resolve(outputRoot, helperRelativePath);
-  const startupListenerPath = resolve(outputRoot, startupListenerRelativePath);
-  const dockLauncherPath = resolve(outputRoot, dockLauncherRelativePath);
-  const rendererPath = resolve(outputRoot, rendererRelativePath);
-  const rendererManifestPath = resolve(outputRoot, rendererManifestRelativePath);
   await Promise.all([
     mkdir(dirname(helperPath), { recursive: true }),
-    mkdir(dirname(rendererPath), { recursive: true }),
     mkdir(workRoot, { recursive: true }),
   ]);
-  const dockLauncherSource = resolve(root, "platform/macos/launcher/main.swift");
-  run(
-    "/usr/bin/xcrun",
-    ["swiftc", "-O", "-framework", "AppKit", dockLauncherSource, "-o", dockLauncherPath],
-    "GOAL_PROGRESS_DOCK_LAUNCHER_BUILD_FAILED",
-  );
-  assertReleaseBinaryHygiene(await readFile(dockLauncherPath), [root, outputRoot, workRoot]);
-  await chmod(dockLauncherPath, 0o755);
-  run(
-    "/usr/bin/codesign",
-    createCodesignArgs(
-      signing.identity,
-      GOAL_PROGRESS_DOCK_LAUNCHER_SIGNING_IDENTIFIER,
-      dockLauncherPath,
-    ),
-    "GOAL_PROGRESS_DOCK_LAUNCHER_SIGN_FAILED",
-  );
-  run(
-    "/usr/bin/codesign",
-    ["--verify", "--strict", dockLauncherPath],
-    "GOAL_PROGRESS_DOCK_LAUNCHER_SIGNATURE_INVALID",
-  );
-  const startupListenerSource = resolve(root, "platform/macos/startup-listener/main.swift");
-  run(
-    "/usr/bin/xcrun",
-    ["swiftc", "-O", "-framework", "AppKit", startupListenerSource, "-o", startupListenerPath],
-    "GOAL_PROGRESS_STARTUP_LISTENER_BUILD_FAILED",
-  );
-  assertReleaseBinaryHygiene(await readFile(startupListenerPath), [root, outputRoot, workRoot]);
-  await chmod(startupListenerPath, 0o755);
-  run(
-    "/usr/bin/codesign",
-    createCodesignArgs(
-      signing.identity,
-      GOAL_PROGRESS_STARTUP_LISTENER_SIGNING_IDENTIFIER,
-      startupListenerPath,
-    ),
-    "GOAL_PROGRESS_STARTUP_LISTENER_SIGN_FAILED",
-  );
-  run(
-    "/usr/bin/codesign",
-    ["--verify", "--strict", startupListenerPath],
-    "GOAL_PROGRESS_STARTUP_LISTENER_SIGNATURE_INVALID",
-  );
   await Promise.all([
-    copyFile(rendererBundleSource, rendererPath),
-    copyFile(rendererManifestSource, rendererManifestPath),
     ...documentationRelativePaths.map((relativePath) =>
       copyFile(resolve(root, relativePath), resolve(outputRoot, relativePath)),
     ),
@@ -345,10 +281,6 @@ async function main(): Promise<void> {
 
   const [
     helper,
-    startupListener,
-    dockLauncher,
-    renderer,
-    rendererManifestFile,
     pluginArchive,
     installGuide,
     installCommand,
@@ -361,10 +293,6 @@ async function main(): Promise<void> {
     readme,
   ] = await Promise.all([
     releaseFile(helperPath, helperRelativePath),
-    releaseFile(startupListenerPath, startupListenerRelativePath),
-    releaseFile(dockLauncherPath, dockLauncherRelativePath),
-    releaseFile(rendererPath, rendererRelativePath),
-    releaseFile(rendererManifestPath, rendererManifestRelativePath),
     releaseFile(pluginArchivePath, pluginArchiveRelativePath),
     releaseFile(resolve(outputRoot, "INSTALL-FOR-AI.md"), "INSTALL-FOR-AI.md"),
     releaseFile(installCommandPath, GOAL_PROGRESS_INSTALL_COMMAND_PATH),
@@ -378,14 +306,9 @@ async function main(): Promise<void> {
   ]);
   const releaseManifest = createMacosReleaseManifest({
     releaseVersion: packageJson.version,
-    rendererReleaseVersion: rendererManifest.releaseVersion ?? "",
     nodeVersion: GOAL_PROGRESS_MACOS_RELEASE_NODE_VERSION,
     pluginTreeManifestSha256,
     helper,
-    startupListener,
-    dockLauncher,
-    renderer,
-    rendererManifest: rendererManifestFile,
     pluginArchive,
     license,
     nodeLicense,
@@ -404,10 +327,6 @@ async function main(): Promise<void> {
     resolve(outputRoot, "SHA256SUMS"),
     renderSha256Sums([
       helper,
-      startupListener,
-      dockLauncher,
-      renderer,
-      rendererManifestFile,
       pluginArchive,
       installGuide,
       installCommand,

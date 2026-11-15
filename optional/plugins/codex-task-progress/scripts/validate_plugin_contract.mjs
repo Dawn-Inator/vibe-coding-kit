@@ -421,10 +421,6 @@ if (manifest) {
       "runtime/pnpm-lock.yaml",
       "runtime/pnpm-workspace.yaml",
       "runtime/run-bootstrap.sh",
-      "runtime/startup-listener-bridge.mjs",
-      "runtime/startup-listener-launcher.sh",
-      "runtime/startup-listener.mjs",
-      "runtime/startup-listener.jxa",
     ]) {
       try {
         await readFile(resolve(pluginRoot, relativePath));

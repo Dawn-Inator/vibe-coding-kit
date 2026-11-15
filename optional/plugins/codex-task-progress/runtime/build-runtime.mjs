@@ -24,45 +24,8 @@ const releaseVersion = String(packageJson.version ?? "").trim();
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(releaseVersion)) {
   throw new Error("GOAL_PROGRESS_SOURCE_BUILD_VERSION_INVALID");
 }
-const pageHostVersionDocument = JSON.parse(
-  await readFile(resolve(sourceRoot, "packages/contracts/src/page-host-version.json"), "utf8"),
-);
-const rendererBundlePolicy = JSON.parse(
-  await readFile(resolve(sourceRoot, "packages/contracts/src/renderer-bundle-policy.json"), "utf8"),
-);
-const maxRendererBundleBytes = rendererBundlePolicy.rendererBundleMaxBytes;
-if (!Number.isSafeInteger(maxRendererBundleBytes) || maxRendererBundleBytes < 1) {
-  throw new Error("GOAL_PROGRESS_RENDERER_BUNDLE_POLICY_INVALID");
-}
-const pageHostVersion = pageHostVersionDocument.pageHostVersion;
-if (!Number.isSafeInteger(pageHostVersion) || pageHostVersion < 1) {
-  throw new Error("GOAL_PROGRESS_SOURCE_BUILD_PAGE_HOST_VERSION_INVALID");
-}
-
-const rendererBuild = await build({
-  absWorkingDir: sourceRoot,
-  bundle: true,
-  charset: "utf8",
-  entryPoints: ["packages/codex-adapter/src/browser-entry.ts"],
-  format: "iife",
-  legalComments: "none",
-  minify: true,
-  nodePaths: [resolve(runtimeRoot, "node_modules")],
-  outfile: resolve(outputRoot, "renderer/goal-progress.js"),
-  platform: "browser",
-  target: "chrome120",
-  write: false,
-});
-const renderer = rendererBuild.outputFiles[0]?.contents;
-if (!renderer || renderer.byteLength === 0 || renderer.byteLength > maxRendererBundleBytes) {
-  throw new Error(`GOAL_PROGRESS_RENDERER_BUNDLE_SIZE_INVALID: ${renderer?.byteLength ?? 0}`);
-}
-
 await rm(outputRoot, { recursive: true, force: true });
-await Promise.all([
-  mkdir(resolve(outputRoot, "bin"), { recursive: true }),
-  mkdir(resolve(outputRoot, "renderer"), { recursive: true }),
-]);
+await Promise.all([mkdir(resolve(outputRoot, "bin"), { recursive: true })]);
 
 const helperBundlePath = resolve(outputRoot, "bin/goal-progress.cjs");
 const cliEntryPath = resolve(sourceRoot, "platform/macos/src/cli.ts");
@@ -102,45 +65,13 @@ await buildNativePanel({
   nodePaths: [resolve(runtimeRoot, "node_modules")],
 });
 
-const rendererPath = resolve(outputRoot, "renderer/goal-progress.js");
-await writeFile(rendererPath, renderer);
-const rendererManifest = {
-  schemaVersion: 1,
-  releaseVersion,
-  pageHostVersion,
-  file: "goal-progress.js",
-  bytes: renderer.byteLength,
-  sha256: createHash("sha256").update(renderer).digest("hex"),
-};
-await writeFile(
-  resolve(outputRoot, "renderer/goal-progress.manifest.json"),
-  `${JSON.stringify(rendererManifest, null, 2)}\n`,
-);
-
 await Promise.all([
   copyFile(resolve(runtimeRoot, "node-runtime.sh"), resolve(outputRoot, "bin/node-runtime.sh")),
   copyFile(resolve(runtimeRoot, "helper-launcher.sh"), resolve(outputRoot, "bin/goal-progress")),
-  copyFile(
-    resolve(runtimeRoot, "startup-listener-launcher.sh"),
-    resolve(outputRoot, "bin/goal-progress-startup-listener"),
-  ),
-  copyFile(
-    resolve(runtimeRoot, "startup-listener-bridge.mjs"),
-    resolve(outputRoot, "bin/startup-listener-bridge.mjs"),
-  ),
-  copyFile(
-    resolve(runtimeRoot, "startup-listener.mjs"),
-    resolve(outputRoot, "bin/startup-listener.mjs"),
-  ),
-  copyFile(
-    resolve(runtimeRoot, "startup-listener.jxa"),
-    resolve(outputRoot, "bin/startup-listener.jxa"),
-  ),
 ]);
 for (const executable of [
   resolve(outputRoot, "bin/node-runtime.sh"),
   resolve(outputRoot, "bin/goal-progress"),
-  resolve(outputRoot, "bin/goal-progress-startup-listener"),
 ]) {
   await chmod(executable, 0o700);
 }
@@ -159,13 +90,7 @@ const files = {};
 for (const relativePath of [
   "bin/goal-progress",
   "bin/goal-progress.cjs",
-  "bin/goal-progress-startup-listener",
   "bin/node-runtime.sh",
-  "bin/startup-listener-bridge.mjs",
-  "bin/startup-listener.mjs",
-  "bin/startup-listener.jxa",
-  "renderer/goal-progress.js",
-  "renderer/goal-progress.manifest.json",
   "assets/task-progress-panel.html",
 ]) {
   files[relativePath] = await fileRecord(relativePath);

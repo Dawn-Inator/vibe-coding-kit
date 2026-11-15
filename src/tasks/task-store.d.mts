@@ -6,6 +6,7 @@ import type {
 	TaskRescopeInput,
 	TaskMutationResult,
 	TaskHistoryPage,
+	TaskHistorySummaryPage,
 } from "./task-contract.mjs";
 export class TaskStoreError extends Error {
 	readonly code: string;
@@ -35,9 +36,15 @@ export class TaskStore {
 		threadId: string,
 		value: TaskRescopeInput,
 	): Promise<TaskMutationResult>;
+	/** Summary pages contain no snapshots, cap reasons at 512 characters and fit within 512 KiB.
+	 * canonicalHistoryPath and revision identify the unchanged full records. */
 	history(
 		threadId: string,
-		options?: { cursor?: string; limit?: number },
+		options: { cursor?: string; limit?: number; projection: "summary" },
+	): Promise<TaskHistorySummaryPage>;
+	history(
+		threadId: string,
+		options?: { cursor?: string; limit?: number; projection?: "raw" },
 	): Promise<TaskHistoryPage>;
 }
 export function taskMarkdownPaths(

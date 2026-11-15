@@ -42,7 +42,7 @@ function manager(legacy: string) {
   managers.push(instance);
   return instance;
 }
-function initialize(store: TaskStore, thread = "thread", title = "Task") {
+function initialize(store: Pick<TaskStore, "initialize">, thread = "thread", title = "Task") {
   return store.initialize(thread, {
     requestId: `init-${title}`,
     expectedRevision: 0,
@@ -53,6 +53,25 @@ function initialize(store: TaskStore, thread = "thread", title = "Task") {
 }
 const hasCode = (code: string) => (error: unknown) =>
   error instanceof TaskStoreError && error.code === code;
+
+test("workspace presentation history requests Kit summaries without changing canonical task records", async () => {
+  const { cwd, legacy } = await setup();
+  const context = await manager(legacy).forThread("thread", cwd);
+  assert.equal(await context.taskStore.get("thread"), null);
+  assert.deepEqual((await context.taskStore.history("thread")).events, []);
+  await initialize(context.taskStore);
+  const path = context.storage.taskhistoryPath;
+  const before = await readFile(path, "utf8");
+  const page = await context.taskStore.history("thread");
+  assert.equal(page.events.length, 1);
+  const event = page.events[0];
+  assert.ok(event);
+  assert.equal(event.reason, "Requested");
+  assert.equal("state" in event, false);
+  assert.equal(page.canonicalHistoryPath, path);
+  assert.equal(await readFile(path, "utf8"), before);
+  assert.equal((await context.taskStore.get("thread"))?.revision, 1);
+});
 
 test("legacy JSONL migrates to canonical Markdown while full replay and source bytes remain exact", async () => {
   const { cwd, legacy, legacyStore } = await setup();

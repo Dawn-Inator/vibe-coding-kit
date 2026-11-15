@@ -177,20 +177,17 @@ async function inspectTaskProgress(context) {
     let document;
     try { document = JSON.parse(doctor.stdout); } catch { throw new Error('goal-progress doctor returned invalid JSON'); }
     if (document?.details?.pluginInstalled === true) {
-      const launcher = await inspectManagedLauncher(stableHelper, context);
       return result('installed', document?.ok === false || doctor.code !== 0
         ? 'The registered plugin remains installed; doctor reports a separate issue.' : undefined,
       {
         component: 'codex-task-progress', source: 'stable-install',
         pluginInstalled: true,
-        ...launcher,
         diagnostic: document,
       });
     }
     if (doctor.code !== 0) throw new Error(`goal-progress doctor failed (exit ${doctor.code})`);
     if (document?.ok === true || document?.status === 'DOCTOR_OK' || document?.code === 'DOCTOR_OK') {
-      const launcher = await inspectManagedLauncher(stableHelper, context);
-      return result('installed', undefined, { component: 'codex-task-progress', source: 'stable-install', pluginInstalled: true, ...launcher });
+      return result('installed', undefined, { component: 'codex-task-progress', source: 'stable-install', pluginInstalled: true });
     }
     if (document?.ok === false || document?.status || document?.code) return result('error', 'The existing Codex Task Progress installation needs attention; run its doctor command and follow the reported repair step.');
     throw new Error('goal-progress doctor result is unrecognized');
@@ -208,31 +205,9 @@ async function inspectTaskProgress(context) {
   return record
     ? result('installed', undefined, {
       component: 'codex-task-progress', source: 'codex-plugin-registration', pluginInstalled: true,
-      launcherSupported: false, launcherInstalled: false, dockConfigured: false, launcherAppPath: null,
       version: typeof record.version === 'string' ? record.version : undefined,
     })
     : result('missing', 'Codex Task Progress is not installed.');
-}
-
-async function inspectManagedLauncher(helper, context) {
-  const response = await run(context.runner, helper, ['launcher', '--status', '--json'], dirname(helper), context.env);
-  let document;
-  try { document = JSON.parse(response.stdout); } catch {
-    return { launcherSupported: false, launcherInstalled: false, dockConfigured: false, launcherAppPath: null };
-  }
-  if (response.code !== 0 || !document || typeof document !== 'object') {
-    return { launcherSupported: false, launcherInstalled: false, dockConfigured: false, launcherAppPath: null };
-  }
-  const details = document.details && typeof document.details === 'object' ? document.details : document;
-  const hasStatusContract = typeof details.launcherInstalled === 'boolean' && typeof details.dockConfigured === 'boolean';
-  const supported = (document.supported === true || hasStatusContract)
-    && document.status !== 'unsupported' && document.code !== 'LAUNCHER_UNSUPPORTED';
-  return {
-    launcherSupported: supported,
-    launcherInstalled: supported && details.launcherInstalled === true,
-    dockConfigured: supported && details.dockConfigured === true,
-    launcherAppPath: typeof details.launcherAppPath === 'string' ? details.launcherAppPath : null,
-  };
 }
 
 function resolveInstalledTaskProgressHelper(dataRoot) {
@@ -403,45 +378,22 @@ async function installTaskProgress(component, context, priorInspection = undefin
   if (!existsSync(helper) || !statSync(helper).isFile()) return result('setup-required', 'The bundled Codex Task Progress installer is unavailable in this Kit checkout.');
   const signing = await prepareTaskProgressSigning(helper, context);
   if (signing.status !== 'ready') return signing;
-  const installerArgs = context.managedDock === true ? [helper, '--defer-connection'] : [helper];
+  const installerArgs = [helper];
   const installed = await context.runner('node', installerArgs, { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 10 * 60_000 });
   if (!installed || !Number.isInteger(installed.code)) return result('error', 'Codex Task Progress installer returned an invalid runner response.');
   let document;
   try { document = JSON.parse(installed.stdout); } catch { return result('error', `Codex Task Progress installer returned invalid JSON (exit ${installed.code}).`); }
   const installerCode = document?.output?.code ?? document?.output?.status ?? document?.code;
   const installerReason = document?.reason ?? document?.message ?? document?.output?.reason ?? document?.output?.message;
-  if (installerCode === 'INSTALL_RESTART_REQUIRED' || document?.status === 'INSTALL_RESTART_REQUIRED' || document?.status === 'setup-required') return result('setup-required', installerReason ?? 'Codex Task Progress setup requires the next step shown by its installer.');
+  if (installerCode === 'INSTALL_RESTART_REQUIRED' || document?.status === 'INSTALL_RESTART_REQUIRED') {
+    return result('error', 'The bundled Codex Task Progress installer requested a Codex restart; the native-only installer contract forbids application restarts.');
+  }
+  if (document?.status === 'setup-required') return result('setup-required', installerReason ?? 'Codex Task Progress setup requires the next step shown by its installer.');
   if (installed.code !== 0) return result(document?.status === 'setup-required' ? 'setup-required' : 'error', installerReason ?? `Codex Task Progress installation failed (exit ${installed.code}).`);
   if (document?.status !== 'installed' && document?.status !== 'INSTALL_OK' && document?.code !== 'INSTALL_OK') return result('error', installerReason ?? 'Codex Task Progress installer did not report a successful install.');
   const after = await inspectTaskProgress(context);
-  if (after.status === 'installed') {
-    if (context.managedDock !== true) return after;
-    return await ensureManagedLauncher(after, context);
-  }
+  if (after.status === 'installed') return after;
   return after.status === 'error' ? after : result('setup-required', 'The installer completed but the existing installation could not be verified.');
-}
-
-async function ensureManagedLauncher(existing, context) {
-  if (existing.dockConfigured === true && existing.launcherInstalled === true) return existing;
-  if (existing.launcherSupported !== true) {
-    return result('setup-required', 'The installed Goal Progress helper does not support managed Dock launchers. Update the plugin explicitly, then rerun task-progress setup.');
-  }
-  const helper = resolveInstalledTaskProgressHelper(join(context.home, 'Library', 'Application Support', 'CodexTaskProgress'));
-  if (!helper) return result('setup-required', 'The installed Goal Progress helper could not be found for managed Dock setup.');
-  const response = await run(context.runner, helper, ['launcher', '--install', '--dock', '--json'], dirname(helper), context.env);
-  let document;
-  try { document = JSON.parse(response.stdout); } catch {
-    return result('setup-required', `Managed Dock launcher setup returned invalid JSON (exit ${response.code}).`);
-  }
-  const details = document?.details && typeof document.details === 'object' ? document.details : document;
-  if (response.code !== 0 || !(document?.ok === true || ['installed', 'configured', 'LAUNCHER_OK'].includes(document?.status ?? document?.code))
-    || details?.launcherInstalled !== true || details?.dockConfigured !== true) {
-    return result('setup-required', document?.reason ?? document?.message ?? 'Managed Dock launcher setup was not confirmed.');
-  }
-  return result('installed', undefined, {
-    ...existing, launcherSupported: true, launcherInstalled: true, dockConfigured: true,
-    launcherAppPath: typeof details.launcherAppPath === 'string' ? details.launcherAppPath : existing.launcherAppPath ?? null,
-  });
 }
 
 function parseInstallerJson(response, action) {
@@ -535,7 +487,7 @@ export async function installOptionalComponent(options) {
       componentInstallerPath(kitRoot, component);
       const existing = await inspectTaskProgress(context);
       if (existing.status === 'error') return existing;
-      if (existing.status === 'installed') return context.managedDock === true ? await ensureManagedLauncher(existing, context) : existing;
+      if (existing.status === 'installed') return existing;
       return await installTaskProgress(component, context, existing);
     }
     if (component.id === 'lark') return await installLark(component, context);

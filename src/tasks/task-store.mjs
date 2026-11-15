@@ -11,6 +11,23 @@ import {
 } from "./markdown-records.mjs";
 import { calculateTaskProgress } from "./task-contract.mjs";
 
+// Leave room for the surrounding IPC envelope. The raw journal is never truncated.
+const SUMMARY_PAGE_BYTES = 512 * 1024;
+const SUMMARY_REASON_CHARACTERS = 512;
+
+function summarizeHistoryEvent(event) {
+	const characters = Array.from(event.reason);
+	return {
+		revision: event.revision,
+		kind: event.kind,
+		occurredAt: event.occurredAt,
+		reason: characters.slice(0, SUMMARY_REASON_CHARACTERS).join(""),
+		reasonTruncated: characters.length > SUMMARY_REASON_CHARACTERS,
+		before: event.before,
+		after: event.after,
+	};
+}
+
 export class TaskStoreError extends Error {
 	constructor(code, message) {
 		super(message);
@@ -643,6 +660,28 @@ export class TaskStore {
 			const eligible = events
 				.filter((event) => event.revision < before)
 				.reverse();
+			if (options.projection === "summary") {
+				const page = [];
+				const canonicalHistoryPath = taskMarkdownPaths(this.root, threadId).history;
+				for (const event of eligible.slice(0, limit)) {
+					const summary = summarizeHistoryEvent(event);
+					const candidate = [...page, summary];
+					// Measure the serialized result itself, including cursor and source metadata.
+					if (Buffer.byteLength(JSON.stringify({ events: candidate, nextCursor: String(event.revision), canonicalHistoryPath })) > SUMMARY_PAGE_BYTES - 1024) {
+						if (page.length === 0)
+							throw new TaskStoreError("TASK_HISTORY_PAGE_TOO_LARGE", "History summary cannot fit the page budget");
+						break;
+					}
+					page.push(summary);
+				}
+				return {
+					events: page,
+					nextCursor: eligible.length > page.length ? String(page.at(-1).revision) : null,
+					canonicalHistoryPath,
+				};
+			}
+			if (options.projection !== undefined && options.projection !== "raw")
+				throw new TaskStoreError("TASK_HISTORY_PROJECTION_INVALID", "Invalid history projection");
 			const page = eligible.slice(0, limit);
 			return {
 				events: page,

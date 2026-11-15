@@ -72,7 +72,12 @@ window.addEventListener('message', async (event) => {
   if(!request || request.jsonrpc !== '2.0' || !request.method) return;
   if(request.method === 'ui/initialize') {
     if(window.ignoreInitialize) return;
-    frame.contentWindow.postMessage({jsonrpc:'2.0',id:request.id,result:{protocolVersion:'2026-01-26',hostInfo:{name:'test-host',version:'1'},hostCapabilities:{serverTools:{listChanged:true}},hostContext:{theme:'dark',safeAreaInsets:{top:20,right:10,bottom:15,left:10},platform:'desktop'}}},'*');
+    const url=new URL(location.href);
+    const theme=url.searchParams.get('theme') || 'dark';
+    const foreground=theme==='dark'?'rgb(220, 224, 230)':'rgb(45, 51, 60)';
+    const hostContext={theme,safeAreaInsets:{top:20,right:10,bottom:15,left:10},platform:'desktop'};
+    if(!url.searchParams.has('nostyles')) hostContext.styles={variables:{'--color-token-foreground':foreground,'--color-text-primary':foreground,'--color-token-primary':'rgb(0, 128, 0)','--color-background-primary':theme==='dark'?'rgb(30, 32, 36)':'rgb(255, 255, 255)','--ctp-accent':'rgb(0, 128, 0)'}};
+    frame.contentWindow.postMessage({jsonrpc:'2.0',id:request.id,result:{protocolVersion:'2026-01-26',hostInfo:{name:'test-host',version:'1'},hostCapabilities:{serverTools:{listChanged:true}},hostContext}},'*');
     return;
   }
   if(request.method === 'tools/call') {
@@ -150,7 +155,11 @@ test("native panel MCP Apps integration", async (t) => {
 
     // Isolate each protocol scenario so a failure cannot hide later coverage.
     async function scenario(run, suffix = "") {
-      const context = await browser.newContext({ viewport: { width: 350, height: 740 } });
+      const preferredColorScheme = new URLSearchParams(suffix).get("theme");
+      const context = await browser.newContext({
+        viewport: { width: 350, height: 740 },
+        ...(preferredColorScheme ? { colorScheme: preferredColorScheme } : {}),
+      });
       await context.addInitScript(() =>
         localStorage.setItem("codex-task-progress:expanded", "sentinel"),
       );
@@ -173,6 +182,111 @@ test("native panel MCP Apps integration", async (t) => {
         iframe.contentDocument.dispatchEvent(new Event("visibilitychange"));
       });
     }
+
+    await t.test("neutral native theme follows host light and dark foreground tokens", async () => {
+      for (const theme of ["light", "dark"]) {
+        await scenario(async (_page, frame) => {
+          await ready(frame);
+          await frame.locator(".row[data-objective]").click();
+          const taskColors = await frame.locator("codex-task-panel").evaluate((element) => {
+            const root = element.shadowRoot;
+            const fill = root.querySelector(".edge-fill");
+            const track = root.querySelector(".edge-track");
+            const percent = root.querySelector(".percent");
+            const main = root.querySelector(".main");
+            const style = (node) => getComputedStyle(node);
+            return {
+              documentTheme: document.documentElement.getAttribute("data-theme"),
+              hostForeground: getComputedStyle(element).color,
+              accent: getComputedStyle(element).getPropertyValue("--ctp-accent").trim(),
+              fill: style(fill).stroke,
+              track: style(track).stroke,
+              percent: style(percent).color,
+              main: style(main).color,
+              states: ["active", "completed"].map((status) => {
+                const icon = root.querySelector(
+                  status === "completed"
+                    ? ".node-symbol[data-status='completed']"
+                    : ".module-icon[data-status='active']",
+                );
+                return icon ? style(icon).color : null;
+              }),
+            };
+          });
+          assert.equal(taskColors.documentTheme, theme);
+          assert.equal(taskColors.accent, "var(--ctp-text)");
+          assert.equal(taskColors.percent, taskColors.main);
+          assert.equal(taskColors.percent, taskColors.hostForeground);
+          assert.notEqual(taskColors.fill, "rgb(0, 128, 0)");
+          assert.notEqual(taskColors.fill, taskColors.track);
+          assert.ok(taskColors.states.every((color) => color && color !== "rgb(0, 128, 0)"));
+
+          await frame.getByRole("button", { name: "History" }).click();
+          const historyColor = await frame.locator("codex-task-panel").evaluate((element) => {
+            const event = element.shadowRoot.querySelector(".event:first-child");
+            return getComputedStyle(event, "::before").borderTopColor;
+          });
+          await frame.getByRole("button", { name: "Heartbeat" }).click();
+          const heartbeatColor = await frame.locator("codex-task-panel").evaluate((element) => {
+            const status = element.shadowRoot.querySelector(".hb-status[data-status='ready']");
+            return getComputedStyle(status).color;
+          });
+          assert.equal(historyColor, taskColors.percent);
+          assert.equal(heartbeatColor, taskColors.percent);
+        }, `?theme=${theme}`);
+      }
+    });
+
+    await t.test(
+      "neutral native fallbacks work without host context or style variables",
+      async () => {
+        for (const theme of ["light", "dark"]) {
+          for (const suffix of [`?nohost&theme=${theme}`, `?nostyles&theme=${theme}`]) {
+            await scenario(async (_page, frame) => {
+              if (suffix.includes("nohost")) {
+                const panel = frame.locator("codex-task-panel");
+                await panel.waitFor();
+                await panel.evaluate((element, response) => {
+                  element.data = response;
+                  element.observed = true;
+                  element.threadId = response.task.threadId;
+                  element.requester = async () => response;
+                }, initialResponse);
+                await frame.locator(".percent").waitFor();
+              } else {
+                await ready(frame);
+              }
+              await frame.locator(".row[data-objective]").click();
+              const colors = await frame.locator("codex-task-panel").evaluate((element) => {
+                const root = element.shadowRoot;
+                const style = (selector) => getComputedStyle(root.querySelector(selector));
+                return {
+                  accent: getComputedStyle(element).getPropertyValue("--ctp-accent").trim(),
+                  colorScheme: getComputedStyle(document.documentElement).colorScheme,
+                  prefersDark: matchMedia("(prefers-color-scheme: dark)").matches,
+                  documentTheme: document.documentElement.getAttribute("data-theme"),
+                  foreground: getComputedStyle(element).color,
+                  percent: style(".percent").color,
+                  fill: style(".edge-fill").stroke,
+                  track: style(".edge-track").stroke,
+                  active: style(".module-icon[data-status='active']").color,
+                  completed: style(".node-symbol[data-status='completed']").color,
+                };
+              });
+              assert.equal(colors.accent, "var(--ctp-text)");
+              assert.equal(colors.prefersDark, theme === "dark");
+              assert.equal(colors.documentTheme, suffix.includes("nohost") ? null : theme);
+              assert.equal(colors.colorScheme, suffix.includes("nohost") ? "light dark" : theme);
+              assert.equal(colors.percent, colors.foreground);
+              assert.notEqual(colors.fill, "rgb(0, 128, 0)");
+              assert.notEqual(colors.fill, colors.track);
+              assert.notEqual(colors.active, "rgb(0, 128, 0)");
+              assert.notEqual(colors.completed, "rgb(0, 128, 0)");
+            }, suffix);
+          }
+        }
+      },
+    );
 
     await t.test("handshake, tabs, read-only requests and host presentation", () =>
       scenario(async (page, frame, requests) => {

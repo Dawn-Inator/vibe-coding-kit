@@ -2,8 +2,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  accessSync,
-  constants,
   cpSync,
   existsSync,
   mkdirSync,
@@ -156,10 +154,6 @@ const setupLockPath = resolve(sourceRuntimeRoot, "setup.lock");
 const bootstrapLogPath = resolve(sourceRuntimeRoot, "bootstrap.log");
 const helperLauncherPath = resolve(versionRoot, "bin/goal-progress");
 const helperBundlePath = resolve(versionRoot, "bin/goal-progress.cjs");
-const legacyBinary = resolve(
-  homedir(),
-  "Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress",
-);
 
 async function log(event, details = {}) {
   await mkdir(sourceRuntimeRoot, { recursive: true, mode: 0o700 });
@@ -228,10 +222,6 @@ function sourceInputHash() {
     "pnpm-workspace.yaml",
     "node-runtime.sh",
     "helper-launcher.sh",
-    "startup-listener-launcher.sh",
-    "startup-listener-bridge.mjs",
-    "startup-listener.mjs",
-    "startup-listener.jxa",
   ])
     add(resolve(runtimeRoot, file), `runtime/${file}`);
   return hash.digest("hex");
@@ -286,18 +276,8 @@ function runtimeIsReady(root = versionRoot) {
   }
   return (
     existsSync(resolve(root, "bin/goal-progress")) &&
-    existsSync(resolve(root, "bin/goal-progress.cjs")) &&
-    existsSync(resolve(root, "bin/goal-progress-startup-listener"))
+    existsSync(resolve(root, "bin/goal-progress.cjs"))
   );
-}
-
-function executable(path) {
-  try {
-    accessSync(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function commandVersion(command, prefix = []) {
@@ -373,10 +353,6 @@ function copyBuildInputs(stagingRoot) {
     "build-runtime.mjs",
     "node-runtime.sh",
     "helper-launcher.sh",
-    "startup-listener-launcher.sh",
-    "startup-listener-bridge.mjs",
-    "startup-listener.mjs",
-    "startup-listener.jxa",
   ]) {
     cpSync(resolve(runtimeRoot, file), resolve(stagingRoot, file));
   }
@@ -487,8 +463,6 @@ function runtimeEnvironment(root = versionRoot) {
     GOAL_PROGRESS_SOURCE_RUNTIME_ROOT: root,
     GOAL_PROGRESS_SOURCE_LAUNCHER: resolve(root, "bin/goal-progress"),
     GOAL_PROGRESS_SOURCE_BUNDLE: resolve(root, "bin/goal-progress.cjs"),
-    GOAL_PROGRESS_RENDERER_BUNDLE_DIR: resolve(root, "renderer"),
-    GOAL_PROGRESS_STARTUP_LISTENER: resolve(root, "bin/goal-progress-startup-listener"),
   };
 }
 
@@ -544,14 +518,6 @@ function sourceHelperReachable(timeoutMs = 150) {
   });
 }
 
-function fallbackLegacy(targetMode) {
-  if (!executable(legacyBinary)) {
-    return false;
-  }
-  runAttached(legacyBinary, [targetMode], process.env);
-  return true;
-}
-
 async function ensureSourceSetup(root) {
   if (process.env.GOAL_PROGRESS_SOURCE_SKIP_SETUP === "1") {
     return;
@@ -583,12 +549,10 @@ async function main() {
   if (mode === "hook") {
     if (!runtimeIsReady()) {
       spawnPrepare();
-      fallbackLegacy("hook");
       return;
     }
     if (!(await sourceHelperReachable())) {
       spawnPrepare();
-      fallbackLegacy("hook");
       return;
     }
     runAttached(helperLauncherPath, ["hook"], runtimeEnvironment());
@@ -602,10 +566,8 @@ async function main() {
       runAttached(resolve(root, "bin/goal-progress"), ["mcp-server"], runtimeEnvironment(root));
     } catch (error) {
       await log("mcp-start-failed", { code: errorCode(error) });
-      if (!fallbackLegacy("mcp-server")) {
-        process.stderr.write(`${errorCode(error)}\n`);
-        process.exitCode = 1;
-      }
+      process.stderr.write(`${errorCode(error)}\n`);
+      process.exitCode = 1;
     }
     return;
   }

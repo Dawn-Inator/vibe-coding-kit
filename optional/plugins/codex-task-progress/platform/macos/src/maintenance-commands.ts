@@ -1,13 +1,11 @@
-import { access, lstat, readlink, rm } from "node:fs/promises";
+import { access, readlink, rm } from "node:fs/promises";
 import { resolveGoalProgressPaths } from "../../../packages/store/src/index.js";
-import { cdpPaths, type RestoreCdpResult } from "./cdp-controller.js";
-import { readCodexCdpRuntimeState, verifyCodexCdpRuntimeIdentity } from "./cdp-runtime.js";
 import type { MacosCommandInput, MacosCommandResult } from "./command-protocol.js";
-import { type manageCodexDockLauncher, resolveCodexDockLauncherPaths } from "./dock-launcher.js";
 import { waitForHelperStopped } from "./helper-wait.js";
 import type { MacosCommandResultFactory } from "./install-command.js";
 import { resolveMacosInstallationLayout } from "./install-layout.js";
 import type { LaunchAgentController } from "./launch-agent-controller.js";
+import { assertLegacyLauncherRemoved } from "./legacy-cleanup-preflight.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
 import type { PluginController } from "./plugin-controller.js";
 import {
@@ -18,13 +16,11 @@ import {
 } from "./verified-release.js";
 
 export interface MaintenanceCommandDependencies {
-  readonly manageLauncher?: typeof manageCodexDockLauncher;
   readonly homeDirectory: string;
   readonly releaseRoot: string;
   readonly launchAgent: LaunchAgentController;
   readonly discoverCodex: () => Promise<CodexInstallIdentity>;
   readonly pluginFor: (codex: CodexInstallIdentity) => Promise<PluginController>;
-  readonly restoreCdp: (restartCodex: boolean) => Promise<RestoreCdpResult>;
   readonly commandResult: MacosCommandResultFactory;
 }
 
@@ -41,51 +37,12 @@ async function currentLinkExists(path: string): Promise<boolean> {
 }
 
 export function createMaintenanceCommands(dependencies: MaintenanceCommandDependencies) {
-  const preflight = async (command: "restore" | "uninstall") => {
-    const paths = cdpPaths(dependencies.homeDirectory);
-    let state: Awaited<ReturnType<typeof readCodexCdpRuntimeState>>;
-    try {
-      state = await readCodexCdpRuntimeState(paths.cdpRuntimePath);
-    } catch (error) {
-      if (isNotFound(error)) return null;
-      if (!stableErrorCode(error).startsWith("GOAL_PROGRESS_CDP_TIME_IDENTITY_REBUILD_REQUIRED"))
-        throw error;
-      return dependencies.commandResult(command, {
-        ok: false,
-        changed: false,
-        code: "GOAL_PROGRESS_CDP_TIME_IDENTITY_REBUILD_REQUIRED",
-        nextStep:
-          "After current tasks finish and a restart is confirmed, run install --json --restart-codex to rebuild connection identity, then retry this command.",
-      });
-    }
-    if (command === "uninstall") await verifyCodexCdpRuntimeIdentity(state);
-    return null;
-  };
-
-  const restore = async (input: MacosCommandInput): Promise<MacosCommandResult> => {
-    const blocked = await preflight("restore");
-    if (blocked) return blocked;
-    const restored = await dependencies.restoreCdp(input.restartCodex);
-    return dependencies.commandResult("restore", {
-      ok: true,
-      code: restored.changed ? "RESTORE_OK" : "RESTORE_NOT_NEEDED",
-      changed: restored.changed,
-      nextStep: restored.scheduled
-        ? "Codex restore has been scheduled."
-        : input.restartCodex
-          ? null
-          : "Restart Codex normally if it is still open.",
-      details: {
-        restartedCodex: restored.restartedCodex,
-        restoreScheduled: restored.scheduled,
-      },
-    });
-  };
-
   const uninstall = async (input: MacosCommandInput): Promise<MacosCommandResult> => {
-    const blocked = await preflight("uninstall");
-    if (blocked) return blocked;
-    const basePaths = cdpPaths(dependencies.homeDirectory);
+    await assertLegacyLauncherRemoved(dependencies.homeDirectory);
+    const basePaths = resolveGoalProgressPaths({
+      platform: "darwin",
+      homeDirectory: dependencies.homeDirectory,
+    });
     const installed = await readInstalledManifest(basePaths.installManifestPath);
     let releaseVersion = installed?.releaseVersion;
     if (!releaseVersion) {
@@ -99,68 +56,6 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       homeDirectory: dependencies.homeDirectory,
       releaseVersion,
     });
-    // Marker/receipt presence is only a trigger; the manager verifies ownership before any mutation.
-    const { markerPath, dockReceiptPath, appInstallReceiptPath } = resolveCodexDockLauncherPaths(
-      dependencies.homeDirectory,
-    );
-    const present = async (path: string) => {
-      try {
-        await lstat(path);
-        return true;
-      } catch (error) {
-        if (isNotFound(error)) return false;
-        throw error;
-      }
-    };
-    let launcherChanged = false;
-    if (
-      (await present(markerPath)) ||
-      (await present(dockReceiptPath)) ||
-      (await present(appInstallReceiptPath))
-    ) {
-      if (!dependencies.manageLauncher)
-        return dependencies.commandResult("uninstall", {
-          ok: false,
-          code: "UNINSTALL_LAUNCHER_CLEANUP_UNAVAILABLE",
-          changed: false,
-          nextStep: "Restore the managed Codex launcher before uninstalling.",
-        });
-      try {
-        const codex = installed?.codex ?? (await dependencies.discoverCodex());
-        validateCodexIdentity(codex);
-        const cleanup = await dependencies.manageLauncher({
-          action: "remove",
-          configureDock: true,
-          homeDirectory: dependencies.homeDirectory,
-          releaseRoot: installed?.programReleaseRoot ?? dependencies.releaseRoot,
-          codex,
-        });
-        launcherChanged = cleanup.changed;
-        if (
-          !cleanup.ok ||
-          cleanup.details.retainedForUserEdit === true ||
-          cleanup.details.launcherInstalled === true ||
-          cleanup.details.dockConfigured === true
-        ) {
-          return dependencies.commandResult("uninstall", {
-            ok: false,
-            code: "UNINSTALL_LAUNCHER_CLEANUP_BLOCKED",
-            changed: cleanup.changed,
-            nextStep:
-              cleanup.nextStep ?? "Resolve the managed Dock entry before uninstalling the Helper.",
-            details: { launcherCode: cleanup.code, launcherDetails: cleanup.details },
-          });
-        }
-      } catch (error) {
-        return dependencies.commandResult("uninstall", {
-          ok: false,
-          code: "UNINSTALL_LAUNCHER_CLEANUP_FAILED",
-          changed: launcherChanged,
-          nextStep: "Resolve the managed Dock entry before uninstalling the Helper.",
-          details: { errorCode: stableErrorCode(error) },
-        });
-      }
-    }
     let pluginChanged = false;
     let pluginError: string | null = null;
     try {
@@ -175,29 +70,6 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       layout.launchAgentPath,
     );
     await waitForHelperStopped(basePaths);
-    const cdpRestore = await dependencies.restoreCdp(true);
-    if (cdpRestore.scheduled) {
-      return dependencies.commandResult("uninstall", {
-        ok: pluginError === null,
-        code:
-          pluginError === null
-            ? "UNINSTALL_RESTORE_SCHEDULED"
-            : "UNINSTALL_PARTIAL_RESTORE_SCHEDULED",
-        changed: true,
-        nextStep:
-          pluginError === null
-            ? "After Codex reopens normally, run uninstall --json again."
-            : "Remove the Goal Progress Plugin in Codex, then rerun uninstall after Codex reopens.",
-        details: {
-          historyPreserved: input.preserveHistory,
-          codexRestored: true,
-          restoreScheduled: true,
-          pluginRemoved: pluginError === null,
-          pluginError,
-          helperStopped: true,
-        },
-      });
-    }
     let filesChanged = false;
     for (const path of [layout.launchAgentPath, layout.installRoot, layout.runtimeRoot]) {
       try {
@@ -214,8 +86,7 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       await rm(layout.applicationSupportRoot, { recursive: true, force: true });
       filesChanged = true;
     }
-    const changed =
-      launcherChanged || cdpRestore.changed || pluginChanged || jobChanged || filesChanged;
+    const changed = pluginChanged || jobChanged || filesChanged;
     if (pluginError) {
       return dependencies.commandResult("uninstall", {
         ok: false,
@@ -224,8 +95,6 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
         nextStep: "Remove the Goal Progress Plugin in Codex, then retry uninstall.",
         details: {
           historyPreserved: input.preserveHistory,
-          codexRestored: cdpRestore.changed,
-          restoreScheduled: false,
           pluginRemoved: false,
           pluginError,
           helperStopped: true,
@@ -238,8 +107,6 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
       changed,
       details: {
         historyPreserved: input.preserveHistory,
-        codexRestored: cdpRestore.changed,
-        restoreScheduled: cdpRestore.scheduled,
         pluginRemoved: true,
         helperStopped: true,
       },
@@ -290,5 +157,5 @@ export function createMaintenanceCommands(dependencies: MaintenanceCommandDepend
     });
   };
 
-  return { emergencyDisable, restore, uninstall };
+  return { emergencyDisable, uninstall };
 }

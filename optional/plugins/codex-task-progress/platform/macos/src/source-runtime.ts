@@ -4,7 +4,6 @@ import { constants } from "node:fs";
 import {
   access,
   chmod,
-  copyFile,
   cp,
   lstat,
   mkdir,
@@ -24,20 +23,22 @@ import {
   resolveGoalProgressPaths,
 } from "../../../packages/store/src/index.js";
 import { requireSingleCodexMacosApp } from "./app-discovery.js";
-import { createCdpController } from "./cdp-controller.js";
 import type { MacosCommandName, MacosCommandResult } from "./command-protocol.js";
 import { GOAL_PROGRESS_LAUNCH_AGENT_LABEL } from "./install-layout.js";
-import { inspectDisplayVerification, inspectInstalledHelper } from "./installed-inspection.js";
+import { inspectInstalledHelper, nativeVerification } from "./installed-inspection.js";
 import {
   createLaunchAgentController,
   launchdPlist,
   writeIfChanged,
 } from "./launch-agent-controller.js";
 import { stableErrorCode } from "./macos-errors.js";
-import { createPluginController, resolveVerifiedCodexCli } from "./plugin-controller.js";
+import {
+  inspectNativeMcpFeature,
+  retireLegacyControlFiles,
+} from "./native-install-prerequisites.js";
+import { resolveVerifiedCodexCli } from "./plugin-controller.js";
 
 const SOURCE_RUNTIME_ENSURE_COMMAND = "__source-runtime-ensure";
-const LEGACY_PLUGIN_MARKETPLACE = "codex-task-progress-local";
 
 interface SourceRuntimeConfiguration {
   readonly pluginDataRoot: string;
@@ -47,8 +48,6 @@ interface SourceRuntimeConfiguration {
   readonly sourceRuntimeRoot: string;
   readonly helperLauncherPath: string;
   readonly bundlePath: string;
-  readonly rendererRoot: string;
-  readonly startupListenerPath: string;
 }
 
 function requiredAbsoluteEnvironment(name: string): string {
@@ -82,15 +81,11 @@ function sourceRuntimeConfiguration(): SourceRuntimeConfiguration {
   const sourceRuntimeRoot = requiredAbsoluteEnvironment("GOAL_PROGRESS_SOURCE_RUNTIME_ROOT");
   const helperLauncherPath = requiredAbsoluteEnvironment("GOAL_PROGRESS_SOURCE_LAUNCHER");
   const bundlePath = requiredAbsoluteEnvironment("GOAL_PROGRESS_SOURCE_BUNDLE");
-  const rendererRoot = requiredAbsoluteEnvironment("GOAL_PROGRESS_RENDERER_BUNDLE_DIR");
-  const startupListenerPath = requiredAbsoluteEnvironment("GOAL_PROGRESS_STARTUP_LISTENER");
   if (
     goalProgressRoot !== pluginDataRoot ||
     !isInside(pluginDataRoot, sourceRuntimeRoot) ||
     !isInside(sourceRuntimeRoot, helperLauncherPath) ||
-    !isInside(sourceRuntimeRoot, bundlePath) ||
-    !isInside(sourceRuntimeRoot, rendererRoot) ||
-    !isInside(sourceRuntimeRoot, startupListenerPath)
+    !isInside(sourceRuntimeRoot, bundlePath)
   ) {
     throw new Error("GOAL_PROGRESS_SOURCE_RUNTIME_PATH_MISMATCH");
   }
@@ -102,8 +97,6 @@ function sourceRuntimeConfiguration(): SourceRuntimeConfiguration {
     sourceRuntimeRoot,
     helperLauncherPath,
     bundlePath,
-    rendererRoot,
-    startupListenerPath,
   };
 }
 
@@ -126,61 +119,6 @@ async function directoryHasEntries(path: string): Promise<boolean> {
       return false;
     }
     throw error;
-  }
-}
-
-async function copyLegacyFileIfTargetMissing(source: string, target: string): Promise<boolean> {
-  try {
-    await stat(target);
-    return false;
-  } catch (error) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      (error as NodeJS.ErrnoException).code !== "ENOENT"
-    ) {
-      throw error;
-    }
-  }
-  try {
-    const metadata = await stat(source);
-    if (!metadata.isFile()) {
-      return false;
-    }
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return false;
-    }
-    throw error;
-  }
-  const staging = resolve(
-    dirname(target),
-    `.${basename(target)}.migration-${process.pid}-${randomUUID()}`,
-  );
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  try {
-    await copyFile(source, staging);
-    await chmod(staging, 0o600);
-    try {
-      await stat(target);
-      return false;
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !("code" in error) ||
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
-      ) {
-        throw error;
-      }
-    }
-    await rename(staging, target);
-    return true;
-  } finally {
-    await rm(staging, { force: true }).catch(() => undefined);
   }
 }
 
@@ -243,28 +181,6 @@ async function replaceWithLegacyDirectory(source: string, target: string): Promi
   await rm(target, { recursive: true, force: true });
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await cp(source, target, { recursive: true, force: true });
-  return true;
-}
-
-async function replaceWithLegacyFile(source: string, target: string): Promise<boolean> {
-  try {
-    const metadata = await stat(source);
-    if (!metadata.isFile()) {
-      return false;
-    }
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return false;
-    }
-    throw error;
-  }
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  await copyFile(source, target);
-  await chmod(target, 0o600);
   return true;
 }
 
@@ -350,11 +266,7 @@ export interface SourceRuntimeEnsureResult {
   readonly ok: true;
   readonly migratedState: boolean;
   readonly migratedPreferences: boolean;
-  readonly migratedCdpRuntime: boolean;
   readonly launchAgentChanged: boolean;
-  readonly cdpChanged: boolean;
-  readonly legacyPluginRemoved: boolean;
-  readonly legacyPluginCleanupCode: string | null;
 }
 
 export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> {
@@ -369,16 +281,11 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
     sourceRuntimeRoot,
     helperLauncherPath,
     bundlePath,
-    rendererRoot,
-    startupListenerPath,
   } = configuration;
   const goalProgressRoot = pluginDataRoot;
   await Promise.all([
     access(helperLauncherPath, constants.X_OK),
     access(bundlePath, constants.R_OK),
-    access(startupListenerPath, constants.X_OK),
-    access(resolve(rendererRoot, "goal-progress.js"), constants.R_OK),
-    access(resolve(rendererRoot, "goal-progress.manifest.json"), constants.R_OK),
   ]);
 
   const paths = resolveGoalProgressPaths({ root: goalProgressRoot });
@@ -405,7 +312,6 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
   } catch {
     previousLaunchAgent = null;
   }
-  const app = await requireSingleCodexMacosApp();
   const launchAgent = createLaunchAgentController();
   const restorePreviousLaunchAgent = async (): Promise<void> => {
     // The previous owner can be either a SEA release or a source-built release.
@@ -434,22 +340,19 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
   };
   let migratedState = false;
   let migratedPreferences = false;
-  let migratedCdpRuntime = false;
   try {
     if (switchingFromLegacy) {
       bootoutCurrentLaunchAgent();
       await waitForSocketRemoval(legacyPaths.helperSocketPath);
     }
-    [migratedState, migratedPreferences, migratedCdpRuntime] = switchingFromLegacy
+    [migratedState, migratedPreferences] = switchingFromLegacy
       ? await Promise.all([
           replaceWithLegacyDirectory(legacyPaths.stateRoot, paths.stateRoot),
           replaceWithLegacyDirectory(legacyPaths.preferencesRoot, paths.preferencesRoot),
-          replaceWithLegacyFile(legacyPaths.cdpRuntimePath, paths.cdpRuntimePath),
         ])
       : await Promise.all([
           copyLegacyDirectoryIfTargetEmpty(legacyPaths.stateRoot, paths.stateRoot),
           copyLegacyDirectoryIfTargetEmpty(legacyPaths.preferencesRoot, paths.preferencesRoot),
-          copyLegacyFileIfTargetMissing(legacyPaths.cdpRuntimePath, paths.cdpRuntimePath),
         ]);
   } catch (error) {
     return rollback(error);
@@ -469,9 +372,6 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
       GOAL_PROGRESS_CODEX_HOME: codexHome,
       ...(marketplace ? { GOAL_PROGRESS_PLUGIN_MARKETPLACE: marketplace } : {}),
       ...(configuration.pluginRoot ? { GOAL_PROGRESS_PLUGIN_ROOT: configuration.pluginRoot } : {}),
-      GOAL_PROGRESS_RENDERER_BUNDLE_DIR: rendererRoot,
-      GOAL_PROGRESS_STARTUP_LISTENER: startupListenerPath,
-      GOAL_PROGRESS_CODEX_APP_PATH: app.realAppPath,
     },
     runAtLoad: true,
     keepAlive: true,
@@ -479,24 +379,9 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
     standardErrorPath: resolve(paths.logsRoot, "helper-error.log"),
   });
   let launchAgentChanged = false;
-  let cdpChanged = false;
   try {
     launchAgentChanged = await writeIfChanged(launchAgentPath, plist);
     await chmod(launchAgentPath, 0o600);
-    // The renderer target source needs CDP before the Helper can become ready.
-    const cdp = createCdpController(homedir(), goalProgressRoot);
-    if (!(await cdp.verify()))
-      throw new Error(
-        "TASK_PROGRESS_RESTART_REQUIRED: install the built release with --restart-codex only after user approval",
-      );
-    cdpChanged = await cdp.ensure(false);
-    const cdpDeadline = Date.now() + 60_000;
-    while (!(await cdp.verify())) {
-      if (Date.now() >= cdpDeadline) {
-        throw new Error("GOAL_PROGRESS_SOURCE_CDP_START_TIMEOUT");
-      }
-      await new Promise((done) => setTimeout(done, 250));
-    }
     const helperReadyBefore = await helperIsReady(paths.helperSocketPath);
     await launchAgent.ensure(
       GOAL_PROGRESS_LAUNCH_AGENT_LABEL,
@@ -507,30 +392,15 @@ export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> 
   } catch (error) {
     return rollback(error);
   }
-  let legacyPluginRemoved = false;
-  let legacyPluginCleanupCode: string | null = null;
-  if (marketplace && marketplace !== LEGACY_PLUGIN_MARKETPLACE) {
-    try {
-      const codexCommand = await resolveVerifiedCodexCli(app);
-      legacyPluginRemoved = await createPluginController({
-        codexHomeDirectory: codexHome,
-        codexCommand,
-      }).remove();
-    } catch (error) {
-      legacyPluginCleanupCode = stableErrorCode(error);
-    }
-  }
+  await retireLegacyControlFiles(pluginDataRoot);
+  if (legacyRoot !== pluginDataRoot) await retireLegacyControlFiles(legacyRoot);
   return {
     schemaVersion: 1,
     command: SOURCE_RUNTIME_ENSURE_COMMAND,
     ok: true,
     migratedState,
     migratedPreferences,
-    migratedCdpRuntime,
     launchAgentChanged,
-    cdpChanged,
-    legacyPluginRemoved,
-    legacyPluginCleanupCode,
   };
 }
 
@@ -551,13 +421,8 @@ interface SourceRuntimeManifest {
 const SOURCE_RUNTIME_REQUIRED_FILES = [
   "bin/goal-progress",
   "bin/goal-progress.cjs",
-  "bin/goal-progress-startup-listener",
   "bin/node-runtime.sh",
-  "bin/startup-listener-bridge.mjs",
-  "bin/startup-listener.mjs",
-  "bin/startup-listener.jxa",
-  "renderer/goal-progress.js",
-  "renderer/goal-progress.manifest.json",
+  "assets/task-progress-panel.html",
 ] as const;
 
 function validSourceRuntimeRecord(value: unknown): value is SourceRuntimeFileRecord {
@@ -636,10 +501,7 @@ async function verifySourceRuntimeFiles(
         return { ok: false, manifest: null };
       }
     }
-    for (const executable of [
-      configuration.helperLauncherPath,
-      configuration.startupListenerPath,
-    ]) {
+    for (const executable of [configuration.helperLauncherPath]) {
       const metadata = await stat(executable);
       if ((metadata.mode & 0o111) === 0 || (metadata.mode & 0o022) !== 0) {
         return { ok: false, manifest: null };
@@ -663,7 +525,7 @@ export interface SourceRuntimeHealthResult {
 
 export async function inspectSourceRuntime(
   command: "doctor" | "verify",
-  installationOnly = false,
+  _installationOnly = false,
 ): Promise<SourceRuntimeHealthResult> {
   const configuration = sourceRuntimeConfiguration();
   const paths = resolveGoalProgressPaths({ root: configuration.pluginDataRoot });
@@ -672,20 +534,13 @@ export async function inspectSourceRuntime(
   const runtimeManifest = runtimeInspection.manifest;
 
   const launchAgent = createLaunchAgentController();
-  const [helperJobLoaded, helper, cdpReady] = await Promise.all([
+  const [helperJobLoaded, helper] = await Promise.all([
     launchAgent.isLoaded(GOAL_PROGRESS_LAUNCH_AGENT_LABEL),
     inspectInstalledHelper(paths),
-    createCdpController(homedir(), configuration.pluginDataRoot).verify(),
   ]);
-  const ok =
-    runtimeFilesReady &&
-    helperJobLoaded &&
-    helper.ok &&
-    helper.startupListenerRunning &&
-    helper.startupListenerReady &&
-    cdpReady;
-  const verification = inspectDisplayVerification(helper);
-  const displayMissing = !installationOnly && verification.currentDisplay === "fail";
+  const ok = runtimeFilesReady && helperJobLoaded && helper.ok;
+  // Native panel visibility is verified in Codex, not inferred from helper health.
+  const verification = nativeVerification(ok);
   const code = ok
     ? command === "doctor"
       ? "DOCTOR_OK"
@@ -696,20 +551,16 @@ export async function inspectSourceRuntime(
         ? "HELPER_JOB_NOT_LOADED"
         : !helper.ok
           ? (helper.code ?? "HELPER_UNHEALTHY")
-          : !helper.startupListenerRunning
-            ? "STARTUP_LISTENER_NOT_RUNNING"
-            : !helper.startupListenerReady
-              ? "STARTUP_LISTENER_NOT_READY"
-              : "CDP_NOT_READY";
+          : "HELPER_UNHEALTHY";
   return {
     schemaVersion: 1,
     command,
-    ok: ok && !displayMissing,
-    code: ok && displayMissing ? `${command.toUpperCase()}_DISPLAY_MISSING` : code,
+    ok,
+    code,
     changed: false,
     nextStep: ok ? null : "Run the source Plugin again to repair its local runtime.",
     details: {
-      verification: { ...verification, installation: ok ? "pass" : "fail" },
+      verification,
       releaseVersion: GOAL_PROGRESS_RELEASE_VERSION,
       sourceRuntimeRoot: configuration.sourceRuntimeRoot,
       helperLauncherPath: configuration.helperLauncherPath,
@@ -717,7 +568,6 @@ export async function inspectSourceRuntime(
       runtimeManifest,
       helperJobLoaded,
       helper,
-      cdpReady,
       marketplace: configuration.marketplace,
       pluginRoot: configuration.pluginRoot,
     },
@@ -784,7 +634,7 @@ export async function uninstallSourceRuntime(): Promise<MacosCommandResult> {
     ok: true,
     code: "UNINSTALL_OK",
     changed: true,
-    nextStep: "Restart Codex normally when convenient to close its local debugging port.",
+    nextStep: null,
     details: {
       pluginRemoved: true,
       dataDeleted: true,
@@ -815,6 +665,28 @@ export async function executeSourceRuntimeCommand(
     return inspectSourceRuntime(command);
   }
   if (command === "uninstall") return uninstallSourceRuntime();
+  let nativeMcpFeature: "enabled" | "disabled" | "unknown" = "unknown";
+  try {
+    const configuration = sourceRuntimeConfiguration();
+    const codex = await requireSingleCodexMacosApp();
+    nativeMcpFeature = inspectNativeMcpFeature(
+      await resolveVerifiedCodexCli(codex),
+      configuration.codexHome,
+    );
+  } catch {
+    /* Unsupported or unavailable CLI is setup-required. */
+  }
+  if (nativeMcpFeature !== "enabled")
+    return sourceCommandResult(command, {
+      ok: false,
+      code: "NATIVE_MCP_SETUP_REQUIRED",
+      changed: false,
+      nextStep:
+        nativeMcpFeature === "disabled"
+          ? "Enable native MCP Apps with codex features enable enable_mcp_apps, then retry."
+          : "Check that codex features list reports enable_mcp_apps as true, then retry.",
+      details: { nativeMcpFeature },
+    });
   if (command === "upgrade") {
     return sourceCommandResult(command, {
       ok: true,
@@ -823,6 +695,7 @@ export async function executeSourceRuntimeCommand(
       nextStep: "Update Goal Progress from its Codex Plugin marketplace.",
       details: {
         distribution: "source-plugin",
+        nativeMcpFeature,
         marketplace: optionalEnvironment("GOAL_PROGRESS_PLUGIN_MARKETPLACE"),
       },
     });
@@ -833,7 +706,7 @@ export async function executeSourceRuntimeCommand(
     return sourceCommandResult(command, {
       ok: false,
       code: verified.code,
-      changed: ensured.launchAgentChanged || ensured.cdpChanged,
+      changed: ensured.launchAgentChanged,
       nextStep: verified.nextStep,
       details: verified.details,
     });
@@ -841,14 +714,8 @@ export async function executeSourceRuntimeCommand(
   return sourceCommandResult(command, {
     ok: true,
     code: command === "install" ? "INSTALL_OK" : "REPAIR_OK",
-    changed:
-      ensured.migratedState ||
-      ensured.migratedPreferences ||
-      ensured.migratedCdpRuntime ||
-      ensured.launchAgentChanged ||
-      ensured.cdpChanged ||
-      ensured.legacyPluginRemoved,
+    changed: ensured.migratedState || ensured.migratedPreferences || ensured.launchAgentChanged,
     nextStep: null,
-    details: { ...ensured },
+    details: { ...ensured, nativeMcpFeature },
   });
 }

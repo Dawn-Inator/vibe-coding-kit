@@ -1,14 +1,10 @@
 import type {
-  GoalProgressUpdateIntent,
   GoalProgressUpdateNextStep,
   GoalProgressUpdatePhase,
   GoalProgressUpdateState,
 } from "./update-state.js";
 
 export const GOAL_PROGRESS_UPDATE_STATE_SCHEMA_VERSION = 1 as const;
-export const GOAL_PROGRESS_UPDATE_INTENT_PROTOCOL_VERSION = 1 as const;
-export const GOAL_PROGRESS_UPDATE_INTENT_MAX_BYTES = 1_024;
-export const GOAL_PROGRESS_UPDATE_INTENT_EVENT = "goal-progress-update-intent";
 
 const strictSemverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
@@ -168,26 +164,4 @@ export function parseGoalProgressUpdateState(value: unknown): GoalProgressUpdate
     return null;
   }
   return value as unknown as GoalProgressUpdateState;
-}
-
-export function parseGoalProgressUpdateIntent(value: unknown): GoalProgressUpdateIntent | null {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    return null;
-  }
-  if (value.type === "check") {
-    return Object.keys(value).length === 1 ? { type: "check" } : null;
-  }
-  if (
-    value.type !== "start" &&
-    value.type !== "retry" &&
-    value.type !== "restart-now" &&
-    value.type !== "restart-later" &&
-    value.type !== "open-release"
-  ) {
-    return null;
-  }
-  if (Object.keys(value).length !== 2 || !isGoalProgressUpdateVersion(value.version)) {
-    return null;
-  }
-  return { type: value.type, version: value.version };
 }

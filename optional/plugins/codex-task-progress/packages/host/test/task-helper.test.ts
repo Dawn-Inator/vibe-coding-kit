@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
 import { HeartbeatDiscoveryIndex } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
-import type {
-  CodexCdpListenerOwnership,
-  CodexCdpRuntimeState,
-} from "../../../platform/macos/src/index.js";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import {
   GoalProgressIpcClient,
@@ -26,7 +19,7 @@ import {
   type GoalProgressIpcRequestInput,
   GoalProgressIpcRequestSchema,
 } from "../../ipc/src/protocol.js";
-import { GoalProgressLogger, resolveGoalProgressPaths } from "../../store/src/index.js";
+import { resolveGoalProgressPaths } from "../../store/src/index.js";
 import { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
   type TaskHistoryPage,
@@ -35,13 +28,6 @@ import {
   TaskStore,
 } from "../../tasks/src/index.js";
 import { GoalProgressHelper } from "../src/index.js";
-import {
-  hasRecoverableStartupProgress,
-  type MacosCodexStartupEvent,
-  type MacosCodexStartupResponse,
-  MacosStartupHandoffController,
-  MacosStartupListenerSupervisor,
-} from "../src/startup-listener.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
   const root = await mkdtemp("/tmp/ctph-optional-");
@@ -61,7 +47,6 @@ test("disabled project task progress returns inert reads and rejects writes befo
     paths,
     runtime: testRuntime,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let callNumber = 0;
@@ -259,7 +244,6 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
@@ -389,7 +373,6 @@ test("slow task diagnostics record bounded stage timings without changing get re
     paths,
     runtime: testRuntime,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   try {
@@ -470,6 +453,43 @@ test("slow task diagnostics record bounded stage timings without changing get re
     await rm(root, { recursive: true, force: true });
   }
 });
+type TaskHistorySummaryPage = {
+  events: Array<{
+    revision: number;
+    kind: string;
+    occurredAt: string;
+    reason: string;
+    reasonTruncated: boolean;
+    before: { completed: number; total: number; percent: number | null } | null;
+    after: { completed: number; total: number; percent: number | null };
+  }>;
+  nextCursor: string | null;
+  canonicalHistoryPath: string;
+};
+
+function assertHistorySummary(
+  event: TaskHistorySummaryPage["events"][number] | undefined,
+  expected: Omit<TaskHistorySummaryPage["events"][number], "occurredAt" | "reasonTruncated">,
+) {
+  assert.ok(event);
+  assert.deepEqual(Object.keys(event).sort(), [
+    "after",
+    "before",
+    "kind",
+    "occurredAt",
+    "reason",
+    "reasonTruncated",
+    "revision",
+  ]);
+  assert.equal(Number.isNaN(Date.parse(event.occurredAt)), false);
+  assert.equal(event.reasonTruncated, false);
+  assert.equal(event.revision, expected.revision);
+  assert.equal(event.kind, expected.kind);
+  assert.equal(event.reason, expected.reason);
+  assert.deepEqual(event.before, expected.before);
+  assert.deepEqual(event.after, expected.after);
+}
+
 async function taskEvents(root: string, threadId: string) {
   const store = new TaskStore(join(root, ".workspace", "codex-task-progress"));
   return (await store.history(threadId, { limit: 100 })).events;
@@ -483,7 +503,6 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   };
   let helper = new GoalProgressHelper(options);
   let callNumber = 0;
@@ -669,7 +688,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
   }
 });
 
-test("Helper rejects mismatched tool identity, mismatched exact chat record and untrusted panel chat", async () => {
+test("Helper rejects mismatched tool identity, mismatched exact chat record", async () => {
   const root = await mkdtemp("/tmp/ctph-auth-");
   await mkdir(join(root, ".git"));
   const paths = resolveGoalProgressPaths({ root: join(root, "data") });
@@ -682,10 +701,8 @@ test("Helper rejects mismatched tool identity, mismatched exact chat record and 
     paths,
     runtime: mocked,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-  const cdp = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "cdp" });
   try {
     await helper.start();
     const auth: GoalProgressIpcAuthorization = {
@@ -719,14 +736,6 @@ test("Helper rejects mismatched tool identity, mismatched exact chat record and 
       } as GoalProgressIpcRequestInput),
       hasCode("CODEX_REQUEST_IDENTITY_CONFLICT"),
     );
-    await assert.rejects(
-      cdp.request({ method: "task.view", params: { action: "get", threadId: "worker-chat" } }),
-      hasCode("TASK_THREAD_UNTRUSTED"),
-    );
-    await assert.rejects(
-      client.request({ method: "task.view", params: { action: "get", threadId: "ordinary-chat" } }),
-      hasCode("IPC_METHOD_FORBIDDEN"),
-    );
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });
@@ -759,10 +768,8 @@ test("native read IPC stays read-only and resolves each exact user chat independ
     paths,
     runtime: mocked,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-  const cdp = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "cdp" });
   let call = 0;
   const initialize = (threadId: string, title: string) =>
     client.request({
@@ -832,13 +839,6 @@ test("native read IPC stays read-only and resolves each exact user chat independ
       "non-user-chat",
     ])
       await assert.rejects(nativeRead(threadId, "get"));
-    await assert.rejects(
-      cdp.request({
-        method: "task.native-read",
-        params: { threadId: "first-chat", action: "get", input: {} },
-      }),
-      hasCode("IPC_METHOD_FORBIDDEN"),
-    );
     for (const action of ["initialize", "update", "rescope", "bind-heartbeat"])
       assert.equal(
         GoalProgressIpcRequestSchema.safeParse({
@@ -887,7 +887,6 @@ test("native task IPC reads retain the shared 30-second socket deadline", async 
     paths,
     runtime: mocked,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   try {
@@ -914,7 +913,6 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
@@ -1166,7 +1164,6 @@ test("incomplete discovery preserves known local history but still guards new an
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   let call = 0;
   async function request(
@@ -1278,7 +1275,6 @@ test("incomplete discovery preserves known local history but still guards new an
       paths,
       runtime: runtime(root),
       resolveNativeGoal: async () => null,
-      visibleThreadRecoveryDelaysMs: [],
     });
     await helper.start();
     helperStarted = true;
@@ -1301,10 +1297,36 @@ test("incomplete discovery preserves known local history but still guards new an
     assert.equal(known.heartbeat.sourcePath, await realpath(projectLedgerPath));
     assert.equal(known.heartbeat.discoveryComplete, false);
     assert.match(known.heartbeat.warning ?? "", /discovery was incomplete/);
-    const knownHistory = (await request("history", {}, "known-local-chat")).result as {
-      history: { events: unknown[] };
+    const knownHistory = (await request("history", { limit: 1 }, "known-local-chat")).result as {
+      history: TaskHistorySummaryPage;
     };
-    assert.deepEqual(knownHistory.history.events, knownEventsBefore);
+    const knownHistoryPath = eventPath(
+      join(await realpath(root), ".workspace", "codex-task-progress"),
+      "known-local-chat",
+    );
+    assert.equal(knownHistory.history.canonicalHistoryPath, knownHistoryPath);
+    assert.equal(knownHistory.history.nextCursor, "2");
+    assert.equal(knownHistory.history.events.length, 1);
+    assertHistorySummary(knownHistory.history.events[0], {
+      revision: 2,
+      kind: "task.updated",
+      reason: "Start the known task",
+      before: { completed: 0, total: 1, percent: 0 },
+      after: { completed: 0, total: 1, percent: 0 },
+    });
+    const knownOlder = (await request("history", { limit: 1, cursor: "2" })).result as {
+      history: TaskHistorySummaryPage;
+    };
+    assert.equal(knownOlder.history.canonicalHistoryPath, knownHistoryPath);
+    assert.equal(knownOlder.history.nextCursor, null);
+    assertHistorySummary(knownOlder.history.events[0], {
+      revision: 1,
+      kind: "task.initialized",
+      reason: "Create durable local task history before bounded discovery",
+      before: null,
+      after: { completed: 0, total: 1, percent: 0 },
+    });
+    assert.deepEqual(await taskEvents(root, "known-local-chat"), knownEventsBefore);
     assert.doesNotMatch(
       await readFile(
         eventPath(
@@ -1329,9 +1351,21 @@ test("incomplete discovery preserves known local history but still guards new an
     assert.equal(knownEventsAfter.length, 3);
     assert.deepEqual(knownEventsAfter.slice(1), knownEventsBefore);
     const historyAfterUpdate = (await request("history", {}, "known-local-chat")).result as {
-      history: { events: unknown[] };
+      history: TaskHistorySummaryPage;
     };
-    assert.deepEqual(historyAfterUpdate.history.events, knownEventsAfter);
+    assert.equal(historyAfterUpdate.history.canonicalHistoryPath, knownHistoryPath);
+    assert.equal(historyAfterUpdate.history.nextCursor, null);
+    assert.deepEqual(
+      historyAfterUpdate.history.events.map((event) => event.revision),
+      [3, 2, 1],
+    );
+    assertHistorySummary(historyAfterUpdate.history.events[0], {
+      revision: 3,
+      kind: "task.updated",
+      reason: "Continue the known task despite incomplete discovery",
+      before: { completed: 0, total: 1, percent: 0 },
+      after: { completed: 0, total: 1, percent: 0 },
+    });
 
     const freshChat = "new-incomplete-chat";
     const fresh = (await request("get", {}, freshChat)).result as {
@@ -1406,7 +1440,6 @@ test("automatic heartbeat authority stays latched through association loss and r
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
@@ -1610,7 +1643,6 @@ test("automatic heartbeat authority stays latched through association loss and r
       paths,
       runtime: runtime(root),
       resolveNativeGoal: async () => null,
-      visibleThreadRecoveryDelaysMs: [],
     });
     reopened = restartHelper;
     await restartHelper.start();
@@ -1688,10 +1720,8 @@ test("completed checklist does not imply runtime completion when a later turn is
     paths,
     runtime: mocked,
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-  const cdp = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "cdp" });
   let callNumber = 0;
   async function request(action: "get" | "initialize", input: unknown) {
     const auth: GoalProgressIpcAuthorization = {
@@ -1744,15 +1774,14 @@ test("completed checklist does not imply runtime completion when a later turn is
     assert.equal(active.execution.state, "working");
     assert.equal(active.execution.source, "codex-app-server");
     assert.equal(active.completionBasis, "registered-checklist");
-    const panelActive = (
-      await cdp.request({
-        method: "task.view",
-        params: { action: "get", threadId: "ordinary-chat" },
+    const nativeActive = (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId: "ordinary-chat", input: {} },
       })
     ).result as ObservedTask;
-    assert.equal(panelActive.task.revision, originalRevision);
-    assert.equal(panelActive.execution.state, "working");
-    assert.equal(panelActive.completionBasis, "registered-checklist");
+    assert.equal(nativeActive.execution.state, "working");
+    assert.equal(nativeActive.task.revision, originalRevision);
 
     // App-server notLoaded is not positive evidence that the UI's running turn finished.
     status = { type: "notLoaded" };
@@ -1761,14 +1790,14 @@ test("completed checklist does not imply runtime completion when a later turn is
     assert.equal(unavailable.task.progress.percent, 100);
     assert.equal(unavailable.execution.state, "unknown");
     assert.equal(unavailable.completionBasis, "registered-checklist");
-    const panelUnknown = (
-      await cdp.request({
-        method: "task.view",
-        params: { action: "get", threadId: "ordinary-chat" },
+    const nativeUnknown = (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId: "ordinary-chat", input: {} },
       })
     ).result as ObservedTask;
-    assert.equal(panelUnknown.execution.state, "unknown");
-    assert.equal(panelUnknown.task.revision, originalRevision);
+    assert.equal(nativeUnknown.execution.state, "unknown");
+    assert.equal(nativeUnknown.task.revision, originalRevision);
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });
@@ -1829,7 +1858,6 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     paths,
     runtime: runtime(workspaceCwd),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
@@ -1863,10 +1891,37 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     assert.equal(migrated.task.revision, 2);
     assert.equal(migrated.task.progress.percent, 100);
     assert.deepEqual(migrated.task, expectedTask);
-    const history = (await request("history", { limit: 100 })).result as {
-      history: TaskHistoryPage;
+    const history = (await request("history", { limit: 1 })).result as {
+      history: TaskHistorySummaryPage;
     };
-    assert.deepEqual(history.history, expectedHistory);
+    assert.equal(history.history.canonicalHistoryPath, eventPath(workspaceRoot, "legacy-chat"));
+    assert.equal(history.history.nextCursor, "2");
+    assert.equal(history.history.events.length, 1);
+    assertHistorySummary(history.history.events[0], {
+      revision: 2,
+      kind: "task.updated",
+      reason: "Existing meaningful evidence",
+      before: { completed: 0, total: 1, percent: 0 },
+      after: { completed: 1, total: 1, percent: 100 },
+    });
+    const older = (await request("history", { limit: 1, cursor: "2" })).result as {
+      history: TaskHistorySummaryPage;
+    };
+    assert.equal(older.history.canonicalHistoryPath, history.history.canonicalHistoryPath);
+    assert.equal(older.history.nextCursor, null);
+    assert.equal(older.history.events.length, 1);
+    assertHistorySummary(older.history.events[0], {
+      revision: 1,
+      kind: "task.initialized",
+      reason: "Prior plugin version",
+      before: null,
+      after: { completed: 0, total: 1, percent: 0 },
+    });
+    // The public summary must not alter the complete canonical migration records.
+    assert.deepEqual(
+      await new TaskStore(workspaceRoot).history("legacy-chat", { limit: 100 }),
+      expectedHistory,
+    );
     assert.ok(
       (await readFile(eventPath(workspaceRoot, "legacy-chat"), "utf8")).includes(
         '"requestId": "legacy-init"',
@@ -1882,947 +1937,6 @@ test("Helper migrates only the trusted chat's legacy record into its workspace a
     await rm(root, { recursive: true, force: true });
   }
 });
-const startupExecutablePath = "/Applications/Codex.app/Contents/MacOS/Codex";
-const startupAppPath = "/Applications/Codex.app";
-const startupStartedAt = "2026-11-13T12:00:00.000Z";
-const startupPort = 9222;
-
-function startupEvent(_command: string, pid = 4242): MacosCodexStartupEvent {
-  return {
-    schemaVersion: 1,
-    event: "codex.willLaunch",
-    pid,
-    bundleId: "com.openai.codex",
-    appPath: startupAppPath,
-    executablePath: startupExecutablePath,
-    launchedAt: startupStartedAt,
-    deadlineAtMs: Date.parse(startupStartedAt) + 30_000,
-  };
-}
-
-function startupAppIdentity() {
-  return {
-    appPath: startupAppPath,
-    realAppPath: startupAppPath,
-    executablePath: startupExecutablePath,
-    realExecutablePath: startupExecutablePath,
-    bundleId: "com.openai.codex",
-    teamId: "7P5S3ZLCN7",
-    version: "1.0",
-  } as const;
-}
-
-function startupProcessSnapshot(pid: number, command: string, start = startupStartedAt) {
-  return { pid, parentPid: 1, startedAt: start, command };
-}
-
-function startupOwnership(
-  pid: number,
-  command: string,
-  start = startupStartedAt,
-): CodexCdpListenerOwnership {
-  return {
-    mainProcess: startupProcessSnapshot(pid, command, start),
-    listeners: [{ pid: pid + 1, commandName: "Codex Helper", address: `127.0.0.1:${startupPort}` }],
-    listenerPids: [pid + 1],
-  };
-}
-
-function startupController(
-  root: string,
-  overrides: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {},
-) {
-  const paths = resolveGoalProgressPaths({ root });
-  let signals = 0;
-  let launches = 0;
-  let allocations = 0;
-  let writes = 0;
-  const instance = new MacosStartupHandoffController({
-    paths,
-    inspectApp: async () => startupAppIdentity() as never,
-    inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, startupExecutablePath),
-    listMainProcesses: async () => [],
-    readRuntimeState: async () => {
-      throw new Error("ENOENT");
-    },
-    verifyExistingOwnership: async (_app, pid) => startupOwnership(pid, startupExecutablePath),
-    allocatePort: async () => {
-      allocations += 1;
-      return startupPort;
-    },
-    launchWithCdp: async () => {
-      launches += 1;
-      throw new Error("unexpected launch");
-    },
-    waitForOwnership: async () => startupOwnership(4242, startupExecutablePath),
-    createRuntimeState: () => ({}) as CodexCdpRuntimeState,
-    writeRuntimeState: async () => {
-      writes += 1;
-    },
-    signalProcess: () => {
-      signals += 1;
-    },
-    now: () => Date.parse(startupStartedAt) + 1,
-    sleep: async () => undefined,
-    ...overrides,
-  });
-  return {
-    instance,
-    paths,
-    counts: () => ({ signals, launches, allocations, writes }),
-  };
-}
-
-test("ordinary task recovery makes startup eligible without creating task state", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const paths = resolveGoalProgressPaths({ root });
-    let detections = 0;
-    assert.equal(
-      await hasRecoverableStartupProgress(paths, {
-        async hasRecoverableTasks() {
-          detections += 1;
-          return true;
-        },
-      }),
-      true,
-    );
-    assert.equal(detections, 1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("Helper startup handler admits a real ordinary task without restarting Codex", async () => {
-  const root = await mkdtemp("/tmp/ctph-startup-");
-  await mkdir(join(root, ".git"));
-  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
-  assert.ok(
-    paths.helperSocketPath.length < 100,
-    `Helper IPC socket path exceeds the macOS UNIX socket path limit: ${paths.helperSocketPath}`,
-  );
-  let startupHandler:
-    | ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>)
-    | undefined;
-  const startupListener = {
-    start(handler: typeof startupHandler) {
-      startupHandler = handler;
-    },
-    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
-    isPending: (pid: number) => pid === 4242,
-    waitUntilReady: async () => true,
-    stop: async () => undefined,
-  };
-  const setup = startupController(paths.root);
-  const helper = new GoalProgressHelper({
-    paths,
-    runtime: runtime(root),
-    resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
-    startupListener: startupListener as never,
-    startupHandoff: setup.instance,
-  });
-  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-  try {
-    await helper.start();
-    await client.request({
-      method: "task.request",
-      params: {
-        action: "initialize",
-        auth: {
-          kind: "codex-request",
-          toolName: "task_progress_initialize",
-          identity: {
-            threadId: "startup-ordinary-chat",
-            sessionId: "startup-ordinary-chat",
-            turnId: "turn-1",
-            callId: "startup-init",
-            model: "test",
-            threadSource: "user",
-            cwd: root,
-          },
-        },
-        input: {
-          requestId: "startup-init",
-          expectedRevision: 0,
-          title: "Recover ordinary task",
-          reason: "User requested recovery",
-          objectives: [{ id: "C1", title: "Build" }],
-        },
-      },
-    });
-    assert.ok(startupHandler);
-    const response = await startupHandler(startupEvent(startupExecutablePath));
-    assert.equal(response.code, "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE");
-    assert.equal(response.action, "continue");
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await helper.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("native task reads count as startup activity and cannot trigger automatic recovery", async () => {
-  const root = await mkdtemp("/tmp/ctph-native-startup-activity-");
-  await mkdir(join(root, ".git"));
-  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
-  const { writeCodexStartupRecoveryPolicy } = await import(
-    "../../../platform/macos/src/startup-recovery-policy.js"
-  );
-  await writeCodexStartupRecoveryPolicy(paths, "enable");
-  let startupHandler:
-    | ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>)
-    | undefined;
-  const startupListener = {
-    start(handler: typeof startupHandler) {
-      startupHandler = handler;
-    },
-    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
-    isPending: (pid: number) => pid === 4242,
-    waitUntilReady: async () => true,
-    stop: async () => undefined,
-  };
-  const setup = startupController(paths.root);
-  const helper = new GoalProgressHelper({
-    paths,
-    runtime: runtime(root),
-    resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
-    startupListener: startupListener as never,
-    startupHandoff: setup.instance,
-  });
-  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-  try {
-    await helper.start();
-    await client.request({
-      method: "task.native-read",
-      params: { threadId: "active-native-chat", action: "get", input: {} },
-    });
-    assert.ok(startupHandler);
-    const response = await startupHandler(startupEvent(startupExecutablePath));
-    assert.equal(response.code, "STARTUP_RECOVERY_ACTIVITY");
-    assert.equal(response.action, "continue");
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await helper.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("eligible ordinary tasks never kill or relaunch Codex when no verified CDP exists", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const { instance, counts } = startupController(root);
-    const response = await instance.handle(startupEvent(startupExecutablePath), true);
-    assert.equal(response.code, "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE");
-    assert.deepEqual(counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("valid CDP startup is reattached and runtime identity is rebuilt from verified ownership", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, pid, requestedPort) => {
-        assert.equal(requestedPort, startupPort);
-        return startupOwnership(pid, command);
-      },
-    });
-    const response = await setup.instance.handle(startupEvent(command), true);
-    assert.equal(response.action, "continue");
-    assert.equal(response.code, "STARTUP_EVENT_EXISTING_CDP");
-    assert.equal(response.mainPid, 4242);
-    assert.equal(response.port, startupPort);
-    assert.ok(response.launchId);
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 1 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("CDP command with stale process ownership fails closed without side effects", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, pid) =>
-        startupOwnership(pid, command, "2026-11-13T11:00:00.000Z"),
-    });
-    const response = await setup.instance.handle(startupEvent(command), true);
-    assert.equal(response.code, "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("superseded CDP ownership check returns continue and does not rewrite runtime state", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    let releaseOwnership: ((value: CodexCdpListenerOwnership) => void) | undefined;
-    let ownershipStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolveStarted) => {
-      ownershipStarted = resolveStarted;
-    });
-    let verifyCount = 0;
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, _pid) => {
-        if (verifyCount++ > 0) throw new Error("no second verified CDP owner");
-        ownershipStarted?.();
-        return new Promise<CodexCdpListenerOwnership>((resolveOwnership) => {
-          releaseOwnership = resolveOwnership;
-        });
-      },
-    });
-    const first = setup.instance.handle(startupEvent(command), true);
-    await started;
-    await setup.instance.handle(startupEvent(startupExecutablePath, 4243), true);
-    releaseOwnership?.(startupOwnership(4242, command));
-    const response = await first;
-    assert.equal(response.action, "continue");
-    assert.equal(response.code, "STARTUP_EVENT_RELEASED");
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("stopped Helper during CDP ownership check returns continue without runtime writes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    let releaseOwnership: ((value: CodexCdpListenerOwnership) => void) | undefined;
-    let ownershipStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolveStarted) => {
-      ownershipStarted = resolveStarted;
-    });
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, _pid) => {
-        ownershipStarted?.();
-        return new Promise<CodexCdpListenerOwnership>((resolveOwnership) => {
-          releaseOwnership = resolveOwnership;
-        });
-      },
-    });
-    let stopped = false;
-    const pending = setup.instance.handle(startupEvent(command), true, {
-      isPending: () => true,
-      isStopped: () => stopped,
-    });
-    await started;
-    stopped = true;
-    releaseOwnership?.(startupOwnership(4242, command));
-    const response = await pending;
-    assert.equal(response.action, "continue");
-    assert.equal(response.code, "STARTUP_EVENT_RELEASED");
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("observed CDP startup retries after the listener becomes ready without restarting", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    let ready = false;
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, pid) => {
-        if (!ready) throw new Error("listener not ready");
-        return startupOwnership(pid, command);
-      },
-    });
-    const event = { ...startupEvent(command), event: "codex.didLaunch" as const };
-    assert.equal(
-      (await setup.instance.handle(event, true)).code,
-      "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE",
-    );
-    ready = true;
-    assert.equal(
-      (await setup.instance.retryObservedStartup(event, () => true)).code,
-      "STARTUP_EVENT_EXISTING_CDP",
-    );
-    assert.deepEqual(setup.counts(), { signals: 0, launches: 0, allocations: 0, writes: 1 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("observed startup retry rejects cancellation and changed process identity", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    let start = startupStartedAt;
-    const event = { ...startupEvent(command), event: "codex.didLaunch" as const };
-    // Simulate a listener that becomes unavailable during the initial observation.
-    const unavailable = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command, start),
-      verifyExistingOwnership: async () => {
-        throw new Error("not ready");
-      },
-    });
-    assert.equal(
-      (await unavailable.instance.handle(event, true)).code,
-      "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE",
-    );
-    assert.equal(
-      (await unavailable.instance.retryObservedStartup(event, () => false)).code,
-      "STARTUP_EVENT_RELEASED",
-    );
-    start = "2026-11-13T12:00:01.000Z";
-    assert.equal(
-      (await unavailable.instance.retryObservedStartup(event, () => true)).code,
-      "STARTUP_EVENT_PROCESS_MISMATCH",
-    );
-    assert.deepEqual(unavailable.counts(), { signals: 0, launches: 0, allocations: 0, writes: 0 });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-async function waitForStartupTest(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.fail("timed out waiting for startup recovery");
-}
-
-async function startupHelperFixture(options: {
-  readonly verify: (pid: number, command: string) => Promise<ReturnType<typeof startupOwnership>>;
-  readonly delays?: readonly number[];
-  readonly visibleDelays?: readonly number[];
-  readonly recoverTargets?: () => Promise<readonly { targetId: string; threadId: string | null }[]>;
-}) {
-  const root = await mkdtemp("/tmp/ctph-startup-wiring-");
-  await mkdir(join(root, ".git"));
-  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
-  const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-  let handler: ((event: MacosCodexStartupEvent) => Promise<MacosCodexStartupResponse>) | undefined;
-  let reconnects = 0;
-  const setup = startupController(paths.root, {
-    inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-    verifyExistingOwnership: async (_app, pid) => options.verify(pid, command),
-  });
-  const listener = {
-    start(value: typeof handler) {
-      handler = value;
-    },
-    health: () => ({ running: true, ready: true, pid: 1, pendingPid: 4242 }),
-    isPending: () => true,
-    waitUntilReady: async () => true,
-    stop: async () => undefined,
-  };
-  const sink = {
-    clear: async () => undefined,
-    clearTarget: async () => undefined,
-    publish: async () => undefined,
-    publishTarget: async () => undefined,
-    hasTarget: () => true,
-    setTargetThread: async () => undefined,
-    reconnect: async () => {
-      reconnects += 1;
-      return undefined;
-    },
-    recoverVisibleTargets: async () =>
-      reconnects === 0 ? [] : ((await options.recoverTargets?.()) ?? []),
-  };
-  const helper = new GoalProgressHelper({
-    paths,
-    runtime: runtime(root),
-    resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: options.visibleDelays ?? [],
-    startupReattachDelaysMs: options.delays ?? [1, 1],
-    startupListener: listener as never,
-    startupHandoff: setup.instance,
-    viewModelSink: sink,
-  });
-  try {
-    await helper.start();
-    const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-    await client.request({
-      method: "task.request",
-      params: {
-        action: "initialize",
-        auth: {
-          kind: "codex-request",
-          toolName: "task_progress_initialize",
-          identity: {
-            threadId: "startup-chat",
-            sessionId: "startup-chat",
-            turnId: "turn-1",
-            callId: "startup-init",
-            model: "test",
-            threadSource: "user",
-            cwd: root,
-          },
-        },
-        input: {
-          requestId: "startup-init",
-          expectedRevision: 0,
-          title: "Recover",
-          reason: "Requested",
-          objectives: [{ id: "C1", title: "Build" }],
-        },
-      },
-    });
-    assert.ok(handler);
-    const onStartup = handler;
-    return {
-      root,
-      paths,
-      helper,
-      setup,
-      command,
-      reconnects: () => reconnects,
-      fire: (pid = 4242) => onStartup({ ...startupEvent(command, pid), event: "codex.didLaunch" }),
-      close: async () => {
-        await helper.stop();
-        await rm(root, { recursive: true, force: true });
-      },
-    };
-  } catch (error) {
-    await helper.stop();
-    await rm(root, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-test("startup handoff dispatch does not wait for observational log persistence", async () => {
-  let dispatch!: () => void;
-  const dispatched = new Promise<void>((resolveDispatch) => {
-    dispatch = resolveDispatch;
-  });
-  let release!: () => void;
-  const gate = new Promise<void>((resolveGate) => {
-    release = resolveGate;
-  });
-  const fixture = await startupHelperFixture({
-    verify: async (pid, command) => {
-      dispatch();
-      return startupOwnership(pid, command);
-    },
-  });
-  const originalWrite = GoalProgressLogger.prototype.write;
-  let observationBlocked = false;
-  GoalProgressLogger.prototype.write = async function (input) {
-    if (input.event === "startup.event") {
-      observationBlocked = true;
-      await gate;
-    }
-    return originalWrite.call(this, input);
-  };
-  let response: Promise<MacosCodexStartupResponse> | undefined;
-  try {
-    response = fixture.fire();
-    await dispatched;
-    assert.equal(observationBlocked, true);
-  } finally {
-    release();
-    GoalProgressLogger.prototype.write = originalWrite;
-    try {
-      await response;
-    } finally {
-      await fixture.close();
-    }
-  }
-});
-
-test("Helper retries delayed CDP and reconnects visible targets", async () => {
-  let attempts = 0;
-  let targetReads = 0;
-  const fixture = await startupHelperFixture({
-    verify: async (pid, command) => {
-      attempts += 1;
-      if (attempts < 2) throw new Error("not listening yet");
-      return startupOwnership(pid, command);
-    },
-    visibleDelays: [1, 1],
-    recoverTargets: async () => {
-      targetReads += 1;
-      // Startup and handoff both initially see no renderer; the scheduled retry finds it.
-      return targetReads < 2 ? [] : [{ targetId: "window", threadId: "startup-chat" }];
-    },
-  });
-  try {
-    assert.equal((await fixture.fire()).code, "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE");
-    await waitForStartupTest(() => fixture.reconnects() === 1 && targetReads >= 2);
-    assert.equal(attempts, 2);
-    assert.deepEqual(fixture.setup.counts(), {
-      signals: 0,
-      launches: 0,
-      allocations: 0,
-      writes: 1,
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
-test("Helper bounds unavailable CDP retries without a restart", async () => {
-  let attempts = 0;
-  const fixture = await startupHelperFixture({
-    verify: async () => {
-      attempts += 1;
-      throw new Error("not ready");
-    },
-  });
-  try {
-    await fixture.fire();
-    await waitForStartupTest(() => attempts === 3);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(attempts, 3);
-    assert.equal(fixture.reconnects(), 0);
-    assert.deepEqual(fixture.setup.counts(), {
-      signals: 0,
-      launches: 0,
-      allocations: 0,
-      writes: 0,
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
-test("Helper stop and newer observations cancel pending CDP reattachment", async () => {
-  const inspected: number[] = [];
-  const fixture = await startupHelperFixture({
-    delays: [60],
-    verify: async (pid) => {
-      inspected.push(pid);
-      throw new Error("not ready");
-    },
-  });
-  try {
-    await fixture.fire(4242);
-    await fixture.fire(4243);
-    await waitForStartupTest(() => inspected.length === 3);
-    assert.deepEqual(inspected, [4242, 4243, 4243]);
-    await fixture.fire(4244);
-    await fixture.helper.stop();
-    await new Promise((resolve) => setTimeout(resolve, 90));
-    assert.deepEqual(inspected, [4242, 4243, 4243, 4244]);
-    assert.deepEqual(fixture.setup.counts(), {
-      signals: 0,
-      launches: 0,
-      allocations: 0,
-      writes: 0,
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
-test("multi-target handoff retries a transient visible-thread restore failure", async () => {
-  let targetReads = 0;
-  let stateBlocker = "";
-  const fixture = await startupHelperFixture({
-    verify: async (pid, command) => startupOwnership(pid, command),
-    visibleDelays: [1, 1],
-    recoverTargets: async () => {
-      targetReads += 1;
-      if (targetReads === 2) await rm(stateBlocker);
-      return [{ targetId: "window", threadId: "transient-chat" }];
-    },
-  });
-  try {
-    await mkdir(fixture.paths.stateRoot, { recursive: true });
-    stateBlocker = join(
-      fixture.paths.stateRoot,
-      createHash("sha256").update("transient-chat").digest("hex"),
-    );
-    // A file at the session-directory path makes the first restore fail with a store I/O error.
-    await writeFile(stateBlocker, "temporary");
-    assert.equal((await fixture.fire()).code, "STARTUP_EVENT_EXISTING_CDP");
-    await waitForStartupTest(() => targetReads >= 2);
-    await waitForStartupTest(
-      async () => (await stat(stateBlocker).catch(() => undefined))?.isDirectory() === true,
-    );
-    await waitForStartupTest(() => fixture.reconnects() === 1);
-    assert.deepEqual(fixture.setup.counts(), {
-      signals: 0,
-      launches: 0,
-      allocations: 0,
-      writes: 1,
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
-function legacyListenerChild(failWrite = false) {
-  const child = new EventEmitter() as EventEmitter & {
-    stdout: PassThrough;
-    stderr: PassThrough;
-    stdin: Writable;
-    exitCode: number | null;
-    signalCode: string | null;
-    kill: (signal: string) => boolean;
-  };
-  let suspended = false;
-  const actions: string[] = [];
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.exitCode = null;
-  child.signalCode = null;
-  child.stdin = new Writable({
-    write(chunk, _encoding, callback) {
-      if (failWrite) {
-        callback(new Error("broken pipe"));
-        return;
-      }
-      const response = JSON.parse(chunk.toString()) as { action: string };
-      actions.push(response.action);
-      if (response.action === "continue") suspended = false;
-      callback();
-    },
-    final(callback) {
-      // Legacy Swift resumes on stdin EOF.
-      suspended = false;
-      callback();
-    },
-  });
-  child.kill = (signal) => {
-    // Legacy Swift catches SIGTERM and resumes its pending process before exiting.
-    if (signal === "SIGTERM") suspended = false;
-    child.signalCode = signal;
-    queueMicrotask(() => child.emit("close"));
-    return true;
-  };
-  return {
-    child,
-    actions,
-    suspended: () => suspended,
-    ready: () =>
-      child.stdout.write(
-        `${JSON.stringify({ schemaVersion: 1, event: "listener.ready", pid: 99 })}\n`,
-      ),
-    launch: (deadlineAtMs: number) => {
-      suspended = true;
-      child.stdout.write(
-        `${JSON.stringify({ ...startupEvent(startupExecutablePath), deadlineAtMs })}\n`,
-      );
-    },
-  };
-}
-
-test("supervisor releases a legacy suspended launch on continue, failure, timeout, stop and write failure", async () => {
-  for (const scenario of ["continue", "failure", "timeout", "stop", "write-failure"] as const) {
-    const fake = legacyListenerChild(scenario === "write-failure");
-    let supervisorSignals = 0;
-    const supervisor = new MacosStartupListenerSupervisor({
-      executablePath: "/fake/listener",
-      bundleId: "com.openai.codex",
-      appPath: startupAppPath,
-      appExecutablePath: startupExecutablePath,
-      spawnProcess: (() => fake.child) as never,
-      restartDelaysMs: [],
-      signalProcess: () => {
-        supervisorSignals += 1;
-      },
-    });
-    supervisor.start(async (event) => {
-      if (scenario === "timeout" || scenario === "stop") return new Promise(() => undefined);
-      if (scenario === "failure") throw new Error("handler failed");
-      return { schemaVersion: 1, pid: event.pid, action: "continue", code: "TEST" };
-    });
-    fake.ready();
-    await waitForStartupTest(() => supervisor.health().ready);
-    fake.launch(Date.now() + (scenario === "timeout" ? 20 : 1_000));
-    await waitForStartupTest(() => supervisor.isPending(4242) || !fake.suspended());
-    if (scenario === "stop") await supervisor.stop();
-    await waitForStartupTest(() => !fake.suspended());
-    if (scenario === "continue" || scenario === "failure" || scenario === "timeout") {
-      assert.deepEqual(fake.actions, ["continue"], scenario);
-    }
-    assert.equal(supervisorSignals, 0, scenario);
-    await supervisor.stop();
-  }
-});
-
-test("multi-target recovery retries unknown thread identity and stops after bounded exhaustion", async () => {
-  for (const becomesKnown of [true, false]) {
-    let reads = 0;
-    const fixture = await startupHelperFixture({
-      verify: async (pid, command) => startupOwnership(pid, command),
-      visibleDelays: [1, 1],
-      recoverTargets: async () => {
-        reads += 1;
-        return [{ targetId: "window", threadId: becomesKnown && reads >= 3 ? "known-chat" : null }];
-      },
-    });
-    try {
-      assert.equal((await fixture.fire()).code, "STARTUP_EVENT_EXISTING_CDP");
-      await waitForStartupTest(() => reads === 3);
-      if (becomesKnown) {
-        const directory = join(
-          fixture.paths.stateRoot,
-          createHash("sha256").update("known-chat").digest("hex"),
-        );
-        await waitForStartupTest(
-          async () => (await stat(directory).catch(() => undefined))?.isDirectory() === true,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.equal(reads, 3);
-      assert.deepEqual(fixture.setup.counts(), {
-        signals: 0,
-        launches: 0,
-        allocations: 0,
-        writes: 1,
-      });
-    } finally {
-      await fixture.close();
-    }
-  }
-});
-
-test("Helper remains ready and task IPC works through stale renderer bootstrap, then recovers", async () => {
-  for (const failure of [
-    "target-discovery",
-    "target-initialize",
-    "target-activation",
-    "thread-discovery",
-  ] as const) {
-    const root = await mkdtemp("/tmp/ctph-renderer-offline-");
-    await mkdir(join(root, ".git"));
-    const paths = resolveGoalProgressPaths({ root: join(root, "data") });
-    let available = false;
-    let lookups = 0;
-    let signals = 0;
-    let listenerStarted = false;
-    const missing = () => {
-      throw new Error("GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED");
-    };
-    const sink = {
-      clear: async () => undefined,
-      publish: async () => undefined,
-      ...(failure === "thread-discovery"
-        ? {
-            recoverVisibleThreadId: async () => {
-              lookups += 1;
-              return available ? "recovered-chat" : missing();
-            },
-          }
-        : {
-            clearTarget: async () => undefined,
-            publishTarget: async () => undefined,
-            setTargetThread: async () => undefined,
-            hasTarget: () => (failure === "target-activation" && !available ? missing() : true),
-            recoverVisibleTargets: async () => {
-              lookups += 1;
-              if (
-                !available &&
-                (failure === "target-discovery" ||
-                  (failure === "target-initialize" && lookups >= 2))
-              )
-                return missing();
-              return failure === "target-activation" || available
-                ? [{ targetId: "window", threadId: "recovered-chat" }]
-                : [];
-            },
-          }),
-    };
-    const helper = new GoalProgressHelper({
-      paths,
-      runtime: runtime(root),
-      resolveNativeGoal: async () => null,
-      viewModelSink: sink,
-      visibleThreadRecoveryDelaysMs: Array.from({ length: 10 }, () => 100),
-      startupListener: {
-        start: () => {
-          listenerStarted = true;
-        },
-        health: () => ({ running: true, ready: true, pid: 1, pendingPid: null }),
-        isPending: () => false,
-        canReplaceStartingApp: async () => false,
-        waitUntilReady: async () => true,
-        stop: async () => undefined,
-      },
-      startupHandoff: startupController(paths.root, {
-        signalProcess: () => {
-          signals += 1;
-        },
-      }).instance,
-    });
-    const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
-    let call = 0;
-    const request = (action: "get" | "initialize" | "history", input: unknown) =>
-      client.request({
-        method: "task.request",
-        params: {
-          action,
-          auth: {
-            kind: "codex-request",
-            toolName: `task_progress_${action}`,
-            identity: {
-              threadId: "ordinary-chat",
-              sessionId: "ordinary-chat",
-              turnId: "turn-1",
-              callId: `call-${++call}`,
-              model: "test",
-              threadSource: "user",
-              cwd: root,
-            },
-          },
-          input,
-        },
-      });
-    try {
-      await helper.start();
-      assert.equal(listenerStarted, true, failure);
-      const ping = await client.request({ method: "ping", params: {} });
-      assert.equal((ping.result as { ready: boolean }).ready, true, failure);
-      assert.equal(((await request("get", {})).result as { task: unknown }).task, null);
-      await request("initialize", {
-        requestId: "init",
-        expectedRevision: 0,
-        title: "Offline task",
-        reason: "Requested",
-        objectives: [{ id: "C1", title: "Build" }],
-      });
-      assert.equal(
-        ((await request("get", {})).result as { task: TaskState }).task.title,
-        "Offline task",
-      );
-      const history = (await request("history", {})).result as { history: TaskHistoryPage };
-      assert.equal(history.history.events.length, 1);
-      available = true;
-      const recoveredDirectory = join(
-        paths.stateRoot,
-        createHash("sha256").update("recovered-chat").digest("hex"),
-      );
-      await waitForStartupTest(
-        async () => (await stat(recoveredDirectory).catch(() => undefined))?.isDirectory() === true,
-      );
-      const laterPing = await client.request({ method: "ping", params: {} });
-      assert.equal(
-        (laterPing.result as { instanceId: string }).instanceId,
-        (ping.result as { instanceId: string }).instanceId,
-      );
-      assert.equal(signals, 0);
-      assert.equal(
-        ((await request("history", {})).result as { history: TaskHistoryPage }).history.events
-          .length,
-        1,
-      );
-    } finally {
-      await helper.stop();
-      await rm(root, { recursive: true, force: true });
-    }
-  }
-});
-
 test("task mutation forces discovery before writing a local checklist", async () => {
   const root = await mkdtemp("/tmp/ctph-force-source-");
   await mkdir(join(root, ".git"));
@@ -2840,7 +1954,6 @@ test("task mutation forces discovery before writing a local checklist", async ()
     paths,
     runtime: runtime(root),
     resolveNativeGoal: async () => null,
-    visibleThreadRecoveryDelaysMs: [],
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   const original = HeartbeatService.prototype.taskProjection;
@@ -2928,429 +2041,75 @@ test("task mutation forces discovery before writing a local checklist", async ()
   }
 });
 
-test("two fresh ordinary launches within cooldown each hand off once", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  let originalAlive = true;
-  let originalPid = 4242;
-  let launches = 0;
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    const options: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {
-      inspectTargetProcess: async (pid) => {
-        if (pid === originalPid && !originalAlive) throw new Error("exited");
-        return startupProcessSnapshot(pid, pid === originalPid ? startupExecutablePath : command);
-      },
-      signalProcess: (_pid, signal) => {
-        if (signal === "SIGTERM") originalAlive = false;
-      },
-      launchWithCdp: async () => {
-        launches += 1;
-        return { pid: originalPid + 1, processStartedAt: startupStartedAt, command } as never;
-      },
-      waitForOwnership: async () => startupOwnership(originalPid + 1, command),
-      createRuntimeState: () =>
-        ({
-          mainPid: originalPid + 1,
-          port: startupPort,
-          launchId: "00000000-0000-4000-8000-000000000001",
-        }) as CodexCdpRuntimeState,
-    };
-    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
-    const context = {
-      isPending: () => true,
-      allowRestart: true,
-      restartStillAllowedNow: () => true,
-      canReplaceStartingApp: async () => true,
-    };
-    const first = startupController(root, options);
-    assert.equal(
-      (await first.instance.handle(event, true, context)).code,
-      "STARTUP_HANDOFF_COMPLETE",
-    );
-    assert.equal(
-      (await first.instance.handle(event, true, context)).code,
-      "STARTUP_HANDOFF_COMPLETE",
-    );
-    originalPid = 4244;
-    originalAlive = true;
-    const second = startupController(root, options);
-    assert.equal(
-      (await second.instance.handle({ ...event, pid: originalPid }, true, context)).code,
-      "STARTUP_HANDOFF_COMPLETE",
-    );
-    assert.equal(launches, 2);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("denied native proof releases only its own reservation for next fresh launch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  let alive = true;
-  let launches = 0;
-  try {
-    const command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    const options: Partial<ConstructorParameters<typeof MacosStartupHandoffController>[0]> = {
-      inspectTargetProcess: async (pid) => {
-        if (pid === 4244 && !alive) throw new Error("exited");
-        return startupProcessSnapshot(pid, pid === 4245 ? command : startupExecutablePath);
-      },
-      signalProcess: (_pid, signal) => {
-        if (signal === "SIGTERM") alive = false;
-      },
-      launchWithCdp: async () => {
-        launches += 1;
-        return { pid: 4245, processStartedAt: startupStartedAt, command } as never;
-      },
-      waitForOwnership: async () => startupOwnership(4245, command),
-      createRuntimeState: () =>
-        ({
-          mainPid: 4245,
-          port: startupPort,
-          launchId: "00000000-0000-4000-8000-000000000001",
-        }) as CodexCdpRuntimeState,
-    };
-    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
-    const first = startupController(root, options);
-    assert.equal(
-      (
-        await first.instance.handle(event, true, {
-          isPending: () => true,
-          allowRestart: true,
-          restartStillAllowedNow: () => true,
-          canReplaceStartingApp: async () => false,
-        })
-      ).code,
-      "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED",
-    );
-    assert.equal(launches, 0);
-    const second = startupController(root, options);
-    assert.equal(
-      (
-        await second.instance.handle({ ...event, pid: 4244 }, true, {
-          isPending: () => true,
-          allowRestart: true,
-          restartStillAllowedNow: () => true,
-          canReplaceStartingApp: async () => true,
-        })
-      ).code,
-      "STARTUP_HANDOFF_COMPLETE",
-    );
-    assert.equal(launches, 1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("automatic recovery rejects late, synthetic, active, disabled, and changed processes", async () => {
-  for (const scenario of ["late", "will-launch", "activity", "disabled", "changed"] as const) {
-    const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-    let inspections = 0;
-    try {
-      const setup = startupController(root, {
-        now: () => Date.parse(startupStartedAt) + (scenario === "late" ? 6_000 : 1),
-        inspectTargetProcess: async (pid) =>
-          startupProcessSnapshot(
-            pid,
-            scenario === "changed" && ++inspections > 1
-              ? `${startupExecutablePath} --new-argument`
-              : startupExecutablePath,
-          ),
-      });
-      const event = {
-        ...startupEvent(startupExecutablePath),
-        event:
-          scenario === "will-launch" ? ("codex.willLaunch" as const) : ("codex.didLaunch" as const),
-      };
-      const response = await setup.instance.handle(event, true, {
-        isPending: () => true,
-        allowRestart: true,
-        restartStillAllowedNow: () => true,
-        restartStillAllowed: async () => scenario !== "disabled",
-        hasObservedTaskActivity: () => scenario === "activity",
-      });
-      assert.ok(
-        [
-          "STARTUP_RECOVERY_EXPIRED",
-          "STARTUP_RECOVERY_ACTIVITY",
-          "STARTUP_RECOVERY_DISABLED",
-          "STARTUP_RECOVERY_ACTIVITY_UNVERIFIED",
-          "STARTUP_EVENT_PROCESS_MISMATCH",
-        ].includes(response.code),
-        `${scenario}: ${response.code}`,
-      );
-      assert.equal(setup.counts().signals, 0, scenario);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  }
-});
-
-test("failed automatic launch restores normal Codex and blocks immediate repeat", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  let originalAlive = true;
-  let normalLaunches = 0;
-  try {
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => {
-        if (!originalAlive) throw new Error("exited");
-        return startupProcessSnapshot(pid, startupExecutablePath);
-      },
-      signalProcess: (_pid, signal) => {
-        if (signal === "SIGTERM") originalAlive = false;
-      },
-      launchNormal: async () => {
-        normalLaunches += 1;
-      },
-    });
-    const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
-    assert.equal(
-      (
-        await setup.instance.handle(event, true, {
-          isPending: () => true,
-          allowRestart: true,
-          restartStillAllowedNow: () => true,
-          canReplaceStartingApp: async () => true,
-        })
-      ).code,
-      "STARTUP_HANDOFF_FALLBACK_NORMAL",
-    );
-    assert.equal(normalLaunches, 1);
-    const next = startupController(root);
-    assert.equal(
-      (
-        await next.instance.handle({ ...event, pid: 4244 }, true, {
-          isPending: () => true,
-          allowRestart: true,
-          restartStillAllowedNow: () => true,
-        })
-      ).code,
-      "STARTUP_RECOVERY_COOLDOWN",
-    );
-    assert.equal(next.counts().signals, 0);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("native replacement proof binds listener generation, pid, deadline and fresh acknowledgement", async () => {
-  for (const scenario of [
-    "allowed",
-    "finished",
-    "has-window",
-    "wrong-pid",
-    "stale",
-    "late",
-    "child-restart",
-  ] as const) {
-    const fake = legacyListenerChild();
-    let inspect: { requestId: string; pid: number; deadlineAtMs: number } | undefined;
-    fake.child.stdin = new Writable({
-      write(chunk, _encoding, callback) {
-        const message = JSON.parse(chunk.toString());
-        if (message.event === "startup.inspect-replacement") inspect = message;
-        callback();
-      },
-    });
-    const supervisor = new MacosStartupListenerSupervisor({
-      executablePath: "/fake/listener",
-      bundleId: "com.openai.codex",
-      appPath: startupAppPath,
-      appExecutablePath: startupExecutablePath,
-      spawnProcess: (() => fake.child) as never,
-      restartDelaysMs: [],
-    });
-    let result: boolean | undefined;
-    supervisor.start(async (event) => {
-      result = await supervisor.canReplaceStartingApp(event);
-      return { schemaVersion: 1, pid: event.pid, action: "continue", code: "TEST" };
-    });
-    try {
-      fake.ready();
-      await waitForStartupTest(() => supervisor.health().ready);
-      fake.launch(Date.now() + 2_000);
-      await waitForStartupTest(() => inspect !== undefined);
-      if (scenario === "child-restart") {
-        fake.child.emit("close");
-      } else {
-        const observed = inspect as
-          | { requestId: string; pid: number; deadlineAtMs: number }
-          | undefined;
-        assert.ok(observed);
-        if (scenario === "late") await new Promise((resolveDelay) => setTimeout(resolveDelay, 320));
-        fake.child.stdout.write(
-          `${JSON.stringify({
-            schemaVersion: 1,
-            event: "startup.replacement-check",
-            requestId: observed.requestId,
-            pid: scenario === "wrong-pid" ? observed.pid + 1 : observed.pid,
-            allowed: scenario !== "finished" && scenario !== "has-window",
-            checkedAtMs: Date.now() - (scenario === "stale" ? 200 : 0),
-            reason: scenario,
-          })}\n`,
-        );
-      }
-      await waitForStartupTest(() => result !== undefined);
-      assert.equal(result, scenario === "allowed", scenario);
-    } finally {
-      await supervisor.stop();
-    }
-  }
-});
-
-test("disabling startup recovery while native proof is pending prevents signalling", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  let requestProof!: () => void;
-  let releaseProof!: () => void;
-  const requested = new Promise<void>((resolveRequested) => {
-    requestProof = resolveRequested;
-  });
-  const gate = new Promise<void>((resolveGate) => {
-    releaseProof = resolveGate;
-  });
-  let enabled = true;
-  try {
-    const setup = startupController(root);
-    const pending = setup.instance.handle(
-      { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" },
-      true,
-      {
-        isPending: () => true,
-        allowRestart: true,
-        restartStillAllowed: async () => true,
-        restartStillAllowedNow: () => enabled,
-        canReplaceStartingApp: async () => {
-          requestProof();
-          await gate;
-          return true;
-        },
-      },
-    );
-    await requested;
-    enabled = false;
-    releaseProof();
-    assert.equal((await pending).code, "STARTUP_RECOVERY_DISABLED");
-    assert.equal(setup.counts().signals, 0);
-  } finally {
-    releaseProof();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("stop and supersession after original exit restore a usable app and drain recovery", async () => {
-  for (const scenario of ["stop", "supersede"] as const) {
-    const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-    let signalled!: () => void;
-    let releaseExit!: () => void;
-    const signalledGate = new Promise<void>((resolveSignal) => {
-      signalled = resolveSignal;
-    });
-    const exitGate = new Promise<void>((resolveExit) => {
-      releaseExit = resolveExit;
-    });
-    let stopped = false;
-    let alive = true;
-    let restores = 0;
-    try {
-      const setup = startupController(root, {
-        inspectTargetProcess: async (pid) => {
-          if (pid === 4242 && !alive) {
-            await exitGate;
-            throw new Error("exited");
-          }
-          return startupProcessSnapshot(pid, startupExecutablePath);
-        },
-        signalProcess: () => {
-          alive = false;
-          signalled();
-        },
-        launchNormal: async () => {
-          restores += 1;
-        },
-      });
-      const event = { ...startupEvent(startupExecutablePath), event: "codex.didLaunch" as const };
-      const pending = setup.instance.handle(event, true, {
-        isPending: () => true,
-        isStopped: () => stopped,
-        allowRestart: true,
-        restartStillAllowedNow: () => true,
-        canReplaceStartingApp: async () => true,
-      });
-      await signalledGate;
-      if (scenario === "stop") stopped = true;
-      else await setup.instance.handle({ ...event, pid: 4244 }, false);
-      let drained = false;
-      const idle = setup.instance.whenIdle().then(() => {
-        drained = true;
-      });
-      await Promise.resolve();
-      assert.equal(drained, false);
-      releaseExit();
-      assert.equal((await pending).code, "STARTUP_HANDOFF_FALLBACK_NORMAL");
-      await idle;
-      assert.equal(restores, 1);
-      assert.equal(setup.counts().launches, 0);
-    } finally {
-      releaseExit();
-      await rm(root, { recursive: true, force: true });
-    }
-  }
-});
-
-test("failed willLaunch observation does not suppress didLaunch CDP reattachment", async () => {
-  const root = await mkdtemp(join(tmpdir(), "task-progress-startup-"));
-  try {
-    let command = `${startupExecutablePath} --unsupported`;
-    const setup = startupController(root, {
-      inspectTargetProcess: async (pid) => startupProcessSnapshot(pid, command),
-      verifyExistingOwnership: async (_app, pid) => startupOwnership(pid, command),
-    });
-    const will = startupEvent(startupExecutablePath);
-    assert.equal((await setup.instance.handle(will, true)).code, "STARTUP_EVENT_PROCESS_MISMATCH");
-    command = `${startupExecutablePath} --remote-debugging-port=${startupPort}`;
-    assert.equal(
-      (await setup.instance.handle({ ...will, event: "codex.didLaunch" }, true)).code,
-      "STARTUP_EVENT_EXISTING_CDP",
-    );
-    assert.equal(setup.counts().signals, 0);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("cheap Helper ping follows late startup listener readiness without requiring CDP", async () => {
-  const { inspectInstalledHelperReadiness } = await import(
-    "../../../platform/macos/src/installed-inspection.js"
-  );
-  const root = await mkdtemp("/tmp/ctph-listener-readiness-");
+test("model Goal initialization and retrieval remain available without a desktop renderer", async () => {
+  const root = await mkdtemp("/tmp/ctph-goal-native-");
+  await mkdir(join(root, ".git"));
   const paths = resolveGoalProgressPaths({ root: join(root, "data") });
-  let listenerReady = false;
   const helper = new GoalProgressHelper({
     paths,
     runtime: runtime(root),
-    resolveNativeGoal: async () => null,
-    startupListener: {
-      start: () => undefined,
-      health: () => ({ running: true, ready: listenerReady, pid: 42, pendingPid: null }),
-      isPending: () => false,
-      canReplaceStartingApp: async () => false,
-      waitUntilReady: async () => false,
-      stop: async () => undefined,
+    resolveNativeGoal: async (threadId) => ({
+      threadId,
+      objective: "Deliver the intended result",
+      status: "active",
+      createdAt: 100,
+    }),
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const auth = (toolName: "goal_progress_initialize" | "goal_progress_get", callId: string) => ({
+    kind: "codex-request" as const,
+    toolName,
+    identity: {
+      threadId: "goal-chat",
+      sessionId: "goal-chat",
+      turnId: "turn-1",
+      callId,
+      model: "test",
+      threadSource: "user" as const,
+      cwd: root,
     },
   });
-  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "doctor" });
   try {
     await helper.start();
-    const pending = await client.request({ method: "ping", params: {} });
-    assert.deepEqual((pending.result as { startupListener: unknown }).startupListener, {
-      running: true,
-      ready: false,
+    const initialized = await client.request({
+      method: "store.initialize",
+      params: {
+        auth: auth("goal_progress_initialize", "goal-init"),
+        initialization: {
+          contractId: "gp_goaltest01",
+          source: "model-generated",
+          objectives: [
+            {
+              id: "C1",
+              title: "Deliver",
+              requirement: "required",
+              contributionBps: 10000,
+              contributionReason: "Complete scope",
+              status: "pending",
+              evidence: [],
+              items: [],
+            },
+          ],
+        },
+        metadata: {
+          eventId: "evt-init",
+          requestId: "req-init",
+          turnId: "turn-1",
+          occurredAt: new Date().toISOString(),
+          source: "model",
+        },
+      },
     });
-    assert.equal((await inspectInstalledHelperReadiness(paths)).ready, false);
-    listenerReady = true;
-    const ready = await inspectInstalledHelperReadiness(paths);
-    assert.equal(ready.pingOk, true);
-    assert.equal(ready.ready, true);
+    assert.equal(initialized.revision, 1);
+    const loaded = await client.request({
+      method: "store.load",
+      params: { sessionId: "goal-chat", auth: auth("goal_progress_get", "goal-get") },
+    });
+    assert.equal(loaded.revision, 1);
+    assert.equal(
+      (loaded.result as { viewModel: { objective: string } }).viewModel.objective,
+      "Deliver the intended result",
+    );
   } finally {
     await helper.stop();
     await rm(root, { recursive: true, force: true });

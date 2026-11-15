@@ -20,7 +20,6 @@ const configureIdentityIndex = cliArgs.indexOf("--identity");
 const configureIdentity =
   configureIdentityIndex < 0 ? undefined : cliArgs[configureIdentityIndex + 1];
 const replaceSigning = cliArgs.includes("--replace-signing");
-const deferConnection = cliArgs.includes("--defer-connection");
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -49,7 +48,6 @@ export function createCommandPlan({ dependenciesInstalled }) {
   return [
     ...(!dependenciesInstalled ? [["install", "--frozen-lockfile"]] : []),
     ["run", "build:code"],
-    ["run", "build:renderer"],
     ["run", "build:plugin"],
     ["exec", "tsx", "scripts/build_macos_release.ts"],
   ];
@@ -68,15 +66,31 @@ export function installerNeedsRestart(output) {
   );
 }
 
-export function classifyInstallerResult(exitCode, output, { deferConnection: defer = false } = {}) {
+export function classifyInstallerResult(exitCode, output) {
+  if (
+    output?.code === "NATIVE_MCP_SETUP_REQUIRED" ||
+    output?.code === "INSTALL_LEGACY_CONTROL_CLEANUP_REQUIRED"
+  )
+    return {
+      status: "setup-required",
+      reason: output.nextStep ?? "Complete native MCP setup and retry.",
+    };
   if (exitCode !== 0) return { status: "error", reason: `Installer exited with code ${exitCode}` };
   if (installerNeedsRestart(output)) {
     return { status: "setup-required", reason: "Installation is pending a Codex restart." };
   }
-  if (output?.ok === true && output?.code === "INSTALL_OK") {
-    const connectionPending =
-      output.connectionPending === true || output.details?.connectionPending === true;
-    if (!connectionPending || defer) return { status: "installed" };
+  if (
+    output?.connectionPending === true ||
+    output?.details?.connectionPending === true ||
+    output?.details?.connectionRebuildPending === true
+  ) {
+    return {
+      status: "error",
+      reason: "Legacy connection-pending response violates the native installer contract.",
+    };
+  }
+  if (output?.ok === true && ["INSTALL_OK", "INSTALL_ALREADY_CURRENT"].includes(output?.code)) {
+    return { status: "installed" };
   }
   return { status: "error", reason: "Installer response did not confirm INSTALL_OK." };
 }
@@ -148,7 +162,6 @@ async function main(options = {}) {
   const env = options.env ?? process.env;
   const home = options.home;
   const isCheck = options.check ?? check;
-  const shouldDeferConnection = options.deferConnection ?? deferConnection;
   if (options.configureSigning ?? configureSigning) {
     try {
       if (!options.identity && !configureIdentity) {
@@ -327,11 +340,7 @@ async function main(options = {}) {
     }
     if (!(options.installerExists ?? existsSync(installer)))
       throw new Error("Release build completed without producing the installer binary");
-    const installed = runner(installer, [
-      "install",
-      ...(shouldDeferConnection ? ["--defer-connection"] : []),
-      "--json",
-    ]);
+    const installed = runner(installer, ["install", "--json"]);
     logResult("Release installer", { ...installed, stdout: "" });
     let output;
     try {
@@ -341,9 +350,7 @@ async function main(options = {}) {
         `Installer did not return JSON (${resultError(installed)}): ${(installed.stderr || installed.stdout || "").slice(-3000)}`,
       );
     }
-    const installResult = classifyInstallerResult(installed.status, output, {
-      deferConnection: shouldDeferConnection,
-    });
+    const installResult = classifyInstallerResult(installed.status, output);
     if (installResult.status !== "installed") {
       emitResult({ ...installResult, output }, 1);
       return;

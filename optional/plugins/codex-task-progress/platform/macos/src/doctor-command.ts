@@ -3,42 +3,14 @@ import type { MacosCommandResultFactory } from "./install-command.js";
 import type { InstallationState } from "./installation-state.js";
 import {
   type HelperHealthInspection,
-  inspectDisplayVerification,
   inspectHelperDiagnosticFailure,
+  nativeVerification,
 } from "./installed-inspection.js";
 import { inspectOperationalHealth, type OperationalHealthFailure } from "./operational-health.js";
-import type { CodexStartupRecoveryPolicy } from "./startup-recovery-policy.js";
 
 export interface DoctorCommandDependencies {
   readonly state: () => InstallationState;
   readonly commandResult: MacosCommandResultFactory;
-  readonly startupRecoveryPolicy: () => Promise<CodexStartupRecoveryPolicy>;
-}
-
-async function startupRecoveryDiagnostic(
-  dependencies: DoctorCommandDependencies,
-): Promise<Readonly<Record<string, unknown>>> {
-  try {
-    const policy = await dependencies.startupRecoveryPolicy();
-    return {
-      startupRecovery: {
-        configured: policy.autoPrepareOnLaunch ? "enabled" : "disabled",
-        autoPrepareOnLaunch: policy.autoPrepareOnLaunch,
-        nextLaunchBehavior: policy.autoPrepareOnLaunch
-          ? "The original Codex launch will prepare the Dock entry on the next launch."
-          : "Automatic startup recovery is off.",
-      },
-    };
-  } catch {
-    return {
-      startupRecovery: {
-        configured: "invalid",
-        autoPrepareOnLaunch: null,
-        nextLaunchBehavior:
-          "Fix or remove startup-recovery.json before enabling automatic recovery.",
-      },
-    };
-  }
 }
 
 const doctorHookCodes = {
@@ -137,35 +109,6 @@ function createHealthInspectionCommand(
           },
         });
       }
-      if (failure === "startup-listener-missing") {
-        return dependencies.commandResult(command, {
-          ok: false,
-          code: `${prefix}_STARTUP_LISTENER_MISSING`,
-          changed: false,
-          nextStep: "Run install --json to restore the startup listener.",
-          details: {
-            helperJobLoaded: facts.helperJobLoaded,
-            helper: facts.helper,
-            startupListenerFileExists: false,
-          },
-        });
-      }
-      if (failure === "startup-listener-not-running" || failure === "startup-listener-not-ready") {
-        return dependencies.commandResult(command, {
-          ok: false,
-          code:
-            failure === "startup-listener-not-running"
-              ? `${prefix}_STARTUP_LISTENER_NOT_RUNNING`
-              : `${prefix}_STARTUP_LISTENER_NOT_READY`,
-          changed: false,
-          nextStep: "Run install --json to restart the Helper and startup listener.",
-          details: {
-            helperJobLoaded: facts.helperJobLoaded,
-            helper: facts.helper,
-            startupListenerFileExists: true,
-          },
-        });
-      }
       if (failure === "plugin-invalid") {
         return dependencies.commandResult(command, {
           ok: false,
@@ -202,42 +145,11 @@ function createHealthInspectionCommand(
                 },
         });
       }
-      const startupPolicyDetails =
-        command === "doctor" ? await startupRecoveryDiagnostic(dependencies) : {};
-      const startupRecoveryEnabled =
-        (startupPolicyDetails.startupRecovery as { configured?: string } | undefined)
-          ?.configured === "enabled";
-      return dependencies.commandResult(command, {
-        ok: false,
-        code: `${prefix}_CDP_NOT_READY`,
-        changed: false,
-        nextStep:
-          command === "doctor"
-            ? startupRecoveryEnabled
-              ? "Automatic preparation is set for Codex's next launch; the currently running Codex app still requires a separate explicit repair or restart."
-              : "After the user confirms a Codex restart, run install --json --restart-codex."
-            : "Restart Codex through install --json --restart-codex.",
-        details:
-          command === "doctor"
-            ? {
-                ...startupPolicyDetails,
-                helperJobLoaded: facts.helperJobLoaded,
-                helper: facts.helper,
-                pluginInstalled: true,
-                pluginCacheMatchesSource: true,
-                hook: facts.hook,
-                cdpReady: false,
-              }
-            : {
-                helperJobLoaded: facts.helperJobLoaded,
-                helper: facts.helper,
-                cdpOwnership: false,
-              },
-      });
+      throw new Error(`GOAL_PROGRESS_HEALTH_FAILURE: ${failure}`);
     }
 
     const { facts } = health;
-    const verification = inspectDisplayVerification(facts.helper);
+    const verification = nativeVerification(facts.helper.ok);
     if (command === "verify") {
       const permissions = await state.permissionFacts(facts.installed, facts.release);
       if (permissions.configurationPath) {
@@ -251,8 +163,8 @@ function createHealthInspectionCommand(
         );
       }
       return dependencies.commandResult("verify", {
-        ok: verification.currentDisplay !== "fail",
-        code: verification.currentDisplay === "fail" ? "VERIFY_DISPLAY_MISSING" : "VERIFY_OK",
+        ok: true,
+        code: "VERIFY_OK",
         changed: false,
         details: {
           verification,
@@ -267,37 +179,25 @@ function createHealthInspectionCommand(
           storeReadOnly: true,
           helperPid: facts.helper.pid,
           helperOwnerCount: facts.helper.ownerCount,
-          startupListenerFileExists: true,
-          startupListenerRunning: facts.helper.startupListenerRunning,
-          startupListenerReady: facts.helper.startupListenerReady,
-          startupListenerPid: facts.helper.startupListenerPid,
-          cdpOwnership: true,
-          cdpReady: true,
         },
       });
     }
 
     const cleanupBackups = await state.cleanupBackups().catch(() => []);
     return dependencies.commandResult("doctor", {
-      ok: verification.currentDisplay !== "fail",
-      code: verification.currentDisplay === "fail" ? "DOCTOR_DISPLAY_MISSING" : "DOCTOR_OK",
+      ok: true,
+      code: "DOCTOR_OK",
       changed: false,
       details: {
-        ...(await startupRecoveryDiagnostic(dependencies)),
         verification,
         releaseVersion: facts.installed.releaseVersion,
         helperJobLoaded: facts.helperJobLoaded,
         helper: facts.helper,
-        startupListenerFileExists: true,
-        startupListenerRunning: facts.helper.startupListenerRunning,
-        startupListenerReady: facts.helper.startupListenerReady,
-        startupListenerPid: facts.helper.startupListenerPid,
         codexAppPath: facts.codex.realAppPath,
         pluginInstalled: facts.pluginInstalled,
         pluginCacheMatchesSource: true,
         hook: facts.hook,
         hookSha256: facts.installed.hookSha256,
-        cdpReady: facts.cdpReady,
         cleanupPending: cleanupBackups.length > 0,
         cleanupBackups,
       },

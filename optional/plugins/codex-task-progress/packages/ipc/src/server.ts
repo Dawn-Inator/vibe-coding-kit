@@ -349,9 +349,7 @@ export class GoalProgressIpcServer {
               return;
             }
             const isTaskRequest =
-              request.method === "task.request" ||
-              request.method === "task.view" ||
-              request.method === "task.native-read";
+              request.method === "task.request" || request.method === "task.native-read";
             if (isTaskRequest) {
               socket.setTimeout(TASK_PROGRESS_REQUEST_TIMEOUT_MS);
             }

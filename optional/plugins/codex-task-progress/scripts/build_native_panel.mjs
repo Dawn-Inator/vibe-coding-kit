@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// The MCP Apps SDK plus the reused checklist renderer needs more room than the CDP bundle.
+// Allow up to 1 MiB for the MCP Apps SDK and native checklist resource.
 const maxBundleBytes = 1024 * 1024;
 
 export function renderNativePanelHtml(template, script) {

@@ -1,3 +1,11 @@
+# Task Progress 0.6.0
+
+- Breaking native-only release: retire the CDP injected panel, custom Dock launcher, and their management/recovery commands. The supported UI is the native read-only MCP App.
+- Keep Codex native Goal model APIs and original v1/v2 data formats readable; preserve task, History and Heartbeat canonical Kit formats.
+- Stop installation when retired legacy markers are present. Require safe removal with the old installed version before upgrading; do not overwrite the old installation or build a retired launcher.
+- Bound History summary projection to 512 KiB of source input and 512 Unicode characters per summary while retaining the full canonical Markdown path. Source records remain unchanged.
+- Keep Kit's optional native plugin install/reuse flow, fixed signing identity consent, and host-controlled `enable_mcp_apps` setting. No false promise of UI visibility on unsupported hosts.
+
 # Task Progress 0.5.18
 
 - Add a dedicated read-only native MCP App that resolves the current audited Codex Desktop host identity on each call, including its `threadId` aliases, then asks Helper for the exact user, non-subagent, non-ephemeral thread's existing Kit task, Heartbeat and history data. Mutating task operations continue to require the full Hook and turn proof.

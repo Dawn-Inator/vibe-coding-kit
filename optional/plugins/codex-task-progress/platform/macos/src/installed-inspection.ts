@@ -1,6 +1,5 @@
-import { lstat, readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { GoalProgressDoctorResult } from "../../../packages/host/src/helper-doctor.js";
 import {
   GOAL_PROGRESS_IPC_PROTOCOL_VERSION,
   GoalProgressIpcClient,
@@ -10,19 +9,12 @@ import {
   inspectCurrentHelperOwners,
   readCurrentHelperIdentity,
 } from "../../../packages/store/src/index.js";
-import type { MacosInstallationLayout } from "./install-layout.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
 import { GOAL_PROGRESS_STABLE_HOOK_COMMAND } from "./plugin-release.js";
-import {
-  fileSha256,
-  type InstalledManifest,
-  type ParsedReleaseManifest,
-} from "./verified-release.js";
+import { fileSha256, type InstalledManifest } from "./verified-release.js";
 
 export interface HelperHealthInspection {
   readonly diagnosticCompleted?: boolean;
-  readonly rendererCode?: string | null;
-  readonly renderer?: GoalProgressDoctorResult["runtime"]["renderer"] | null;
   readonly ok: boolean;
   readonly socketPathExists: boolean;
   readonly socketIsSocket: boolean;
@@ -36,9 +28,6 @@ export interface HelperHealthInspection {
   readonly ownerCount: number;
   readonly singleOwner: boolean;
   readonly storeReadOnly: boolean;
-  readonly startupListenerRunning: boolean;
-  readonly startupListenerReady: boolean;
-  readonly startupListenerPid: number | null;
   readonly code: string | null;
 }
 
@@ -67,18 +56,10 @@ export function evaluateHelperReadiness(
     protocolVersion === GOAL_PROGRESS_IPC_PROTOCOL_VERSION &&
     result.status === "ok" &&
     Number.isInteger(result.pid);
-  const listener = result.startupListener;
-  const listenerReady =
-    listener === undefined ||
-    (listener !== null &&
-      typeof listener === "object" &&
-      !Array.isArray(listener) &&
-      (listener as Record<string, unknown>).running === true &&
-      (listener as Record<string, unknown>).ready === true);
   return {
     pingOk,
-    ready: pingOk && result.ready === true && listenerReady,
-    code: !pingOk ? "HELPER_PING_INVALID" : !listenerReady ? "STARTUP_LISTENER_NOT_READY" : null,
+    ready: pingOk && result.ready === true,
+    code: pingOk ? null : "HELPER_PING_INVALID",
   };
 }
 
@@ -130,9 +111,6 @@ export async function inspectInstalledHelper(
         ownerCount: 0,
         singleOwner: false,
         storeReadOnly: false,
-        startupListenerRunning: false,
-        startupListenerReady: false,
-        startupListenerPid: null,
         code: stableErrorCode(error),
       };
     }
@@ -148,12 +126,7 @@ export async function inspectInstalledHelper(
   let pid: number | null = null;
   let instanceId: string | null = null;
   let storeReadOnly = false;
-  let startupListenerRunning = false;
-  let startupListenerReady = false;
-  let startupListenerPid: number | null = null;
-  let renderer: HelperHealthInspection["renderer"] = null;
   let diagnosticCompleted = false;
-  let rendererCode: string | null = null;
   let code: string | null = socketPathExists ? null : "HELPER_SOCKET_MISSING";
   if (socketIsSocket) {
     const client = new GoalProgressIpcClient(paths.helperSocketPath, {
@@ -188,24 +161,6 @@ export async function inspectInstalledHelper(
             : {};
         storeReadOnly =
           storeSmoke.checked === true && storeSmoke.readable === true && storeSmoke.code === null;
-        const runtime =
-          doctorResult.runtime !== null && typeof doctorResult.runtime === "object"
-            ? (doctorResult.runtime as Record<string, unknown>)
-            : {};
-        const startupListener =
-          runtime.startupListener !== null && typeof runtime.startupListener === "object"
-            ? (runtime.startupListener as Record<string, unknown>)
-            : {};
-        renderer =
-          runtime.renderer !== null && typeof runtime.renderer === "object"
-            ? (runtime.renderer as GoalProgressDoctorResult["runtime"]["renderer"])
-            : null;
-        rendererCode = typeof runtime.lastErrorCode === "string" ? runtime.lastErrorCode : null;
-        startupListenerRunning = startupListener.running === true;
-        startupListenerReady = startupListener.ready === true;
-        startupListenerPid = Number.isInteger(startupListener.pid)
-          ? Number(startupListener.pid)
-          : null;
         if (!storeReadOnly) {
           code = "HELPER_STORE_READ_FAILED";
         }
@@ -236,8 +191,6 @@ export async function inspectInstalledHelper(
   return {
     ok,
     diagnosticCompleted,
-    rendererCode,
-    renderer,
     socketPathExists,
     socketIsSocket,
     socketMode,
@@ -250,9 +203,6 @@ export async function inspectInstalledHelper(
     ownerCount: owners.length,
     singleOwner,
     storeReadOnly,
-    startupListenerRunning,
-    startupListenerReady,
-    startupListenerPid,
     code: ok ? null : code,
   };
 }
@@ -271,44 +221,15 @@ export function inspectHelperDiagnosticFailure(
   return helper.code === "IPC_TIMEOUT" ? "timeout" : "failed";
 }
 
-export function inspectDisplayVerification(helper: HelperHealthInspection): {
+/** A healthy installation does not establish whether the host displayed its MCP app. */
+export function nativeVerification(helperHealthy: boolean): {
   readonly installation: "pass" | "fail";
-  readonly currentDisplay: "pass" | "fail" | "waiting" | "not-needed" | "unverified";
-  readonly renderer: HelperHealthInspection["renderer"];
+  readonly currentDisplay: "unverified";
   readonly createAndUpdateFlow: "unverified";
 } {
-  const renderer = helper.renderer;
-  const confirmedFailure =
-    renderer?.displayRequired === true &&
-    (renderer.displayState === "unrecognized" || renderer.retryExhausted === true);
-  const currentDisplay =
-    renderer?.visibleThreadStatus === "mismatch"
-      ? "unverified"
-      : confirmedFailure
-        ? "fail"
-        : helper.rendererCode
-          ? "unverified"
-          : renderer?.displayRequired === false && renderer.displayState === "not-needed"
-            ? "not-needed"
-            : renderer?.displayRequired !== true
-              ? "unverified"
-              : renderer.componentVisible === true &&
-                  renderer.displayState === "rendered" &&
-                  renderer.componentCount === 1 &&
-                  renderer.currentThreadMatched === true &&
-                  (renderer.visibleThreadStatus === "matched" ||
-                    renderer.visibleThreadStatus === "retained") &&
-                  Number.isSafeInteger(renderer.receivedViewModelRevision) &&
-                  Number.isSafeInteger(renderer.latestViewModelRevision) &&
-                  renderer.latestViewModelRevision === renderer.receivedViewModelRevision
-                ? "pass"
-                : renderer.displayState === "pending"
-                  ? "waiting"
-                  : "fail";
   return {
-    installation: helper.ok ? "pass" : "fail",
-    currentDisplay,
-    renderer: renderer ?? null,
+    installation: helperHealthy ? "pass" : "fail",
+    currentDisplay: "unverified",
     createAndUpdateFlow: "unverified",
   };
 }
@@ -358,17 +279,4 @@ export async function inspectInstalledHook(
       !hookText.includes("trusted_hash") &&
       !Object.hasOwn(hookDocument.hooks ?? {}, "UserPromptSubmit"),
   };
-}
-
-export async function startupListenerFileExists(
-  layout: MacosInstallationLayout,
-  release: ParsedReleaseManifest,
-): Promise<boolean> {
-  try {
-    return (
-      await stat(resolve(layout.programReleaseRoot, release.files.startupListener.path))
-    ).isFile();
-  } catch {
-    return false;
-  }
 }

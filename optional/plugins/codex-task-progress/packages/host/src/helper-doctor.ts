@@ -1,8 +1,5 @@
 import { lstat, readdir } from "node:fs/promises";
-import type {
-  GoalProgressRendererBridgeDoctor,
-  GoalUsageSnapshot,
-} from "../../codex-adapter/src/index.js";
+import type { GoalUsageSnapshot } from "../../codex-adapter/src/index.js";
 import {
   GOAL_PROGRESS_IPC_PROTOCOL_VERSION,
   GoalProgressIpcClient,
@@ -20,7 +17,6 @@ import {
   type TrustedNativeGoal,
   trustedNativeGoalFromThreadGoal,
 } from "./helper-session-coordinator.js";
-import type { GoalProgressStartupListener } from "./startup-listener.js";
 
 export interface GoalProgressDoctorResult {
   readonly schemaVersion: 1;
@@ -59,50 +55,10 @@ export interface GoalProgressDoctorResult {
         readonly code: string | null;
       };
   readonly runtime: {
-    readonly app: {
-      readonly path: string | null;
-      readonly signatureValid: boolean | null;
-    };
-    readonly cdp: {
-      readonly port: number | null;
-      readonly loopback: boolean | null;
-      readonly targetUrl: string | null;
-    };
-    readonly renderer: {
-      readonly taskPanel: GoalProgressRendererBridgeDoctor["taskPanel"] | null;
-      readonly taskPanels: NonNullable<GoalProgressRendererBridgeDoctor["taskPanels"]>;
-      readonly taskPanelTargetCount: number;
-      readonly displayState: GoalProgressRendererBridgeDoctor["displayState"] | null;
-      readonly displayRequired: boolean | null;
-      readonly receivedViewModelRevision: number | null;
-      readonly pageReason: string | null;
-      readonly retryExhausted: boolean;
-      readonly adapterId: string | null;
-      readonly capabilitySupported: boolean | null;
-      readonly capabilityReason: string | null;
-      readonly anchorMatched: boolean | null;
-      readonly displayMode: "native" | "fallback" | "hidden" | null;
-      readonly nativeAnchorMatched: boolean | null;
-      readonly componentVisible: boolean | null;
-      readonly visibleThreadStatus: "matched" | "retained" | "unknown" | "mismatch" | null;
-      readonly componentCount: number | null;
-      readonly bundleReleaseVersion: string | null;
-      readonly bundlePageHostVersion: number | null;
-      readonly bundleSha256: string | null;
-      readonly latestViewModelRevision: number | null;
-      readonly currentThreadMatched: boolean | null;
-    };
     readonly goal: {
       readonly actualThreadProven: boolean | null;
       readonly nativeGoalBindingMatches: boolean | null;
       readonly tokenAvailability: "available" | "stale" | "unavailable" | "unknown";
-    };
-    readonly startupListener: {
-      readonly configured: boolean;
-      readonly running: boolean;
-      readonly ready: boolean;
-      readonly pid: number | null;
-      readonly pendingPid: number | null;
     };
     readonly lastErrorCode: string | null;
   };
@@ -110,43 +66,10 @@ export interface GoalProgressDoctorResult {
 
 function emptyDoctorRuntime(lastErrorCode: string | null): GoalProgressDoctorResult["runtime"] {
   return {
-    app: { path: null, signatureValid: null },
-    cdp: { port: null, loopback: null, targetUrl: null },
-    renderer: {
-      taskPanel: null,
-      taskPanels: [],
-      taskPanelTargetCount: 0,
-      displayState: null,
-      displayRequired: null,
-      receivedViewModelRevision: null,
-      pageReason: null,
-      retryExhausted: false,
-      adapterId: null,
-      capabilitySupported: null,
-      capabilityReason: null,
-      anchorMatched: null,
-      displayMode: null,
-      nativeAnchorMatched: null,
-      componentVisible: null,
-      visibleThreadStatus: null,
-      componentCount: null,
-      bundleReleaseVersion: null,
-      bundlePageHostVersion: null,
-      bundleSha256: null,
-      latestViewModelRevision: null,
-      currentThreadMatched: null,
-    },
     goal: {
       actualThreadProven: null,
       nativeGoalBindingMatches: null,
       tokenAvailability: "unknown",
-    },
-    startupListener: {
-      configured: false,
-      running: false,
-      ready: false,
-      pid: null,
-      pendingPid: null,
     },
     lastErrorCode,
   };
@@ -322,41 +245,19 @@ export async function inspectGoalProgress(
 }
 
 export interface RuntimeDoctorDependencies {
-  readonly rendererDoctor:
-    | ((expectedThreadId?: string) => Promise<GoalProgressRendererBridgeDoctor>)
-    | undefined;
   readonly store: GoalEventStore;
   readonly refreshUsage: (threadId: string) => Promise<GoalUsageSnapshot | undefined>;
   readonly readNativeGoal: (
     threadId: string,
     revision: number | null,
   ) => Promise<TrustedNativeGoal | null>;
-  readonly startupListener: GoalProgressStartupListener | undefined;
 }
 
 export async function inspectGoalProgressRuntime(
   sessionId: string | undefined,
   dependencies: RuntimeDoctorDependencies,
 ): Promise<GoalProgressDoctorResult["runtime"]> {
-  let renderer: GoalProgressRendererBridgeDoctor | undefined;
   let lastErrorCode: string | null = null;
-  let failedTaskPanels: NonNullable<GoalProgressRendererBridgeDoctor["taskPanels"]> = [];
-  let failedTaskPanelTargetCount = 0;
-  try {
-    renderer = await dependencies.rendererDoctor?.(sessionId);
-    if (!renderer && !dependencies.rendererDoctor) {
-      lastErrorCode = "RENDERER_BRIDGE_UNAVAILABLE";
-    }
-  } catch (error) {
-    lastErrorCode = helperDiagnosticCauseCode(error);
-    if (error instanceof Error && "taskPanels" in error && Array.isArray(error.taskPanels)) {
-      failedTaskPanels = error.taskPanels.slice(0, 64) as typeof failedTaskPanels;
-      if ("taskPanelTargetCount" in error && typeof error.taskPanelTargetCount === "number") {
-        failedTaskPanelTargetCount = error.taskPanelTargetCount;
-      }
-    }
-  }
-
   let actualThreadProven: boolean | null = null;
   let nativeGoalBindingMatches: boolean | null = null;
   let tokenAvailability: GoalProgressDoctorResult["runtime"]["goal"]["tokenAvailability"] =
@@ -395,53 +296,11 @@ export async function inspectGoalProgressRuntime(
   }
 
   return {
-    app: {
-      path: renderer?.appPath ?? null,
-      signatureValid: renderer?.appSignatureValid ?? null,
-    },
-    cdp: {
-      port: renderer?.cdpPort ?? null,
-      loopback: renderer?.cdpLoopback ?? null,
-      targetUrl: renderer?.targetUrl ?? null,
-    },
-    renderer: {
-      taskPanel: renderer?.taskPanel ?? null,
-      taskPanels: renderer?.taskPanels ?? failedTaskPanels,
-      taskPanelTargetCount: renderer?.taskPanelTargetCount ?? failedTaskPanelTargetCount,
-      displayState: renderer?.displayState ?? null,
-      displayRequired: renderer?.displayRequired ?? null,
-      receivedViewModelRevision: renderer?.receivedViewModelRevision ?? null,
-      pageReason: renderer?.pageReason ?? null,
-      retryExhausted: renderer?.retryExhausted ?? false,
-      adapterId: renderer?.adapterId ?? null,
-      capabilitySupported: renderer?.capabilitySupported ?? null,
-      capabilityReason: renderer?.capabilityReason ?? null,
-      anchorMatched: renderer?.anchorMatched ?? null,
-      displayMode: renderer?.displayMode ?? null,
-      nativeAnchorMatched: renderer?.nativeAnchorMatched ?? null,
-      componentVisible: renderer?.componentVisible ?? null,
-      visibleThreadStatus: renderer?.visibleThreadStatus ?? null,
-      componentCount: renderer?.componentCount ?? null,
-      bundleReleaseVersion: renderer?.bundleReleaseVersion ?? null,
-      bundlePageHostVersion: renderer?.bundlePageHostVersion ?? null,
-      bundleSha256: renderer?.bundleSha256 ?? null,
-      latestViewModelRevision: renderer?.latestViewModelRevision ?? null,
-      currentThreadMatched: renderer?.currentThreadMatched ?? null,
-    },
     goal: {
       actualThreadProven,
       nativeGoalBindingMatches,
       tokenAvailability,
     },
-    startupListener: {
-      configured: dependencies.startupListener !== undefined,
-      ...(dependencies.startupListener?.health() ?? {
-        running: false,
-        ready: false,
-        pid: null,
-        pendingPid: null,
-      }),
-    },
-    lastErrorCode: renderer?.lastErrorCode ?? lastErrorCode,
+    lastErrorCode,
   };
 }

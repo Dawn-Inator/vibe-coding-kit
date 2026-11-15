@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -7,26 +6,10 @@ import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
-import {
-  type GoalProgressUpdateManifest,
-  type GoalProgressUpdateOperation,
-  type GoalProgressUpdateOperationStore,
-  type GoalProgressUpdateStateStore,
-  MacosGoalProgressUpdateStateStore,
-  type PreparedGoalProgressUpdate,
-  type PrepareGoalProgressUpdateOptions,
-  requireSingleCodexMacosApp,
-} from "../../../platform/macos/src/index.js";
 import { resolveVerifiedCodexCli } from "../../../platform/macos/src/plugin-controller.js";
-import {
-  readCodexStartupRecoveryPolicy,
-  readCodexStartupRecoveryPolicySync,
-} from "../../../platform/macos/src/startup-recovery-policy.js";
 import {
   type CodexAppServerRuntime,
   createCodexAppServerRuntime,
-  GoalProgressCdpViewClient,
-  type GoalProgressRendererBridgeDoctor,
   type GoalUsageSnapshot,
 } from "../../codex-adapter/src/index.js";
 import {
@@ -36,10 +19,7 @@ import {
   type GoalProgressCommand,
   type GoalProgressTrackingOverlay,
   type GoalProgressUiPreference,
-  type GoalProgressUpdateIntent,
-  type GoalProgressUpdateState,
   type GoalProgressViewModel,
-  GoalProgressViewModelSchema,
   issueRuntimeProof,
   type RuntimeContext,
   type RuntimeIdentity,
@@ -101,12 +81,9 @@ import {
   type HelperDoctorIpcRequest,
   type HelperHookIpcRequest,
   HelperIpcRouter,
-  type HelperRendererIpcRequest,
   type HelperStoreIpcRequest,
   type HelperSystemIpcRequest,
   type HelperTaskIpcRequest,
-  type HelperUiIpcRequest,
-  type HelperUpdateIpcRequest,
 } from "./helper-ipc-router.js";
 import {
   assertBoundNativeGoal,
@@ -131,23 +108,6 @@ import {
   trustedNativeGoalFromThreadGoal,
   writeGoalProgressActivationState,
 } from "./helper-session-coordinator.js";
-import { handleHelperUiIntent } from "./helper-ui-intent.js";
-import { connectHelperRendererTargetSource } from "./renderer-bridge-runtime.js";
-import { RendererTargetManager } from "./renderer-target-manager.js";
-import {
-  type GoalProgressStartupListener,
-  hasRecoverableStartupProgress,
-  type MacosCodexStartupEvent,
-  type MacosCodexStartupResponse,
-  MacosStartupHandoffController,
-  MacosStartupListenerSupervisor,
-  resolveStartupListenerExecutable,
-} from "./startup-listener.js";
-import {
-  GoalProgressUpdateCoordinator,
-  type GoalProgressUpdateIntentResult,
-} from "./update-coordinator.js";
-import { ViewModelPublisher, type ViewModelPublisherSink } from "./view-model-publisher.js";
 
 export { type GoalProgressDoctorResult, inspectGoalProgress } from "./helper-doctor.js";
 export type {
@@ -155,31 +115,6 @@ export type {
   ResolveCurrentThread,
   TrustedNativeGoal,
 } from "./helper-session-coordinator.js";
-export {
-  RendererBridgeSupervisor,
-  type RendererBridgeSupervisorConnection,
-} from "./renderer-bridge-supervisor.js";
-export * from "./renderer-target-manager.js";
-export * from "./startup-listener.js";
-export * from "./update-activation.js";
-export * from "./update-coordinator.js";
-export {
-  ViewModelPublisher,
-  type ViewModelPublisherCloseOptions,
-  type ViewModelPublisherSink,
-} from "./view-model-publisher.js";
-
-export const HELPER_VISIBLE_THREAD_RECOVERY_DELAYS_MS = [
-  0, 1_000, 2_000, 5_000, 10_000, 30_000,
-] as const;
-
-type UpdateActivationTrigger = "task-publish" | "visible-recovery" | "finite-retry";
-
-interface VisibleThreadOrder {
-  lifecycleId: string | null;
-  sequence: number;
-  retiredLifecycleIds: string[];
-}
 
 type TaskDiagnosticStage =
   | "native-identity"
@@ -203,21 +138,6 @@ const TASK_DIAGNOSTIC_STAGES: readonly TaskDiagnosticStage[] = [
 ];
 const TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS = 500;
 
-export function usesSourcePluginRuntime(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return environment.GOAL_PROGRESS_SOURCE_RUNTIME === "1";
-}
-
-export async function sourcePluginUpdateManifest(): Promise<GoalProgressUpdateManifest> {
-  throw new Error("GOAL_PROGRESS_UPDATE_CHANNEL_UNCONFIGURED");
-}
-
-export interface PreparedGoalProgressStartupListener {
-  readonly startupListener: GoalProgressStartupListener;
-  readonly startupHandoff: MacosStartupHandoffController;
-}
-
 export interface GoalProgressHelperOptions {
   readonly paths?: GoalProgressPaths;
   readonly lock?: HelperLockOptions;
@@ -227,30 +147,6 @@ export interface GoalProgressHelperOptions {
   readonly resolveNativeGoal?: NativeGoalResolver;
   readonly resolveCurrentThread?: ResolveCurrentThread;
   readonly readThreadIdentity?: ReadThreadIdentity;
-  readonly viewModelSink?: ViewModelPublisherSink;
-  readonly rendererDoctor?: (
-    expectedThreadId?: string,
-    targetId?: string,
-  ) => Promise<GoalProgressRendererBridgeDoctor>;
-  readonly visibleThreadRecoveryDelaysMs?: readonly number[];
-  readonly startupListener?: GoalProgressStartupListener;
-  readonly startupHandoff?: MacosStartupHandoffController;
-  readonly startupReattachDelaysMs?: readonly number[];
-  readonly prepareStartupListener?: () => Promise<PreparedGoalProgressStartupListener>;
-  readonly updateStateStore?: GoalProgressUpdateStateStore;
-  readonly updateOperationStore?: GoalProgressUpdateOperationStore;
-  readonly updateDeliveryMode?: "prebuilt-release" | "plugin-marketplace";
-  readonly openUpdateRelease?: (version: string) => Promise<void>;
-  readonly checkForUpdate?: () => Promise<GoalProgressUpdateManifest>;
-  readonly prepareUpdate?: (
-    options: PrepareGoalProgressUpdateOptions,
-  ) => Promise<PreparedGoalProgressUpdate>;
-  readonly submitInstallWorker?: (operationId: string) => Promise<void> | void;
-  readonly submitRestartWorker?: (operationId: string) => Promise<void> | void;
-  readonly readCurrentLaunchId?: () => Promise<string | null>;
-  readonly verifyInstalledUpdate?: (operation: GoalProgressUpdateOperation) => Promise<boolean>;
-  readonly updateOperationId?: () => string;
-  readonly sourcePluginRuntime?: boolean;
 }
 
 function requestAuthorization(
@@ -371,44 +267,13 @@ export class GoalProgressHelper {
   readonly #workspaceStorage: WorkspaceTaskStorage;
   readonly #runtime: CodexAppServerRuntime;
   readonly #sessionCoordinator: GoalProgressSessionCoordinator;
-  readonly #rendererDoctor:
-    | ((expectedThreadId?: string, targetId?: string) => Promise<GoalProgressRendererBridgeDoctor>)
-    | undefined;
-  readonly #viewModelPublisher: ViewModelPublisher;
-  readonly #updateCoordinator: GoalProgressUpdateCoordinator;
   readonly #enableGoalWatch: boolean;
-  readonly #visibleThreadRecoveryDelaysMs: readonly number[];
-  readonly #prepareStartupListener:
-    | (() => Promise<PreparedGoalProgressStartupListener>)
-    | undefined;
-  #startupListener: GoalProgressStartupListener | undefined;
-  #startupHandoff: MacosStartupHandoffController | undefined;
-  readonly #startupReattachDelaysMs: readonly number[];
-  #startupReattachTimer: ReturnType<typeof setTimeout> | undefined;
-  #startupEventSequence = 0;
-  #lastObservedTaskActivityAt = 0;
   readonly #goalUsage = new Map<string, GoalUsageSnapshot>();
   readonly #preparingObjectives = new Map<string, string>();
-  readonly #visibleThreadOrderByTarget = new Map<string, VisibleThreadOrder>();
   #lock: HelperInstanceLock | undefined;
   #server: GoalProgressIpcServer | undefined;
   #runtimeProofKey: Uint8Array | undefined;
-  #visibleThreadRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  #lastUpdateStartupHandoff: MacosCodexStartupResponse | undefined;
-  readonly #updateActivationRetryTimers = new Map<
-    string,
-    {
-      readonly targetId: string | undefined;
-      readonly threadId: string;
-      readonly timer: ReturnType<typeof setTimeout>;
-    }
-  >();
-  #updateActivationRunning = false;
   #ready = false;
-
-  get currentUpdateState(): GoalProgressUpdateState | null {
-    return this.#viewModelPublisher.currentUpdateState;
-  }
 
   constructor(options: GoalProgressHelperOptions = {}) {
     this.paths = options.paths ?? resolveGoalProgressPaths();
@@ -440,469 +305,10 @@ export class GoalProgressHelper {
         this.#consumeRuntimeProof(runtimeContext, runtimeProof),
       log: (input) => this.#log(input),
     });
-    this.#viewModelPublisher = new ViewModelPublisher(options.viewModelSink);
-    const sourcePluginRuntime = options.sourcePluginRuntime ?? usesSourcePluginRuntime();
-    const checkForUpdate = options.checkForUpdate;
-    this.#updateCoordinator = new GoalProgressUpdateCoordinator({
-      store: options.updateStateStore ?? new MacosGoalProgressUpdateStateStore(this.paths),
-      paths: this.paths,
-      deliveryMode:
-        options.updateDeliveryMode ??
-        (sourcePluginRuntime ? "plugin-marketplace" : "prebuilt-release"),
-      ...(options.updateOperationStore === undefined
-        ? {}
-        : { operationStore: options.updateOperationStore }),
-      ...(options.openUpdateRelease === undefined
-        ? {}
-        : { openRelease: options.openUpdateRelease }),
-      ...(checkForUpdate === undefined ? {} : { checkForUpdate }),
-      ...(options.prepareUpdate === undefined ? {} : { prepareUpdate: options.prepareUpdate }),
-      ...(options.submitInstallWorker === undefined
-        ? {}
-        : { submitInstallWorker: options.submitInstallWorker }),
-      ...(options.submitRestartWorker === undefined
-        ? {}
-        : { submitRestartWorker: options.submitRestartWorker }),
-      ...(options.readCurrentLaunchId === undefined
-        ? {}
-        : { readCurrentLaunchId: options.readCurrentLaunchId }),
-      ...(options.verifyInstalledUpdate === undefined
-        ? {}
-        : { verifyInstalledUpdate: options.verifyInstalledUpdate }),
-      ...(options.updateOperationId === undefined
-        ? {}
-        : { operationId: options.updateOperationId }),
-      onActivationResult: (result) =>
-        this.#log({
-          level: "info",
-          event: "update.activation",
-          code: result.code,
-        }),
-      onStateChange: (state) => this.#viewModelPublisher.setUpdateState(state),
-    });
-    this.#rendererDoctor = options.rendererDoctor;
-    this.#visibleThreadRecoveryDelaysMs =
-      options.visibleThreadRecoveryDelaysMs ?? HELPER_VISIBLE_THREAD_RECOVERY_DELAYS_MS;
-    this.#prepareStartupListener = options.prepareStartupListener;
-    this.#startupListener = options.startupListener;
-    this.#startupHandoff = options.startupHandoff;
-    this.#startupReattachDelaysMs = options.startupReattachDelaysMs ?? [
-      100, 500, 1_000, 2_000, 5_000,
-    ];
   }
 
   async #log(input: GoalProgressLogInput): Promise<void> {
     await this.#logger.write(input).catch(() => undefined);
-  }
-
-  #recordUpdateActivation(
-    code: string,
-    targetId: string | undefined,
-    threadId: string,
-    revision?: number,
-    causeCode?: string,
-    trigger?: UpdateActivationTrigger,
-    attempt?: number,
-  ): void {
-    void this.#log({
-      level: "info",
-      event: "update.activation",
-      code,
-      threadKey: hashGoalProgressIdentity(threadId),
-      ...(targetId === undefined ? {} : { sessionTreeKey: hashGoalProgressIdentity(targetId) }),
-      ...(revision === undefined ? {} : { revision }),
-      ...(causeCode === undefined ? {} : { causeCode }),
-      ...(trigger === undefined ? {} : { trigger }),
-      ...(attempt === undefined ? {} : { attempt }),
-    });
-  }
-
-  async #handleStartupEvent(event: MacosCodexStartupEvent): Promise<MacosCodexStartupResponse> {
-    const startedAt = Date.now();
-    const sequence = ++this.#startupEventSequence;
-    if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
-    this.#startupReattachTimer = undefined;
-    void this.#log({
-      level: "info",
-      event: "startup.event",
-      pid: event.pid,
-    });
-    let response: MacosCodexStartupResponse;
-    let failureCause: string | undefined;
-    try {
-      if (!this.#startupHandoff) {
-        response = {
-          schemaVersion: 1,
-          pid: event.pid,
-          action: "continue",
-          code: "STARTUP_HANDLER_UNAVAILABLE",
-        };
-      } else {
-        let autoPrepare = false;
-        try {
-          autoPrepare = (await readCodexStartupRecoveryPolicy(this.paths)).autoPrepareOnLaunch;
-          if (!autoPrepare)
-            void this.#log({
-              level: "info",
-              event: "startup.recovery",
-              pid: event.pid,
-              code: "STARTUP_RECOVERY_DISABLED",
-            });
-        } catch {
-          void this.#log({
-            level: "warn",
-            event: "startup.recovery",
-            pid: event.pid,
-            code: "STARTUP_RECOVERY_POLICY_INVALID",
-          });
-        }
-        response = await this.#startupHandoff.handle(
-          event,
-          autoPrepare || (await hasRecoverableStartupProgress(this.paths, this.#workspaceStorage)),
-          {
-            isPending: () => this.#startupListener?.isPending(event.pid) === true,
-            isStopped: () => this.#server === undefined,
-            allowRestart: autoPrepare,
-            restartStillAllowed: async () => {
-              try {
-                return (await readCodexStartupRecoveryPolicy(this.paths)).autoPrepareOnLaunch;
-              } catch {
-                return false;
-              }
-            },
-            restartStillAllowedNow: () =>
-              readCodexStartupRecoveryPolicySync(this.paths).autoPrepareOnLaunch,
-            hasObservedTaskActivity: () =>
-              this.#lastObservedTaskActivityAt >= Date.parse(event.launchedAt),
-            canReplaceStartingApp: () =>
-              this.#startupListener?.canReplaceStartingApp?.(event) ?? Promise.resolve(false),
-          },
-        );
-        if (
-          response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE" ||
-          response.code === "STARTUP_HANDOFF_PENDING_CDP_UNAVAILABLE"
-        ) {
-          this.#scheduleStartupReattach(event, sequence, 0);
-        }
-        if (
-          response.code === "STARTUP_HANDOFF_COMPLETE" ||
-          response.code === "STARTUP_EVENT_EXISTING_CDP"
-        ) {
-          try {
-            await this.#recoverAfterStartupHandoff(response);
-          } catch (error) {
-            await this.#log({
-              level: "warn",
-              event: "startup.recovery",
-              pid: event.pid,
-              code: "STARTUP_RENDERER_RECOVERY_PENDING",
-              causeCode: helperDiagnosticCauseCode(error),
-            });
-            this.#scheduleVisibleThreadRecovery(0);
-          }
-        }
-      }
-    } catch (error) {
-      failureCause = helperDiagnosticCauseCode(error);
-      response = {
-        schemaVersion: 1,
-        pid: event.pid,
-        action: "continue",
-        code: "STARTUP_HANDLER_FAILED",
-      };
-    }
-    await this.#log({
-      level: "info",
-      event: "startup.handoff",
-      pid: event.pid,
-      code: response.code,
-      ...(response.mismatchReason === undefined ? {} : { mismatchReason: response.mismatchReason }),
-      ...(response.clockSkewMs === undefined ? {} : { clockSkewMs: response.clockSkewMs }),
-      ...(failureCause === undefined ? {} : { causeCode: failureCause }),
-      durationMs: Date.now() - startedAt,
-      ...(response.mainPid === undefined ? {} : { mainPid: response.mainPid }),
-      ...(response.port === undefined ? {} : { port: response.port }),
-      ...(response.launchId === undefined ? {} : { launchId: response.launchId }),
-    });
-    return response;
-  }
-
-  #scheduleStartupReattach(event: MacosCodexStartupEvent, sequence: number, attempt: number): void {
-    const delay = this.#startupReattachDelaysMs[attempt];
-    if (delay === undefined || !this.#server || sequence !== this.#startupEventSequence) return;
-    this.#startupReattachTimer = setTimeout(() => {
-      this.#startupReattachTimer = undefined;
-      const isCurrent = () => this.#server !== undefined && sequence === this.#startupEventSequence;
-      if (!isCurrent() || !this.#startupHandoff) return;
-      void this.#startupHandoff
-        .retryObservedStartup(event, isCurrent)
-        .then(async (response) => {
-          if (!isCurrent()) return;
-          if (response.code === "STARTUP_EVENT_EXISTING_CDP") {
-            await this.#recoverAfterStartupHandoff(response).catch(() =>
-              this.#scheduleVisibleThreadRecovery(0),
-            );
-          } else if (response.code === "STARTUP_EVENT_PENDING_CDP_UNAVAILABLE") {
-            this.#scheduleStartupReattach(event, sequence, attempt + 1);
-          }
-        })
-        .catch(() => undefined);
-    }, delay);
-    this.#startupReattachTimer.unref?.();
-  }
-
-  async #recoverAfterStartupHandoff(response: MacosCodexStartupResponse): Promise<void> {
-    if (this.#visibleThreadRecoveryTimer) {
-      clearTimeout(this.#visibleThreadRecoveryTimer);
-      this.#visibleThreadRecoveryTimer = undefined;
-    }
-    this.#clearUpdateActivationRetries();
-    this.#lastUpdateStartupHandoff = response;
-    await this.#reconcileUpdateState();
-    if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      const targets = await this.#viewModelPublisher.reconnectTargets();
-      let retry = targets.length === 0;
-      for (const target of targets) {
-        await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-        if (!target.threadId) {
-          retry = true;
-          continue;
-        }
-        if ((await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry")
-          retry = true;
-      }
-      if (retry) this.#scheduleVisibleThreadRecovery(0);
-      return;
-    }
-    const visibleThreadId = await this.#viewModelPublisher.reconnect();
-    if (!visibleThreadId) {
-      this.#scheduleVisibleThreadRecovery(0);
-      return;
-    }
-    const restored = await this.#restoreVisibleThread(visibleThreadId).catch(
-      (): "retry" => "retry",
-    );
-    if (restored === "retry") {
-      this.#scheduleVisibleThreadRecovery(0);
-    }
-  }
-
-  async #reconcileUpdateState(): Promise<void> {
-    const reconciled = await this.#updateCoordinator.reconcilePersistedUpdateState();
-    await this.#viewModelPublisher.setUpdateState(reconciled);
-    if (reconciled.phase !== "restart-required" && reconciled.phase !== "restarting") {
-      this.#lastUpdateStartupHandoff = undefined;
-      this.#clearUpdateActivationRetries();
-    }
-  }
-
-  async #maybeCompleteUpdateActivation(
-    targetId: string | undefined,
-    threadId: string,
-    trigger: UpdateActivationTrigger = "task-publish",
-    attempt = 0,
-  ): Promise<"complete" | "retry" | "not-applicable"> {
-    const record = (code: string, revision?: number, causeCode?: string): void => {
-      this.#recordUpdateActivation(code, targetId, threadId, revision, causeCode, trigger, attempt);
-    };
-    const startupHandoff = this.#lastUpdateStartupHandoff;
-    if (!this.#server) {
-      record("UPDATE_ACTIVATION_HELPER_STOPPED");
-      return "not-applicable";
-    }
-    const updateState = this.#updateCoordinator.currentState;
-    if (updateState?.phase !== "restart-required" && updateState?.phase !== "restarting") {
-      return "not-applicable";
-    }
-    if (!startupHandoff) {
-      record("UPDATE_ACTIVATION_HANDOFF_MISSING");
-      return "not-applicable";
-    }
-    if (!this.#rendererDoctor) {
-      record("UPDATE_ACTIVATION_DOCTOR_MISSING");
-      return "not-applicable";
-    }
-    if (this.#updateActivationRunning) {
-      record("UPDATE_ACTIVATION_ALREADY_RUNNING");
-      return "retry";
-    }
-    const viewModel =
-      targetId === undefined
-        ? this.#viewModelPublisher.currentViewModel
-        : this.#viewModelPublisher.currentViewModelForTarget(targetId);
-    const deliveryCurrent =
-      targetId === undefined
-        ? this.#viewModelPublisher.deliveryCurrent
-        : this.#viewModelPublisher.deliveryCurrentForTarget(targetId);
-    if (!viewModel) {
-      record("UPDATE_ACTIVATION_VIEW_MISSING");
-      return targetId !== undefined &&
-        this.#viewModelPublisher.currentThreadIdForTarget(targetId) === threadId
-        ? "retry"
-        : "not-applicable";
-    }
-    if (viewModel.sessionId !== threadId) {
-      record("UPDATE_ACTIVATION_THREAD_MISMATCH", viewModel.revision);
-      return "not-applicable";
-    }
-    if (!deliveryCurrent) {
-      record("UPDATE_ACTIVATION_DELIVERY_STALE", viewModel.revision);
-      return "retry";
-    }
-    this.#updateActivationRunning = true;
-    try {
-      const [currentLaunchId, doctor] = await Promise.all([
-        this.#updateCoordinator.currentLaunchId(),
-        this.#rendererDoctor(threadId, targetId),
-      ]);
-      if (!this.#server || this.#lastUpdateStartupHandoff !== startupHandoff) {
-        record("UPDATE_ACTIVATION_CONTEXT_CHANGED", viewModel.revision);
-        return "not-applicable";
-      }
-      const currentViewModel =
-        targetId === undefined
-          ? this.#viewModelPublisher.currentViewModel
-          : this.#viewModelPublisher.currentViewModelForTarget(targetId);
-      const currentDelivery =
-        targetId === undefined
-          ? this.#viewModelPublisher.deliveryCurrent
-          : this.#viewModelPublisher.deliveryCurrentForTarget(targetId);
-      if (
-        currentViewModel?.sessionId !== threadId ||
-        currentViewModel.revision !== viewModel.revision
-      ) {
-        record("UPDATE_ACTIVATION_CURRENT_VIEW_CHANGED", viewModel.revision);
-        return "not-applicable";
-      }
-      if (!currentDelivery) {
-        record("UPDATE_ACTIVATION_CURRENT_DELIVERY_STALE", viewModel.revision);
-        return "retry";
-      }
-      if (startupHandoff.launchId === undefined || currentLaunchId !== startupHandoff.launchId) {
-        record("UPDATE_ACTIVATION_LAUNCH_MISMATCH", viewModel.revision);
-        return "retry";
-      }
-      const completed = await this.#updateCoordinator.completeActivation({
-        currentLaunchId,
-        startupHandoffCode: startupHandoff.code,
-        viewModelRevision: viewModel.revision,
-        taskRecovered: true,
-        deliveryCurrent,
-        renderer: {
-          componentVisible: doctor.componentVisible,
-          componentCount: doctor.componentCount,
-          currentThreadMatched: doctor.currentThreadMatched,
-          latestViewModelRevision: doctor.latestViewModelRevision,
-          bundleReleaseVersion: doctor.bundleReleaseVersion,
-        },
-      });
-      if (!completed) {
-        record("UPDATE_ACTIVATION_COORDINATOR_INCOMPLETE", viewModel.revision);
-        return "retry";
-      }
-      await this.#viewModelPublisher.setUpdateState(completed);
-      await this.#cleanupCompletedUpdate();
-      this.#lastUpdateStartupHandoff = undefined;
-      this.#clearUpdateActivationRetries();
-      record("UPDATE_ACTIVATION_COMPLETE", viewModel.revision);
-      return "complete";
-    } catch (error) {
-      record(
-        "UPDATE_ACTIVATION_ATTEMPT_FAILED",
-        viewModel.revision,
-        helperDiagnosticCauseCode(error),
-      );
-      return "retry";
-    } finally {
-      this.#updateActivationRunning = false;
-    }
-  }
-
-  async #attemptUpdateActivationForThread(
-    threadId: string,
-    trigger: UpdateActivationTrigger = "task-publish",
-  ): Promise<"complete" | "retry" | "not-applicable"> {
-    const targetIds = this.#viewModelPublisher.multiTargetAwarenessAvailable
-      ? this.#viewModelPublisher.targetIdsForThread(threadId)
-      : [undefined];
-    let retry = false;
-    for (const targetId of targetIds) {
-      const result = await this.#maybeCompleteUpdateActivation(targetId, threadId, trigger, 0);
-      if (result === "complete") {
-        return "complete";
-      }
-      if (result === "retry") {
-        retry = true;
-        this.#scheduleUpdateActivationRetry(targetId, threadId, 0);
-      }
-    }
-    return retry ? "retry" : "not-applicable";
-  }
-
-  #scheduleUpdateActivationRetry(
-    targetId: string | undefined,
-    threadId: string,
-    attempt: number,
-  ): void {
-    const key = JSON.stringify([targetId ?? null, threadId]);
-    if (
-      this.#updateActivationRetryTimers.has(key) ||
-      !this.#server ||
-      !this.#lastUpdateStartupHandoff ||
-      attempt >= this.#visibleThreadRecoveryDelaysMs.length
-    ) {
-      return;
-    }
-    const delay = this.#visibleThreadRecoveryDelaysMs[attempt];
-    if (delay === undefined || !Number.isInteger(delay) || delay < 0 || delay > 60_000) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      this.#updateActivationRetryTimers.delete(key);
-      if (!this.#server) {
-        return;
-      }
-      void this.#maybeCompleteUpdateActivation(targetId, threadId, "finite-retry", attempt + 1)
-        .then((result) => {
-          if (result === "retry") {
-            this.#scheduleUpdateActivationRetry(targetId, threadId, attempt + 1);
-          }
-        })
-        .catch(() => {
-          this.#scheduleUpdateActivationRetry(targetId, threadId, attempt + 1);
-        });
-    }, delay);
-    timer.unref?.();
-    this.#updateActivationRetryTimers.set(key, { targetId, threadId, timer });
-  }
-
-  #clearUpdateActivationRetriesForTarget(targetId: string, activeThreadId: string | null): void {
-    for (const [key, retry] of this.#updateActivationRetryTimers) {
-      if (retry.targetId !== targetId || retry.threadId === activeThreadId) {
-        continue;
-      }
-      clearTimeout(retry.timer);
-      this.#updateActivationRetryTimers.delete(key);
-    }
-  }
-
-  #clearUpdateActivationRetries(): void {
-    for (const retry of this.#updateActivationRetryTimers.values()) {
-      clearTimeout(retry.timer);
-    }
-    this.#updateActivationRetryTimers.clear();
-  }
-
-  async #cleanupCompletedUpdate(): Promise<void> {
-    try {
-      await this.#updateCoordinator.cleanupCompletedOperation();
-    } catch (error) {
-      await this.#log({
-        level: "error",
-        event: "update.cleanup.failed",
-        code: helperDiagnosticCauseCode(error),
-      });
-    }
   }
 
   #usageFor(contract: GoalContractAny): GoalUsageSnapshot | undefined {
@@ -1131,81 +537,8 @@ export class GoalProgressHelper {
     }
     this.#runtime.watchGoalUsage(threadId, (snapshot) => {
       this.#goalUsage.set(snapshot.threadId, snapshot);
-      void this.#publishUsageChange(snapshot).catch(() => undefined);
+      void this.#syncNativeGoalStatus(snapshot).catch(() => undefined);
     });
-  }
-
-  #unwatchThreadIfUnused(threadId: string | null | undefined): void {
-    if (
-      !threadId ||
-      !this.#enableGoalWatch ||
-      !this.#viewModelPublisher.multiTargetAwarenessAvailable ||
-      this.#viewModelPublisher.targetIdsForThread(threadId).length > 0
-    ) {
-      return;
-    }
-    this.#runtime.unwatchGoalUsage?.(threadId);
-  }
-
-  async #publishVerified(threadId: string, viewModel: GoalProgressViewModel): Promise<void> {
-    if (viewModel.trackingPhase === "completed") {
-      if (this.#enableGoalWatch) {
-        this.#runtime.setPollingMode("stopped", threadId);
-      }
-      await this.#viewModelPublisher.clear(threadId);
-      return;
-    }
-    if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      if (this.#viewModelPublisher.targetIdsForThread(threadId).length === 0) {
-        return;
-      }
-    } else if (this.#viewModelPublisher.visibleThreadAwarenessAvailable) {
-      const visibleThreadId = await this.#viewModelPublisher.recoverVisibleThreadId();
-      if (
-        (visibleThreadId !== undefined && visibleThreadId !== threadId) ||
-        (visibleThreadId === undefined &&
-          this.#viewModelPublisher.currentThreadId !== undefined &&
-          this.#viewModelPublisher.currentThreadId !== threadId)
-      ) {
-        return;
-      }
-    }
-    if (!this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      await this.#viewModelPublisher.activateThread(threadId);
-    }
-    await this.#viewModelPublisher.setUiPreference(await readGoalProgressUiPreference(this.paths));
-    await this.#viewModelPublisher.publish(threadId, viewModel);
-    const deliveryCurrent = this.#viewModelPublisher.multiTargetAwarenessAvailable
-      ? this.#viewModelPublisher
-          .targetIdsForThread(threadId)
-          .every((targetId) => this.#viewModelPublisher.deliveryCurrentForTarget(targetId))
-      : this.#viewModelPublisher.deliveryCurrent;
-    if (!deliveryCurrent && !this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      this.#scheduleVisibleThreadRecovery(0);
-      return;
-    }
-    await this.#attemptUpdateActivationForThread(threadId);
-    void this.#maybeStartAutomaticUpdateCheck().catch(() => undefined);
-  }
-
-  async #maybeStartAutomaticUpdateCheck(): Promise<void> {
-    if (
-      !this.#ready ||
-      this.#startupListener?.health().ready !== true ||
-      !this.#viewModelPublisher.hasPublishedViewModel ||
-      !this.#viewModelPublisher.hasCurrentDelivery
-    ) {
-      return;
-    }
-    const checking = await this.#updateCoordinator.beginAutomaticCheck();
-    if (!checking) {
-      return;
-    }
-    await this.#viewModelPublisher.setUpdateState(checking.updateState);
-    const finalState = await checking.afterResponse?.();
-    if (finalState) {
-      await this.#viewModelPublisher.setUpdateState(finalState);
-    }
   }
 
   async #syncNativeGoalStatus(snapshot: GoalUsageSnapshot): Promise<GoalContractAny | null> {
@@ -1262,78 +595,6 @@ export class GoalProgressHelper {
     return (await this.#store.load(snapshot.threadId)).contract;
   }
 
-  #transientView(
-    threadId: string,
-    objective: string,
-    phase: "preparing" | "error" | "detached",
-    options: {
-      readonly preparingStep?: "reading-goal" | "preparing-checklist" | "establishing-baseline";
-      readonly errorCode?: string;
-    } = {},
-  ): GoalProgressViewModel {
-    return GoalProgressViewModelSchema.parse({
-      schemaVersion: 2,
-      contractId: `gp_prepare_${hashGoalProgressIdentity(threadId).slice(0, 16)}`,
-      sessionId: threadId,
-      revision: 0,
-      scopeRevision: 0,
-      trackingPhase: phase,
-      objective,
-      overallProgressBps: null,
-      overallPercent: null,
-      finalVerificationPending: false,
-      objectives: [],
-      optionalObjectives: [],
-      maxVisibleObjectives: 3,
-      ...(options.preparingStep === undefined ? {} : { preparingStep: options.preparingStep }),
-      ...(options.errorCode === undefined ? {} : { errorCode: options.errorCode }),
-    });
-  }
-
-  async #publishPreparing(
-    threadId: string,
-    objective: string,
-    preparingStep: "reading-goal" | "preparing-checklist" | "establishing-baseline",
-  ): Promise<GoalProgressViewModel> {
-    this.#preparingObjectives.set(threadId, objective);
-    const viewModel = this.#transientView(threadId, objective, "preparing", {
-      preparingStep,
-    });
-    await this.#publishVerified(threadId, viewModel);
-    return viewModel;
-  }
-
-  async #publishPreparationError(threadId: string, code: string): Promise<GoalProgressViewModel> {
-    const objective = this.#preparingObjectives.get(threadId) ?? "当前 Goal";
-    const viewModel = this.#transientView(threadId, objective, "error", {
-      errorCode: code,
-    });
-    await this.#publishVerified(threadId, viewModel);
-    return viewModel;
-  }
-
-  async #publishResumeUnavailable(
-    contract: GoalContractAny,
-    code: string,
-  ): Promise<GoalProgressViewModel> {
-    const threadId = this.#threadIdOf(contract);
-    const {
-      blockedReason: _blockedReason,
-      token: _token,
-      ...confirmed
-    } = projectContract(contract);
-    const viewModel = GoalProgressViewModelSchema.parse({
-      ...confirmed,
-      trackingPhase: "error",
-      finalVerificationPending: false,
-      objectives: [],
-      optionalObjectives: [],
-      errorCode: code,
-    });
-    await this.#publishVerified(threadId, viewModel);
-    return viewModel;
-  }
-
   async #resumeTracking(threadId: string): Promise<GoalProgressActivationResumeResult> {
     const loaded = await this.#store.load(threadId);
     const contract = loaded.contract;
@@ -1379,183 +640,19 @@ export class GoalProgressHelper {
         return { status: "inactive" };
       }
       const causeCode = helperDiagnosticCauseCode(error);
-      await this.#publishResumeUnavailable(contract, "GOAL_PROGRESS_TEMPORARILY_UNAVAILABLE").catch(
-        () => undefined,
-      );
       return {
         status: "temporarily_unavailable",
         reasonCode: causeCode,
       };
     }
     this.#watchThread(threadId);
-    const usage = await this.#refreshUsage(threadId);
+    await this.#refreshUsage(threadId);
     const latest = (await this.#store.load(threadId)).contract ?? contract;
-    const overlay = await this.#overlayForCurrentNativeGoal(latest, usage);
-    await this.#publishVerified(threadId, this.#projectState(latest, overlay).viewModel);
     return {
       status: "active",
       contractId: latest.contractId,
       revision: latest.revision,
     };
-  }
-
-  async #recoverVisibleThread(): Promise<"done" | "retry"> {
-    if (!this.#server) {
-      return "done";
-    }
-    await this.#reconcileUpdateState();
-    if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      const targets = await this.#viewModelPublisher.recoverVisibleTargets();
-      let retry = targets.length === 0;
-      for (const target of targets) {
-        await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-        if (!target.threadId || (await this.#restoreVisibleThread(target.threadId)) === "retry") {
-          retry = true;
-        }
-      }
-      return retry ? "retry" : "done";
-    }
-    const threadId = await this.#viewModelPublisher.recoverVisibleThreadId();
-    if (!threadId) {
-      return "retry";
-    }
-    if (await this.#rendererMatchesVisibleThread(threadId)) {
-      return (await this.#maybeCompleteUpdateActivation(
-        undefined,
-        threadId,
-        "visible-recovery",
-        0,
-      )) === "retry"
-        ? "retry"
-        : "done";
-    }
-    return this.#restoreVisibleThread(threadId);
-  }
-
-  async #rendererMatchesVisibleThread(threadId: string): Promise<boolean> {
-    if (this.#viewModelPublisher.currentThreadId !== threadId) {
-      return false;
-    }
-    if (!this.#rendererDoctor) {
-      return true;
-    }
-    try {
-      const doctor = await this.#rendererDoctor(threadId);
-      const expectedRevision = this.#viewModelPublisher.currentRevision;
-      return (
-        doctor.componentVisible === true &&
-        doctor.componentCount === 1 &&
-        doctor.currentThreadMatched === true &&
-        doctor.displayMode !== null &&
-        doctor.displayMode !== "hidden" &&
-        expectedRevision !== undefined &&
-        doctor.latestViewModelRevision === expectedRevision &&
-        this.#viewModelPublisher.deliveryCurrent
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  async #restoreVisibleThread(threadId: string): Promise<"done" | "retry"> {
-    const resumed = await this.#resumeTracking(threadId);
-    if (resumed.status === "temporarily_unavailable") {
-      return "retry";
-    }
-    if (resumed.status === "inactive" || !this.#rendererDoctor) {
-      return "done";
-    }
-    if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-      return "done";
-    }
-    try {
-      const doctor = await this.#rendererDoctor(threadId);
-      if (
-        doctor.componentVisible === true &&
-        doctor.componentCount === 1 &&
-        doctor.currentThreadMatched === true &&
-        doctor.displayMode !== null &&
-        doctor.displayMode !== "hidden" &&
-        doctor.latestViewModelRevision === resumed.revision &&
-        this.#viewModelPublisher.deliveryCurrent
-      ) {
-        return (await this.#maybeCompleteUpdateActivation(
-          undefined,
-          threadId,
-          "visible-recovery",
-          0,
-        )) === "retry"
-          ? "retry"
-          : "done";
-      }
-    } catch {
-      // The next bounded attempt reconnects the Bridge and republishes the same full snapshot.
-    }
-    await this.#viewModelPublisher.markDeliveryStale();
-    return "retry";
-  }
-
-  #scheduleVisibleThreadRecovery(attempt: number): void {
-    if (!this.#server || this.#visibleThreadRecoveryTimer) {
-      return;
-    }
-    if (attempt >= this.#visibleThreadRecoveryDelaysMs.length) {
-      return;
-    }
-    const delay = this.#visibleThreadRecoveryDelaysMs[attempt];
-    if (delay === undefined || !Number.isInteger(delay) || delay < 0 || delay > 60_000) {
-      return;
-    }
-    this.#visibleThreadRecoveryTimer = setTimeout(() => {
-      this.#visibleThreadRecoveryTimer = undefined;
-      void this.#recoverVisibleThread()
-        .then((result) => {
-          if (result === "retry") {
-            this.#scheduleVisibleThreadRecovery(attempt + 1);
-          }
-        })
-        .catch(() => {
-          this.#scheduleVisibleThreadRecovery(attempt + 1);
-        });
-    }, delay);
-    this.#visibleThreadRecoveryTimer.unref?.();
-  }
-
-  async #publishUsageChange(snapshot: GoalUsageSnapshot): Promise<void> {
-    if (
-      this.#viewModelPublisher.multiTargetAwarenessAvailable
-        ? this.#viewModelPublisher.targetIdsForThread(snapshot.threadId).length === 0
-        : snapshot.threadId !== this.#viewModelPublisher.currentThreadId
-    ) {
-      return;
-    }
-    const contract = await this.#syncNativeGoalStatus(snapshot);
-    if (!contract) {
-      return;
-    }
-    const overlay = await this.#overlayForCurrentNativeGoal(contract, snapshot);
-    await this.#applyPollingMode(
-      snapshot.threadId,
-      await readGoalProgressUiPreference(this.paths),
-      overlay,
-      contract,
-    );
-    if (overlay.detached) {
-      const preparingObjective = this.#preparingObjectives.get(snapshot.threadId);
-      if (preparingObjective) {
-        await this.#publishPreparing(snapshot.threadId, preparingObjective, "preparing-checklist");
-      } else {
-        await this.#viewModelPublisher.clear(snapshot.threadId);
-      }
-      return;
-    }
-    await this.#publishVerified(snapshot.threadId, this.#projectState(contract, overlay).viewModel);
-    if (
-      !this.#viewModelPublisher.multiTargetAwarenessAvailable &&
-      !this.#viewModelPublisher.deliveryCurrent
-    ) {
-      this.#scheduleVisibleThreadRecovery(0);
-    }
   }
 
   async #refreshUsage(threadId: string): Promise<GoalUsageSnapshot | undefined> {
@@ -1584,12 +681,10 @@ export class GoalProgressHelper {
 
   async #inspectRuntimeDoctor(sessionId?: string): Promise<GoalProgressDoctorResult["runtime"]> {
     return inspectGoalProgressRuntime(sessionId, {
-      rendererDoctor: this.#rendererDoctor,
       store: this.#store,
       refreshUsage: (threadId) => this.#refreshUsage(threadId),
       readNativeGoal: (threadId, revision) =>
         this.#sessionCoordinator.readNativeGoal(threadId, revision),
-      startupListener: this.#startupListener,
     });
   }
 
@@ -1611,7 +706,6 @@ export class GoalProgressHelper {
 
   async #handleSystemIpc(request: HelperSystemIpcRequest): Promise<GoalProgressIpcHandlerResult> {
     if (request.method === "ping") {
-      const listener = this.#startupListener?.health();
       return {
         revision: null,
         result: {
@@ -1619,9 +713,6 @@ export class GoalProgressHelper {
           pid: this.#lock?.identity.pid ?? process.pid,
           instanceId: this.#lock?.identity.instanceId ?? null,
           ready: this.#ready,
-          ...(listener
-            ? { startupListener: { running: listener.running, ready: listener.ready } }
-            : {}),
         },
       };
     }
@@ -1753,15 +844,13 @@ export class GoalProgressHelper {
         this.paths,
         DEFAULT_GOAL_PROGRESS_ACTIVATION_STATE,
       );
-      const overlay = await writeGoalProgressTrackingOverlay(sessionPaths, {
+      await writeGoalProgressTrackingOverlay(sessionPaths, {
         ...DEFAULT_GOAL_PROGRESS_TRACKING_OVERLAY,
         detached: false,
       });
       if (this.#enableGoalWatch) {
         this.#runtime.setPollingMode("collapsed-or-background", identity.threadId);
       }
-      const projected = this.#projectState(applied.contract, overlay);
-      await this.#publishVerified(identity.threadId, projected.viewModel);
       await this.#log({
         level: "info",
         event: "hook.native-goal-complete",
@@ -1827,14 +916,10 @@ export class GoalProgressHelper {
           this.paths,
           DEFAULT_GOAL_PROGRESS_ACTIVATION_STATE,
         );
-        const activeOverlay = await writeGoalProgressTrackingOverlay(sessionPaths, {
+        await writeGoalProgressTrackingOverlay(sessionPaths, {
           ...DEFAULT_GOAL_PROGRESS_TRACKING_OVERLAY,
           detached: false,
         });
-        await this.#publishVerified(
-          identity.threadId,
-          this.#projectState(current, activeOverlay).viewModel,
-        );
       }
     }
     if (plan.preparing) {
@@ -1852,12 +937,7 @@ export class GoalProgressHelper {
         if (plan.progressAction === "rescope-or-replace") {
           await this.#detachTracking(identity.threadId, "stale-contract");
         }
-        await this.#publishPreparing(identity.threadId, nativeGoal.objective, "reading-goal");
-        await this.#publishPreparing(
-          identity.threadId,
-          nativeGoal.objective,
-          "preparing-checklist",
-        );
+        this.#preparingObjectives.set(identity.threadId, nativeGoal.objective);
       }
     }
     return {
@@ -1909,7 +989,6 @@ export class GoalProgressHelper {
       };
       const preparingObjective = this.#preparingObjectives.get(identity.threadId);
       if (overlay.detached && preparingObjective) {
-        await this.#publishPreparing(identity.threadId, preparingObjective, "preparing-checklist");
         return {
           revision: contract.revision,
           result: {
@@ -1923,7 +1002,6 @@ export class GoalProgressHelper {
         };
       }
       const projected = this.#projectState(contract, overlay);
-      await this.#publishVerified(identity.threadId, projected.viewModel);
       return {
         revision: contract.revision,
         result: {
@@ -1943,250 +1021,6 @@ export class GoalProgressHelper {
     };
   }
 
-  async #handleRendererIpc(
-    request: HelperRendererIpcRequest,
-  ): Promise<GoalProgressIpcHandlerResult> {
-    if (request.method === "renderer.visible-thread") {
-      const targetId = request.params.targetId;
-      if (
-        this.#viewModelPublisher.multiTargetAwarenessAvailable &&
-        !this.#viewModelPublisher.hasTarget(targetId)
-      ) {
-        throw new GoalProgressIpcHandlerError(
-          "RENDERER_TARGET_UNKNOWN",
-          "Renderer target is not managed by this Helper",
-        );
-      }
-      const sequence = request.params.sequence;
-      const lifecycleId = request.params.lifecycleId;
-      let order = this.#visibleThreadOrderByTarget.get(targetId);
-      if (!order) {
-        order = {
-          lifecycleId: lifecycleId ?? null,
-          sequence: 0,
-          retiredLifecycleIds: [],
-        };
-        this.#visibleThreadOrderByTarget.set(targetId, order);
-      } else if (lifecycleId !== undefined && lifecycleId !== order.lifecycleId) {
-        if (order.retiredLifecycleIds.includes(lifecycleId)) {
-          const currentThreadId = this.#viewModelPublisher.currentThreadIdForTarget(targetId);
-          return {
-            revision: this.#viewModelPublisher.currentRevisionForTarget(targetId) ?? null,
-            result: { status: currentThreadId ? "done" : "unknown" },
-          };
-        }
-        if (order.lifecycleId) {
-          order.retiredLifecycleIds.push(order.lifecycleId);
-          order.retiredLifecycleIds = order.retiredLifecycleIds.slice(-16);
-        }
-        order.lifecycleId = lifecycleId;
-        order.sequence = 0;
-      }
-      if (sequence !== undefined && sequence <= order.sequence) {
-        const currentThreadId = this.#viewModelPublisher.currentThreadIdForTarget(targetId);
-        return {
-          revision: this.#viewModelPublisher.currentRevisionForTarget(targetId) ?? null,
-          result: { status: currentThreadId ? "done" : "unknown" },
-        };
-      }
-      if (sequence !== undefined) {
-        order.sequence = sequence;
-      }
-      const previousThreadId = this.#viewModelPublisher.multiTargetAwarenessAvailable
-        ? this.#viewModelPublisher.currentThreadIdForTarget(targetId)
-        : undefined;
-      const observedThreadId = this.#viewModelPublisher.multiTargetAwarenessAvailable
-        ? await this.#viewModelPublisher.recoverTargetThreadId(targetId).catch(() => undefined)
-        : undefined;
-      const threadId = observedThreadId ?? request.params.threadId;
-      if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-        this.#clearUpdateActivationRetriesForTarget(targetId, threadId);
-        await this.#viewModelPublisher.activateTarget(targetId, threadId);
-        if (previousThreadId !== threadId) {
-          this.#unwatchThreadIfUnused(previousThreadId);
-        }
-      }
-      if (threadId === null) {
-        this.#scheduleVisibleThreadRecovery(0);
-        return {
-          revision: null,
-          result: { status: "unknown" },
-        };
-      }
-      const result = await this.#restoreVisibleThread(threadId);
-      if (result === "retry") {
-        this.#scheduleVisibleThreadRecovery(0);
-      }
-      return {
-        revision: this.#viewModelPublisher.multiTargetAwarenessAvailable
-          ? (this.#viewModelPublisher.currentRevisionForTarget(targetId) ?? null)
-          : this.#viewModelPublisher.currentThreadId === threadId
-            ? (this.#viewModelPublisher.currentRevision ?? null)
-            : null,
-        result: { status: result },
-      };
-    }
-    if (request.method === "renderer.disconnected") {
-      if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-        if (!this.#viewModelPublisher.hasTarget(request.params.targetId)) {
-          this.#visibleThreadOrderByTarget.delete(request.params.targetId);
-          return {
-            revision: null,
-            result: { status: "scheduled", code: request.params.code },
-          };
-        }
-        const disconnectedThreadId = this.#viewModelPublisher.currentThreadIdForTarget(
-          request.params.targetId,
-        );
-        this.#visibleThreadOrderByTarget.delete(request.params.targetId);
-        await this.#viewModelPublisher.handleTargetDisconnect(
-          request.params.targetId,
-          request.params.code,
-        );
-        this.#unwatchThreadIfUnused(disconnectedThreadId);
-      } else {
-        await this.#viewModelPublisher.handleDisconnect(request.params.code);
-        this.#scheduleVisibleThreadRecovery(0);
-      }
-      return {
-        revision: null,
-        result: { status: "scheduled", code: request.params.code },
-      };
-    }
-    const loaded = await this.#store.load(request.params.sessionId);
-    if (!loaded.contract) {
-      throw new GoalProgressIpcHandlerError(
-        "STORE_NOT_INITIALIZED",
-        "Session has no Goal Contract",
-      );
-    }
-    const threadId = this.#threadIdOf(loaded.contract);
-    this.#watchThread(threadId);
-    const usage = await this.#refreshUsage(threadId);
-    const contract = (await this.#store.load(threadId)).contract ?? loaded.contract;
-    const overlay = await this.#overlayForCurrentNativeGoal(contract, usage);
-    const preparingObjective = this.#preparingObjectives.get(threadId);
-    if (overlay.detached && preparingObjective) {
-      const viewModel = await this.#publishPreparing(
-        threadId,
-        preparingObjective,
-        "preparing-checklist",
-      );
-      return {
-        revision: null,
-        result: {
-          viewModel,
-          uiPreference: await readGoalProgressUiPreference(this.paths),
-        },
-      };
-    }
-    const presented = {
-      ...this.#projectState(contract, overlay),
-      uiPreference: await readGoalProgressUiPreference(this.paths),
-    };
-    return {
-      revision: contract.revision,
-      result: {
-        viewModel: presented.viewModel,
-        uiPreference: presented.uiPreference,
-      },
-    };
-  }
-
-  async #handleUiIpc(request: HelperUiIpcRequest): Promise<GoalProgressIpcHandlerResult> {
-    return await handleHelperUiIntent(request, {
-      paths: this.paths,
-      store: this.#store,
-      preparingObjectives: this.#preparingObjectives,
-      readNativeGoal: (threadId) => this.#sessionCoordinator.readNativeGoal(threadId),
-      publishPreparationError: (threadId, code) => this.#publishPreparationError(threadId, code),
-      publishPreparing: (threadId, objective, stage) =>
-        this.#publishPreparing(threadId, objective, stage),
-      transientView: (threadId, objective, phase) =>
-        this.#transientView(threadId, objective, phase),
-      clearView: (threadId) => this.#viewModelPublisher.clear(threadId),
-      threadIdOf: (contract) => this.#threadIdOf(contract),
-      overlayFor: (threadId) => this.#overlayFor(threadId),
-      watchThread: (threadId) => this.#watchThread(threadId),
-      refreshUsage: (threadId) => this.#refreshUsage(threadId),
-      applyPollingMode: (threadId, preference, overlay, contract) =>
-        this.#applyPollingMode(threadId, preference, overlay, contract),
-      project: (contract, overlay) => this.#project(contract, overlay),
-    });
-  }
-
-  async #handleUpdateIpc(request: HelperUpdateIpcRequest): Promise<GoalProgressIpcHandlerResult> {
-    try {
-      if (request.method === "update.restart-result") {
-        const updateState = await this.#updateCoordinator.handleRestartResult(request.params);
-        await this.#viewModelPublisher.setUpdateState(updateState);
-        return {
-          revision: this.#viewModelPublisher.currentRevision ?? null,
-          result: {
-            action: "state-updated",
-            updateState,
-          },
-        };
-      }
-      if (request.method === "update.worker-result") {
-        const updateState = await this.#updateCoordinator.handleWorkerResult(request.params);
-        await this.#viewModelPublisher.setUpdateState(updateState);
-        return {
-          revision: this.#viewModelPublisher.currentRevision ?? null,
-          result: {
-            action: "state-updated",
-            updateState,
-          },
-        };
-      }
-      const visibleTargetIds = this.#viewModelPublisher.targetIdsForThread(
-        request.params.sessionId,
-      );
-      if (
-        this.#viewModelPublisher.multiTargetAwarenessAvailable
-          ? visibleTargetIds.length === 0
-          : request.params.sessionId !== this.#viewModelPublisher.currentThreadId
-      ) {
-        throw new GoalProgressIpcHandlerError(
-          "GOAL_PROGRESS_UPDATE_THREAD_MISMATCH",
-          "Update intent does not belong to the visible Goal task",
-        );
-      }
-      const result: GoalProgressUpdateIntentResult = await this.#updateCoordinator.handleIntent(
-        request.params.intent as GoalProgressUpdateIntent,
-      );
-      this.#viewModelPublisher.rememberUpdateState(result.updateState);
-      const { afterResponse, ...publicResult } = result;
-      return {
-        revision: this.#viewModelPublisher.multiTargetAwarenessAvailable
-          ? (this.#viewModelPublisher.currentRevisionForTarget(visibleTargetIds[0] ?? "") ?? null)
-          : (this.#viewModelPublisher.currentRevision ?? null),
-        result: publicResult,
-        ...(afterResponse === undefined
-          ? {}
-          : {
-              afterResponse: async () => {
-                const finalState = await afterResponse();
-                if (finalState) {
-                  await this.#viewModelPublisher.setUpdateState(finalState);
-                }
-              },
-            }),
-      };
-    } catch (error) {
-      if (error instanceof GoalProgressIpcHandlerError) {
-        throw error;
-      }
-      const candidate = helperDiagnosticCauseCode(error);
-      throw new GoalProgressIpcHandlerError(
-        candidate.startsWith("GOAL_PROGRESS_UPDATE_")
-          ? candidate
-          : "GOAL_PROGRESS_UPDATE_REQUEST_FAILED",
-        "Goal Progress update request failed",
-      );
-    }
-  }
-
   async #handleStoreInitialize(
     request: Extract<HelperStoreIpcRequest, { method: "store.initialize" }>,
     context: GoalProgressIpcConnectionContext,
@@ -2196,7 +1030,7 @@ export class GoalProgressHelper {
       undefined,
       request.params.metadata.turnId,
     );
-    try {
+    {
       const overlay = await this.#overlayFor(identity.threadId);
       const activationState = await this.#activationStateForOverlay(identity.threadId, overlay);
       if (activationState.detachReason === "user-dismissed-preparation") {
@@ -2209,14 +1043,6 @@ export class GoalProgressHelper {
         throw new GoalProgressIpcHandlerError(
           "TRACKING_DETACHED_BY_USER",
           "Goal Progress tracking was closed by the user",
-        );
-      }
-      const preparingObjective = this.#preparingObjectives.get(identity.threadId);
-      if (preparingObjective) {
-        await this.#publishPreparing(
-          identity.threadId,
-          preparingObjective,
-          "establishing-baseline",
         );
       }
       const nativeGoal = await this.#sessionCoordinator.trustedNativeGoal(identity.threadId);
@@ -2269,7 +1095,6 @@ export class GoalProgressHelper {
           )
         : overlay;
       const projected = this.#projectState(latest, activeOverlay);
-      await this.#publishVerified(identity.threadId, projected.viewModel);
       return {
         revision: latest.revision,
         result: {
@@ -2277,12 +1102,6 @@ export class GoalProgressHelper {
           duplicate: initialized.duplicate,
         },
       };
-    } catch (error) {
-      const loaded = await this.#store.load(identity.threadId).catch(() => null);
-      if (!loaded?.contract && this.#preparingObjectives.has(identity.threadId)) {
-        await this.#publishPreparationError(identity.threadId, helperErrorCode(error));
-      }
-      throw error;
     }
   }
 
@@ -2403,7 +1222,6 @@ export class GoalProgressHelper {
       applied.contract,
     );
     const projected = this.#projectState(applied.contract, overlay);
-    await this.#publishVerified(identity.threadId, projected.viewModel);
     return {
       revision: applied.contract.revision,
       result: {
@@ -2442,8 +1260,6 @@ export class GoalProgressHelper {
     request: HelperTaskIpcRequest,
     context: GoalProgressIpcConnectionContext,
   ): Promise<GoalProgressIpcHandlerResult> {
-    if (request.method === "task.request" || request.method === "task.native-read")
-      this.#lastObservedTaskActivityAt = Date.now();
     const action = request.params.action;
     const nativeRead = request.method === "task.native-read";
     if (
@@ -2516,7 +1332,7 @@ export class GoalProgressHelper {
           .then((thread) => thread.status)
           .catch(() => undefined),
       );
-    } else if (request.method === "task.native-read") {
+    } else {
       threadId = request.params.threadId;
       const identity = await measureStage("native-identity", () =>
         this.#runtime.readThreadIdentity(threadId),
@@ -2535,24 +1351,6 @@ export class GoalProgressHelper {
       cwd = identity.cwd;
       nativeStatus = identity.status;
       input = request.params.input;
-    } else {
-      threadId = request.params.threadId;
-      const identity = await measureStage("native-identity", () =>
-        this.#runtime.readThreadIdentity(threadId),
-      );
-      if (
-        identity.id !== threadId ||
-        identity.threadSource !== "user" ||
-        identity.ephemeral ||
-        identity.agentRole !== null
-      )
-        throw new GoalProgressIpcHandlerError(
-          "TASK_THREAD_UNTRUSTED",
-          "Panel requires a verified user chat",
-        );
-      cwd = identity.cwd;
-      nativeStatus = identity.status;
-      input = request.params;
     }
     // Use the same nearest-Git-boundary rule as heartbeat discovery, before storage is opened.
     const projectEnabled = await measureStage("project-preferences", async () => {
@@ -2805,9 +1603,6 @@ export class GoalProgressHelper {
         hook: (request) => this.#handleHookIpc(request),
         activation: (request) => this.#handleActivationIpc(request),
         store: (request, context) => this.#handleStoreIpc(request, context),
-        renderer: (request) => this.#handleRendererIpc(request),
-        ui: (request) => this.#handleUiIpc(request),
-        update: (request) => this.#handleUpdateIpc(request),
         doctor: (request) => this.#handleDoctorIpc(request),
       },
       log: (input) => this.#log(input),
@@ -2833,139 +1628,22 @@ export class GoalProgressHelper {
     }
     this.#lock = lock;
     this.#server = server;
-    if (!this.#startupListener && this.#prepareStartupListener) {
-      try {
-        const prepared = await this.#prepareStartupListener();
-        if (this.#server !== server) {
-          await prepared.startupListener.stop().catch(() => undefined);
-          return;
-        }
-        this.#startupListener = prepared.startupListener;
-        this.#startupHandoff = prepared.startupHandoff;
-      } catch {
-        // IPC remains available when optional Codex discovery cannot prepare the listener.
-      }
-    }
-    if (this.#startupListener) {
-      try {
-        this.#startupListener.start((event) => this.#handleStartupEvent(event));
-        const ready = await this.#startupListener.waitUntilReady();
-        await this.#log({
-          level: "info",
-          event: "startup.listener.started",
-          ...(ready ? {} : { code: "STARTUP_LISTENER_NOT_READY" }),
-        });
-      } catch {
-        // Helper and ordinary Codex startup remain available without the optional listener.
-      }
-    }
-    if (this.#server !== server) {
-      return;
-    }
-    let rendererBootstrapFailed = false;
-    let recoveredTargets: readonly {
-      readonly targetId: string;
-      readonly threadId: string | null;
-    }[] = [];
-    let recoveredVisibleThreadId: string | undefined;
-    try {
-      if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-        recoveredTargets = await this.#viewModelPublisher.recoverVisibleTargets();
-      } else {
-        recoveredVisibleThreadId = await this.#viewModelPublisher.recoverVisibleThreadId();
-      }
-      await this.#viewModelPublisher.initialize();
-    } catch (error) {
-      rendererBootstrapFailed = true;
-      await this.#log({
-        level: "warn",
-        event: "startup.recovery",
-        code: "STARTUP_RENDERER_RECOVERY_PENDING",
-        causeCode: helperDiagnosticCauseCode(error),
-      });
-    }
-    try {
-      const updateState = await this.#updateCoordinator.initialize();
-      await this.#viewModelPublisher.setUpdateState(updateState);
-      if (updateState.phase === "up-to-date") {
-        await this.#cleanupCompletedUpdate();
-      }
-    } catch {
-      // Update state is optional; Goal tracking remains available if it cannot be restored.
-    }
-    try {
-      if (rendererBootstrapFailed) {
-        this.#scheduleVisibleThreadRecovery(0);
-      } else if (this.#viewModelPublisher.multiTargetAwarenessAvailable) {
-        let retry = recoveredTargets.length === 0;
-        for (const target of recoveredTargets) {
-          await this.#viewModelPublisher.activateTarget(target.targetId, target.threadId);
-          if (
-            !target.threadId ||
-            (await this.#restoreVisibleThread(target.threadId).catch(() => "retry")) === "retry"
-          ) {
-            retry = true;
-          }
-        }
-        if (retry) this.#scheduleVisibleThreadRecovery(0);
-      } else if (recoveredVisibleThreadId) {
-        const restored = await this.#restoreVisibleThread(recoveredVisibleThreadId).catch(
-          (): "retry" => "retry",
-        );
-        if (restored === "retry") this.#scheduleVisibleThreadRecovery(0);
-      } else {
-        this.#scheduleVisibleThreadRecovery(0);
-      }
-    } catch (error) {
-      await this.#log({
-        level: "warn",
-        event: "startup.recovery",
-        code: "STARTUP_RENDERER_RECOVERY_PENDING",
-        causeCode: helperDiagnosticCauseCode(error),
-      });
-      this.#scheduleVisibleThreadRecovery(0);
-    }
     if (this.#server !== server) return;
     this.#ready = true;
-    void this.#maybeStartAutomaticUpdateCheck().catch(() => undefined);
     await this.#log({
       level: "info",
       event: "helper.started",
     });
   }
 
-  async setViewModelSink(sink?: ViewModelPublisherSink): Promise<void> {
-    await this.#viewModelPublisher.setSink(sink);
-  }
-
   async stop(): Promise<void> {
     this.#workspaceStorage.close();
-    const preservePage = this.#viewModelPublisher.currentUpdateState?.phase === "installing";
     this.#ready = false;
-    this.#clearUpdateActivationRetries();
-    this.#visibleThreadOrderByTarget.clear();
     const server = this.#server;
     const lock = this.#lock;
     this.#server = undefined;
     this.#lock = undefined;
-    if (this.#visibleThreadRecoveryTimer) {
-      clearTimeout(this.#visibleThreadRecoveryTimer);
-      this.#visibleThreadRecoveryTimer = undefined;
-    }
-    await this.#updateCoordinator.stop();
-    this.#startupEventSequence += 1;
-    if (this.#startupReattachTimer) clearTimeout(this.#startupReattachTimer);
-    this.#startupReattachTimer = undefined;
-    await this.#startupListener?.stop().catch(() => undefined);
-    await this.#startupHandoff?.whenIdle?.();
-    if (this.#startupListener) {
-      await this.#log({
-        level: "info",
-        event: "startup.listener.stopped",
-      });
-    }
     await server?.stop();
-    await this.#viewModelPublisher.close(preservePage ? { preservePage: true } : undefined);
     await this.#runtime.close();
     await this.#log({
       level: "info",
@@ -2988,62 +1666,8 @@ export async function runHelperCli(argv: readonly string[] = process.argv.slice(
   if (argv.length > 0 && argv[0] !== "serve") {
     throw new Error("Usage: goal-progress-helper [serve|doctor --json]");
   }
-  const viewClient =
-    process.platform === "darwin"
-      ? new GoalProgressCdpViewClient(paths.helperSocketPath)
-      : undefined;
-  const viewModelSink =
-    process.platform === "darwin"
-      ? new RendererTargetManager({
-          connector: () => connectHelperRendererTargetSource(paths),
-          onTargetReady: (targetId, threadId, lifecycleId) => {
-            void viewClient
-              ?.reportVisibleThread(targetId, threadId, undefined, lifecycleId)
-              .catch(() => undefined);
-          },
-          onTargetDestroyed: (targetId, code) => {
-            void viewClient
-              ?.reportDisconnected(targetId, code ?? "GOAL_PROGRESS_CDP_TARGET_DESTROYED")
-              .catch(() => undefined);
-          },
-        })
-      : undefined;
-  const prepareStartupListener =
-    process.platform === "darwin"
-      ? async (): Promise<PreparedGoalProgressStartupListener> => {
-          const app = await requireSingleCodexMacosApp();
-          const listenerExecutable = resolveStartupListenerExecutable();
-          await access(listenerExecutable, constants.X_OK);
-          return {
-            startupListener: new MacosStartupListenerSupervisor({
-              executablePath: listenerExecutable,
-              bundleId: app.bundleId,
-              appPath: app.realAppPath,
-              appExecutablePath: app.realExecutablePath,
-            }),
-            startupHandoff: new MacosStartupHandoffController({ paths }),
-          };
-        }
-      : undefined;
-  const helper = new GoalProgressHelper({
-    paths,
-    ...(viewModelSink === undefined ? {} : { viewModelSink }),
-    ...(viewModelSink === undefined
-      ? {}
-      : {
-          rendererDoctor: (expectedThreadId?: string, targetId?: string) =>
-            targetId
-              ? viewModelSink.doctorTarget(targetId, expectedThreadId)
-              : viewModelSink.doctor(expectedThreadId),
-        }),
-    ...(prepareStartupListener === undefined ? {} : { prepareStartupListener }),
-  });
-  try {
-    await helper.start();
-  } catch (error) {
-    await viewModelSink?.close();
-    throw error;
-  }
+  const helper = new GoalProgressHelper({ paths });
+  await helper.start();
   const stop = async () => {
     await helper.stop();
     process.exitCode = 0;

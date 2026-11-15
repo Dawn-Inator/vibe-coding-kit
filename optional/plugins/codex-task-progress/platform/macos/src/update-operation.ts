@@ -16,7 +16,6 @@ import { fileSha256, readInstalledManifest, readVerifiedRelease } from "./verifi
 const UpdateOperationErrorCodeSchema = z.string().regex(/^[A-Z][A-Z0-9_]{2,127}$/u);
 
 export const GOAL_PROGRESS_UPDATE_INSTALL_WORKER_LEASE_MS = 12 * 60 * 1_000;
-export const GOAL_PROGRESS_UPDATE_RESTART_WORKER_LEASE_MS = 2 * 60 * 1_000;
 const UPDATE_OPERATION_LOCK_TIMEOUT_MS = 2_000;
 const UPDATE_OPERATION_LOCK_STALE_MS = 30_000;
 const UPDATE_OPERATION_LOCK_RETRY_MS = 10;

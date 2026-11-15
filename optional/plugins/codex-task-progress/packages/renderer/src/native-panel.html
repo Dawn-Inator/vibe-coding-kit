@@ -8,11 +8,14 @@
       :root {
         color-scheme: light dark;
         --ctp-surface: var(--color-background-primary, Canvas);
-        --ctp-text: var(--color-text-primary, CanvasText);
+        --ctp-text: var(--color-token-foreground, var(--color-token-text-primary, var(--color-text-primary, CanvasText)));
+        --ctp-accent: var(--ctp-text);
         --ctp-muted: var(--color-text-secondary, GrayText);
         --ctp-border: var(--color-border-primary, color-mix(in srgb, currentColor 18%, transparent));
         --ctp-hover: color-mix(in srgb, currentColor 8%, transparent);
       }
+      :root[data-theme="light"] { color-scheme: light; }
+      :root[data-theme="dark"] { color-scheme: dark; }
       *, *::before, *::after { box-sizing: border-box; }
       html, body { width: 100%; min-height: 100%; margin: 0; background: transparent; }
       body { color: var(--ctp-text); font-family: var(--font-sans, system-ui, sans-serif); }

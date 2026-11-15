@@ -1,10 +1,24 @@
-# Install the locally built Task Progress release
+# Install Task Progress 0.6.0
 
-Build this private derivative from `optional/plugins/codex-task-progress` in the trusted Kit checkout. There is no configured automatic release update channel; update by rebuilding and installing from that checkout. Do not download an upstream Goal Progress release. Preserve upstream Git history, MIT attribution and license. The managed launcher is separate from Codex and does not modify its app bundle.
+This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 
-## Build and install
+## Kit installation
 
-On supported Apple Silicon macOS, use the pinned Node v24.19.0 binary and the component's pnpm toolchain:
+Choose the optional `task-progress` category in Kit or use its documented optional-component command. Kit installs or reuses the native plugin and Helper. A fresh category selection needs no Dock/launcher prompt. Existing plugin installations are reused; Kit does not silently upgrade them. If an upgrade is needed, use the native component installer from this Kit checkout after handling any legacy installation.
+
+The native panel requires a Codex Desktop host that supports MCP Apps and the optional `enable_mcp_apps` feature. Inspect the host setting with `codex features list` before installing. If it is disabled and the user chooses native MCP Apps, enable it explicitly, then retry installation:
+
+```sh
+codex features enable enable_mcp_apps
+```
+
+The installer does not toggle this host feature. If it is disabled or the CLI cannot confirm support, installation returns `NATIVE_MCP_SETUP_REQUIRED` with the next step. Reopen or start an ordinary chat when required by Codex, then confirm the panel and its data are actually visible. Tool registration, build success, `doctor`, and `verify` do not prove UI visibility. Unsupported hosts may not show the panel.
+
+The supported request flow is MCP Apps resource → MCP stdio server → local Helper via the existing launchd service → canonical Kit task/Heartbeat/history records. The Helper applies the existing trusted thread identity and write-authority checks. It does not create or change a custom Goal UI. Existing native Goal model APIs, v1/v2 record formats, task formats, and Heartbeat formats remain compatible.
+
+## Build and checks
+
+For release development on Apple Silicon macOS, use Node >=22.12 and pnpm 11 from the component directory:
 
 ```sh
 corepack pnpm install --frozen-lockfile
@@ -14,62 +28,28 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify release version `0.5.18`. It includes a dedicated read-only native MCP App for the audited Codex Desktop host: each call resolves that host's thread identity, including its `threadId` aliases, and reads the same Kit task, Heartbeat and history data for the exact user, non-subagent, non-ephemeral thread. Task mutations still require full Hook and turn proof. The visible 0.5.17 native entry returned no data before this fix; live visibility and data behavior still need verification in the supported host. When supported and loaded, the native path does not require CDP, a custom launcher or a Codex restart. The existing CDP injected panel and launcher setup remain available as legacy paths. This host-specific behavior is not a generic cross-host identity guarantee. For a launcher-first setup, run `dist/release/macos-arm64/bin/goal-progress install --defer-connection --json`; this prepares the Helper and plugin without requiring CDP so the managed launcher can be configured. The ordinary `install --json` path never restarts Codex automatically, but it may return `INSTALL_RESTART_REQUIRED` when the existing connection cannot be established. Do not interpret its success as a guarantee that no connection setup remains.
-
-## Native-panel trial prerequisites
-
-The native panel needs host support for the MCP Apps desktop entrypoint and Codex's optional `enable_mcp_apps` feature. Inspect the public feature state with `codex features list`. Enable it only when the user chooses to try the native panel:
-
-```sh
-codex features enable enable_mcp_apps
-```
-
-The installer does not change Codex feature settings or force-restart Codex; a running app may not immediately reflect a feature change. Verify that the panel actually appears in an ordinary chat. A registered tool or successful build is not proof that the UI is visible. The managed-launcher/CDP path is a separate legacy mode and does not prove whether the native panel works.
-
-After a successful install, use `doctor --json` and `verify --json`, and keep their results distinct from CDP and visible panel checks. If a legacy install requires a Codex restart to create CDP, never restart it automatically; report the reason and ask before restarting. The independent application data name is `CodexTaskProgress`.
-
-For an existing Codex process without CDP, installation or launcher use can only activate that process; connection rebuild remains pending until a later full cold launch through the managed launcher. Do not restart Codex to clear this pending state without current authorization. `goal-progress launch --json` starts the Helper and Codex with the configured connection arguments without restarting an existing app. When verified CDP is already present, hot updates reconnect the Helper and replace the panel in place; Codex itself is not restarted. An installer, build, launch, or regression-coverage result alone does not prove that the Codex panel is currently restored.
-
-## Managed launcher and Kit integration
-
-Inspect, install or remove the separate launcher using `goal-progress launcher --status --json`, `goal-progress launcher --install --json`, or `goal-progress launcher --remove --json`. It is installed at `~/Applications/Codex.app` and appears as “Codex” in Finder and Dock. Its bundle identifier remains separate from Codex, and its application-support data remains stable across the rename. It preserves the actual Codex app, and direct launches of that app remain normal. macOS may display both app icons; do not promise that every Finder or app-originated launch is intercepted.
-
-Dock replacement is opt-in. Run `goal-progress launcher --install --dock --json` only when explicitly choosing it as the Dock entry. After upgrading from `~/Applications/Codex Task Progress.app`, this command migrates the launcher's owned Dock entry in place while preserving its original Dock restore information and task history. This setup preserves unrelated Dock entries and the current session, and disables the legacy startup auto-observer. The older default-off startup-recovery policy was not reliable and is no longer recommended. The launcher never force-restarts an existing Codex process or bootstraps CDP into an already running process.
-
-On launcher-capable releases, uninstall first removes the owned managed launcher and its Dock entry. If Dock cleanup fails, or a user-edited Dock entry must be retained, Helper removal is blocked so that entry cannot become a broken launcher. Older helpers without managed-launcher support keep their legacy uninstall behavior.
-
-Kit's fresh `task-progress` selection uses the deferred-connection install flow to prepare the launcher. During an interactive install or category wizard, a selected category with an already-installed launcher-capable helper but no launcher configuration triggers a separate purpose-level, default-No, one-click Dock consent prompt; declining leaves the plugin and project selection unchanged. This is separate from signing consent. For an already installed plugin, `--optional task-progress=on` directly requests launcher setup. Non-interactive saved or auto-detected preferences only reuse the existing installation, while unrelated explicit category updates do not prompt. An older helper that lacks launcher support returns setup-required; Kit does not silently upgrade an existing plugin.
-
-## Ordinary-task and UI verification
-
-Reopen the affected chat or open a new chat to load changed plugin tools. Use a verification chat whose task source is resolved; do not initialize a parallel checklist while its source is pending, stale or unavailable. Test an ordinary task without creating a native Goal: initialize, complete items, rescope to add work and observe the progress regression, expand modules and nodes/evidence, then reopen and verify persistence. Check the History and Heartbeat controls, actual records and pagination, panel switching, Escape/focus return, light/dark themes, narrow and short windows, and reduced motion.
-
-Project Heartbeat appears automatically when available, but only a related structured Kit ledger may replace the chat checklist; an unrelated project ledger must not become task authority. Report build, test, connection, visible UI and install results separately. An install or Doctor result alone does not prove the panel is visible.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.6.0`. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
 
 ## Signing and protected folders
 
-Kit reuses an existing Task Progress installation without asking about signing, rebuilding or reinstalling it. For a missing component, interactive setup asks for explicit confirmation of an eligible local certificate. Non-interactive setup reports `setup-required` and gives the commands. Inspect status and candidates read-only with:
+Reuse the existing configured signing identity. For local readiness, inspect signing status and candidates read-only:
 
 ```sh
 node .vibe-coding/kit/optional/plugins/codex-task-progress/scripts/install-from-kit.mjs --check
 ```
 
-To validate and persist a chosen fingerprint in the private local signing configuration:
+When a signing choice is required, Kit asks for explicit consent in interactive setup; non-interactive setup reports the required action. A confirmed identity is stored only in private local configuration:
 
 ```sh
 node .vibe-coding/kit/optional/plugins/codex-task-progress/scripts/install-from-kit.mjs --configure-signing --identity '<certificate fingerprint>'
 ```
 
-This changes only private signing configuration; it does not build, sign, install or restart Codex. The local release builder accepts `GOAL_PROGRESS_CODESIGN_IDENTITY`, which overrides the saved identity, or a `release-signing.json` file under the Task Progress application-support directory. That file uses `{ "schemaVersion": 1, "identity": "..." }`. `GOAL_PROGRESS_CODESIGN_CONFIG` may select an explicit absolute path; invalid explicit configuration fails closed. Keep identity values out of source control and public documentation.
+The release builder also accepts `GOAL_PROGRESS_CODESIGN_IDENTITY` or a private `release-signing.json` under application support (`{ "schemaVersion": 1, "identity": "..." }`). `GOAL_PROGRESS_CODESIGN_CONFIG` selects an explicit absolute config path; invalid explicit config fails closed. Keep identity values out of source and shared docs. Without a configured identity, ad-hoc signing may cause macOS to ask for protected-folder permission again. Apple Development signing is not Developer ID or public notarization. Never automate TCC grants, edit/reset the TCC database, or default to Full Disk Access.
 
-Without a configured identity, ad-hoc signing remains available and macOS may prompt for permission again. Apple Development signing is for local development, not Developer ID or public notarization. The Helper and listener identifiers are `com.codextaskprogress.helper` and `com.codextaskprogress.listener`. First access to a protected folder requires user approval. TCC permission is not transferred when the Helper path changes, and future prompts are not ruled out. Never automate permission grants, edit or reset the TCC database, or default to Full Disk Access.
+The Helper is installed at the stable real path `install/bin/goal-progress`; versioned release assets are retained in `install/releases/<version>/`. Existing grants are not copied to a new executable path. A macOS permission prompt remains a user decision.
 
-The installer retains versioned assets in `install/releases/<version>/` and atomically installs the verified Helper at the real `install/bin/goal-progress` path. launchd, MCP and new Hooks use that stable path; Doctor checks its hash. Existing version-specific installs are supported, but moving to the stable path may require protected-folder approval.
+## Storage compatibility
 
-## Storage-format changes
+Existing canonical task and Heartbeat formats remain in place. The History summary is bounded presentation data only: it keeps a 512 KiB input limit and 512 Unicode-character summaries with full Markdown paths, while Kit's complete records remain unchanged. Native Goal records remain readable under their original formats. Do not migrate, truncate or rewrite source records as part of UI summarization.
 
-When an update changes task or Heartbeat persistence, validate migration fixtures before installation. Cover legacy task events and snapshots, legacy Heartbeat bindings/observations and the previous workspace routing index. Verify task revisions and task/source associations remain available, project Heartbeat wakes retain their content and source line mapping, and original legacy files remain unchanged. Cover repeated first access and a workspace move: routing must survive cwd changes, while a prior project's Heartbeat binding must not follow the chat to another project. Divergent old/new history must fail closed while preserving both copies.
-
-Keep display and ordinary reads of an unrelated active project Heartbeat read-only and retain legacy single-file ledgers as single files. Test an explicit writer-owned cutover only after quiescing the source and obtaining Kit's lock/version preconditions. Pass `legacyWritersQuiescent: true` and a fresh `expectedContentHash` from `readHeartbeatLedgerPair({root, path})`. The flag asserts raw legacy writers stay stopped throughout; the Kit lock coordinates Kit writers only. Verify a concurrent append/version change fails closed without losing either copy. For an interrupted history-first transaction, obtain the raw hash with `readHeartbeatLedgerPairVersion` and validate `recoverHeartbeatLedgerPair` against the backup plus previous/planned head. Helper-owned ordinary task and routing records may use their separate first-access compatibility migration.
-
-For hot updates, install without a Codex restart when verified CDP is available. Verify the main app PID/start time remains unchanged, the Helper executable and panel tag are current, and task state survives. Reopen chat sessions to load changed MCP catalogs. Report code/build/test results, install, Doctor/Verify, CDP and actual visible-app evidence separately.
+When changing storage in future versions, test old-format fixtures, repeated access, workspace moves and divergent histories. Divergent old/new data must fail closed with both copies preserved.

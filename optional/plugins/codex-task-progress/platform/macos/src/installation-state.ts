@@ -4,13 +4,11 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { isGoalProgressUpdateVersion } from "../../../packages/contracts/src/update-state-runtime.js";
 import type { GoalProgressPaths } from "../../../packages/store/src/index.js";
-import type { CdpController } from "./cdp-controller.js";
 import { type MacosInstallationLayout, resolveMacosInstallationLayout } from "./install-layout.js";
 import {
   type HelperHealthInspection,
   type InstalledHookInspection,
   inspectInstalledHook,
-  startupListenerFileExists,
 } from "./installed-inspection.js";
 import type { LaunchAgentController } from "./launch-agent-controller.js";
 import { isNotFound, stableErrorCode } from "./macos-errors.js";
@@ -149,7 +147,6 @@ export interface InstallationStateOptions {
   readonly releaseRoot: string;
   readonly goalPaths: GoalProgressPaths;
   readonly launchAgent: LaunchAgentController;
-  readonly cdp: CdpController;
   readonly inspectHelper: (paths: GoalProgressPaths) => Promise<HelperHealthInspection>;
   readonly discoverCodex: () => Promise<CodexInstallIdentity>;
   readonly pluginFor: (codex: CodexInstallIdentity) => Promise<PluginController>;
@@ -169,7 +166,6 @@ export class InstallationState {
   #helper: Promise<HelperHealthInspection> | undefined;
   #codex: Promise<CodexInstallIdentity> | undefined;
   #plugin: Promise<PluginController> | undefined;
-  #cdpReady: Promise<boolean> | undefined;
 
   constructor(options: InstallationStateOptions) {
     this.#options = options;
@@ -216,10 +212,6 @@ export class InstallationState {
     return this.#helper;
   }
 
-  async startupListenerFileExists(): Promise<boolean> {
-    return startupListenerFileExists(await this.layout(), await this.release());
-  }
-
   codex(): Promise<CodexInstallIdentity> {
     this.#codex ??= this.#options.discoverCodex().then((codex) => {
       validateCodexIdentity(codex);
@@ -242,11 +234,6 @@ export class InstallationState {
 
   hook(installed: InstalledManifest): Promise<InstalledHookInspection> {
     return inspectInstalledHook(this.#options.homeDirectory, installed);
-  }
-
-  cdpReady(codex?: CodexInstallIdentity): Promise<boolean> {
-    this.#cdpReady ??= this.#options.cdp.verify(codex);
-    return this.#cdpReady;
   }
 
   async cleanupBackups(): Promise<string[]> {
@@ -277,18 +264,13 @@ export class InstallationState {
     release: ParsedReleaseManifest,
   ): Promise<InstallationPermissionFacts> {
     const layout = await this.layout();
-    for (const path of [
-      layout.installManifestPath,
-      layout.launchAgentPath,
-      resolve(installed.programReleaseRoot, release.files.renderer.path),
-    ]) {
+    for (const path of [layout.installManifestPath, layout.launchAgentPath]) {
       if (((await stat(path)).mode & 0o777) !== 0o600) {
         return { configurationPath: path, executablePath: null };
       }
     }
     for (const executable of [
       release.files.helper,
-      release.files.startupListener,
       release.files.installCommand,
       release.files.repairCommand,
       release.files.disableCommand,

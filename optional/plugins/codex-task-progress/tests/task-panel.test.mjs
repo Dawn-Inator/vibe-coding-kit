@@ -1,21 +1,20 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild";
 
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
-body{font:14px system-ui;margin:0;background:#f5f5f5}aside{position:absolute;left:0;top:0}
-main{margin:44px auto 0;width:min(700px,calc(100vw - 32px));height:calc(100vh - 44px);position:relative;display:flex;flex-direction:column}
-#layout{height:100%;width:100%}#content{height:100%;width:100%;display:flex;flex-direction:column}
-#messages{flex:1;min-height:0;overflow:auto}#composer{width:100%;height:100px;flex-shrink:0;background:white;border:1px solid #ccc;margin-bottom:20px;box-sizing:border-box}[role=textbox]{height:80px}
+:root{color-scheme:light dark;--ctp-surface:Canvas;--ctp-text:CanvasText;--ctp-accent:var(--ctp-text);--ctp-muted:GrayText;--ctp-border:color-mix(in srgb,currentColor 18%,transparent)}
+body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box-sizing:border-box;min-height:100vh;padding:12px;display:flex;flex-direction:column}
+#messages{flex:1;min-height:0;overflow:auto}#composer{width:100%;height:100px;flex-shrink:0;background:var(--ctp-surface);border:1px solid #ccc;margin-bottom:20px;box-sizing:border-box}[role=textbox]{height:80px}
 </style></head><body>
-<aside><div data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="thread-a"></div></aside>
-<main data-app-shell-page-surface><div id="layout" data-app-shell-main-content-layout="thread-edge-scroll"><div id="content"><div id="messages">Conversation remains below the task panel.</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></div></main>
+<main id="native-panel-shell" aria-label="Task progress"><div id="messages">Native task progress panel</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></main>
 <script>
 window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
+window.fixture.threadId = "thread-a";
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
   const fixtureRequestId = window.fixture.fixtureEvents.length + 1;
@@ -36,25 +35,6 @@ window.__codexTaskProgressRequest = async function(request) {
   return result;
 };
 </script><script src="/bundle.js"></script></body></html>`;
-// Matches the desktop app's empty-chat topology: outer page includes the titlebar;
-// the verified content viewport begins below it, even before a durable thread exists.
-const emptyFixture = `<!doctype html><html lang="zh-CN"><head><style>
-body{font:14px system-ui;margin:0;background:#f5f5f5}*{box-sizing:border-box}
-#appframe{height:100vh;display:flex;flex-direction:column;width:100%;position:relative}
-#toolbar{height:44px;flex-shrink:0;background:#ddd}
-#main-region{display:flex;flex-direction:column;min-height:0;flex:1;margin-left:200px;width:calc(100% - 200px)}
-#layout{display:flex;flex:1;min-height:0;position:relative;overflow:hidden;width:100%}
-#content{display:flex;flex-direction:column;flex:1;min-height:0;width:100%}
-#messages{flex:1;min-height:0;overflow:auto}#composer{width:calc(100% - 48px);max-width:700px;height:100px;flex-shrink:0;margin:0 auto 20px;background:white;border:1px solid #ccc}[role=textbox]{height:80px}
-@media(max-width:600px){#main-region{margin-left:0;width:100%}}
-</style></head><body>
-<main id="outer-generic-main"><div id="appframe" data-app-shell-page-surface>
-<header id="toolbar" data-app-shell-titlebar>Codex toolbar remains unobscured</header>
-<main id="main-region" data-app-shell-main-surface="default"><div id="layout" data-app-shell-main-content-layout="default"><div id="content"><div id="messages">Empty chat content</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></div></main>
-</div></main>
-<aside><div id="active-thread" data-app-action-sidebar-thread-row aria-current="page" data-app-action-sidebar-thread-active="true" data-app-action-sidebar-thread-selected="true" data-app-action-sidebar-thread-id="client-new-thread:placeholder"></div></aside>
-<div id="cached-page" data-app-shell-page-surface hidden><div data-app-shell-main-content-layout="thread-edge-scroll"><div data-codex-composer-root><div role="textbox"></div></div></div></div>
-${fixture.slice(fixture.indexOf("<script>"))}`;
 const task = {
   schemaVersion: 3,
   kind: "task",
@@ -107,9 +87,61 @@ const heartbeat = {
   findings: [{ severity: "error", message: "缺少巡检证据" }],
 };
 
-test("ordinary chat task panel browser flows", async (t) => {
+test("native task panel component flows", async (t) => {
   const result = await build({
-    entryPoints: ["packages/codex-adapter/src/browser-entry.ts"],
+    stdin: {
+      resolveDir: new URL(".", import.meta.url).pathname,
+      sourcefile: "task-panel-native-test-entry.ts",
+      loader: "ts",
+      contents: `import { registerTaskProgressElement } from "../packages/renderer/src/task-progress-element.ts";
+const elementName = registerTaskProgressElement(window);
+const element = document.createElement(elementName);
+element.locale = navigator.language || "en";
+element.threadId = window.fixture.threadId;
+element.requester = (request) => window.__codexTaskProgressRequest(request);
+document.querySelector("#native-panel-shell").append(element);
+let requestSequence = 0;
+let lastError = null;
+window.__CODEX_TASK_PROGRESS__ = {
+  async refresh() {
+    const requestId = ++requestSequence;
+    const threadId = window.fixture.threadId || null;
+    if (element.threadId !== threadId) element.resetThread(threadId);
+    if (window.fixture.disabled) { element.hidden = true; return; }
+    element.hidden = false;
+    try {
+      const response = await window.__codexTaskProgressRequest({ method: "get", threadId });
+      if (requestId !== requestSequence || element.threadId !== threadId) return;
+      element.data = response;
+      element.observed = true;
+      element.connectionError = null;
+      lastError = null;
+    } catch (error) {
+      if (requestId !== requestSequence || element.threadId !== threadId) return;
+      element.connectionError = String(error);
+      element.observed = true;
+      lastError = "TASK_PROGRESS_ERROR";
+    }
+    await element.updateComplete;
+  },
+  diagnostics() {
+    return {
+      status: element.connectionError ? "error" : element.threadId ? "connected" : "waiting",
+      threadId: element.threadId,
+      lastError,
+      revision: element.data.task?.revision ?? null,
+      lastRefreshAt: null,
+      textboxCount: document.querySelectorAll('[data-codex-composer-root] [role="textbox"]:not([hidden])').length,
+      composerCount: document.querySelectorAll("[data-codex-composer-root]").length,
+      rejectionReason: null,
+      visible: !element.hidden,
+      elementName,
+    };
+  },
+  destroy() { element.remove(); },
+};
+void window.__CODEX_TASK_PROGRESS__.refresh();`,
+    },
     bundle: true,
     write: false,
     format: "iife",
@@ -122,9 +154,7 @@ test("ordinary chat task panel browser flows", async (t) => {
       "Content-Type",
       req.url === "/bundle.js" ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8",
     );
-    res.end(
-      req.url === "/bundle.js" ? bundle : req.url?.startsWith("/empty") ? emptyFixture : fixture,
-    );
+    res.end(req.url === "/bundle.js" ? bundle : fixture);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -154,172 +184,6 @@ test("ordinary chat task panel browser flows", async (t) => {
   };
   try {
     await t.test(
-      "health reports only the owned ordinary task panel without a native Goal",
-      async () => {
-        const { context, page } = await open();
-        try {
-          await page.evaluate(async (value) => {
-            window.fixture.task = value;
-            await window.__CODEX_TASK_PROGRESS__.refresh();
-          }, task);
-          assert.equal(
-            await page.locator('[role="textbox"]').getAttribute("data-codex-composer"),
-            null,
-            "the current Codex textbox no longer needs the legacy marker",
-          );
-          const health = await page.evaluate(() => window.__CODEX_GOAL_PROGRESS__.health());
-          assert.equal(health.reason, "not-configured");
-          assert.equal(health.hostCount, 0);
-          assert.equal(health.taskPanel.status, "connected");
-          assert.equal(health.taskPanel.threadId, "thread-a");
-          assert.equal(health.taskPanel.threadMatched, true);
-          assert.equal(health.taskPanel.revision, 1);
-          assert.equal(health.taskPanel.connected, true);
-          assert.equal(health.taskPanel.visible, true);
-          assert.equal(health.taskPanel.count, 1);
-          assert.ok(health.taskPanel.bounds.width > 0 && health.taskPanel.bounds.height > 0);
-          await page.evaluate(async () => {
-            window.fixture.getFailureNext = "GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED";
-            await window.__CODEX_TASK_PROGRESS__.refresh();
-          });
-          const failed = await page.evaluate(
-            () => window.__CODEX_GOAL_PROGRESS__.health().taskPanel,
-          );
-          assert.equal(failed.status, "error");
-          assert.equal(failed.lastError, "GOAL_PROGRESS_CDP_PROCESS_LOOKUP_FAILED");
-          const switched = await page.evaluate(() => {
-            document
-              .querySelector("[data-app-action-sidebar-thread-id]")
-              .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
-            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
-          });
-          assert.equal(switched.visible, false);
-          assert.equal(switched.threadMatched, false);
-          assert.equal(switched.bounds, null);
-          await page.waitForFunction(
-            () =>
-              window.__CODEX_TASK_PROGRESS__.diagnostics().lastError ===
-              "TASK_RESPONSE_THREAD_MISMATCH",
-          );
-          await page.evaluate(() =>
-            document
-              .querySelector("[data-app-action-sidebar-thread-id]")
-              .setAttribute("data-app-action-sidebar-thread-id", "thread-a"),
-          );
-          const hidden = await page.evaluate(() => {
-            document.querySelector("[data-codex-task-panel]").style.display = "none";
-            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
-          });
-          assert.equal(hidden.visible, false);
-          assert.equal(hidden.bounds, null);
-          const destroyed = await page.evaluate(() => {
-            window.__CODEX_TASK_PROGRESS__.destroy();
-            return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
-          });
-          assert.equal(destroyed.connected, false);
-          assert.equal(destroyed.visible, false);
-          assert.equal(destroyed.count, 0);
-        } finally {
-          await context.close();
-        }
-      },
-    );
-    await t.test(
-      "current composer shape scopes textbox proof and preserves legacy marker support",
-      async () => {
-        const { context, page, panel } = await open();
-        try {
-          await page.evaluate((value) => {
-            window.fixture.task = value;
-            const outside = document.createElement("div");
-            outside.setAttribute("role", "textbox");
-            document.body.append(outside);
-            const hidden = document.createElement("div");
-            hidden.setAttribute("role", "textbox");
-            hidden.hidden = true;
-            document.querySelector("[data-codex-composer-root]").append(hidden);
-            return window.__CODEX_TASK_PROGRESS__.refresh();
-          }, task);
-          await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
-          let state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-          assert.equal(state.textboxCount, 1);
-          assert.equal(state.rejectionReason, null);
-          assert.equal(state.threadId, "thread-a");
-          assert.equal(state.visible, true);
-
-          await page
-            .locator('[data-codex-composer-root] [role="textbox"]:visible')
-            .evaluate((node) => {
-              node.setAttribute("data-codex-composer", "");
-            });
-          await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-          state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-          assert.equal(state.textboxCount, 1);
-          assert.equal(state.rejectionReason, null);
-          assert.equal(state.visible, true);
-        } finally {
-          await context.close();
-        }
-      },
-    );
-    await t.test("ambiguous visible textboxes and competing surfaces fail closed", async () => {
-      const { context, page } = await open();
-      try {
-        const ambiguousTextbox = await page.evaluate(() => {
-          const second = document.createElement("div");
-          second.setAttribute("role", "textbox");
-          document.querySelector("[data-codex-composer-root]").append(second);
-          return window.__CODEX_TASK_PROGRESS__.diagnostics();
-        });
-        assert.equal(ambiguousTextbox.textboxCount, 2);
-        assert.equal(ambiguousTextbox.rejectionReason, "composer-textbox-ambiguous");
-        assert.equal(ambiguousTextbox.visible, false);
-
-        await page
-          .locator("[data-codex-composer-root] [role=textbox]")
-          .nth(1)
-          .evaluate((node) => node.remove());
-        const ambiguousSurface = await page.evaluate(() => {
-          const surface = document.createElement("main");
-          surface.setAttribute("data-app-shell-page-surface", "");
-          surface.innerHTML = '<div data-codex-composer-root><div role="textbox"></div></div>';
-          document.body.append(surface);
-          return window.__CODEX_TASK_PROGRESS__.diagnostics();
-        });
-        assert.equal(ambiguousSurface.rejectionReason, "composer-root-ambiguous");
-        assert.equal(ambiguousSurface.visible, false);
-      } finally {
-        await context.close();
-      }
-    });
-    await t.test("waiting diagnostics show proof counts and sanitize errors", async () => {
-      const { context, page } = await open();
-      try {
-        await page.evaluate(async () => {
-          window.fixture.getFailureNext = "private message containing a path /tmp/secret";
-          await window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        const error = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-        assert.equal(error.status, "error");
-        assert.equal(error.lastError, "TASK_PROGRESS_ERROR");
-        const waiting = await page.evaluate(async () => {
-          document.querySelector("[data-app-action-sidebar-thread-row]").remove();
-          await window.__CODEX_TASK_PROGRESS__.refresh();
-          return window.__CODEX_GOAL_PROGRESS__.health().taskPanel;
-        });
-        assert.equal(waiting.status, "waiting");
-        assert.equal(waiting.threadId, null);
-        assert.equal(waiting.visible, false);
-        assert.equal(waiting.composerCount, 1);
-        assert.equal(waiting.textboxCount, 1);
-        assert.equal(waiting.threadCandidateCount, 0);
-        assert.equal(waiting.rejectionReason, null);
-        assert.equal(waiting.threadRejectionReason, "visible-thread-marker-missing");
-      } finally {
-        await context.close();
-      }
-    });
-    await t.test(
       "disabled project hides panel without stale data; omitted legacy flag stays enabled",
       async () => {
         const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
@@ -345,671 +209,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         const legacy = await open();
         assert.equal(await legacy.panel.isVisible(), true);
         await legacy.context.close();
-      },
-    );
-    await t.test(
-      "new chat content dock remains below titlebar and ignores hidden cached layouts",
-      async () => {
-        const { context, page, panel } = await open("/empty");
-        const [toolbarBox, layoutBox, composerBox, panelBox, contentBox] = await Promise.all([
-          page.locator("#toolbar").boundingBox(),
-          page.locator("#layout").boundingBox(),
-          page.locator("#composer").boundingBox(),
-          panel.boundingBox(),
-          page.locator("#content").boundingBox(),
-        ]);
-        assert.equal((await page.locator("#appframe").boundingBox()).y, 0);
-        assert.equal(layoutBox.y, toolbarBox.y + toolbarBox.height);
-        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(panelBox.y >= toolbarBox.y + toolbarBox.height);
-        assert.ok(
-          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
-        );
-        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
-        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
-        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
-        assert.equal(
-          await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
-          "",
-        );
-        assert.equal(
-          await page.locator("#cached-page").evaluate((node) => node.style.paddingTop),
-          "",
-        );
-        assert.equal(
-          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
-          null,
-        );
-        assert.equal(await page.evaluate(() => window.fixture.calls.length), 0);
-        await page.evaluate(() => {
-          document.querySelector("#active-thread").remove();
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        assert.ok(Math.abs((await panel.boundingBox()).y - layoutBox.y - 8) < 1);
-        assert.equal(
-          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
-          null,
-        );
-        await context.close();
-      },
-    );
-    await t.test(
-      "new chat transition stays centered and fixed when a legacy floating preference exists",
-      async () => {
-        const { context, page, panel } = await open("/empty");
-        await page.evaluate(() => localStorage.setItem("codex-task-progress:floating", "true"));
-        await page.reload();
-        await panel.locator(".summary .main").waitFor();
-        assert.equal(
-          await panel.getAttribute("floating"),
-          null,
-          "legacy floating preference is ignored",
-        );
-        const initialTop = (await panel.boundingBox()).y;
-        await page.evaluate((value) => {
-          window.fixture.task = {
-            ...value,
-            objectives: Array.from({ length: 28 }, (_, index) => ({
-              id: `fixed-${index + 1}`,
-              title: `固定项目 ${index + 1}`,
-              required: true,
-              status: "active",
-              evidence: [],
-              items: [
-                {
-                  id: `item-${index + 1}`,
-                  title: `纵向内容 ${index + 1}`,
-                  status: "active",
-                  evidence: [],
-                },
-              ],
-            })),
-          };
-          document
-            .querySelector("#layout")
-            .setAttribute("data-app-shell-main-content-layout", "thread-edge-scroll");
-          document
-            .querySelector("#active-thread")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
-        }, task);
-        await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
-        assert.ok(Math.abs((await panel.boundingBox()).y - initialTop) < 1);
-        assert.equal(
-          (await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics())).threadId,
-          "thread-a",
-        );
-        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
-        assert.equal(
-          await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
-          "",
-        );
-        await page.setViewportSize({ width: 420, height: 640 });
-        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-        await panel.locator(".summary .main").click();
-        await panel.locator(".body").waitFor({ state: "visible" });
-        const [panelBox, composerBox, layoutBox] = await Promise.all([
-          panel.boundingBox(),
-          page.locator("#composer").boundingBox(),
-          page.locator("#layout").boundingBox(),
-        ]);
-        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(
-          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
-        );
-        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
-        assert.equal(await panel.getAttribute("floating"), null);
-        assert.equal(await panel.getByRole("button", { name: /浮动面板|固定面板/ }).count(), 0);
-        assert.equal(await panel.locator(".grip").count(), 0, "fixed panel has no drag affordance");
-        const scroll = panel.locator(".scroll");
-        const beforeWheel = await panel.boundingBox();
-        await scroll.dispatchEvent("wheel", { deltaX: 240, deltaY: 0 });
-        assert.equal(await scroll.evaluate((element) => element.scrollLeft), 0);
-        assert.equal(
-          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-          true,
-        );
-        assert.equal(await page.evaluate(() => window.scrollX), 0);
-        assert.ok(Math.abs((await panel.boundingBox()).x - beforeWheel.x) < 1);
-        await scroll.evaluate((element) => {
-          element.scrollTop = element.scrollHeight;
-        });
-        assert.ok(
-          await scroll.evaluate((element) => element.scrollTop > 0),
-          "vertical scrolling reaches the end of the checklist",
-        );
-        const [lastRow, scrollBox] = await Promise.all([
-          scroll.locator(".row").last().boundingBox(),
-          scroll.boundingBox(),
-        ]);
-        assert.ok(
-          lastRow &&
-            scrollBox &&
-            lastRow.y >= scrollBox.y &&
-            lastRow.y + lastRow.height <= scrollBox.y + scrollBox.height,
-        );
-        assert.ok(
-          Number.parseFloat(
-            await page.locator("#layout").evaluate((node) => node.style.paddingTop),
-          ) > 0,
-        );
-        await context.close();
-      },
-    );
-    await t.test(
-      "verified main-surface fallback never reserves outer app frame or toolbar",
-      async () => {
-        const { context, page, panel } = await open("/empty");
-        await page.evaluate(() => {
-          document.querySelector("#layout").removeAttribute("data-app-shell-main-content-layout");
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        const [panelBox, regionBox, toolbarBox] = await Promise.all([
-          panel.boundingBox(),
-          page.locator("#main-region").boundingBox(),
-          page.locator("#toolbar").boundingBox(),
-        ]);
-        assert.ok(Math.abs(panelBox.y - regionBox.y - 8) < 1);
-        assert.ok(panelBox.y >= toolbarBox.y + toolbarBox.height);
-        assert.equal(await page.locator("#layout").evaluate((node) => node.style.paddingTop), "");
-        assert.ok(
-          Number.parseFloat(
-            await page.locator("#main-region").evaluate((node) => node.style.paddingTop),
-          ) > 0,
-        );
-        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
-        assert.equal(
-          await page.locator("#outer-generic-main").evaluate((node) => node.style.paddingTop),
-          "",
-        );
-        await context.close();
-      },
-    );
-    await t.test(
-      "zoomed content ancestors reserve physical panel height without changing frame",
-      async () => {
-        const { context, page, panel } = await open("/empty");
-        await page.evaluate(() => {
-          document.querySelector("#main-region").style.zoom = "0.8";
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        const [panelBox, composerBox, layoutBox, contentBox] = await Promise.all([
-          panel.boundingBox(),
-          page.locator("#composer").boundingBox(),
-          page.locator("#layout").boundingBox(),
-          page.locator("#content").boundingBox(),
-        ]);
-        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(
-          Math.abs(panelBox.x + panelBox.width / 2 - composerBox.x - composerBox.width / 2) < 1,
-        );
-        assert.ok(Math.abs(panelBox.width - Math.min(464, composerBox.width)) < 1);
-        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
-        assert.equal(await page.locator("#appframe").evaluate((node) => node.style.paddingTop), "");
-        await context.close();
-      },
-    );
-    await t.test(
-      "first task read stays unknown until a response confirms an empty checklist",
-      async () => {
-        const { context, panel } = await open("?initialDelay=800");
-        const header = panel.locator(".summary");
-        assert.match(await header.innerText(), /正在读取清单/);
-        assert.doesNotMatch(await header.innerText(), /0\/0|尚未建立任务/);
-        assert.equal(await header.locator(".percent").textContent(), "");
-        assert.match(await header.locator(".main").getAttribute("aria-label"), /正在读取清单/);
-        await header.getByText(/尚未建立任务/).waitFor();
-        assert.match(await header.innerText(), /已登记清单 0\/0/);
-        assert.equal(await header.locator(".percent").textContent(), "");
-        assert.match(await header.locator(".main").getAttribute("aria-label"), /已登记清单 0\/0/);
-        await context.close();
-      },
-    );
-    await t.test(
-      "page host automatically recovers after initial and later transient get failures",
-      async () => {
-        const { context, page, panel } = await open(
-          "?initialGetFailure=temporary%20initial%20bridge%20failure",
-        );
-        const summary = panel.locator(".summary");
-        await summary.getByText(/清单暂不可用/).waitFor();
-        assert.match(await summary.innerText(), /清单暂不可用/);
-        assert.equal(await summary.locator(".percent").textContent(), "");
-        assert.match(await summary.locator(".main").getAttribute("aria-label"), /清单暂不可用/);
-        await page.evaluate((value) => {
-          window.fixture.task = value;
-        }, task);
-        await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
-        await page.waitForFunction(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-        );
-        assert.doesNotMatch(await summary.innerText(), /清单暂不可用/);
-        assert.equal(await summary.locator(".percent").textContent(), "50%");
-        assert.match(await summary.locator(".main").getAttribute("aria-label"), /清单进度 50%/);
-
-        await page.evaluate(() => {
-          window.fixture.getFailureNext = "later poll failure";
-        });
-        await summary.getByText(/清单暂不可用/).waitFor();
-        assert.match(await summary.innerText(), /实现普通任务面板/);
-        assert.match(await summary.innerText(), /清单暂不可用/);
-        assert.equal(await summary.locator(".percent").textContent(), "");
-        assert.match(await summary.locator(".main").getAttribute("aria-label"), /清单暂不可用/);
-        await summary.getByText(/实现普通任务面板/).waitFor();
-        await page.waitForFunction(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-        );
-        assert.doesNotMatch(await summary.innerText(), /清单暂不可用/);
-        assert.match(await summary.innerText(), /实现普通任务面板/);
-        assert.ok(
-          (await page.evaluate(
-            () => window.fixture.calls.filter((call) => call.method === "get").length,
-          )) >= 4,
-        );
-        await context.close();
-      },
-    );
-    await t.test(
-      "late failed get from a previous thread cannot poison the selected thread",
-      async () => {
-        const { context, page, panel } = await open();
-        await page.waitForFunction(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-        );
-        await page.evaluate(() => {
-          window.fixture.getFailureNext = "late thread-a get failure";
-          window.fixture.holdNextGetFailure = true;
-          void window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await page.waitForFunction(
-          () => typeof window.fixture.releaseHeldGetFailure === "function",
-        );
-        const heldGetCount = await page.evaluate(
-          () => window.fixture.calls.filter((call) => call.method === "get").length,
-        );
-        await page.evaluate(() => void window.__CODEX_TASK_PROGRESS__.refresh());
-        assert.equal(
-          await page.evaluate(
-            () => window.fixture.calls.filter((call) => call.method === "get").length,
-          ),
-          heldGetCount,
-          "an in-flight get is not overlapped by a second refresh",
-        );
-        await page.evaluate(() => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
-          window.fixture.task = null;
-        });
-        await page.waitForFunction(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().threadId === "thread-b",
-        );
-        await page.evaluate(() => window.fixture.releaseHeldGetFailure());
-        await page.waitForFunction(() => window.fixture.getFailureThrownCount === 1);
-        await page.evaluate(
-          () =>
-            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-        );
-        const state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-        assert.equal(state.threadId, "thread-b");
-        assert.notEqual(state.status, "error");
-        assert.equal(state.lastError, null);
-        assert.equal(await panel.evaluate((element) => element.connectionError), null);
-        await page.waitForFunction(
-          () =>
-            window.__CODEX_TASK_PROGRESS__.diagnostics().threadId === "thread-b" &&
-            window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-        );
-        assert.equal(await panel.evaluate((element) => element.connectionError), null);
-        await context.close();
-      },
-    );
-    await t.test(
-      "generation-aware refresh renders B before held A and ignores A after an A to B to A switch",
-      async () => {
-        const { context, page, panel } = await open();
-        try {
-          await page.waitForFunction(
-            () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-            null,
-            { timeout: 6000 },
-          );
-          const initialACount = await page.evaluate(
-            () =>
-              window.fixture.calls.filter(
-                (call) => call.method === "get" && call.threadId === "thread-a",
-              ).length,
-          );
-          const oldA = { ...task, title: "旧 A 延迟任务", revision: 11 };
-          const taskB = { ...task, threadId: "thread-b", title: "B 当前任务", revision: 20 };
-          const latestA = { ...task, title: "最新 A 任务", revision: 21 };
-          await page.evaluate((value) => {
-            window.fixture.task = value;
-            window.fixture.holdNextGetSuccess = true;
-            void window.__CODEX_TASK_PROGRESS__.refresh();
-          }, oldA);
-          await page.waitForFunction(
-            () => typeof window.fixture.releaseHeldGetSuccess === "function",
-            null,
-            { timeout: 6000 },
-          );
-          const heldA = await page.evaluate(() =>
-            window.fixture.fixtureEvents
-              .filter(
-                (event) =>
-                  event.type === "request" &&
-                  event.method === "get" &&
-                  event.threadId === "thread-a",
-              )
-              .at(-1),
-          );
-
-          const switchAt = await page.evaluate((value) => {
-            document
-              .querySelector("[data-app-action-sidebar-thread-id]")
-              .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
-            window.fixture.task = value;
-            return performance.now();
-          }, taskB);
-          await page.waitForFunction(
-            () =>
-              window.fixture.calls.filter(
-                (call) => call.method === "get" && call.threadId === "thread-b",
-              ).length === 1,
-            null,
-            { timeout: 6000 },
-          );
-          await panel.getByRole("button", { name: /B 当前任务/ }).waitFor({ timeout: 6000 });
-          const bRenderedAt = await page.evaluate(() => performance.now());
-          assert.ok(bRenderedAt - switchAt < 6000, "B is rendered promptly from its own request");
-          assert.equal(
-            await page.evaluate(() => typeof window.fixture.releaseHeldGetSuccess),
-            "function",
-            "A remains held while B is visible",
-          );
-          assert.equal(
-            await page.evaluate(
-              (id) =>
-                window.fixture.fixtureEvents.some(
-                  (event) => event.type === "response" && event.id === id,
-                ),
-              heldA.id,
-            ),
-            false,
-          );
-
-          const backToAAt = await page.evaluate((value) => {
-            document
-              .querySelector("[data-app-action-sidebar-thread-id]")
-              .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
-            window.fixture.task = value;
-            return performance.now();
-          }, latestA);
-          await page.waitForFunction(
-            (minimum) =>
-              window.fixture.calls.filter(
-                (call) => call.method === "get" && call.threadId === "thread-a",
-              ).length >= minimum,
-            initialACount + 2,
-            { timeout: 6000 },
-          );
-          await panel.getByRole("button", { name: /最新 A 任务/ }).waitFor({ timeout: 6000 });
-          const latestARenderedAt = await page.evaluate(() => performance.now());
-          assert.ok(latestARenderedAt >= backToAAt);
-          await page.evaluate(() => window.fixture.releaseHeldGetSuccess());
-          await page.waitForFunction(
-            (id) =>
-              window.fixture.fixtureEvents.some(
-                (event) => event.type === "response" && event.id === id,
-              ),
-            heldA.id,
-            { timeout: 6000 },
-          );
-          await page.evaluate(
-            () =>
-              new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-          );
-          assert.match(await panel.locator("section.panel").innerText(), /最新 A 任务/);
-          assert.doesNotMatch(
-            await panel.locator("section.panel").innerText(),
-            /旧 A 延迟任务|B 当前任务/,
-          );
-          const afterLateRelease = await page.evaluate(() =>
-            window.__CODEX_TASK_PROGRESS__.diagnostics(),
-          );
-          assert.equal(afterLateRelease.threadId, "thread-a");
-          assert.equal(afterLateRelease.lastError, null);
-          assert.equal(afterLateRelease.revision, 21);
-          assert.equal(afterLateRelease.status, "connected");
-          assert.equal(await panel.evaluate((element) => element.connectionError), null);
-
-          const requests = await page.evaluate(() =>
-            window.fixture.calls
-              .filter((call) => call.method === "get")
-              .map((call) => call.threadId),
-          );
-          assert.deepEqual(requests.slice(initialACount, initialACount + 3), [
-            "thread-a",
-            "thread-b",
-            "thread-a",
-          ]);
-          const fixtureTrace = await page.evaluate(
-            ({ switchAt, bRenderedAt, backToAAt, latestARenderedAt }) => ({
-              fixtureOnly: true,
-              note: "Browser fixture request and DOM paint timing; not a measurement of app-server or production app speed.",
-              switchAt,
-              bRenderedAt,
-              backToAAt,
-              latestARenderedAt,
-              events: window.fixture.fixtureEvents,
-            }),
-            { switchAt, bRenderedAt, backToAAt, latestARenderedAt },
-          );
-          await mkdir(".playwright-img", { recursive: true });
-          await writeFile(
-            ".playwright-img/chat-switch-performance.json",
-            `${JSON.stringify(fixtureTrace, null, 2)}\n`,
-          );
-        } finally {
-          await context.close();
-        }
-      },
-    );
-    await t.test("held A get errors cannot update B diagnostics after B has rendered", async () => {
-      const { context, page, panel } = await open();
-      try {
-        await page.waitForFunction(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-          null,
-          { timeout: 6000 },
-        );
-        const errorCountBefore = await page.evaluate(() => window.fixture.getFailureThrownCount);
-        const taskB = {
-          ...task,
-          threadId: "thread-b",
-          title: "B survives old error",
-          revision: 30,
-        };
-        await page.evaluate(() => {
-          window.fixture.getFailureNext = "late A bridge error";
-          window.fixture.holdNextGetFailure = true;
-          void window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await page.waitForFunction(
-          () => typeof window.fixture.releaseHeldGetFailure === "function",
-          null,
-          { timeout: 6000 },
-        );
-        const heldA = await page.evaluate(() =>
-          window.fixture.fixtureEvents
-            .filter(
-              (event) =>
-                event.type === "request" && event.method === "get" && event.threadId === "thread-a",
-            )
-            .at(-1),
-        );
-        await page.evaluate((value) => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-id]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
-          window.fixture.task = value;
-        }, taskB);
-        await page.waitForFunction(
-          () =>
-            window.fixture.calls.filter(
-              (call) => call.method === "get" && call.threadId === "thread-b",
-            ).length === 1,
-          null,
-          { timeout: 6000 },
-        );
-        await panel
-          .getByRole("button", { name: /B survives old error/ })
-          .waitFor({ timeout: 6000 });
-        assert.equal(
-          await page.evaluate(() => typeof window.fixture.releaseHeldGetFailure),
-          "function",
-        );
-        assert.equal(
-          await page.evaluate(
-            (id) =>
-              window.fixture.fixtureEvents.some(
-                (event) => event.type === "response" && event.id === id,
-              ),
-            heldA.id,
-          ),
-          false,
-        );
-        await page.evaluate(() => window.fixture.releaseHeldGetFailure());
-        await page.waitForFunction(
-          (id) =>
-            window.fixture.fixtureEvents.some(
-              (event) => event.type === "response" && event.id === id && event.outcome === "error",
-            ),
-          heldA.id,
-          { timeout: 6000 },
-        );
-        await page.waitForFunction(
-          (count) => window.fixture.getFailureThrownCount === count + 1,
-          errorCountBefore,
-          { timeout: 6000 },
-        );
-        await page.evaluate(
-          () =>
-            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-        );
-        const diagnostics = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-        assert.equal(diagnostics.threadId, "thread-b");
-        assert.equal(diagnostics.status, "connected");
-        assert.equal(diagnostics.lastError, null);
-        assert.equal(await panel.evaluate((element) => element.connectionError), null);
-        assert.match(await panel.locator("section.panel").innerText(), /B survives old error/);
-        assert.doesNotMatch(
-          await panel.locator("section.panel").innerText(),
-          /late A bridge error/,
-        );
-      } finally {
-        await context.close();
-      }
-    });
-    await t.test(
-      "same-generation DOM refreshes coalesce and destroy fences a held response",
-      async () => {
-        const { context, page, panel } = await open();
-        try {
-          await page.waitForFunction(
-            () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
-            null,
-            { timeout: 6000 },
-          );
-          await page.evaluate((value) => {
-            window.fixture.task = value;
-            return window.__CODEX_TASK_PROGRESS__.refresh();
-          }, task);
-          await page.waitForFunction(
-            () =>
-              document.querySelector("codex-task-panel")?.data?.task?.title === "实现普通任务面板",
-            null,
-            { timeout: 6000 },
-          );
-          const beforeCount = await page.evaluate(
-            () =>
-              window.fixture.calls.filter(
-                (call) => call.method === "get" && call.threadId === "thread-a",
-              ).length,
-          );
-          await page.evaluate(() => {
-            window.fixture.holdNextGetSuccess = true;
-            void window.__CODEX_TASK_PROGRESS__.refresh();
-          });
-          await page.waitForFunction(
-            () => typeof window.fixture.releaseHeldGetSuccess === "function",
-            null,
-            { timeout: 6000 },
-          );
-          await page.evaluate(() => {
-            for (let index = 0; index < 25; index++) {
-              const message = document.querySelector("#messages");
-              message.textContent = `same-thread-dom-mutation-${index}`;
-              message.setAttribute("data-fixture-refresh", String(index));
-            }
-          });
-          await page.waitForTimeout(300);
-          const duringPending = await page.evaluate(
-            () =>
-              window.fixture.calls.filter(
-                (call) => call.method === "get" && call.threadId === "thread-a",
-              ).length,
-          );
-          assert.equal(
-            duringPending,
-            beforeCount + 1,
-            "many same-generation DOM refreshes share the pending get",
-          );
-
-          const heldId = await page.evaluate(
-            () =>
-              window.fixture.fixtureEvents
-                .filter(
-                  (event) =>
-                    event.type === "request" &&
-                    event.method === "get" &&
-                    event.threadId === "thread-a",
-                )
-                .at(-1).id,
-          );
-          const beforeDestroy = await page.evaluate(() => {
-            window.fixture.panelBeforeDestroy = document.querySelector("codex-task-panel");
-            window.fixture.dataBeforeDestroy = window.fixture.panelBeforeDestroy.data;
-            window.fixture.diagnosticsBeforeDestroy = window.__CODEX_TASK_PROGRESS__.diagnostics();
-            window.__CODEX_TASK_PROGRESS__.destroy();
-            return window.fixture.diagnosticsBeforeDestroy;
-          });
-          assert.equal(await panel.count(), 0);
-          await page.evaluate(() => window.fixture.releaseHeldGetSuccess());
-          await page.waitForFunction(
-            (id) =>
-              window.fixture.fixtureEvents.some(
-                (event) => event.type === "response" && event.id === id,
-              ),
-            heldId,
-            { timeout: 6000 },
-          );
-          const afterDestroy = await page.evaluate(() => ({
-            dataUnchanged:
-              window.fixture.panelBeforeDestroy.data === window.fixture.dataBeforeDestroy,
-            connectionError: window.fixture.panelBeforeDestroy.connectionError,
-            diagnostics: window.__CODEX_TASK_PROGRESS__.diagnostics(),
-          }));
-          assert.equal(afterDestroy.dataUnchanged, true);
-          assert.equal(afterDestroy.connectionError, null);
-          for (const key of ["threadId", "status", "lastError", "revision", "lastRefreshAt"])
-            assert.equal(
-              afterDestroy.diagnostics[key],
-              beforeDestroy[key],
-              `destroyed host diagnostics.${key} remain unchanged`,
-            );
-        } finally {
-          await context.close();
-        }
       },
     );
     await t.test(
@@ -1682,9 +881,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           };
           await page.evaluate(
             ({ value, bHistory }) => {
-              document
-                .querySelector("[data-app-action-sidebar-thread-id]")
-                .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+              window.fixture.threadId = "thread-b";
               window.fixture.task = { ...value, threadId: "thread-b", title: "B same project" };
               window.fixture.heartbeatHistory = bHistory;
             },
@@ -1756,31 +953,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         } finally {
           await context.close();
         }
-      },
-    );
-    await t.test(
-      "empty chat reserves top space and hides heartbeat; identity confirmed",
-      async () => {
-        const { context, page, panel } = await open();
-        assert.match(await panel.locator("section.panel").innerText(), /尚未建立任务/);
-        assert.equal(await panel.getByRole("progressbar").count(), 0);
-        await panel.getByRole("button", { name: /任务进度/ }).click();
-        assert.equal(await panel.getByRole("heading", { name: "心跳", exact: true }).count(), 0);
-        const state = await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.diagnostics());
-        assert.equal(state.threadId, "thread-a");
-        assert.equal(state.status, "connected");
-        const [panelBox, composerBox] = await Promise.all([
-          panel.boundingBox(),
-          page.locator("#composer").boundingBox(),
-        ]);
-        assert.ok(panelBox.y + panelBox.height <= composerBox.y);
-        const [layoutBox, contentBox] = await Promise.all([
-          page.locator("#layout").boundingBox(),
-          page.locator("#content").boundingBox(),
-        ]);
-        assert.ok(Math.abs(panelBox.y - layoutBox.y - 8) < 1);
-        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
-        await context.close();
       },
     );
     await t.test(
@@ -1939,7 +1111,6 @@ test("ordinary chat task panel browser flows", async (t) => {
           await summary.innerText(),
           /I9: missing linked item|very-long-unbroken/,
         );
-        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
 
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
@@ -1967,7 +1138,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           .filter({ hasText: "来源错误详情" });
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.ok((await scroll.locator(".path-value").textContent()).includes(longPath));
-        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
+        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
         assert.ok(
           (await scroll.boundingBox()).height < (await panel.locator(".body").boundingBox()).height,
         );
@@ -2011,7 +1182,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         );
         await panel.getByRole("button", { name: "心跳", exact: true }).click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "false");
-        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
         assert.equal(await liveStatus.count(), 1);
         assert.equal(await liveStatus.textContent(), "清单暂不可用");
         assert.doesNotMatch(await liveStatus.textContent(), /I9: missing linked item/);
@@ -2042,7 +1212,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           .locator("details.diagnostic")
           .filter({ hasText: "项目心跳错误" });
         assert.equal(await projectDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
+        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
 
         for (const [status, expected] of [
           ["error", /心跳任务来源暂不可用/],
@@ -2070,192 +1240,173 @@ test("ordinary chat task panel browser flows", async (t) => {
           .locator("details.diagnostic")
           .filter({ hasText: "台账历史不可用" });
         assert.equal(await historyDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.locator(".body").boundingBox()).height < 500);
+        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
 
-        await panel.getByRole("button", { name: "历史", exact: true }).click();
-        await panel.locator(".body").waitFor({ state: "hidden" });
-        assert.equal(await panel.locator(".body").isVisible(), false);
-        assert.ok((await panel.locator("section.panel").boundingBox()).height < 90);
+        await panel.getByRole("button", { name: "心跳", exact: true }).click();
+        assert.equal(await panel.locator(".body").isVisible(), true);
+        assert.match(await panel.locator(".panel-title").innerText(), /项目心跳/);
         await context.close();
       },
     );
-    await t.test(
-      "capsule hierarchy, independent circles, lazy history and keyboard dismissal",
-      async () => {
-        const { context, page, panel } = await open();
+    await t.test("capsule hierarchy and tabs remain in the native panel", async () => {
+      const { context, page, panel } = await open();
+      await page.evaluate(
+        ({ task, heartbeat }) => {
+          window.fixture.task = {
+            ...task,
+            objectives: [
+              {
+                ...task.objectives[0],
+                items: [
+                  ...task.objectives[0].items,
+                  { id: "cancelled", title: "取消的节点", status: "cancelled", evidence: [] },
+                ],
+              },
+            ],
+          };
+          window.fixture.heartbeat = heartbeat;
+          window.fixture.history = {
+            events: [{ occurredAt: "2026-11-11T12:01:00Z", reason: "真实历史请求" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        },
+        { task, heartbeat },
+      );
+      const main = panel.locator(".summary .main");
+      assert.equal((await main.boundingBox()).height, 44);
+      assert.equal(
+        await panel.locator(".edge-fill").evaluate((element) => element.namespaceURI),
+        "http://www.w3.org/2000/svg",
+      );
+      for (const name of ["历史", "心跳"]) {
+        const circle = await panel.getByRole("button", { name, exact: true }).boundingBox();
+        assert.equal(circle.width, 40);
+        assert.equal(circle.height, 40);
+      }
+      assert.equal(await panel.locator(".body").isVisible(), true);
+      assert.equal(
         await page.evaluate(
-          ({ task, heartbeat }) => {
-            window.fixture.task = {
-              ...task,
-              objectives: [
-                {
-                  ...task.objectives[0],
-                  items: [
-                    ...task.objectives[0].items,
-                    { id: "cancelled", title: "取消的节点", status: "cancelled", evidence: [] },
-                  ],
-                },
-              ],
-            };
-            window.fixture.heartbeat = heartbeat;
-            window.fixture.history = {
-              events: [{ occurredAt: "2026-11-11T12:01:00Z", reason: "真实历史请求" }],
-              nextCursor: null,
-            };
-            return window.__CODEX_TASK_PROGRESS__.refresh();
-          },
-          { task, heartbeat },
-        );
-        const main = panel.locator(".summary .main");
-        assert.equal((await main.boundingBox()).height, 44);
-        assert.equal(
-          await panel.locator(".edge-fill").evaluate((element) => element.namespaceURI),
-          "http://www.w3.org/2000/svg",
-        );
-        for (const name of ["历史", "心跳"]) {
-          const circle = await panel.getByRole("button", { name, exact: true }).boundingBox();
-          assert.equal(circle.width, 40);
-          assert.equal(circle.height, 40);
-        }
-        assert.equal(await panel.locator(".body").isVisible(), false);
-        assert.equal(
-          await page.evaluate(
-            () => window.fixture.calls.filter((call) => call.method === "history").length,
-          ),
-          0,
-        );
-        const idleMainBorder = await main.evaluate(
-          (element) => getComputedStyle(element).borderColor,
-        );
-        await main.click();
-        const pointerFocus = await main.evaluate((element) => ({
-          borderColor: getComputedStyle(element).borderColor,
-          focusVisible: element.matches(":focus-visible"),
-          outlineStyle: getComputedStyle(element).outlineStyle,
-          outlineWidth: getComputedStyle(element).outlineWidth,
-        }));
-        assert.equal(
-          pointerFocus.borderColor,
-          idleMainBorder,
-          "pointer opening keeps the pill border neutral",
-        );
-        assert.equal(
-          pointerFocus.focusVisible,
-          false,
-          "pointer focus does not receive the keyboard ring",
-        );
-        assert.ok(
-          pointerFocus.outlineStyle === "none" || pointerFocus.outlineWidth === "0px",
-          "pointer focus has no visible outline",
-        );
-        const module = panel.getByRole("button", { name: /普通聊天界面/ });
-        const meter = panel.getByRole("meter");
-        assert.equal(await meter.getAttribute("aria-valuenow"), "50");
-        assert.match(await module.innerText(), /1\s*\/\s*2/);
-        await module.click();
-        assert.equal(await module.getAttribute("aria-expanded"), "true");
-        assert.equal(await panel.locator(".check").count(), 3);
-        assert.match(await panel.locator(".detail").innerText(), /浏览器实测通过/);
-        await module.press("Escape");
-        assert.equal(await module.getAttribute("aria-expanded"), "false");
-        await module.press("Escape");
-        await panel.locator(".body").waitFor({ state: "hidden" });
-        assert.equal(
-          await panel.evaluate((element) =>
-            element.shadowRoot.activeElement?.classList.contains("main"),
-          ),
-          true,
-        );
-        await panel.evaluate((element) => element.shadowRoot.activeElement?.blur());
-        await page.locator("[role=textbox]:visible").focus();
-        await page.keyboard.press("Tab");
-        assert.equal(
-          await panel.evaluate(
-            (element) =>
-              element.shadowRoot.activeElement ===
-              element.shadowRoot.querySelector(".summary .main"),
-          ),
-          true,
-          "Tab reaches the main pill before the other controls",
-        );
-        const keyboardFocus = await main.evaluate((element) => ({
-          focusVisible: element.matches(":focus-visible"),
-          outlineStyle: getComputedStyle(element).outlineStyle,
-          outlineWidth: getComputedStyle(element).outlineWidth,
-          boxShadow: getComputedStyle(element).boxShadow,
-        }));
-        assert.equal(
-          keyboardFocus.focusVisible,
-          true,
-          "keyboard navigation retains focus-visible state",
-        );
-        assert.ok(
-          (keyboardFocus.outlineStyle !== "none" && keyboardFocus.outlineWidth !== "0px") ||
-            keyboardFocus.boxShadow !== "none",
-          "keyboard focus remains visibly indicated",
-        );
-        await main.press("Enter");
-        await panel.locator(".body").waitFor({ state: "visible" });
-        assert.equal(
-          await panel.evaluate(
-            (element) =>
-              element.shadowRoot.activeElement === element.shadowRoot.querySelector(".panel-title"),
-          ),
-          true,
-          "opening the panel moves focus to its heading",
-        );
-        await panel.locator(".panel-title").press("Escape");
-        await panel.locator(".body").waitFor({ state: "hidden" });
-        assert.equal(
-          await panel.evaluate(
-            (element) =>
-              element.shadowRoot.activeElement ===
-              element.shadowRoot.querySelector(".summary .main"),
-          ),
-          true,
-          "Escape returns focus to the main pill",
-        );
-        await main.press("Enter");
-        await panel.locator(".body").waitFor({ state: "visible" });
-        await module.focus();
-        await module.press("Space");
-        assert.equal(await module.getAttribute("aria-expanded"), "true");
-        await showView(panel, "history");
-        await panel.getByText("真实历史请求", { exact: true }).waitFor();
-        assert.equal(await main.getAttribute("aria-expanded"), "false");
-        assert.equal(
-          await panel
-            .getByRole("button", { name: "历史", exact: true })
-            .getAttribute("aria-expanded"),
-          "true",
-        );
-        assert.equal(await panel.getByRole("meter").count(), 0);
-        await showView(panel, "heartbeat");
-        assert.equal(await panel.locator(".body").count(), 1);
-        assert.equal(
-          await panel
-            .getByRole("button", { name: "历史", exact: true })
-            .getAttribute("aria-expanded"),
-          "false",
-        );
-        assert.equal(
-          await panel
-            .getByRole("button", { name: "心跳", exact: true })
-            .getAttribute("aria-expanded"),
-          "true",
-        );
-        assert.equal(await panel.getByText("真实历史请求", { exact: true }).count(), 0);
-        await page.locator("#messages").click({ position: { x: 3, y: 160 } });
-        await panel.locator(".body").waitFor({ state: "hidden" });
-        assert.equal(
-          await panel.evaluate((element) =>
-            element.shadowRoot.activeElement?.classList.contains("heartbeat-trigger"),
-          ),
-          true,
-        );
-        await context.close();
-      },
-    );
+          () => window.fixture.calls.filter((call) => call.method === "history").length,
+        ),
+        0,
+      );
+      const idleMainBorder = await main.evaluate(
+        (element) => getComputedStyle(element).borderColor,
+      );
+      await main.click();
+      const pointerFocus = await main.evaluate((element) => ({
+        borderColor: getComputedStyle(element).borderColor,
+        focusVisible: element.matches(":focus-visible"),
+        outlineStyle: getComputedStyle(element).outlineStyle,
+        outlineWidth: getComputedStyle(element).outlineWidth,
+      }));
+      assert.equal(
+        pointerFocus.borderColor,
+        idleMainBorder,
+        "pointer opening keeps the pill border neutral",
+      );
+      assert.equal(
+        pointerFocus.focusVisible,
+        false,
+        "pointer focus does not receive the keyboard ring",
+      );
+      assert.ok(
+        pointerFocus.outlineStyle === "none" || pointerFocus.outlineWidth === "0px",
+        "pointer focus has no visible outline",
+      );
+      const module = panel.getByRole("button", { name: /普通聊天界面/ });
+      const meter = panel.getByRole("meter");
+      assert.equal(await meter.getAttribute("aria-valuenow"), "50");
+      assert.match(await module.innerText(), /1\s*\/\s*2/);
+      await module.click();
+      assert.equal(await module.getAttribute("aria-expanded"), "true");
+      assert.equal(await panel.locator(".check").count(), 3);
+      assert.match(await panel.locator(".detail").innerText(), /浏览器实测通过/);
+      await module.press("Escape");
+      assert.equal(await module.getAttribute("aria-expanded"), "false");
+      await module.press("Escape");
+      assert.equal(await panel.locator(".body").isVisible(), true);
+      assert.equal(
+        await panel.evaluate((element) =>
+          element.shadowRoot.activeElement?.classList.contains("main"),
+        ),
+        true,
+      );
+      await panel.evaluate((element) => element.shadowRoot.activeElement?.blur());
+      await page.locator("[role=textbox]:visible").focus();
+      await page.keyboard.press("Tab");
+      assert.equal(
+        await panel.evaluate(
+          (element) =>
+            element.shadowRoot.activeElement === element.shadowRoot.querySelector(".summary .main"),
+        ),
+        true,
+        "Tab reaches the main pill before the other controls",
+      );
+      const keyboardFocus = await main.evaluate((element) => ({
+        focusVisible: element.matches(":focus-visible"),
+        outlineStyle: getComputedStyle(element).outlineStyle,
+        outlineWidth: getComputedStyle(element).outlineWidth,
+        boxShadow: getComputedStyle(element).boxShadow,
+      }));
+      assert.equal(
+        keyboardFocus.focusVisible,
+        true,
+        "keyboard navigation retains focus-visible state",
+      );
+      assert.ok(
+        (keyboardFocus.outlineStyle !== "none" && keyboardFocus.outlineWidth !== "0px") ||
+          keyboardFocus.boxShadow !== "none",
+        "keyboard focus remains visibly indicated",
+      );
+      await main.press("Enter");
+      await panel.locator(".body").waitFor({ state: "visible" });
+      assert.equal(
+        await panel.evaluate(
+          (element) =>
+            element.shadowRoot.activeElement === element.shadowRoot.querySelector(".panel-title"),
+        ),
+        true,
+        "opening the panel moves focus to its heading",
+      );
+      await panel.locator(".panel-title").press("Escape");
+      assert.equal(await panel.locator(".body").isVisible(), true);
+      await main.press("Enter");
+      await panel.locator(".body").waitFor({ state: "visible" });
+      await module.focus();
+      await module.press("Space");
+      assert.equal(await module.getAttribute("aria-expanded"), "true");
+      await showView(panel, "history");
+      await panel.getByText("真实历史请求", { exact: true }).waitFor();
+      assert.equal(await main.getAttribute("aria-expanded"), "false");
+      assert.equal(
+        await panel
+          .getByRole("button", { name: "历史", exact: true })
+          .getAttribute("aria-expanded"),
+        "true",
+      );
+      assert.equal(await panel.getByRole("meter").count(), 0);
+      await showView(panel, "heartbeat");
+      assert.equal(await panel.locator(".body").count(), 1);
+      assert.equal(
+        await panel
+          .getByRole("button", { name: "历史", exact: true })
+          .getAttribute("aria-expanded"),
+        "false",
+      );
+      assert.equal(
+        await panel
+          .getByRole("button", { name: "心跳", exact: true })
+          .getAttribute("aria-expanded"),
+        "true",
+      );
+      assert.equal(await panel.getByText("真实历史请求", { exact: true }).count(), 0);
+      await page.locator("#messages").click({ position: { x: 3, y: 160 } });
+      assert.equal(await panel.locator(".body").isVisible(), true);
+      assert.equal(await panel.locator(".panel-title").innerText(), "项目心跳");
+      await context.close();
+    });
     await t.test(
       "long task and evidence remain bounded in narrow short windows with reduced motion",
       async () => {
@@ -2292,9 +1443,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
         assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 400);
         assert.ok(await panel.locator(".scroll").evaluate((element) => element.clientHeight > 40));
-        const close = await panel.locator(".close-panel").boundingBox();
-        assert.ok(close.x >= 0 && close.x + close.width <= 390);
-        assert.ok(close.y >= 0 && close.y + close.height <= 400);
         assert.equal(await panel.locator(".panel-title").getAttribute("title"), title);
         await page.evaluate(() => {
           document.documentElement.dir = "rtl";
@@ -2343,10 +1491,13 @@ test("ordinary chat task panel browser flows", async (t) => {
             {
               occurredAt: "2026-11-11T12:01:00Z",
               reason: "新增验证任务",
+              reasonTruncated: true,
+              canonicalHistoryPath: "/repo/.workspace/task/session/original-history.md",
               before: { completed: 1, total: 2, percent: 50 },
               after: { completed: 1, total: 3, percent: 33.33 },
             },
           ],
+          canonicalHistoryPath: "/repo/.workspace/task/session/history.md",
           nextCursor: "1",
         };
         return window.__CODEX_TASK_PROGRESS__.refresh();
@@ -2354,6 +1505,14 @@ test("ordinary chat task panel browser flows", async (t) => {
       assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "33.33");
       await panel.getByRole("button", { name: "历史", exact: true }).click();
       await panel.getByText("新增验证任务", { exact: true }).waitFor();
+      const sourceNote = panel.locator(".history-source-note");
+      await sourceNote.waitFor();
+      assert.match(await sourceNote.innerText(), /完整记录见来源文件/);
+      assert.match(await sourceNote.locator("code").innerText(), /original-history\.md$/);
+      assert.doesNotMatch(
+        await panel.locator(".scroll").innerText(),
+        /reasonTruncated|canonicalHistoryPath/,
+      );
       assert.match(
         await panel.locator("section.panel").innerText(),
         /1\/2 \(50%\) → 1\/3 \(33.33%\)/,
@@ -2367,9 +1526,7 @@ test("ordinary chat task panel browser flows", async (t) => {
       await panel.getByRole("button", { name: "加载更多" }).click();
       await panel.getByText("建立任务", { exact: true }).waitFor();
       assert.match(await panel.locator("section.panel").innerText(), /新增验证任务/);
-      const contentBox = await page.locator("#content").boundingBox();
-      const panelBox = await panel.boundingBox();
-      assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
+      assert.equal(await panel.locator(".history-source-note").count(), 1);
       await context.close();
     });
     await t.test(
@@ -2957,9 +2114,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           () => window.fixture.calls.filter((call) => call.method === "history").length === 1,
         );
         await page.evaluate(() => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.threadId = "thread-b";
           window.fixture.task = null;
           window.fixture.history = {
             events: [{ reason: "current thread-b history" }],
@@ -2999,9 +2154,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           () => typeof window.fixture.releaseHeldHistoryFailure === "function",
         );
         await page.evaluate(() => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.threadId = "thread-b";
           window.fixture.task = null;
           window.fixture.history = {
             events: [{ reason: "thread-b history" }],
@@ -3011,9 +2164,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         });
         await panel.getByText("thread-b history", { exact: true }).waitFor();
         await page.evaluate(() => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
+          window.fixture.threadId = "thread-a";
           window.fixture.history = {
             events: [{ reason: "new thread-a history" }],
             nextCursor: null,
@@ -3095,79 +2246,6 @@ test("ordinary chat task panel browser flows", async (t) => {
       assert.doesNotMatch(await header.innerText(), /已完成/);
       await context.close();
     });
-    await t.test(
-      "visible composer Stop and Send controls independently report execution",
-      async () => {
-        const { context, page, panel } = await open();
-        const runtime = panel.locator(".execution");
-        await page.evaluate((value) => {
-          window.fixture.task = {
-            ...value,
-            revision: 9,
-            progress: { completed: 2, total: 2, percent: 100 },
-          };
-          const button = document.createElement("button");
-          button.id = "runtime-control";
-          button.textContent = "Control";
-          button.setAttribute("aria-label", "Stop");
-          document.querySelector("#composer").append(button);
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        }, task);
-        assert.match(await runtime.innerText(), /当前仍在执行/);
-        assert.equal(await panel.evaluate((element) => element.data.execution.source), "codex-ui");
-        assert.equal(await panel.getByRole("progressbar").count(), 0);
-        for (const label of ["Stop generating", "停止", "停止生成"]) {
-          await page
-            .locator("#runtime-control")
-            .evaluate((button, label) => button.setAttribute("aria-label", label), label);
-          await runtime.filter({ hasText: "当前仍在执行" }).waitFor();
-        }
-        for (const label of ["Send", "Send prompt", "发送", "发送消息"]) {
-          await page
-            .locator("#runtime-control")
-            .evaluate((button, label) => button.setAttribute("aria-label", label), label);
-          await runtime.filter({ hasText: "当前空闲" }).waitFor();
-        }
-        await page
-          .locator("#runtime-control")
-          .evaluate((button) => button.setAttribute("aria-label", "Envoyer"));
-        await runtime.filter({ hasText: "执行状态未知" }).waitFor();
-        await page.locator("#runtime-control").evaluate((button) => {
-          button.style.display = "none";
-          button.setAttribute("aria-label", "Stop");
-        });
-        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-        assert.match(await runtime.innerText(), /执行状态未知/);
-        await page.evaluate(() => {
-          window.fixture.execution.state = "idle";
-          const button = document.querySelector("#runtime-control");
-          button.style.display = "";
-          button.setAttribute("aria-label", "Stop");
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        assert.match(await runtime.innerText(), /当前仍在执行/);
-        await page.evaluate(() => {
-          window.fixture.execution.state = "waiting";
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        assert.match(await runtime.innerText(), /等待输入/);
-        await page.evaluate(() => {
-          window.fixture.execution.state = "unknown";
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await page.evaluate(() => {
-          window.fixture.delay = 700;
-          void window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await page
-          .locator("#runtime-control")
-          .evaluate((button) => button.setAttribute("aria-label", "Send prompt"));
-        await runtime.filter({ hasText: "当前空闲" }).waitFor({ timeout: 600 });
-        assert.equal(await page.evaluate(() => window.fixture.task.revision), 9);
-        assert.doesNotMatch(await panel.locator(".summary").innerText(), /100%|已完成/);
-        await context.close();
-      },
-    );
     await t.test(
       "objective display status reflects children rather than stale stored status",
       async () => {
@@ -3529,19 +2607,19 @@ test("ordinary chat task panel browser flows", async (t) => {
           assert.equal(await scroll.evaluate((element) => element.scrollTop), 0);
           const bounds = await body.boundingBox();
           assert.ok(
-            bounds && Math.abs(bounds.width - 464) <= 1,
-            `expected a 464px panel, got ${bounds?.width}`,
+            bounds && Math.abs(bounds.width - (await panel.boundingBox()).width) <= 1,
+            `expected the native panel to use its available width, got ${bounds?.width}`,
           );
           assert.ok(
-            bounds.height <= 496,
-            `expected a panel no taller than 496px, got ${bounds.height}`,
+            bounds.height <= 640,
+            `expected a panel no taller than 640px, got ${bounds.height}`,
           );
           const light = await body.screenshot({
             path: ".playwright-img/heartbeat-grouped-light.png",
           });
           assert.deepEqual(
             [light.readUInt32BE(16), light.readUInt32BE(20)],
-            [928, Math.round(bounds.height * 2)],
+            [Math.round(bounds.width * 2), Math.round(bounds.height * 2)],
           );
 
           const lightBackground = await body.evaluate(
@@ -3550,7 +2628,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           const lightText = await body.evaluate((element) => getComputedStyle(element).color);
           await page.addStyleTag({
             content: `
-            html.dark { color: #eee; color-scheme: dark; --color-token-main-surface-primary: #252525; }
+            html.dark { color: #eee; color-scheme: dark; --ctp-surface: #252525; --ctp-text: #eee; }
             html.dark body { color: inherit; background: #1b1b1b; }
             html.dark #composer { color: inherit; background: #252525; border-color: #555; }
           `,
@@ -3640,8 +2718,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           await page.keyboard.press("Enter");
           assert.equal(await source.getAttribute("open"), "");
           await source.locator(":scope > summary").press("Escape");
-          await panel.locator(".body").waitFor({ state: "hidden" });
-          assert.equal(await panel.locator(".body").isVisible(), false);
+          assert.equal(await panel.locator(".body").isVisible(), true);
           assert.equal(
             await panel.evaluate(
               (element) =>
@@ -3649,7 +2726,7 @@ test("ordinary chat task panel browser flows", async (t) => {
                 element.shadowRoot.querySelector(".heartbeat-trigger"),
             ),
             true,
-            "Escape closes the panel and returns focus to the heartbeat trigger",
+            "Escape leaves the standalone panel mounted",
           );
           assert.deepEqual(pageErrors, []);
           assert.deepEqual(consoleErrors, []);
@@ -3689,7 +2766,93 @@ test("ordinary chat task panel browser flows", async (t) => {
           await panel.getByRole("heading", { name: "项目心跳", exact: true }).count(),
           1,
         );
-        assert.match(await panel.locator(".hb-status").innerText(), /未认证/);
+        assert.match(await panel.locator(".hb-status").innerText(), /当前状态未知/);
+        assert.equal(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "current-unknown",
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: false,
+            discoveryComplete: false,
+            discoveryReasons: ["depth-limit", "file-limit"],
+            warning: "Incomplete discovery (depth-limit, file-limit); best available source",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.equal(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "limited-source",
+        );
+        assert.match(await panel.locator(".hb-status").innerText(), /来源不完整/);
+        await panel.locator(".hb-alert > summary").click();
+        assert.match(
+          await panel.locator(".hb-alert").innerText(),
+          /Incomplete discovery \(depth-limit, file-limit\); best available source/,
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: false,
+            basis: "latest-recorded-wake",
+            discoveryComplete: true,
+            nextWakeAt: null,
+            cadenceMinutes: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.equal(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "record-validated",
+        );
+        assert.match(await panel.locator(".hb-status").innerText(), /记录已校验/);
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: true,
+            discoveryComplete: true,
+            nextWakeAt: null,
+            cadenceMinutes: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.equal(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "current-unknown",
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: true,
+            discoveryComplete: true,
+            nextWakeAt: "2026-11-11T12:00:00Z",
+            cadenceMinutes: 20,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.equal(
+          await panel.locator(".hb-status").getAttribute("data-certification"),
+          "certified",
+        );
+        assert.match(await panel.locator(".hb-status").innerText(), /当前已认证/);
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = { ...value, status: "stale", certifiesCurrent: true };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.match(await panel.locator(".hb-status").innerText(), /已过期/);
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = { ...value, status: "ready" };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
         assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
         assert.doesNotMatch(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
         await panel.locator(".hb-source > summary").click();
@@ -3733,64 +2896,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         await context.close();
       },
     );
-    await t.test("Goal panel coexistence keeps heartbeat accessible without overlap", async () => {
-      const { context, page, panel } = await open();
-      await page.evaluate(
-        ({ task, heartbeat }) => {
-          window.fixture.task = task;
-          window.fixture.heartbeat = heartbeat;
-          const goal = document.createElement("codex-task-progress");
-          goal.id = "goal-fixture";
-          goal.style.cssText =
-            "display:block;position:fixed;bottom:128px;left:200px;width:700px;height:60px";
-          document.body.append(goal);
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        },
-        { task, heartbeat },
-      );
-      await showView(panel, "heartbeat");
-      await panel.getByRole("heading", { name: "项目心跳", exact: true }).waitFor();
-      const [popoverBox, goalBox] = await Promise.all([
-        panel.locator(".body").boundingBox(),
-        page.locator("#goal-fixture").boundingBox(),
-      ]);
-      assert.ok(popoverBox.y + popoverBox.height <= goalBox.y);
-      const releaseVersion = JSON.parse(
-        readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-      ).version;
-      const { pageHostVersion } = JSON.parse(
-        readFileSync(
-          new URL("../packages/contracts/src/page-host-version.json", import.meta.url),
-          "utf8",
-        ),
-      );
-      const hotGoalElementName = `codex-task-progress-v${releaseVersion.replaceAll(".", "-")}-p${pageHostVersion}`;
-      await page.evaluate((tagName) => {
-        const previous = document.querySelector("#goal-fixture");
-        const current = document.createElement(tagName);
-        current.id = previous.id;
-        current.style.cssText = previous.style.cssText;
-        previous.replaceWith(current);
-        return window.__CODEX_TASK_PROGRESS__.refresh();
-      }, hotGoalElementName);
-      const [hotPopover, hotGoal] = await Promise.all([
-        panel.locator(".body").boundingBox(),
-        page.locator("#goal-fixture").boundingBox(),
-      ]);
-      assert.ok(hotPopover.y + hotPopover.height <= hotGoal.y);
-      await mkdir(".playwright-img", { recursive: true });
-      await page.screenshot({ path: ".playwright-img/task-panel-preview.png" });
-      await panel.locator(".hb-history").waitFor();
-      await panel.locator(".hb-wake > summary").first().scrollIntoViewIfNeeded();
-      await page.screenshot({ path: ".playwright-img/task-panel-heartbeat-history-preview.png" });
-      await page.setViewportSize({ width: 420, height: 640 });
-      await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-      const narrow = await panel.locator(".body").boundingBox();
-      const goalNarrow = await page.locator("#goal-fixture").boundingBox();
-      assert.ok(narrow.x >= 0 && narrow.x + narrow.width <= 420);
-      assert.ok(narrow.y >= 0 && narrow.y + narrow.height <= goalNarrow.y);
-      await context.close();
-    });
     await t.test(
       "large heartbeat history loads compact pages and displays full counts",
       async () => {
@@ -3864,9 +2969,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           () => typeof window.fixture.releaseHeldHeartbeatHistory === "function",
         );
         await page.evaluate(() => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+          window.fixture.threadId = "thread-b";
           window.fixture.heartbeat = {
             ...window.fixture.heartbeat,
             sourcePath: "/workspace/thread-b/heartbeat.md",
@@ -3874,9 +2977,7 @@ test("ordinary chat task panel browser flows", async (t) => {
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await page.evaluate((value) => {
-          document
-            .querySelector("[data-app-action-sidebar-thread-row]")
-            .setAttribute("data-app-action-sidebar-thread-id", "thread-a");
+          window.fixture.threadId = "thread-a";
           window.fixture.heartbeat = value;
           window.fixture.heartbeatHistory = {
             wakes: [{ heading: "new thread-a heartbeat", rows: [] }],
@@ -3926,35 +3027,6 @@ test("ordinary chat task panel browser flows", async (t) => {
         await context.close();
       },
     );
-    await t.test(
-      "hot bundle updates replace the element and restore layout on destroy",
-      async () => {
-        const { context, page } = await open();
-        const firstName = await page.evaluate(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().elementName,
-        );
-        await page.addScriptTag({ content: bundle });
-        await page.locator("[data-codex-task-panel]").waitFor({ state: "visible" });
-        const newName = await page.evaluate(
-          () => window.__CODEX_TASK_PROGRESS__.diagnostics().elementName,
-        );
-        assert.notEqual(firstName, newName);
-        assert.equal(await page.locator("[data-codex-task-panel]").count(), 1);
-        const panelBox = await page.locator("[data-codex-task-panel]").boundingBox();
-        const contentBox = await page.locator("#content").boundingBox();
-        assert.ok(contentBox.y >= panelBox.y + panelBox.height + 7);
-        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.destroy());
-        assert.equal(
-          await page.locator("#layout").evaluate((element) => element.style.paddingTop),
-          "",
-        );
-        assert.equal(
-          await page.locator("#layout").evaluate((element) => element.style.boxSizing),
-          "",
-        );
-        await context.close();
-      },
-    );
     await t.test("switching threads clears old data and rejects delayed replies", async () => {
       const { context, page, panel } = await open();
       await page.evaluate((value) => {
@@ -3966,9 +3038,7 @@ test("ordinary chat task panel browser flows", async (t) => {
         void window.__CODEX_TASK_PROGRESS__.refresh();
       });
       await page.evaluate(() => {
-        document
-          .querySelector("[data-app-action-sidebar-thread-row]")
-          .setAttribute("data-app-action-sidebar-thread-id", "thread-b");
+        window.fixture.threadId = "thread-b";
         window.fixture.task = null;
         window.fixture.delay = 0;
       });

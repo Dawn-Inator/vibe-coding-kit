@@ -11,38 +11,30 @@ export type OperationalHealthFailure =
   | "stable-helper-invalid"
   | "helper-job-not-loaded"
   | "helper-unhealthy"
-  | "startup-listener-missing"
-  | "startup-listener-not-running"
-  | "startup-listener-not-ready"
   | "plugin-invalid"
   | "hook-invalid"
   | "hook-hash-mismatch"
   | "hook-command-unsafe"
   | "user-hook-present"
-  | "hook-config-unsafe"
-  | "cdp-not-ready";
+  | "hook-config-unsafe";
 
 export interface OperationalHealthFacts {
   readonly release: ParsedReleaseManifest;
   readonly installed: InstalledManifest | null;
   readonly helperJobLoaded?: boolean;
   readonly helper?: HelperHealthInspection;
-  readonly startupListenerFileExists?: boolean;
   readonly codex?: CodexInstallIdentity;
   readonly pluginInstalled?: boolean;
   readonly hook?: InstalledHookInspection;
-  readonly cdpReady?: boolean;
 }
 
 export interface OperationalHealthSuccessFacts extends OperationalHealthFacts {
   readonly installed: InstalledManifest;
   readonly helperJobLoaded: true;
   readonly helper: HelperHealthInspection;
-  readonly startupListenerFileExists: true;
   readonly codex: CodexInstallIdentity;
   readonly pluginInstalled: true;
   readonly hook: InstalledHookInspection;
-  readonly cdpReady: true;
 }
 
 export type OperationalHealthResult =
@@ -88,18 +80,6 @@ export async function inspectOperationalHealth(
     return failure("helper-unhealthy", facts);
   }
 
-  const startupListenerFileExists = await state.startupListenerFileExists();
-  facts = { ...facts, startupListenerFileExists };
-  if (!startupListenerFileExists) {
-    return failure("startup-listener-missing", facts);
-  }
-  if (!helper.startupListenerRunning) {
-    return failure("startup-listener-not-running", facts);
-  }
-  if (!helper.startupListenerReady) {
-    return failure("startup-listener-not-ready", facts);
-  }
-
   const codex = await state.codex();
   facts = { ...facts, codex };
   const pluginInstalled = await state.pluginInstalled(installed, release);
@@ -126,12 +106,6 @@ export async function inspectOperationalHealth(
   }
   if (!hook.embeddedTrustStateAbsent) {
     return failure("hook-config-unsafe", facts);
-  }
-
-  const cdpReady = await state.cdpReady(codex);
-  facts = { ...facts, cdpReady };
-  if (!cdpReady) {
-    return failure("cdp-not-ready", facts);
   }
 
   return {

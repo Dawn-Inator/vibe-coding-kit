@@ -1,162 +1,25 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), preserving its Git history, MIT license and original attribution. Upstream base: `cdb6d9d` (0.3.12). Version 0.5.18 adds a dedicated read-only native MCP App for the audited Codex Desktop host. On each request, it resolves that host's thread identity—including its `threadId` aliases—and asks Helper for data belonging to the exact user, non-subagent, non-ephemeral thread. The App reads the same Kit task, Heartbeat and history records. Task mutations still require full Hook and turn proof. The visible 0.5.17 native entry returned no data before this fix; actual live data behavior still needs validation in the supported host. No generic cross-host identity guarantee is made. The existing CDP panel and managed-launcher setup remain available as legacy paths; the CDP injected UI uses an unsupported Codex interface.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Version 0.6.0 is a breaking native-only release: the supported interface is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them have been retired. A legacy installation must be removed safely with its old installer before installing this version. The new installer detects legacy markers and stops instead of overwriting the old installation.
 
-The native panel requires a host that supports the MCP Apps desktop entrypoint and Codex's optional `enable_mcp_apps` feature. It does not require CDP, a custom launcher, or a Codex restart when the feature and plugin are already supported and loaded. Check `codex features list`; enable the feature with `codex features enable enable_mcp_apps` only when choosing to use the native panel. The installer does not change Codex feature settings or force-restart Codex, and a running app may not immediately reflect a feature change. Verify visibility and data in an ordinary chat on the supported host; tool registration or a successful build alone is not UI verification. The managed-launcher/CDP path remains separate and does not prove native-panel behavior.
+## Native panel
 
-The 44px capsule stays docked and centered at the top of the chat, reserves layout space, and shows progress along its lower curved edge. Click it to expand the real task's modules (`objectives`), then click a module to inspect its nodes (`items`), statuses and evidence. Each module has its own progress bar. Clicking a module does not add a black outline, while keyboard focus remains available. The two 40px round buttons open task History and the project's read-only Heartbeat; only one panel opens at a time. History and Heartbeat records retain their paginated data sources. Unfinished tasks appear in reverse original checklist-addition order at the top; completed tasks remain in stable order at the bottom. These display choices do not rewrite records. The panel does not allow horizontal scrolling or dragging; any saved floating-placement preference from an older version is ignored. Existing native Goal tracking remains available through its separate Skill and original v1/v2 store; ordinary tasks use an independent v3 event store and never create a Goal.
+The native MCP App uses the Codex Desktop MCP Apps entrypoint and the optional `enable_mcp_apps` feature. Kit installs or reuses the plugin and its Helper without asking about a Dock entry. Check `codex features list` before installation. If the feature is disabled and the user chooses to use native MCP Apps, enable it explicitly with `codex features enable enable_mcp_apps`; the installer never changes host feature settings and returns `NATIVE_MCP_SETUP_REQUIRED` when native MCP support is unavailable or disabled. Reopen or start a chat as required by Codex, then verify the panel in an ordinary chat. Plugin registration, a successful build, and Helper health do not prove that the host displays the UI. Visibility is host-dependent and is not guaranteed on unsupported hosts.
 
-The interface follows the host's light/dark theme and reduced-motion preference. Panels support keyboard navigation, Escape and focus return, with internal scrolling and a viewport-constrained layout for short windows. Node progress uses recorded state and evidence, without invented fractional percentages. Existing tool inputs, storage formats and source-authority behavior remain compatible; the `get` output may include an optional `heartbeatPending` status.
+The native App resolves the supported host's current thread identity on each request, then reads only that user's matching, non-subagent, non-ephemeral task, History and project Heartbeat records through the local Helper and canonical Kit APIs. Task writes remain protected by Hook and turn proof. Existing native Codex Goal model APIs, record formats and compatibility are retained; the plugin does not create Goals or provide a custom Goal UI.
 
-Heartbeat history is arranged in grouped time cards. Expand a record to inspect a bounded preview of available raw fields; the source file retains the complete record. Compact, collapsible diagnostic disclosures keep the summary readable. History and Heartbeat views retain pagination, host theme support and responsive layouts. This is a presentation update and does not change task or Heartbeat storage or source authority.
+Task data follows the Kit canonical records. The native panel shows the registered checklist, recorded status and evidence, paginated History, and a read-only project Heartbeat view. Heartbeat remains observational and does not schedule or write to a ledger. The History panel uses a bounded summary projection (at most 512 KiB source input and 512 Unicode characters per summary) and keeps the full canonical Markdown path available; the underlying Kit records are not truncated or rewritten.
 
-Project Heartbeat summary cache is reused within its configured scope for 30 seconds after refresh completes, and in-flight reads are reused per project. `task_progress_get` returns the task result independently after validating any related task source; the project Heartbeat view loads in the background. A source-generation change starts a refresh without waiting for older requests, and polling runs every two seconds. The watcher for a bound source invalidates that source's cache.
+## Installation and validation
 
-While the same-scope project Heartbeat refresh is pending, the panel keeps its last valid summary and history visible with a pending notice; manual refresh remains available. The old summary is marked non-certifying until refreshed. A new scope with no verified snapshot clears the old view, and the frontend does not maintain a separate source-authority cache.
+Use the [AI installation guide](INSTALL-FOR-AI.md). The plugin requires Apple Silicon macOS, Codex Desktop with MCP Apps support, Node.js 22.12+, and pnpm 11 for development/building. Local release signing reuses the existing configured identity; signing does not grant TCC permissions or self-authorize protected folders.
 
-Kit's `WorkspaceTaskStorage` owns the `HeartbeatDiscoveryIndex` shared across chat services and project display. Before reusing an indexed report, it checks a bounded traversed-directory snapshot and known Markdown metadata so newly added, changed or deleted Heartbeat files are found even if their watcher event has not arrived. A bounded entry-set proof preserves the fast skip for ordinary new non-Markdown files. Writes can force a fresh scan; watcher errors/closure or unsupported recursive watching drop protected discovery and fall back to a fresh scan. Automatic discovery skips `.tmp`; explicit `.tmp` sources are read fresh. Candidate selection uses canonical summary parsing, with full audit only on the selected candidate. File/depth limits, nested-Git and symlink boundaries, and exact-thread association are preserved. Normalization and CPU guarding remain call-local; shared cache state does not guarantee zero I/O.
+Keep these evidence separate: package/build checks, Helper `doctor` and `verify`, plugin registration, and actual native UI visibility/data in a supported host. A host feature change may require a new chat or reopening a chat. Do not infer UI visibility from command success.
 
-Cold source validation can still take seconds.
+## Data and compatibility
 
-Version 0.5.8 resolves task and Heartbeat APIs from the Kit bundled with the release by default, without probing an implicit global developer checkout. Explicit project Kit paths/pins and configured fallback paths still take precedence; `fallbackKitPath: null` disables the fallback. This changes API resolution, not task or Heartbeat storage formats.
+The local Helper is supervised by the existing launchd service. MCP requests flow through the stdio server to Helper, which reads/writes canonical Kit records according to each operation's authority. Kit's optional `task-progress` category installs or reuses the native plugin; no separate launcher or Dock choice exists.
 
-Version 0.5.10 uses one canonical Kit bound-source lookup when validating a previously saved Heartbeat binding. Path, content hash, task association and any configured custom inspector remain validated. New or unbound chats and forced-write discovery continue to use the full project scan; an incomplete scan is not treated as complete or as proof that no source exists.
+Existing task and Heartbeat formats remain compatible. Existing native Goal APIs and original v1/v2 Goal records remain readable. Existing History source data is retained; the concise display summary is a bounded projection only. Preserve the derivative's upstream Git history, license, and attribution when redistributing it.
 
-Watched project discovery ignores invalidation only for a positively identified content change to an existing regular non-Markdown file. Unknown events, directory or other structural changes, Git changes, Markdown changes and explicit source invalidations continue to invalidate discovery.
-
-The installer retains release files under `install/releases/<version>/` and atomically installs a verified real Helper executable at `install/bin/goal-progress`; it rolls back to the previous executable snapshot if replacement fails. launchd, MCP and new Hooks use that stable path, while the CLI resolves active release resources from the install manifest. Doctor verifies the executable hash and rejects symlinks. Codex is not unloaded during the update. macOS may still request protected-folder permission when moving an existing installation to the stable path; no TCC grant is copied or assumed, and this path change does not guarantee that future system prompts will never recur.
-
-Version 0.5.6 avoids redundant permission updates when private directories already have the expected ownership and mode, reducing unnecessary filesystem watcher events. Mismatched permissions are repaired, and operating-system ownership checks remain enforced.
-
-At background startup, recovery eligibility checks inspect only Helper-owned recoverability hints. A hint does not provide task contents or authority: after a trusted chat identity is established, normal recovery reads and validates that chat's canonical task files through Kit. It does not scan arbitrary workspaces or use a hint as a substitute for file validation.
-
-The older persisted startup-recovery policy is disabled by `goal-progress launcher --install --dock --json` and is no longer recommended. Its previous default-off behavior was not reliable enough to promise automatic recovery. The managed launcher uses an explicit start flow instead; it does not forcibly restart an already running Codex process.
-
-Bounded Kit Heartbeat discovery memoizes the canonical project root and Git-boundary checks for one scan, then discards that memo before the next scan. Configured file/depth limits, nested-Git and symlink boundaries, and exact-thread association behavior are preserved.
-
-Progress counts non-cancelled required checklist leaves equally. A completed item needs evidence labelled `reported` or `verified`. Time, token use and activity do not count as completion. An idle chat has no invented percentage. SessionStart supplies a short instruction for the current model to maintain task records; semantic updates still depend on that model calling the tools at meaningful milestones. The panel automatically shows the current project's Heartbeat separately from chat task progress. Only a structured Kit record related to the current task may project into the checklist as a read-only source; the project view alone never creates or replaces a chat checklist.
-
-## Development
-
-Requires Apple Silicon macOS, Codex Desktop, Node >=22.12 and pnpm 11. Use `corepack pnpm install --frozen-lockfile`, then `corepack pnpm verify:public` and `corepack pnpm test`. Browser tests: `corepack pnpm test:ui`.
-
-`corepack pnpm build` builds source code, renderer and the source plugin. Generated plugin output is `plugins/codex-task-progress`. The repository has one authoritative source tree; the plugin build copies it into the generated package's `runtime/source`.
-
-To build a self-contained macOS release, obtain Node v24.19.0 darwin-arm64 from nodejs.org, verify its archive against SHASUMS256.txt, and run:
-
-```sh
-GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
-```
-
-For a fresh explicit `task-progress` category selection, Kit prepares the component with deferred connection before managed-launcher setup. During an interactive install or category wizard, a selected category with an already-installed launcher-capable helper but no launcher configuration triggers a separate purpose-level, default-No, one-click Dock consent prompt; declining keeps the plugin and project selection unchanged. For an existing plugin, explicitly passing `--optional task-progress=on` requests launcher setup directly. Non-interactive runs with saved or auto-detected preferences only reuse the install, and unrelated category updates do not prompt. Ordinary Kit installation does not automatically upgrade an existing plugin. A helper without launcher support returns setup-required rather than being upgraded in place. When the plugin is missing, interactive Kit setup asks once for explicit confirmation of an eligible local certificate; non-interactive setup returns actionable setup guidance. `install-from-kit.mjs --check` lists signing status and candidates read-only. `install-from-kit.mjs --configure-signing --identity '<certificate fingerprint>'` validates and persists a choice privately only; future builds reuse it. This does not guarantee macOS protected-folder consent will carry across updates: TCC may associate consent with the executable's physical version path, and inheritance across upgrades has not been verified. This setup does not build, sign, install, restart Codex, create certificates, export private keys or grant privacy permissions.
-
-Local release signing accepts an identity through `GOAL_PROGRESS_CODESIGN_IDENTITY` or a `release-signing.json` configuration (`schemaVersion: 1`, `identity`) under the Task Progress application-support directory. Set `GOAL_PROGRESS_CODESIGN_CONFIG` to choose an explicit absolute configuration path. Do not put signing identities in source or shared docs. If no identity is configured, the local build remains ad-hoc signed and warns that macOS may request permission again. An Apple Development signature is for local development; it is not a Developer ID or publicly notarized release. Helper and listener identifiers remain fixed as `com.codextaskprogress.helper` and `com.codextaskprogress.listener`.
-
-The release is `dist/release/macos-arm64`; see [installation instructions](INSTALL-FOR-AI.md). Updates are manual: rebuild and install from the Kit checkout. No automatic release channel is configured. No credentials are embedded in the plugin.
-
-## Heartbeats
-
-The panel resolves the current project's Heartbeat automatically when available. Click its round button to inspect the source path, status, audit details and read-only access. It does not ask the user to select a ledger. Project Heartbeat display is separate from chat task authority: only a structured Kit record related to the current task may become `taskSource` and replace the chat checklist. An unrelated project ledger remains a project view and does not overwrite local task progress. If an existing ordinary task history is valid, no source is bound, and the current candidate scan reports zero associations, an incomplete discovery scan does not suppress that local checklist. A new chat without task events stays pending until discovery is complete; an existing binding, including a stale one, does not trigger fallback, and multiple associated candidates stay pending. The `get` request returns after related task-source validation while the project Heartbeat display loads in the background. Per-project cache and in-flight work are reused; generation changes trigger refreshes without waiting for older requests, and the view polls every two seconds. The Heartbeat summary stays concise, with full diagnostics in bounded, collapsible details. When a related task source is active, History reads that bound task's recorded ledger wakes through the Kit reader; migrated pairs report the physical head or history source for each wake, while a legacy single-file ledger points to that original file. Reading never initiates a cutover, creates a second timeline or writes back to the ledger. The project Heartbeat panel may display a different source from the task's bound ledger.
-
-Release builds use the bundled Kit's canonical `inspectHeartbeatLedger`, project source, audit cadence and task projection APIs by default; they do not implicitly probe a personal global Kit checkout. An explicitly configured project Kit path/pin or fallback path can override that default, while `fallbackKitPath: null` disables the fallback. Missing required helpers fail visibly instead of falling back to plugin-owned parsing or policy. Current certification, audit success and historical readability are distinct. An unavailable project source shows an honest empty/error state; a stale related task source blocks writes to parallel local task history. A bound-source watcher invalidates that source's cache. Project summary reads are reused within their configured scope for 30 seconds; same-project in-flight reads are shared, with a two-second view poll and generation-based refresh. Observation never schedules a heartbeat, updates the ledger, or counts plugin liveness as an audit.
-
-Optional project `.codex-task-progress.json`:
-
-```json
-{"heartbeat":{"ledgerPath":".workspace/session/heartbeat.md","kitPath":".vibe-coding/kit","cadenceMinutes":20}}
-```
-
-An explicit `nextWakeAt` ISO timestamp is also supported. No cadence is inferred when absent. Ordinary task data and heartbeat observations live under the trusted chat cwd `.workspace/codex-task-progress/`. The executable, socket, logs, native Goal legacy state and preferences remain in application support/private plugin data. No project ledger or personal task history belongs in Git.
-
-## Interfaces
-
-`task_progress_get`, `task_progress_initialize`, `task_progress_update`, `task_progress_rescope`, `task_progress_history`, `task_progress_heartbeat_history`, `task_progress_bind_heartbeat`. Identity is derived from trusted Codex metadata/signed Hook context; callers do not supply a thread ID. Local writes require `expectedRevision`, stable `requestId`, and a reason. A related read-only Kit task source rejects initialize/update/rescope with `TASK_SOURCE_READ_ONLY`; history reports source metadata and no fabricated local events. `task_progress_bind_heartbeat` remains available for compatibility and recovery of existing bindings, but is not part of normal project source selection. Conflicting revisions fail, exact retries are idempotent, and reusing a request ID with a different payload fails.
-
-History is newest-first, paginated with an opaque revision cursor. The same Kit checkout stores task events and source associations in each chat's durable Markdown `taskhistory.md`; `heartbeat.md` is a readable current-state projection. Cancelling or removing scope retains the old entries and evidence in history. The panel verifies the visible thread again before delivering asynchronous results.
-
-## Compatibility and removal
-
-The renderer uses a loopback CDP connection and verified local app/process identity, like upstream. Codex upgrades may change its DOM; run Doctor and Verify after updates and distinguish connection checks from visible UI testing. Plugin hooks never silently restart Codex.
-
-On launcher-capable releases, uninstall first removes the owned managed launcher and its Dock entry. If Dock cleanup fails, or a user-edited entry must be retained, Helper removal is blocked so the retained entry does not become a broken launcher. Older helpers without managed-launcher support keep their legacy uninstall behavior. To remove a release while preserving history, run the installed `bin/goal-progress uninstall --json --keep-history`. Native Goals and chat history remain separate. Original Goal record schemas stay readable; the derivative does not automatically import another plugin's private data directory.
-
-## Hot updates
-
-Once the verified CDP connection is established, build a new release and run `./install.sh` without `--restart-codex`. The installer switches the local release and restarts only the Helper; the browser reconnects and replaces the versioned Task panel in place. Main Codex PID/start time should remain unchanged. If CDP needs rebuilding, this command reports that requirement instead of silently restarting Codex.
-
-### Managed Codex launcher
-
-On supported macOS, the release provides `goal-progress launch --json` and a separately managed signed launcher at `~/Applications/Codex.app`, displayed as “Codex” in Finder and Dock. It starts the Helper and Codex Desktop with the configured connection arguments. Its bundle identifier remains separate from Codex, and its application-support data remains stable across the launcher rename. Codex itself remains untouched.
-
-Manage the launcher with `goal-progress launcher --status --json`, `--install --json`, or `--remove --json`. Use `goal-progress launcher --install --dock --json` only when explicitly choosing the managed Dock replacement; after upgrading from the legacy `~/Applications/Codex Task Progress.app` name, this command migrates the launcher's owned Dock entry in place and preserves its original Dock restore information and task history. It also disables the legacy startup auto-observer. Installation without `--dock` keeps the normal Codex Dock app. Dock replacement preserves unrelated Dock items and the current session. The original Codex app remains available and its direct launches continue normally; the managed launcher does not intercept every Finder or app-originated launch, and macOS may show both app icons.
-
-The managed launcher runs as an AppKit application and starts the Helper asynchronously, so a slow Helper startup does not block the launcher's event loop. Regression coverage exercises fast and delayed Helper startup through real LaunchServices; validate launcher behavior with an actual LaunchServices launch, since direct executable runs do not cover that path. When Codex is already running without CDP, the launcher can only activate that process; a later full cold launch through the managed launcher is needed to establish the connection. It never forces an existing Codex restart. When verified CDP is already available, it reuses that connection. A launch command does not restart Codex. The older default-off startup-recovery policy was not reliable and is no longer recommended.
-
-The read-only Kit workspace API recognizes ordinary task history and source associations, including completed tasks and legacy records. When a verified CDP process is available, the Helper reconnects and restores the visible chat's panel. A running process without CDP cannot gain a debugging port by retrying record reads; use a later full cold launch through the managed launcher.
-
-For an existing installation, `goal-progress upgrade --json` can update the Helper and packaged plugin while CDP is unavailable. Its `connectionRebuildPending` result means the software was updated but the top panel is still unavailable. Check Doctor and the actual visible panel separately; a completed upgrade is not evidence of restored display.
-
-Backend and panel changes are live after reconnect. A changed MCP tool catalog or Skill/Hook session context needs reopening the affected chat; this is separate from restarting the application. Heartbeat panel data is bounded; use its paginated history or `task_progress_heartbeat_history` to browse earlier audits. Counts describe the complete source, while displayed text is summarized with source line references.
-
-## Completion semantics
-
-The header counts **registered checklist items**, not total task scope. Current execution is observed separately from trusted App Server status or positive visible composer Stop/Send controls. A complete checklist with ongoing, waiting or unknown execution never shows a numeric 100% header or full progress bar. Idle means the chat is not running, not that all requested work was delivered. The legacy stored phase describes only the checklist; MCP responses declare `completionBasis: registered-checklist`. Missing scope remains a limitation of model-maintained lists and must be registered before new work starts.
-
-## Project workspace storage
-
-The trusted Codex chat working directory determines the task workspace; neither the Helper process directory nor
-the shell's last `cd` is used. Release builds use the Kit `resolveTaskProgressStorage({cwd})` implementation bundled from the recorded Kit revision by default; explicit project Kit paths/pins and configured fallbacks remain supported. The contract defines
-`<cwd>/.workspace/codex-task-progress` for durable project task records and
-`<cwd>/.tmp/codex-task-progress` for reconstructable caches. The plugin uses the same checkout’s canonical schemas, task store, source relations, heartbeat-pair API and workspace router. Release builds bundle the Kit source from the recorded Git HEAD for a self-contained runtime; the checkout remains authoritative.
-
-Ordinary task history is stored per thread at `tasks/v3/<thread-sha256>/taskhistory.md`; `heartbeat.md` is a
-readable projection of the latest task state, not an event log. The Markdown history holds structured task events,
-source bindings and the legacy-binding migration marker. It is the persistent task authority. A project's own
-Heartbeat ledger is separately stored as `heartbeat.md` plus a same-directory `taskhistory.md` containing the
-complete wake history. For a custom head such as `release.md`, the companion is `release.taskhistory.md`.
-Project history rows keep their actual source paths and lines in Kit inspection reports. The plugin uses Kit's
-read-only API for display; it does not write to or migrate a project ledger during observation. A legacy source
-remains a single file, and its wake paths refer to that file, until a writer explicitly takes ownership after
-quiescence. Only that writer's explicit, locked and version-checked cutover may create the companion pair. A
-concurrent append, mismatched version or conflict must fail closed with both copies preserved.
-
-For a deliberate cutover, the writer first reads the current pair version and passes it with its ownership
-assertion:
-
-```js
-const observed = readHeartbeatLedgerPair({ root, path });
-migrateHeartbeatLedgerPair({
-  root,
-  path,
-  legacyWritersQuiescent: true,
-  expectedContentHash: observed.contentHash,
-});
-```
-
-`legacyWritersQuiescent` asserts that all raw legacy writers stay stopped for the entire operation; the Kit's
-cross-process lock coordinates Kit writers only. Each later write uses a newly read `contentHash`. If a
-history-first write is interrupted, read the raw version with `readHeartbeatLedgerPairVersion` and pass that
-hash plus the same ownership assertion to `recoverHeartbeatLedgerPair`. Recovery verifies its backup and
-planned/previous head; do not repair partial files manually.
-
-Kit `WorkspaceTaskStorage` owns routing from the authenticated current cwd and stores durable helper routing
-history in its app root at `task-routing/heartbeat.md` and `task-routing/taskhistory.md`. This routing history is
-not a rebuildable cache and is not the task history for a project. The previous `workspace-storage-index.json`
-remains a read-only migration source. A cwd move preserves task history and routing while deliberately excluding
-the previous project's source association. Workspace task directories self-ignore Git.
-
-Legacy task `events.jsonl`/`snapshot.json`, heartbeat binding JSON, derived heartbeat-observation JSONL, and the
-workspace index are read only for migration/compatibility; they are not new write targets. Helper-owned ordinary
-task/history/source-relation/workspace-index compatibility migration may run on first access. An unrelated active
-project heartbeat is different: it remains a legacy single file until its writer explicitly quiesces and owns a
-locked/version-checked cutover. Old files remain as backups. A conflicting task history or invalid migration
-source fails closed and preserves both copies rather than silently choosing a version. The cache under
-`.tmp/codex-task-progress/<thread-sha256>/` can be rebuilt or deleted
-without losing task events, source relations, workspace routing or project heartbeat history. If the trusted
-workspace is unavailable or unwritable, the plugin reports an error rather than redirecting state globally.
-`task_progress_get` exposes the resolved storage paths for inspection.
-
-The installed executable, local socket, Helper logs, native Goal legacy state and UI preferences remain in
-application support. They are separate from project task history and project Heartbeat records.
-
-Task Progress can be disabled per trusted project with `.vibe-coding/project.config.json` containing `"optional": { "task-progress": false }`. Existing task and association history is retained; projects without the setting keep their prior behavior.
+See [architecture](docs/ARCHITECTURE.md), [permissions](docs/PERMISSIONS.md), [validation evidence](docs/VALIDATION.md), and the [changelog](CHANGELOG.md).

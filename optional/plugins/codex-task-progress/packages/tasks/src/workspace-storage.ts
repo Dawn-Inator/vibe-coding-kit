@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveTaskProgressStorage } from "vibe-coding-kit/src/contracts/task-progress-storage.mjs";
 import { HeartbeatDiscoveryIndex } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import type { TaskHistorySummaryPage } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import type { WorkspaceTaskStorageContext as KitWorkspaceContext } from "vibe-coding-kit/src/tasks/workspace-storage.mjs";
 import { z } from "zod";
@@ -15,7 +16,14 @@ export interface WorkspaceTaskStorageOptions {
   heartbeat?: HeartbeatOptions;
 }
 export type WorkspaceTaskStorageLocation = KitWorkspaceContext["storage"];
-export type WorkspaceTaskStorageContext = KitWorkspaceContext & {
+type PresentationTaskStore = Omit<KitWorkspaceContext["taskStore"], "history"> & {
+  history(
+    threadId: string,
+    options?: { cursor?: string; limit?: number },
+  ): Promise<TaskHistorySummaryPage>;
+};
+export type WorkspaceTaskStorageContext = Omit<KitWorkspaceContext, "taskStore"> & {
+  taskStore: PresentationTaskStore;
   heartbeat: HeartbeatService;
 };
 type KitWorkspace = InstanceType<
@@ -115,7 +123,18 @@ export class WorkspaceTaskStorage {
       projectViewCache: this.#projectViewCache,
       discoveryIndex: this.#discoveryIndex,
     });
-    const adapted: WorkspaceTaskStorageContext = { ...context, heartbeat };
+    // The Kit owns the presentation projection and preserves its raw history API.
+    const taskStore = new Proxy(context.taskStore, {
+      get(target, property) {
+        if (property === "history") {
+          return (id: string, options: { cursor?: string; limit?: number } = {}) =>
+            target.history(id, { ...options, projection: "summary" });
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as PresentationTaskStore;
+    const adapted: WorkspaceTaskStorageContext = { ...context, taskStore, heartbeat };
     this.#contexts.set(threadId, adapted);
     cached?.heartbeat.close();
     return adapted;
