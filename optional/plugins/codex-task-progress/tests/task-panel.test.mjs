@@ -198,6 +198,131 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
+    await t.test(
+      "view snapshots retain cached pages only within their thread and source fences",
+      async () => {
+        const { page } = await open();
+        const result = await page.evaluate(
+          async ({ task, heartbeat }) => {
+            const panel = document.querySelector("codex-task-panel");
+            panel.requester = null;
+            const source = {
+              kind: "kit-heartbeat",
+              path: "/task.md",
+              historyPath: "/task-history.md",
+              contentHash: "task-v1",
+              readOnly: true,
+            };
+            const data = {
+              task: { ...task, source, lifecycle: { state: "active" } },
+              heartbeat: { ...heartbeat, contentHash: "heartbeat-v1" },
+              presentation: { scope: "project-a", pending: true, cached: true, updatedAt: 1 },
+              taskSourcePending: true,
+              history: {
+                events: [],
+                wakes: [{ heading: "cached history" }],
+                total: 1,
+                nextCursor: null,
+                source,
+              },
+              heartbeatHistory: {
+                wakes: [{ heading: "cached wake" }],
+                total: 1,
+                nextCursor: null,
+                sourcePath: heartbeat.sourcePath,
+                contentHash: "heartbeat-v1",
+              },
+            };
+            panel.resetThread("thread-a");
+            panel.data = data;
+            panel.observed = true;
+            panel.tab = "heartbeat";
+            panel.selectedObjective = "ui";
+            panel.heartbeatWakeExpansion.set("wake-key", true);
+            await panel.updateComplete;
+            const cachedWakeVisible = panel.shadowRoot.textContent.includes("cached wake");
+            panel.tab = "history";
+            await panel.updateComplete;
+            const cachedHistoryVisible = panel.shadowRoot.textContent.includes("cached history");
+            panel.tab = "heartbeat";
+            await panel.updateComplete;
+            const snapshot = panel.captureViewState();
+            snapshot.heartbeatHistory.wakes[0].heading = "snapshot copy";
+            const originalUnchanged = panel.heartbeatHistory.wakes[0].heading === "cached wake";
+            panel.resetThread("thread-b");
+            panel.data = { ...data, task: { ...data.task, threadId: "thread-b" } };
+            panel.restoreViewState(snapshot);
+            const otherThread = { tab: panel.tab, selected: panel.selectedObjective };
+            panel.resetThread("thread-a");
+            panel.data = data;
+            panel.restoreViewState(snapshot);
+            await panel.updateComplete;
+            const restored = {
+              tab: panel.tab,
+              selected: panel.selectedObjective,
+              history: panel.history.wakes[0].heading,
+              wake: panel.heartbeatHistory.wakes[0].heading,
+              expanded: panel.heartbeatWakeExpansion.get("wake-key"),
+              pendingLabel: panel.shadowRoot.textContent.includes("正在刷新任务来源"),
+            };
+            panel.resetThread("thread-a");
+            panel.data = {
+              ...data,
+              task: { ...data.task, source: { ...source, contentHash: "task-v2" } },
+              history: undefined,
+            };
+            panel.restoreViewState(snapshot);
+            const changedSource = { history: panel.history, selected: panel.selectedObjective };
+            panel.resetThread("thread-a");
+            panel.data = {
+              ...data,
+              task: { ...data.task, lifecycle: { state: "complete" } },
+              history: undefined,
+              heartbeatHistory: undefined,
+            };
+            panel.restoreViewState(snapshot);
+            const changedLifecycle = {
+              history: panel.history,
+              heartbeatHistory: panel.heartbeatHistory,
+              selected: panel.selectedObjective,
+            };
+            panel.resetThread(null);
+            const nullThread = panel.captureViewState();
+            return {
+              originalUnchanged,
+              cachedWakeVisible,
+              cachedHistoryVisible,
+              otherThread,
+              restored,
+              changedSource,
+              changedLifecycle,
+              nullThread,
+            };
+          },
+          { task, heartbeat },
+        );
+        assert.equal(result.originalUnchanged, true);
+        assert.equal(result.cachedWakeVisible, true);
+        assert.equal(result.cachedHistoryVisible, true);
+        assert.deepEqual(result.otherThread, { tab: "tasks", selected: null });
+        assert.deepEqual(result.restored, {
+          tab: "heartbeat",
+          selected: "ui",
+          history: "cached history",
+          wake: "snapshot copy",
+          expanded: true,
+          pendingLabel: false,
+        });
+        assert.deepEqual(result.changedSource, { history: null, selected: null });
+        assert.deepEqual(result.changedLifecycle, {
+          history: null,
+          heartbeatHistory: null,
+          selected: null,
+        });
+        assert.equal(result.nullThread, null);
+      },
+    );
+
     await t.test("all views share the icon and label kicker", async () => {
       const { context, panel } = await open();
       for (const [view, label, path] of [

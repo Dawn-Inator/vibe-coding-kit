@@ -11,9 +11,12 @@ import {
   registerTaskProgressElement,
   type TaskPanelRequest,
   type TaskPanelResponse,
+  type TaskPanelViewState,
 } from "./task-progress-element.js";
 
-type ToolEnvelope = { ok: true; result: TaskPanelResponse } | { ok: false; summary?: string };
+type ToolEnvelope =
+  | { ok: true; result: TaskPanelResponse }
+  | { ok: false; code?: string; summary?: string };
 type PanelElement = HTMLElement & {
   data: TaskPanelResponse;
   observed: boolean;
@@ -25,6 +28,8 @@ type PanelElement = HTMLElement & {
   locale: string;
   presentation: "panel";
   resetThread(threadId: string | null): void;
+  captureViewState(): TaskPanelViewState | null;
+  restoreViewState(state: TaskPanelViewState): void;
 };
 
 const READ_ONLY_TOOL_NAMES: Partial<Record<TaskPanelRequest["method"], string>> = {
@@ -106,6 +111,7 @@ function showError(message: string): void {
 const elementName = registerTaskProgressElement(window);
 const element = document.createElement(elementName) as PanelElement;
 element.presentation = "panel";
+element.setAttribute("data-task-progress-version", GOAL_PROGRESS_RELEASE_VERSION);
 element.setAttribute("presentation", "panel");
 element.locale = navigator.language || "en";
 element.data = { task: null, heartbeat: null };
@@ -128,6 +134,96 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 const pendingDelays = [150, 250, 500, 1_000];
 let pendingAttempts = 0;
 
+type Presentation = {
+  scope: string;
+  pending: boolean;
+  cached: boolean;
+  updatedAt: number | null;
+  error?: string;
+};
+type ScopedResponse = TaskPanelResponse & { presentation?: Presentation };
+type RetainedView = { data: TaskPanelResponse; view: TaskPanelViewState | null; bytes: number };
+const retained = new Map<string, RetainedView>();
+const MAX_VIEWS = 16;
+const MAX_BYTES = 4 * 1024 * 1024;
+let activeScope: string | null = null;
+let activeKey: string | null = null;
+
+function scopeOf(response: TaskPanelResponse): string | null {
+  const scope = (response as ScopedResponse).presentation?.scope;
+  return typeof scope === "string" && scope.length > 0 ? scope : null;
+}
+function cacheKey(threadId: string | null, scope: string | null): string | null {
+  return threadId && scope ? JSON.stringify([threadId, scope]) : null;
+}
+function rememberCurrent(): void {
+  if (!activeKey || !element.observed || element.data.enabled === false || element.connectionError)
+    return;
+  const presentation = (element.data as ScopedResponse).presentation;
+  if (
+    presentation?.error ||
+    (presentation?.pending && !element.data.task && !element.data.heartbeat)
+  )
+    return;
+  const view = element.captureViewState();
+  try {
+    const bytes = new TextEncoder().encode(JSON.stringify({ data: element.data, view })).byteLength;
+    if (bytes > MAX_BYTES) {
+      retained.delete(activeKey);
+      return;
+    }
+    retained.delete(activeKey);
+    retained.set(activeKey, {
+      data: structuredClone(element.data),
+      view: structuredClone(view),
+      bytes,
+    });
+    let total = Array.from(retained.values()).reduce((sum, item) => sum + item.bytes, 0);
+    while (retained.size > MAX_VIEWS || total > MAX_BYTES) {
+      const oldest = retained.entries().next();
+      if (oldest.done) break;
+      const [key, entry] = oldest.value;
+      total -= entry.bytes;
+      retained.delete(key);
+    }
+  } catch {
+    retained.delete(activeKey);
+  }
+}
+function clearPresentationAttributes(): void {
+  element.removeAttribute("data-presentation-cached");
+  element.removeAttribute("data-presentation-pending");
+  element.removeAttribute("data-presentation-updated-at");
+}
+function invalidateIdentity(): void {
+  clearPresentationAttributes();
+  retained.clear();
+  invalidatePendingRefresh();
+  for (const active of activeToolControllers) active.abort();
+  setIdentity(null, null, false);
+  element.data = { task: null, heartbeat: null };
+  element.observed = true;
+}
+class IdentityError extends Error {}
+function isIdentityFailure(message: string): boolean {
+  return /identity|unauthori[sz]ed|forbidden|authentication|access denied|disabled/i.test(message);
+}
+function failureInvalidatesIdentity(
+  failure: Extract<ToolEnvelope, { ok: false }>,
+  raw: unknown,
+  expectedThread: string | null,
+): boolean {
+  const code = typeof failure.code === "string" ? failure.code : "";
+  return (
+    /(?:IDENTITY|THREAD|AUTH|UNTRUSTED|METADATA|HOOK_CONTEXT|HOOK_PROOF|DISABLED|FORBIDDEN)/i.test(
+      code,
+    ) ||
+    isIdentityFailure(failure.summary ?? "") ||
+    !expectedThread ||
+    trustedThreadId(raw) !== expectedThread
+  );
+}
+
 function clearTimer(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
@@ -136,7 +232,10 @@ function clearTimer(): void {
 function schedule(response?: TaskPanelResponse): void {
   clearTimer();
   if (disposed || !connected || document.visibilityState !== "visible") return;
-  const pending = response?.heartbeatPending === true || response?.taskSourcePending === true;
+  const pending =
+    response?.heartbeatPending === true ||
+    response?.taskSourcePending === true ||
+    (response as ScopedResponse | undefined)?.presentation?.pending === true;
   const delay = pending ? (pendingDelays[pendingAttempts++] ?? 5_000) : 5_000;
   if (!pending) pendingAttempts = 0;
   timer = setTimeout(() => {
@@ -167,8 +266,10 @@ function dispose(): void {
   element.remove();
 }
 
-function setIdentity(threadId: string | null): void {
-  if (element.threadId === threadId) return;
+function setIdentity(threadId: string | null, scope: string | null, capture = true): boolean {
+  if (element.threadId === threadId && activeScope === scope) return false;
+  if (capture) rememberCurrent();
+  clearPresentationAttributes();
   identityGeneration++;
   refreshSequence++;
   pendingAttempts = 0;
@@ -178,7 +279,50 @@ function setIdentity(threadId: string | null): void {
   for (const active of activeToolControllers) active.abort();
   busy = false;
   element.refreshing = false;
+  activeScope = scope;
+  activeKey = cacheKey(threadId, scope);
   element.resetThread(threadId);
+  return true;
+}
+
+function applyVerifiedResponse(response: TaskPanelResponse, threadId: string): void {
+  const scope = scopeOf(response);
+  if (response.enabled === false) {
+    retained.clear();
+    invalidatePendingRefresh();
+    for (const active of activeToolControllers) active.abort();
+    if (!setIdentity(threadId, scope, false)) element.resetThread(threadId);
+    clearPresentationAttributes();
+    element.data = response;
+    element.observed = true;
+    element.connectionError = null;
+    showError("");
+    return;
+  }
+  const changed = setIdentity(threadId, scope);
+  const presentation = (response as ScopedResponse).presentation;
+  clearPresentationAttributes();
+  if (presentation) {
+    element.setAttribute("data-presentation-cached", String(presentation.cached === true));
+    element.setAttribute("data-presentation-pending", String(presentation.pending === true));
+    if (typeof presentation.updatedAt === "number" && Number.isFinite(presentation.updatedAt)) {
+      element.setAttribute("data-presentation-updated-at", String(presentation.updatedAt));
+    }
+  }
+  const saved = activeKey ? retained.get(activeKey) : undefined;
+  const emptyPending = presentation?.pending && !response.task && !response.heartbeat;
+  const emptyError = presentation?.error && !response.task && !response.heartbeat;
+  const previous =
+    !changed && element.observed && element.data.enabled !== false ? element.data : null;
+  const fallback = saved?.data ?? previous;
+  element.data = (emptyPending || emptyError) && fallback ? fallback : response;
+  element.observed = true;
+  // Data setters may reset view state, so restore only after installing base data.
+  if (changed && saved?.view) element.restoreViewState(saved.view);
+  const message = presentation?.error ?? "";
+  element.connectionError = message || null;
+  showError(message);
+  if (!presentation?.error && !(emptyPending && fallback)) rememberCurrent();
 }
 
 function invalidatePendingRefresh(): void {
@@ -227,15 +371,17 @@ async function readTaskResponse(
   if (!parsed.ok) {
     const summary =
       typeof parsed.summary === "string" ? parsed.summary : "Task progress is unavailable.";
-    throw new Error(summary);
+    throw failureInvalidatesIdentity(parsed, raw, element.threadId)
+      ? new IdentityError(summary)
+      : new Error(summary);
   }
   const threadId = trustedThreadId(raw);
   if (!threadId)
-    throw new Error(
+    throw new IdentityError(
       "Trusted conversation identity was not returned. Reload the current task to retry.",
     );
   if (parsed.result.task?.threadId && parsed.result.task.threadId !== threadId)
-    throw new Error(
+    throw new IdentityError(
       "Task progress identity did not match the trusted conversation. Reload the current task to retry.",
     );
   return { response: parsed.result, threadId };
@@ -252,19 +398,13 @@ async function refresh(): Promise<void> {
   try {
     const { response, threadId } = await readTaskResponse(controller.signal);
     if (disposed || requestGeneration !== refreshSequence) return;
-    setIdentity(threadId);
-    element.data = response;
-    element.observed = true;
-    element.connectionError = null;
-    showError("");
+    applyVerifiedResponse(response, threadId);
     schedule(response);
   } catch (error) {
     if (disposed || requestGeneration !== refreshSequence) return;
-    setIdentity(null);
-    element.resetThread(null);
-    element.data = { task: null, heartbeat: null };
-    element.observed = true;
     const message = error instanceof Error ? error.message : "Task progress is unavailable.";
+    if (error instanceof IdentityError || isIdentityFailure(message)) invalidateIdentity();
+    else element.observed = true;
     element.connectionError = message;
     showError(message);
     schedule();
@@ -286,6 +426,7 @@ element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse
   if (!toolName) throw new Error("This panel only supports read-only task requests.");
   const expectedThreadId = element.threadId;
   const expectedIdentityGeneration = identityGeneration;
+  const expectedScope = activeScope;
   const args = {
     ...(request.cursor ? { cursor: request.cursor } : {}),
     ...(request.taskId ? { taskId: request.taskId } : {}),
@@ -294,11 +435,24 @@ element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse
   const raw = await callTool(toolName, args);
   const parsed = envelope(raw);
   if (!parsed) throw new Error("Task history returned an unreadable response.");
-  if (!parsed.ok) throw new Error(parsed.summary ?? "Task history is unavailable.");
+  if (!parsed.ok) {
+    const message = parsed.summary ?? "Task history is unavailable.";
+    if (
+      identityGeneration === expectedIdentityGeneration &&
+      failureInvalidatesIdentity(parsed, raw, expectedThreadId)
+    ) {
+      invalidateIdentity();
+      element.connectionError = message;
+      showError(message);
+      schedule();
+    }
+    throw new Error(message);
+  }
   if (
     identityGeneration !== expectedIdentityGeneration ||
     element.threadId !== expectedThreadId ||
     trustedThreadId(raw) !== expectedThreadId ||
+    (scopeOf(parsed.result) !== null && scopeOf(parsed.result) !== expectedScope) ||
     (parsed.result.task?.threadId && parsed.result.task.threadId !== expectedThreadId)
   )
     throw new Error("Task history identity changed. Refresh the panel to continue.");
@@ -307,24 +461,30 @@ element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse
 
 app.ontoolresult = (result) => {
   const parsed = envelope(result);
+  if (parsed && !parsed.ok && failureInvalidatesIdentity(parsed, result, element.threadId)) {
+    invalidateIdentity();
+    element.connectionError = parsed.summary ?? "Task progress is unavailable.";
+    showError(element.connectionError);
+    schedule();
+    return;
+  }
   if (parsed?.ok) {
     // Host-delivered tool results are accepted only after the SDK validates the
     // MCP Apps protocol message; identity still comes from the tool response.
     const verifiedThreadId = trustedThreadId(result);
-    const identityChanged = element.threadId !== verifiedThreadId;
-    setIdentity(verifiedThreadId);
     if (
       !verifiedThreadId ||
       (parsed.result.task?.threadId && parsed.result.task.threadId !== verifiedThreadId)
     ) {
-      element.data = { task: null, heartbeat: null };
-      element.observed = true;
+      invalidateIdentity();
       element.connectionError =
         "Trusted conversation identity was not returned or did not match. Reload the current task to retry.";
       showError(element.connectionError);
       schedule();
       return;
     }
+    const scope = scopeOf(parsed.result);
+    const identityChanged = element.threadId !== verifiedThreadId || activeScope !== scope;
     const hasBaseResponse = [
       "task",
       "heartbeat",
@@ -333,9 +493,11 @@ app.ontoolresult = (result) => {
       "enabled",
       "heartbeatPending",
       "taskSourcePending",
+      "presentation",
     ].some((key) => Object.hasOwn(parsed.result, key));
     if (!hasBaseResponse) {
       if (identityChanged) {
+        setIdentity(verifiedThreadId, scope);
         element.data = { task: null, heartbeat: null };
         element.observed = true;
         void refresh();
@@ -343,10 +505,7 @@ app.ontoolresult = (result) => {
       return;
     }
     invalidatePendingRefresh();
-    element.data = parsed.result;
-    element.observed = true;
-    element.connectionError = null;
-    showError("");
+    applyVerifiedResponse(parsed.result, verifiedThreadId);
     schedule(parsed.result);
   }
 };

@@ -1,3 +1,9 @@
+# Task Progress 0.7.6
+
+- Retain a bounded in-memory read-only snapshot for verified thread, canonical working directory and Git-root scopes. Returning to a known scope displays its last snapshot while canonical refresh runs when due; background errors retain that display without claiming it is current. Unsupported, untrusted, moved and disabled contexts do not inherit another scope.
+- Restore the selected Task, History or Heartbeat tab, objective and wake expansions only for the matching context. A five-second snapshot lease avoids duplicate work; independent five-second polling and fast follow-ups for pending reads continue. A cold scope without a snapshot still requires its initial read.
+- Task models and writes continue to use canonical authority. No disk cache, browser storage or history format changes are introduced. After upgrading, reenter the affected chat for the native catalog to refresh; do not restart Codex. Actual native host behavior still requires verification.
+
 # Task Progress 0.7.5
 
 - While source discovery is pending, GET does not expose a local task; ongoing discovery is shared across requests rather than restarted. Writes continue to perform the full source-authority check.

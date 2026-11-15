@@ -134,6 +134,13 @@ export interface TaskPanelExecution {
 }
 export interface TaskPanelResponse {
   enabled?: boolean;
+  presentation?: {
+    scope: string;
+    pending: boolean;
+    cached: boolean;
+    updatedAt: number | null;
+    error?: string;
+  };
   task: TaskPanelState | null;
   heartbeat: TaskPanelHeartbeat | null;
   heartbeatPending?: boolean;
@@ -158,6 +165,18 @@ export interface TaskPanelResponse {
     | (TaskArchivePage & { available?: true })
     | { available: false; reason?: string; currentTaskId: string | null };
 }
+export type TaskPanelViewState = Readonly<{
+  threadId: string;
+  tab: "tasks" | "history" | "heartbeat";
+  selectedObjective: string | null;
+  taskContext: string;
+  history: TaskPanelHistory | TaskPanelSourceHistory | null;
+  historyContext: string | null;
+  heartbeatHistory: TaskPanelHeartbeatHistory | null;
+  heartbeatHistoryContext: string | null;
+  wakeExpansion: readonly (readonly [string, boolean])[];
+}>;
+
 export interface TaskPanelRequest {
   method: "get" | "history" | "bind-heartbeat" | "heartbeat-history" | "archive";
   threadId: string;
@@ -205,6 +224,7 @@ export class TaskProgressElement extends LitElement {
       this.clearArchive();
       this.archiveContext = context;
     }
+    this.adoptCachedPages();
     this.requestUpdate("data", old);
   }
   declare observed: boolean;
@@ -347,6 +367,113 @@ export class TaskProgressElement extends LitElement {
         : value;
   }
 
+  private currentTaskContext(): string {
+    return JSON.stringify([
+      this.threadId,
+      this.data.task?.source?.path ?? this.data.taskSource?.path ?? null,
+      this.data.task?.source?.contentHash ?? this.data.taskSource?.contentHash ?? null,
+      this.data.task?.lifecycle ?? null,
+    ]);
+  }
+
+  private cachedHistoryMatches(page: TaskPanelHistory | TaskPanelSourceHistory): boolean {
+    const source = this.historySource();
+    return source
+      ? "source" in page &&
+          !!source.path &&
+          page.source.path === source.path &&
+          page.source.contentHash === source.contentHash &&
+          page.source.historyPath === source.historyPath &&
+          page.source.kind === source.kind
+      : !("source" in page);
+  }
+
+  private cachedHeartbeatMatches(page: TaskPanelHeartbeatHistory): boolean {
+    const heartbeat = this.displayHeartbeat();
+    return (
+      !!heartbeat?.sourcePath &&
+      page.sourcePath === heartbeat.sourcePath &&
+      page.contentHash === heartbeat.contentHash
+    );
+  }
+
+  private adoptCachedPages(): void {
+    if (!this.threadId || !this.data.presentation?.cached) return;
+    const historyContext = this.currentHistoryContext();
+    if (
+      this.data.history &&
+      this.historyContext !== historyContext &&
+      this.cachedHistoryMatches(this.data.history)
+    ) {
+      this.history = structuredClone(this.data.history);
+      this.historyContext = historyContext;
+      this.historyThread = null;
+    }
+    const heartbeatContext = this.currentHeartbeatHistoryContext();
+    if (
+      heartbeatContext &&
+      this.data.heartbeatHistory &&
+      this.heartbeatHistoryContext !== heartbeatContext &&
+      this.cachedHeartbeatMatches(this.data.heartbeatHistory)
+    ) {
+      this.heartbeatHistory = structuredClone(this.data.heartbeatHistory);
+      this.heartbeatHistoryContext = heartbeatContext;
+      this.heartbeatHistoryObservedContext = heartbeatContext;
+      this.heartbeatHistoryAttemptedContext = null;
+    }
+  }
+
+  captureViewState(): TaskPanelViewState | null {
+    if (!this.threadId) return null;
+    return structuredClone({
+      threadId: this.threadId,
+      tab: this.tab,
+      selectedObjective: this.selectedObjective,
+      taskContext: this.currentTaskContext(),
+      history: this.history,
+      historyContext: this.historyContext,
+      heartbeatHistory: this.heartbeatHistory,
+      heartbeatHistoryContext:
+        this.heartbeatHistoryContext ?? this.currentHeartbeatHistoryContext(),
+      wakeExpansion: [...this.heartbeatWakeExpansion.entries()],
+    });
+  }
+
+  restoreViewState(snapshot: TaskPanelViewState): void {
+    if (!this.threadId || snapshot.threadId !== this.threadId) return;
+    const taskMatches = snapshot.taskContext === this.currentTaskContext();
+    this.tab = snapshot.tab;
+    this.selectedObjective =
+      taskMatches &&
+      this.data.task?.objectives.some((item) => item.id === snapshot.selectedObjective)
+        ? snapshot.selectedObjective
+        : null;
+    if (
+      taskMatches &&
+      snapshot.history &&
+      snapshot.historyContext === this.currentHistoryContext() &&
+      this.cachedHistoryMatches(snapshot.history)
+    ) {
+      this.history = structuredClone(snapshot.history);
+      this.historyContext = snapshot.historyContext;
+      this.historyThread = null;
+    }
+    const heartbeatContext = this.currentHeartbeatHistoryContext();
+    if (
+      taskMatches &&
+      heartbeatContext &&
+      snapshot.heartbeatHistoryContext === heartbeatContext &&
+      (!snapshot.heartbeatHistory || this.cachedHeartbeatMatches(snapshot.heartbeatHistory))
+    ) {
+      this.heartbeatHistory = structuredClone(snapshot.heartbeatHistory);
+      this.heartbeatHistoryContext = heartbeatContext;
+      this.heartbeatHistoryObservedContext = heartbeatContext;
+      this.heartbeatHistoryAttemptedContext = null;
+      this.heartbeatWakeExpansion = new Map(snapshot.wakeExpansion);
+    }
+    this.requestUpdate();
+  }
+
   resetThread(threadId: string | null): void {
     this.refreshViewGeneration++;
     this.refreshViewBusy = false;
@@ -373,6 +500,7 @@ export class TaskProgressElement extends LitElement {
     this.historyContext = null;
     this.historyRequest++;
     this.selectedObjective = null;
+    this.tab = "tasks";
     this.connectionError = null;
     this.busy = false;
   }
@@ -428,6 +556,7 @@ export class TaskProgressElement extends LitElement {
       this.heartbeatHistoryAttemptedContext = null;
       this.heartbeatHistoryContext = null;
       this.heartbeatHistory = null;
+      this.heartbeatWakeExpansion.clear();
       this.heartbeatHistoryError = null;
       this.heartbeatHistoryErrorContext = null;
       this.heartbeatHistoryRetryContext = null;
@@ -450,7 +579,13 @@ export class TaskProgressElement extends LitElement {
   private currentHeartbeatHistoryContext(): string | null {
     const heartbeat = this.displayHeartbeat();
     if (!this.threadId || !heartbeat?.sourcePath) return null;
-    return JSON.stringify([this.threadId, heartbeat.sourcePath, heartbeat.contentHash ?? null]);
+    return JSON.stringify([
+      this.threadId,
+      heartbeat.sourcePath,
+      heartbeat.historyPath ?? null,
+      heartbeat.contentHash ?? null,
+      this.data.task?.lifecycle ?? null,
+    ]);
   }
 
   private displayHeartbeat(): TaskPanelHeartbeat | null {
@@ -629,6 +764,14 @@ export class TaskProgressElement extends LitElement {
           )
         : Boolean(page?.source);
       if (mismatch) {
+        if (
+          this.data.presentation?.cached &&
+          this.history &&
+          this.cachedHistoryMatches(this.history)
+        ) {
+          this.historyThread = threadId;
+          return;
+        }
         this.history = expectedSource
           ? {
               events: [],
@@ -676,6 +819,14 @@ export class TaskProgressElement extends LitElement {
       ) {
         this.historyRetryContext = null;
         this.historyAutoRetries = 0;
+        if (
+          this.data.presentation?.cached &&
+          this.history &&
+          this.cachedHistoryMatches(this.history)
+        ) {
+          this.historyThread = threadId;
+          return;
+        }
         if (expectedSource) {
           this.history = {
             events: [],
@@ -708,8 +859,10 @@ export class TaskProgressElement extends LitElement {
       this.threadId,
       source?.kind ?? "local",
       source?.path ?? null,
+      source?.historyPath ?? null,
       source?.contentHash ?? null,
       authority,
+      this.data.task?.lifecycle ?? null,
     ]);
   }
 
@@ -869,6 +1022,7 @@ export class TaskProgressElement extends LitElement {
 
   private taskSourceIsPending(): boolean {
     const source = this.data.taskSource;
+    if (this.data.presentation?.cached && (this.data.task || source?.path)) return false;
     if (source?.status === "error" && !source.retryable) return false;
     return this.data.taskSourcePending === true || source?.status === "pending";
   }
@@ -1081,10 +1235,10 @@ export class TaskProgressElement extends LitElement {
     }
     if (source) {
       const sourceHistory = this.history && "source" in this.history ? this.history : null;
-      if (!sourceHistory && !this.busy && this.historyThread !== this.threadId)
-        void this.loadHistory();
+      if (!this.busy && this.historyThread !== this.threadId) void this.loadHistory();
       const wakes = sourceHistory?.wakes ?? [];
-      const retrying = this.historyRetryContext === context;
+      const retrying =
+        this.historyRetryContext === context && !(this.data.presentation?.cached && sourceHistory);
       const sourceError = retrying
         ? null
         : sourceHistory
@@ -1124,7 +1278,7 @@ export class TaskProgressElement extends LitElement {
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    const localBody = html`${this.historyRetryContext === context ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
+    const localBody = html`${this.historyRetryContext === context && !(this.data.presentation?.cached && localHistory) ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
     return this.framedCard(this.t("History", "历史记录"), List, localBody, {
       ...(localHistory && !localHistory.error ? { count: localHistory.events.length } : {}),
     });
@@ -1229,10 +1383,11 @@ export class TaskProgressElement extends LitElement {
     return JSON.stringify([
       this.threadId,
       this.data.task?.lifecycle?.id ?? null,
-      this.data.task?.source?.path ?? null,
-      this.data.task?.source?.contentHash ?? null,
+      this.data.task?.source?.path ?? this.data.taskSource?.path ?? null,
+      this.data.task?.source?.contentHash ?? this.data.taskSource?.contentHash ?? null,
       source?.status ?? null,
       source?.path ?? null,
+      source?.historyPath ?? null,
       source?.contentHash ?? null,
       this.data.taskSourcePending ?? false,
     ]);

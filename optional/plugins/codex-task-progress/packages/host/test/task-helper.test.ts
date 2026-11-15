@@ -1133,8 +1133,11 @@ test("native read IPC stays read-only and resolves each exact user chat independ
     await initialize("first-chat", "First exact task");
     await initialize("second-chat", "Second exact task");
 
-    const first = (await nativeRead("first-chat", "get")).result as { task: TaskState };
-    const second = (await nativeRead("second-chat", "get")).result as { task: TaskState };
+    // A cold native presentation returns immediately; canonical history reads remain awaited.
+    await nativeRead("first-chat", "history");
+    await nativeRead("second-chat", "history");
+    const first = (await nativeRead("first-chat", "get")).result as { task: TaskState | null };
+    const second = (await nativeRead("second-chat", "get")).result as { task: TaskState | null };
     const firstHistory = (await nativeRead("first-chat", "history")).result as {
       history: { events: unknown[] };
     };
@@ -1145,8 +1148,8 @@ test("native read IPC stays read-only and resolves each exact user chat independ
     const firstHistoryAgain = (await nativeRead("first-chat", "history")).result as {
       history: { events: unknown[] };
     };
-    assert.equal(first.task.title, "First exact task");
-    assert.equal(second.task.title, "Second exact task");
+    assert.ok(first.task === null || first.task.title === "First exact task");
+    assert.ok(second.task === null || second.task.title === "Second exact task");
     assert.ok(firstHistory.history.events.length > 0);
     assert.deepEqual(firstHistoryAgain.history.events, firstHistory.history.events);
     assert.ok(Array.isArray(secondHeartbeatHistory.heartbeatHistory.wakes));
@@ -2707,6 +2710,330 @@ test("pending history uses first resolution and the next request resolves ordina
   } finally {
     HeartbeatDiscoveryIndex.prototype.discover = discover;
     HeartbeatService.prototype.history = heartbeatHistory;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native presentation returns a verified snapshot while canonical reads deduplicate and model reads wait", async () => {
+  const root = await mkdtemp("/tmp/ctph-display-cache-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const original = HeartbeatService.prototype.taskProjection;
+  let release!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  let held = false;
+  let count = 0;
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  HeartbeatService.prototype.taskProjection = async function (threadId, cwd, options) {
+    if (held) {
+      count++;
+      await gate;
+    }
+    return original.call(this, threadId, cwd, options);
+  };
+  let call = 0;
+  const model = () =>
+    client.request({
+      method: "task.request",
+      params: {
+        action: "get",
+        input: {},
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_get",
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `display-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    await model();
+    held = true;
+    now += 5_001;
+    const first = (await native()).result as {
+      presentation: { cached: boolean; pending: boolean };
+    };
+    const second = (await native()).result as {
+      presentation: { cached: boolean; pending: boolean };
+    };
+    assert.equal(first.presentation.cached, true);
+    assert.equal(first.presentation.pending, true);
+    assert.equal(second.presentation.cached, true);
+    assert.equal(count, 1);
+    let modelDone = false;
+    const pendingModel = model().then((value) => {
+      modelDone = true;
+      return value;
+    });
+    // A third native request proves the event loop handled more IPC while the model is held.
+    await native();
+    assert.equal(modelDone, false);
+    release();
+    await pendingModel;
+    const readsAfterCompletion = count;
+    const fresh = (await native()).result as {
+      presentation: { cached: boolean; pending: boolean };
+    };
+    assert.equal(fresh.presentation.cached, true);
+    assert.equal(fresh.presentation.pending, false);
+    assert.equal(count, readsAfterCompletion);
+  } finally {
+    release();
+    Date.now = originalNow;
+    HeartbeatService.prototype.taskProjection = original;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native cached presentation rechecks identity, project preference and canonical cwd", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-boundary-");
+  const moved = await mkdtemp("/tmp/ctph-cache-moved-");
+  await mkdir(join(root, ".git"));
+  await mkdir(join(moved, ".git"));
+  await mkdir(join(root, ".vibe-coding"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const mocked = runtime(root);
+  let cwd = root;
+  let untrusted = false;
+  mocked.readThreadIdentity = async (threadId) => ({
+    ...identity(threadId, cwd),
+    agentRole: untrusted ? "worker" : null,
+  });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const model = (action: "get" | "initialize", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `boundary-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    const cold = (await native()).result as {
+      task: TaskState | null;
+      taskSourcePending?: boolean;
+      heartbeatPending?: boolean;
+      presentation: { pending: boolean; cached: boolean };
+    };
+    assert.equal(cold.task, null);
+    assert.equal(cold.presentation.pending, true);
+    assert.equal(cold.presentation.cached, false);
+    assert.equal(cold.taskSourcePending, true);
+    assert.equal(cold.heartbeatPending, true);
+    const canonicalEmpty = (await model("get", {})).result as {
+      taskSourcePending?: boolean;
+      heartbeatPending?: boolean;
+    };
+    const empty = (await native()).result as {
+      task: TaskState | null;
+      taskSourcePending?: boolean;
+      heartbeatPending?: boolean;
+      presentation: { cached: boolean };
+    };
+    assert.equal(empty.task, null);
+    assert.equal(empty.presentation.cached, true);
+    assert.equal(empty.taskSourcePending, canonicalEmpty.taskSourcePending);
+    assert.equal(empty.heartbeatPending, canonicalEmpty.heartbeatPending);
+    await model("initialize", {
+      requestId: "seed",
+      expectedRevision: 0,
+      title: "Private first project",
+      reason: "Boundary test",
+      objectives: [{ id: "I1", title: "One" }],
+    });
+    await model("get", {});
+    const initial = (await native()).result as { task: TaskState; presentation: { scope: string } };
+    assert.equal(initial.task.title, "Private first project");
+    untrusted = true;
+    await assert.rejects(native(), hasCode("TASK_THREAD_UNTRUSTED"));
+    untrusted = false;
+    await writeFile(
+      join(root, ".vibe-coding", "project.config.json"),
+      JSON.stringify({ optional: { "task-progress": false } }),
+    );
+    assert.deepEqual((await native()).result, { enabled: false, task: null, heartbeat: null });
+    await writeFile(
+      join(root, ".vibe-coding", "project.config.json"),
+      JSON.stringify({ optional: { "task-progress": true } }),
+    );
+    const reenabled = (await native()).result as {
+      task: TaskState | null;
+      presentation: { cached: boolean };
+    };
+    assert.equal(reenabled.task, null);
+    assert.equal(reenabled.presentation.cached, false);
+    cwd = moved;
+    const afterMove = (await native()).result as {
+      task: TaskState | null;
+      presentation: { scope: string; cached: boolean };
+    };
+    assert.notEqual(afterMove.presentation.scope, initial.presentation.scope);
+    assert.equal(afterMove.task, null);
+    assert.equal(afterMove.presentation.cached, false);
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(moved, { recursive: true, force: true });
+  }
+});
+
+test("a newer mutation wins an older pending display read and writes still validate the journal", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-write-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const originalGet = KitTaskStore.prototype.get;
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  let release!: () => void;
+  let captured!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const capturedRead = new Promise<void>((resolveCapture) => {
+    captured = resolveCapture;
+  });
+  let holdNext = false;
+  KitTaskStore.prototype.get = async function (threadId) {
+    const value = await originalGet.call(this, threadId);
+    if (holdNext) {
+      holdNext = false;
+      captured();
+      await gate;
+    }
+    return value;
+  };
+  let call = 0;
+  const model = (action: "get" | "initialize" | "update", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `race-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    await model("initialize", {
+      requestId: "seed",
+      expectedRevision: 0,
+      title: "Original",
+      reason: "Race test",
+      objectives: [{ id: "I1", title: "One" }],
+    });
+    const before = (await model("get", {})).result as { task: TaskState };
+    now += 5_001;
+    holdNext = true;
+    await native();
+    await capturedRead;
+    await model("update", {
+      requestId: "newer",
+      expectedRevision: before.task.revision,
+      reason: "Newer",
+      changes: [{ targetId: "I1", status: "active" }],
+    });
+    release();
+    const current = (await native()).result as { task: TaskState };
+    assert.equal(current.task.revision, before.task.revision + 1);
+    await assert.rejects(
+      model("update", {
+        requestId: "stale",
+        expectedRevision: before.task.revision,
+        reason: "Stale",
+        changes: [{ targetId: "I1", status: "active" }],
+      }),
+      hasCode("TASK_REVISION_CONFLICT"),
+    );
+    await writeFile(
+      eventPath(join(root, ".workspace", "codex-task-progress"), "chat-A"),
+      "corrupt\n",
+    );
+    await assert.rejects(
+      model("update", {
+        requestId: "corrupt",
+        expectedRevision: current.task.revision,
+        reason: "Corrupt journal",
+        changes: [{ targetId: "I1", status: "active" }],
+      }),
+    );
+  } finally {
+    release();
+    Date.now = originalNow;
+    KitTaskStore.prototype.get = originalGet;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

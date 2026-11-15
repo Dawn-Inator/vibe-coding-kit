@@ -61,6 +61,8 @@ if (new URL(location.href).searchParams.has('pending')) window.currentResponse={
 window.noIdentity=false;
 window.noTask=false;
 window.currentThreadId='conversation-verified-by-tool';
+window.getError=null;
+window.historyError=null;
 window.holdGet=false;
 window.releaseHeldGet=null;
 window.archiveResponse=null;
@@ -105,6 +107,10 @@ window.addEventListener('message', async (event) => {
       result={content:[{type:'text',text:JSON.stringify({ok:true,result:{...responseWithoutTask,heartbeatHistory:{wakes:[],nextCursor:null,total:0,sourcePath:window.currentResponse.heartbeat?.sourcePath}}})}],_meta:{'codex-task-progress/threadId':window.currentThreadId}};
     } else {
       result={content:[{type:'text',text:JSON.stringify({ok:false,summary:'Unexpected tool call.'})}],isError:true};
+    }
+    if ((name === 'task_progress_get' && window.getError) || (name === 'task_progress_history' && window.historyError)) {
+      const failure = name === 'task_progress_get' ? window.getError : window.historyError;
+      result = { content: [{type:'text', text:JSON.stringify({ok:false,...failure})}], isError:true };
     }
     // Snapshot the response and identity when the request arrives, before delaying delivery.
     result=JSON.parse(JSON.stringify(result));
@@ -276,6 +282,194 @@ test("native panel MCP Apps integration", async (t) => {
           "/?pending",
           true,
         ),
+    );
+
+    await t.test("scoped cached views restore immediately and stay isolated", () =>
+      scenario(
+        async (page, frame) => {
+          const present = (scope, pending = false, error) => ({
+            scope,
+            pending,
+            cached: false,
+            updatedAt: 10,
+            ...(error ? { error } : {}),
+          });
+          await frame.locator(".summary .main").waitFor();
+          await page.evaluate((presentation) => {
+            window.currentResponse = { ...window.currentResponse, presentation };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          }, present("project-a"));
+          await frame.getByRole("button", { name: "History" }).click();
+          await frame.getByText("OLD HISTORY", { exact: false }).waitFor();
+          await page.evaluate((presentation) => {
+            window.deliverToolResult("thread-b", {
+              ...window.currentResponse,
+              presentation,
+              task: { ...window.currentResponse.task, threadId: "thread-b", title: "Project B" },
+            });
+          }, present("project-b"));
+          await waitForPanelThread(page, "thread-b");
+          await page.evaluate(
+            (presentation) => {
+              window.holdGet = true;
+              window.deliverToolResult("conversation-verified-by-tool", {
+                task: null,
+                heartbeat: null,
+                presentation,
+              });
+            },
+            present("project-a", true),
+          );
+          await frame.getByRole("heading", { name: "Task history" }).waitFor({ timeout: 1_000 });
+          await frame.getByText("OLD HISTORY", { exact: false }).waitFor({ timeout: 1_000 });
+          await page.clock.fastForward(150);
+          await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+          await page.locator("#app").evaluate((iframe) => {
+            Object.defineProperty(iframe.contentDocument, "visibilityState", {
+              configurable: true,
+              value: "hidden",
+            });
+            iframe.contentDocument.dispatchEvent(new Event("visibilitychange"));
+            Object.defineProperty(iframe.contentDocument, "visibilityState", {
+              configurable: true,
+              value: "visible",
+            });
+            iframe.contentDocument.dispatchEvent(new Event("visibilitychange"));
+          });
+          await frame.getByText("OLD HISTORY", { exact: false }).waitFor({ timeout: 1_000 });
+          await page.evaluate(
+            (presentation) => {
+              window.deliverToolResult("conversation-verified-by-tool", {
+                task: null,
+                heartbeat: null,
+                presentation,
+              });
+            },
+            present("project-c", true),
+          );
+          await page.waitForFunction(() => {
+            const panel = document
+              .getElementById("app")
+              .contentWindow.document.querySelector("codex-task-panel");
+            return panel.data.task === null;
+          });
+          assert.equal(await frame.getByText("OLD HISTORY", { exact: false }).count(), 0);
+        },
+        "",
+        true,
+      ),
+    );
+
+    await t.test(
+      "presentation errors keep valid data visible; disabled and untrusted responses invalidate it",
+      () =>
+        scenario(async (page, frame) => {
+          await frame.locator(".summary .main").waitFor();
+          await page.evaluate(() => {
+            const presentation = {
+              scope: "project-a",
+              pending: false,
+              cached: false,
+              updatedAt: 10,
+            };
+            window.currentResponse = { ...window.currentResponse, presentation };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+            window.deliverToolResult(window.currentThreadId, {
+              task: null,
+              heartbeat: null,
+              presentation: { ...presentation, error: "Backend unavailable" },
+            });
+          });
+          await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
+          await frame.getByText("Backend unavailable", { exact: false }).first().waitFor();
+          await page.evaluate(() =>
+            window.deliverToolResult(window.currentThreadId, {
+              task: null,
+              heartbeat: null,
+              enabled: false,
+            }),
+          );
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.enabled === false,
+          );
+          await page.evaluate(() =>
+            window.deliverToolResult(window.currentThreadId, {
+              task: null,
+              heartbeat: null,
+              presentation: { scope: "project-a", pending: true, cached: false, updatedAt: null },
+            }),
+          );
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.enabled !== false,
+          );
+          assert.equal(await frame.getByRole("heading", { name: "Native task panel" }).count(), 0);
+          await page.evaluate(() => window.deliverToolResult(null, window.currentResponse));
+          await frame
+            .getByRole("alert")
+            .getByText(/Trusted conversation identity/)
+            .waitFor();
+        }),
+    );
+
+    await t.test("identity failure codes clear snapshots even with neutral summaries", () =>
+      scenario(async (page, frame) => {
+        for (const failure of [
+          {
+            code: "TASK_THREAD_UNTRUSTED",
+            summary: "Native task read requires a verified user chat",
+          },
+          {
+            code: "CODEX_REQUEST_THREAD_UNTRUSTED",
+            summary: "Goal Progress only accepts a main user task.",
+          },
+          { code: "UNRECOGNIZED", summary: "Temporarily unavailable." },
+        ]) {
+          await page.evaluate(() => {
+            window.getError = null;
+            window.currentResponse = {
+              ...window.currentResponse,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
+          await page.evaluate((value) => {
+            window.getError = value;
+          }, failure);
+          await frame.locator(".panel-head .panel-refresh").click();
+          await frame.getByRole("alert").getByText(failure.summary, { exact: false }).waitFor();
+          assert.equal(await frame.getByRole("heading", { name: "Native task panel" }).count(), 0);
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((panel) => panel.threadId),
+            null,
+          );
+        }
+        await page.evaluate(() => {
+          window.getError = null;
+          window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          window.historyError = {
+            code: "CODEX_REQUEST_THREAD_UNTRUSTED",
+            summary: "Goal Progress only accepts a main user task.",
+          };
+        });
+        await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
+        await frame.getByRole("button", { name: "History" }).click();
+        await frame
+          .getByRole("alert")
+          .getByText("Goal Progress only accepts a main user task.", { exact: false })
+          .waitFor();
+        assert.equal(
+          await frame.locator("codex-task-panel").evaluate((panel) => panel.threadId),
+          null,
+        );
+        assert.equal(await frame.getByRole("heading", { name: "Native task panel" }).count(), 0);
+      }),
     );
 
     await t.test("native archive is lazy and uses trusted tool identity", async () => {

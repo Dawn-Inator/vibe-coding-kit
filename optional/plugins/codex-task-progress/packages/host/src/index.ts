@@ -4,6 +4,10 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
+import {
+  ReadOnlySnapshotCache,
+  taskPresentationScope,
+} from "vibe-coding-kit/src/tasks/presentation-cache.mjs";
 import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
 import { resolveVerifiedCodexCli } from "../../../platform/macos/src/plugin-controller.js";
@@ -268,6 +272,10 @@ export class GoalProgressHelper {
   readonly #logger: GoalProgressLogger;
   readonly #store: GoalEventStore;
   readonly #workspaceStorage: WorkspaceTaskStorage;
+  readonly #taskPresentation = new ReadOnlySnapshotCache<{
+    revision: number | null;
+    result: Record<string, unknown>;
+  }>({ now: () => Date.now() });
   readonly #runtime: CodexAppServerRuntime;
   readonly #sessionCoordinator: GoalProgressSessionCoordinator;
   readonly #enableGoalWatch: boolean;
@@ -1287,24 +1295,33 @@ export class GoalProgressHelper {
         );
       }
     };
-    const logSlowTask = (threadId: string) => {
-      const durationMs = Math.min(60_000, Math.round(performance.now() - diagnosticStartedAt));
+    const logSlowTask = (threadId: string, backgroundStartedAt?: number) => {
+      const durationMs = Math.min(
+        60_000,
+        Math.round(performance.now() - (backgroundStartedAt ?? diagnosticStartedAt)),
+      );
+      const prefix = backgroundStartedAt === undefined ? "TASK_PERF" : "TASK_BACKGROUND_PERF";
       if (durationMs < TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS) return;
       const threadKey = hashGoalProgressIdentity(threadId);
       void this.#log({
         level: "info",
         event: "ipc.response",
-        code: "TASK_PERF_TOTAL",
+        code: `${prefix}_TOTAL`,
         durationMs,
         threadKey,
       });
       for (const stage of TASK_DIAGNOSTIC_STAGES) {
+        if (
+          backgroundStartedAt !== undefined &&
+          (stage === "native-identity" || stage === "project-preferences")
+        )
+          continue;
         const stageDuration = stageDurations[stage];
         if (stageDuration === undefined) continue;
         void this.#log({
           level: "info",
           event: "ipc.response",
-          code: `TASK_PERF_${stage.toUpperCase().replaceAll("-", "_")}`,
+          code: `${prefix}_${stage.toUpperCase().replaceAll("-", "_")}`,
           durationMs: stageDuration,
           threadKey,
         });
@@ -1359,7 +1376,7 @@ export class GoalProgressHelper {
       input = request.params.input;
     }
     // Use the same nearest-Git-boundary rule as heartbeat discovery, before storage is opened.
-    const projectEnabled = await measureStage("project-preferences", async () => {
+    const project = await measureStage("project-preferences", async () => {
       const initial = resolve(cwd);
       let project = initial;
       while (true) {
@@ -1378,9 +1395,15 @@ export class GoalProgressHelper {
         project = parent;
       }
       project = await realpath(project);
-      return readOptionalGroupPreference(project, "task-progress") !== false;
+      return {
+        root: project,
+        enabled: readOptionalGroupPreference(project, "task-progress") !== false,
+      };
     });
-    if (!projectEnabled) {
+    const canonicalCwd = await realpath(cwd);
+    const scope = taskPresentationScope({ threadId, cwd: canonicalCwd, projectRoot: project.root });
+    if (!project.enabled) {
+      this.#taskPresentation.delete(scope);
       if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
@@ -1389,323 +1412,444 @@ export class GoalProgressHelper {
       logSlowTask(threadId);
       return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
     }
-    const workspace = await measureStage("workspace-routing", () =>
-      this.#workspaceStorage.forThread(threadId, cwd),
-    );
-    const { taskStore, heartbeat: heartbeatService } = workspace;
-    const execution = projectTaskExecution(nativeStatus);
-    let result: unknown;
-    let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
-    let heartbeat: Awaited<ReturnType<typeof heartbeatService.projectView>> | null = null;
-    let heartbeatPending = false;
-    if (action === "get")
-      sourceTask = await measureStage("task-projection", () =>
-        heartbeatService.taskProjection(threadId, cwd),
+    const canonicalRead = async (
+      backgroundStartedAt?: number,
+    ): Promise<{
+      revision: number | null;
+      result: Record<string, unknown>;
+    }> => {
+      const workspace = await measureStage("workspace-routing", () =>
+        this.#workspaceStorage.forThread(threadId, cwd),
       );
-    else {
-      [sourceTask, heartbeat] = await Promise.all([
-        measureStage("task-projection", () =>
-          heartbeatService.taskProjection(threadId, cwd, {
-            forceDiscovery: [
-              "initialize",
-              "update",
-              "rescope",
-              "complete",
-              "bind-heartbeat",
-            ].includes(action),
-          }),
-        ),
-        measureStage("project-view", () => heartbeatService.projectView(cwd)),
-      ]);
-    }
-    let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
-    let localTaskRead = false;
-    if (
-      ["initialize", "update", "rescope", "complete", "bind-heartbeat"].includes(action) &&
-      sourceTask.status === "pending"
-    )
-      throw new GoalProgressIpcHandlerError(
-        "TASK_SOURCE_UNAVAILABLE",
-        "The Kit task source is refreshing. Retry after discovery completes.",
-      );
-    if (action === "bind-heartbeat") {
-      await workspace.ensureWritable();
-      const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
-      await measureStage("local-task-store", () => heartbeatService.bind(threadId, bind.path, cwd));
-      sourceTask = await measureStage("task-projection", () =>
-        heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: true }),
-      );
-    }
-    if (
-      ["initialize", "update", "rescope", "complete"].includes(action) &&
-      sourceTask.status === "error" &&
-      !sourceTask.sourcePath
-    )
-      throw new GoalProgressIpcHandlerError(
-        "TASK_SOURCE_UNAVAILABLE",
-        `The Kit heartbeat task source could not be checked${sourceTask.error ? `: ${sourceTask.error}` : ""}. Restore the Kit source helpers or resolve the heartbeat read error before writing a local checklist.`,
-      );
-    if (
-      ["initialize", "update", "rescope", "complete"].includes(action) &&
-      sourceTask.status === "pending-selection"
-    )
-      throw new GoalProgressIpcHandlerError(
-        "TASK_SOURCE_SELECTION_REQUIRED",
-        `${sourceTask.error ?? "The current-task Kit source relation is unresolved."} Do not create or change a parallel local checklist until the runtime resolves the task-source relation.`,
-      );
-    if (["initialize", "update", "rescope", "complete"].includes(action) && sourceTask.sourcePath)
-      throw new GoalProgressIpcHandlerError(
-        "TASK_SOURCE_READ_ONLY",
-        `This task is projected from read-only current-task Kit source ${sourceTask.sourcePath}. Update that canonical source through the project workflow; do not create a parallel local checklist.`,
-      );
-    if (["initialize", "update", "rescope", "complete"].includes(action)) {
+      const { taskStore, heartbeat: heartbeatService } = workspace;
+      const execution = projectTaskExecution(nativeStatus);
+      let result: unknown;
+      let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
+      let heartbeat: Awaited<ReturnType<typeof heartbeatService.projectView>> | null = null;
+      let heartbeatPending = false;
+      if (action === "get")
+        sourceTask = await measureStage("task-projection", () =>
+          heartbeatService.taskProjection(threadId, cwd),
+        );
+      else {
+        [sourceTask, heartbeat] = await Promise.all([
+          measureStage("task-projection", () =>
+            heartbeatService.taskProjection(threadId, cwd, {
+              forceDiscovery: [
+                "initialize",
+                "update",
+                "rescope",
+                "complete",
+                "bind-heartbeat",
+              ].includes(action),
+            }),
+          ),
+          measureStage("project-view", () => heartbeatService.projectView(cwd)),
+        ]);
+      }
+      let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
+      let localTaskRead = false;
       if (
-        typeof taskStore.complete !== "function" ||
-        typeof taskStore.archives !== "function" ||
-        typeof taskStore.archive !== "function"
+        ["initialize", "update", "rescope", "complete", "bind-heartbeat"].includes(action) &&
+        sourceTask.status === "pending"
       )
         throw new GoalProgressIpcHandlerError(
-          "TASK_LIFECYCLE_UNAVAILABLE",
-          "Task lifecycle support is unavailable",
+          "TASK_SOURCE_UNAVAILABLE",
+          "The Kit task source is refreshing. Retry after discovery completes.",
         );
-      await workspace.ensureWritable();
-    }
-    if (action === "initialize")
-      result = await measureStage("local-task-store", () =>
-        taskStore.initialize(threadId, {
-          ...TaskInitializeInputSchema.parse({ ...(input as object), lifecycle: true }),
-          lifecycle: true as const,
-        }),
-      );
-    else if (action === "update")
-      result = await measureStage("local-task-store", () =>
-        taskStore.update(threadId, {
-          ...TaskUpdateInputSchema.parse({ ...(input as object), lifecycle: true }),
-          lifecycle: true as const,
-        }),
-      );
-    else if (action === "rescope") {
-      const parsed = TaskRescopeInputSchema.parse({ ...(input as object), lifecycle: true });
-      const rescopeInput = {
-        lifecycle: true as const,
-        requestId: parsed.requestId,
-        expectedRevision: parsed.expectedRevision,
-        reason: parsed.reason,
-        objectives: parsed.objectives,
-        ...(parsed.title === undefined ? {} : { title: parsed.title }),
-      };
-      result = await measureStage("local-task-store", () =>
-        taskStore.rescope(threadId, rescopeInput),
-      );
-    } else if (action === "complete") {
-      if (typeof taskStore.complete !== "function")
-        throw new GoalProgressIpcHandlerError(
-          "TASK_LIFECYCLE_UNAVAILABLE",
-          "Task lifecycle support is unavailable",
+      if (action === "bind-heartbeat") {
+        await workspace.ensureWritable();
+        const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
+        await measureStage("local-task-store", () =>
+          heartbeatService.bind(threadId, bind.path, cwd),
         );
-      result = await measureStage("local-task-store", () =>
-        taskStore.complete(threadId, TaskCompleteInputSchema.parse(input)),
-      );
-    } else {
-      if (action === "get") {
-        const snapshot = await measureStage("project-view-snapshot", () =>
-          heartbeatService.projectViewSnapshot(cwd),
+        sourceTask = await measureStage("task-projection", () =>
+          heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: true }),
         );
-        heartbeat = snapshot.view;
-        heartbeatPending = snapshot.pending;
       }
-      localTaskRead = !(
-        sourceTask.sourcePath ||
-        sourceTask.status === "error" ||
-        sourceTask.status === "pending" ||
+      if (
+        ["initialize", "update", "rescope", "complete"].includes(action) &&
+        sourceTask.status === "error" &&
+        !sourceTask.sourcePath
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_SOURCE_UNAVAILABLE",
+          `The Kit heartbeat task source could not be checked${sourceTask.error ? `: ${sourceTask.error}` : ""}. Restore the Kit source helpers or resolve the heartbeat read error before writing a local checklist.`,
+        );
+      if (
+        ["initialize", "update", "rescope", "complete"].includes(action) &&
         sourceTask.status === "pending-selection"
-      );
-      localTaskState = localTaskRead
-        ? await measureStage("local-task-store", () => taskStore.get(threadId))
-        : null;
-      const task = sourceTask.sourcePath
-        ? sourceTask.task
-        : sourceTask.status === "error" ||
-            sourceTask.status === "pending" ||
-            sourceTask.status === "pending-selection"
-          ? null
-          : localTaskState;
-      const history =
-        action === "history"
-          ? sourceTask.status === "pending"
-            ? (() => {
-                // Until the initial source resolution succeeds, neither a second scan nor a
-                // local-history read can determine which authority owns this request.
-                z.object({
-                  cursor: z.string().optional(),
-                  limit: z.number().int().min(1).max(100).optional(),
-                }).parse(input ?? {});
-                return {
-                  events: [],
-                  nextCursor: null,
-                  wakes: [],
-                  total: 0,
-                  source: { kind: "kit-heartbeat", path: null, readOnly: true, retryable: true },
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_SOURCE_SELECTION_REQUIRED",
+          `${sourceTask.error ?? "The current-task Kit source relation is unresolved."} Do not create or change a parallel local checklist until the runtime resolves the task-source relation.`,
+        );
+      if (["initialize", "update", "rescope", "complete"].includes(action) && sourceTask.sourcePath)
+        throw new GoalProgressIpcHandlerError(
+          "TASK_SOURCE_READ_ONLY",
+          `This task is projected from read-only current-task Kit source ${sourceTask.sourcePath}. Update that canonical source through the project workflow; do not create a parallel local checklist.`,
+        );
+      if (["initialize", "update", "rescope", "complete"].includes(action)) {
+        if (
+          typeof taskStore.complete !== "function" ||
+          typeof taskStore.archives !== "function" ||
+          typeof taskStore.archive !== "function"
+        )
+          throw new GoalProgressIpcHandlerError(
+            "TASK_LIFECYCLE_UNAVAILABLE",
+            "Task lifecycle support is unavailable",
+          );
+        await workspace.ensureWritable();
+      }
+      if (action === "initialize")
+        result = await measureStage("local-task-store", () =>
+          taskStore.initialize(threadId, {
+            ...TaskInitializeInputSchema.parse({ ...(input as object), lifecycle: true }),
+            lifecycle: true as const,
+          }),
+        );
+      else if (action === "update")
+        result = await measureStage("local-task-store", () =>
+          taskStore.update(threadId, {
+            ...TaskUpdateInputSchema.parse({ ...(input as object), lifecycle: true }),
+            lifecycle: true as const,
+          }),
+        );
+      else if (action === "rescope") {
+        const parsed = TaskRescopeInputSchema.parse({ ...(input as object), lifecycle: true });
+        const rescopeInput = {
+          lifecycle: true as const,
+          requestId: parsed.requestId,
+          expectedRevision: parsed.expectedRevision,
+          reason: parsed.reason,
+          objectives: parsed.objectives,
+          ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        };
+        result = await measureStage("local-task-store", () =>
+          taskStore.rescope(threadId, rescopeInput),
+        );
+      } else if (action === "complete") {
+        if (typeof taskStore.complete !== "function")
+          throw new GoalProgressIpcHandlerError(
+            "TASK_LIFECYCLE_UNAVAILABLE",
+            "Task lifecycle support is unavailable",
+          );
+        result = await measureStage("local-task-store", () =>
+          taskStore.complete(threadId, TaskCompleteInputSchema.parse(input)),
+        );
+      } else {
+        if (action === "get") {
+          const snapshot = await measureStage("project-view-snapshot", () =>
+            heartbeatService.projectViewSnapshot(cwd),
+          );
+          heartbeat = snapshot.view;
+          heartbeatPending = snapshot.pending;
+        }
+        localTaskRead = !(
+          sourceTask.sourcePath ||
+          sourceTask.status === "error" ||
+          sourceTask.status === "pending" ||
+          sourceTask.status === "pending-selection"
+        );
+        localTaskState = localTaskRead
+          ? await measureStage("local-task-store", () => taskStore.get(threadId))
+          : null;
+        const task = sourceTask.sourcePath
+          ? sourceTask.task
+          : sourceTask.status === "error" ||
+              sourceTask.status === "pending" ||
+              sourceTask.status === "pending-selection"
+            ? null
+            : localTaskState;
+        const history =
+          action === "history"
+            ? sourceTask.status === "pending"
+              ? (() => {
+                  // Until the initial source resolution succeeds, neither a second scan nor a
+                  // local-history read can determine which authority owns this request.
+                  z.object({
+                    cursor: z.string().optional(),
+                    limit: z.number().int().min(1).max(100).optional(),
+                  }).parse(input ?? {});
+                  return {
+                    events: [],
+                    nextCursor: null,
+                    wakes: [],
+                    total: 0,
+                    source: { kind: "kit-heartbeat", path: null, readOnly: true, retryable: true },
+                  };
+                })()
+              : sourceTask.sourcePath ||
+                  sourceTask.status === "error" ||
+                  sourceTask.status === "pending-selection"
+                ? await (async () => {
+                    const options = z
+                      .object({
+                        cursor: z.string().optional(),
+                        limit: z.number().int().min(1).max(10).optional(),
+                      })
+                      .parse(input ?? {});
+                    const page = await heartbeatService.history(threadId, cwd, {
+                      ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                      ...(options.limit === undefined ? {} : { limit: options.limit }),
+                    });
+                    return {
+                      events: [],
+                      nextCursor: page.nextCursor,
+                      wakes: page.wakes,
+                      total: page.total,
+                      source: {
+                        kind: "kit-heartbeat",
+                        path: page.sourcePath,
+                        readOnly: true,
+                        ...(page.historyPath ? { historyPath: page.historyPath } : {}),
+                        ...(page.contentHash ? { contentHash: page.contentHash } : {}),
+                        ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
+                        ...(page.error ? { error: page.error } : {}),
+                        ...(page.retryable ? { retryable: true } : {}),
+                      },
+                    };
+                  })()
+                : await taskStore.history(
+                    threadId,
+                    (() => {
+                      const options = z
+                        .object({
+                          cursor: z.string().optional(),
+                          limit: z.number().int().min(1).max(100).optional(),
+                        })
+                        .parse(input ?? {});
+                      return {
+                        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                        ...(options.limit === undefined ? {} : { limit: options.limit }),
+                      };
+                    })(),
+                  )
+            : undefined;
+        const archive =
+          action === "archive"
+            ? await (async () => {
+                const options = TaskArchiveInputSchema.parse(input ?? {});
+                if (!localTaskRead)
+                  return {
+                    available: false,
+                    kind: "tasks" as const,
+                    tasks: [],
+                    total: 0,
+                    nextCursor: null,
+                    threadId,
+                    currentTaskId: null,
+                    reason: "Formal task cycle archives are unavailable for this task source.",
+                  };
+                if (
+                  typeof taskStore.archives !== "function" ||
+                  typeof taskStore.archive !== "function"
+                )
+                  throw new GoalProgressIpcHandlerError(
+                    "TASK_LIFECYCLE_UNAVAILABLE",
+                    "Task archive support is unavailable",
+                  );
+                const { taskId } = options;
+                const pageOptions = {
+                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                  ...(options.limit === undefined ? {} : { limit: options.limit }),
                 };
+                const page = taskId
+                  ? await taskStore.archive(threadId, taskId, pageOptions)
+                  : await taskStore.archives(threadId, pageOptions);
+                return { ...page, available: true, threadId };
               })()
-            : sourceTask.sourcePath ||
-                sourceTask.status === "error" ||
-                sourceTask.status === "pending-selection"
-              ? await (async () => {
+            : undefined;
+        const heartbeatHistory =
+          action === "heartbeat-history"
+            ? await heartbeatService.projectHistory(
+                cwd,
+                (() => {
                   const options = z
                     .object({
                       cursor: z.string().optional(),
                       limit: z.number().int().min(1).max(10).optional(),
                     })
                     .parse(input ?? {});
-                  const page = await heartbeatService.history(threadId, cwd, {
+                  return {
                     ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
                     ...(options.limit === undefined ? {} : { limit: options.limit }),
-                  });
-                  return {
-                    events: [],
-                    nextCursor: page.nextCursor,
-                    wakes: page.wakes,
-                    total: page.total,
-                    source: {
-                      kind: "kit-heartbeat",
-                      path: page.sourcePath,
-                      readOnly: true,
-                      ...(page.historyPath ? { historyPath: page.historyPath } : {}),
-                      ...(page.contentHash ? { contentHash: page.contentHash } : {}),
-                      ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
-                      ...(page.error ? { error: page.error } : {}),
-                      ...(page.retryable ? { retryable: true } : {}),
-                    },
                   };
-                })()
-              : await taskStore.history(
-                  threadId,
-                  (() => {
-                    const options = z
-                      .object({
-                        cursor: z.string().optional(),
-                        limit: z.number().int().min(1).max(100).optional(),
-                      })
-                      .parse(input ?? {});
-                    return {
-                      ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-                      ...(options.limit === undefined ? {} : { limit: options.limit }),
-                    };
-                  })(),
-                )
-          : undefined;
-      const archive =
-        action === "archive"
-          ? await (async () => {
-              const options = TaskArchiveInputSchema.parse(input ?? {});
-              if (!localTaskRead)
-                return {
-                  available: false,
-                  kind: "tasks" as const,
-                  tasks: [],
-                  total: 0,
-                  nextCursor: null,
-                  threadId,
-                  currentTaskId: null,
-                  reason: "Formal task cycle archives are unavailable for this task source.",
-                };
-              if (
-                typeof taskStore.archives !== "function" ||
-                typeof taskStore.archive !== "function"
+                })(),
               )
-                throw new GoalProgressIpcHandlerError(
-                  "TASK_LIFECYCLE_UNAVAILABLE",
-                  "Task archive support is unavailable",
-                );
-              const { taskId } = options;
-              const pageOptions = {
-                ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-                ...(options.limit === undefined ? {} : { limit: options.limit }),
-              };
-              const page = taskId
-                ? await taskStore.archive(threadId, taskId, pageOptions)
-                : await taskStore.archives(threadId, pageOptions);
-              return { ...page, available: true, threadId };
-            })()
-          : undefined;
-      const heartbeatHistory =
-        action === "heartbeat-history"
-          ? await heartbeatService.projectHistory(
-              cwd,
-              (() => {
-                const options = z
-                  .object({
-                    cursor: z.string().optional(),
-                    limit: z.number().int().min(1).max(10).optional(),
-                  })
-                  .parse(input ?? {});
-                return {
-                  ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-                  ...(options.limit === undefined ? {} : { limit: options.limit }),
-                };
-              })(),
-            )
-          : undefined;
-      result = {
-        task,
-        heartbeat,
-        ...(heartbeatPending ? { heartbeatPending: true } : {}),
-        ...(sourceTask.status === "pending" ? { taskSourcePending: true } : {}),
-        taskSource:
-          sourceTask.sourcePath ||
-          sourceTask.status === "error" ||
-          sourceTask.status === "pending" ||
-          sourceTask.status === "pending-selection"
-            ? {
-                status: sourceTask.status,
-                ...(sourceTask.sourcePath ? { path: sourceTask.sourcePath } : {}),
-                readOnly: true,
-                ...(sourceTask.historyPath ? { historyPath: sourceTask.historyPath } : {}),
-                ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
-                ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
-                ...(sourceTask.error ? { error: sourceTask.error } : {}),
-                ...(sourceTask.retryable ? { retryable: true } : {}),
-              }
-            : sourceTask.status === "candidates"
-              ? { status: "candidates", readOnly: true }
-              : null,
-        execution,
-        ...(history ? { history } : {}),
-        ...(archive ? { archive } : {}),
-        ...(heartbeatHistory ? { heartbeatHistory } : {}),
-      };
-    }
-    const state =
-      sourceTask.sourcePath ||
-      sourceTask.status === "error" ||
-      sourceTask.status === "pending" ||
-      sourceTask.status === "pending-selection"
-        ? null
-        : localTaskRead
-          ? localTaskState
-          : await measureStage("local-task-store", () => taskStore.get(threadId));
-    logSlowTask(threadId);
-    return {
-      revision: sourceTask.sourcePath
-        ? (sourceTask.task?.revision ?? null)
-        : sourceTask.status === "error" ||
+            : undefined;
+        result = {
+          task,
+          heartbeat,
+          ...(heartbeatPending ? { heartbeatPending: true } : {}),
+          ...(sourceTask.status === "pending" ? { taskSourcePending: true } : {}),
+          taskSource:
+            sourceTask.sourcePath ||
+            sourceTask.status === "error" ||
             sourceTask.status === "pending" ||
             sourceTask.status === "pending-selection"
+              ? {
+                  status: sourceTask.status,
+                  ...(sourceTask.sourcePath ? { path: sourceTask.sourcePath } : {}),
+                  readOnly: true,
+                  ...(sourceTask.historyPath ? { historyPath: sourceTask.historyPath } : {}),
+                  ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
+                  ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
+                  ...(sourceTask.error ? { error: sourceTask.error } : {}),
+                  ...(sourceTask.retryable ? { retryable: true } : {}),
+                }
+              : sourceTask.status === "candidates"
+                ? { status: "candidates", readOnly: true }
+                : null,
+          execution,
+          ...(history ? { history } : {}),
+          ...(archive ? { archive } : {}),
+          ...(heartbeatHistory ? { heartbeatHistory } : {}),
+        };
+      }
+      const state =
+        sourceTask.sourcePath ||
+        sourceTask.status === "error" ||
+        sourceTask.status === "pending" ||
+        sourceTask.status === "pending-selection"
           ? null
-          : (state?.revision ?? null),
-      result: {
-        ...(result as Record<string, unknown>),
-        execution,
-        completionBasis: state && "lifecycle" in state ? "task-lifecycle" : "registered-checklist",
-        archiveCount:
-          sourceTask.sourcePath ||
-          sourceTask.status === "error" ||
-          sourceTask.status === "pending" ||
-          sourceTask.status === "pending-selection"
+          : localTaskRead
+            ? localTaskState
+            : await measureStage("local-task-store", () => taskStore.get(threadId));
+      logSlowTask(threadId, backgroundStartedAt);
+      return {
+        revision: sourceTask.sourcePath
+          ? (sourceTask.task?.revision ?? null)
+          : sourceTask.status === "error" ||
+              sourceTask.status === "pending" ||
+              sourceTask.status === "pending-selection"
             ? null
-            : getTaskArchiveCount(state ?? null),
-        storage: workspace.storage,
+            : (state?.revision ?? null),
+        result: {
+          ...(result as Record<string, unknown>),
+          execution,
+          completionBasis:
+            state && "lifecycle" in state ? "task-lifecycle" : "registered-checklist",
+          archiveCount:
+            sourceTask.sourcePath ||
+            sourceTask.status === "error" ||
+            sourceTask.status === "pending" ||
+            sourceTask.status === "pending-selection"
+              ? null
+              : getTaskArchiveCount(state ?? null),
+          storage: workspace.storage,
+        },
+      };
+    };
+    if (nativeRead && action === "get") {
+      const existing = this.#taskPresentation.peek(scope);
+      const fresh =
+        existing.value !== null &&
+        existing.error === null &&
+        !existing.pending &&
+        existing.updatedAt !== null &&
+        Date.now() - existing.updatedAt < 5_000 &&
+        Date.now() >= existing.updatedAt;
+      const snapshot = fresh
+        ? existing
+        : this.#taskPresentation.read(scope, async () => {
+            const loaded = await canonicalRead(performance.now());
+            const previous = this.#taskPresentation.peek(scope).value;
+            if (
+              previous?.result.history &&
+              JSON.stringify(previous.result.taskSource ?? null) ===
+                JSON.stringify(loaded.result.taskSource ?? null)
+            ) {
+              loaded.result.history = previous.result.history;
+            }
+            return loaded;
+          });
+      const error =
+        snapshot.error == null
+          ? undefined
+          : String(snapshot.error instanceof Error ? snapshot.error.message : snapshot.error).slice(
+              0,
+              300,
+            );
+      const presentationDurationMs = Math.min(
+        60_000,
+        Math.round(performance.now() - diagnosticStartedAt),
+      );
+      if (presentationDurationMs >= TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS) {
+        void this.#log({
+          level: "info",
+          event: "ipc.response",
+          code: "TASK_PERF_PRESENTATION_TOTAL",
+          durationMs: presentationDurationMs,
+          threadKey: hashGoalProgressIdentity(threadId),
+        });
+      }
+      return {
+        revision: snapshot.value?.revision ?? null,
+        result: {
+          ...(snapshot.value?.result ?? { task: null, heartbeat: null }),
+          ...(snapshot.value === null && snapshot.error === null
+            ? { taskSourcePending: true, heartbeatPending: true }
+            : {}),
+          execution: projectTaskExecution(nativeStatus),
+          presentation: {
+            scope,
+            pending: snapshot.pending || (snapshot.value === null && snapshot.error === null),
+            cached: snapshot.value !== null,
+            updatedAt: snapshot.updatedAt,
+            ...(error ? { error } : {}),
+          },
+        },
+      };
+    }
+    const canonical = await canonicalRead();
+    if (action === "get") {
+      this.#taskPresentation.set(scope, canonical);
+    } else if (["initialize", "update", "rescope", "complete"].includes(action)) {
+      // A successful mutation invalidates any older in-flight presentation read.
+      // Only a previously verified display snapshot may supply the other fields.
+      const previous = this.#taskPresentation.peek(scope).value;
+      const state = canonical.result.state;
+      if (previous && state && typeof state === "object") {
+        this.#taskPresentation.set(scope, {
+          revision: canonical.revision,
+          result: {
+            ...previous.result,
+            task: state,
+            execution: canonical.result.execution,
+            archiveCount: canonical.result.archiveCount,
+          },
+        });
+      } else this.#taskPresentation.delete(scope);
+    } else if (action === "bind-heartbeat") {
+      this.#taskPresentation.delete(scope);
+    } else if (
+      action === "history" &&
+      !(
+        input &&
+        typeof input === "object" &&
+        "cursor" in input &&
+        (input as { cursor?: unknown }).cursor
+      )
+    ) {
+      const previous = this.#taskPresentation.peek(scope).value;
+      if (
+        previous &&
+        JSON.stringify(previous.result.taskSource ?? null) ===
+          JSON.stringify(canonical.result.taskSource ?? null)
+      ) {
+        this.#taskPresentation.set(scope, {
+          ...previous,
+          result: { ...previous.result, history: canonical.result.history },
+        });
+      }
+    }
+    const snapshot = this.#taskPresentation.peek(scope);
+    return {
+      ...canonical,
+      result: {
+        ...canonical.result,
+        presentation: { scope, pending: false, cached: false, updatedAt: snapshot.updatedAt },
       },
     };
   }
