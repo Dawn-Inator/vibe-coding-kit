@@ -174,6 +174,7 @@ export class TaskProgressElement extends LitElement {
     threadId: { attribute: false },
     requester: { attribute: false },
     connectionError: { attribute: false },
+    presentation: { attribute: true },
     expanded: { state: true },
     closing: { state: true },
     tab: { state: true },
@@ -192,6 +193,7 @@ export class TaskProgressElement extends LitElement {
   declare threadId: string | null;
   declare requester: TaskPanelRequester | null;
   declare connectionError: string | null;
+  declare presentation: "popover" | "panel";
   declare expanded: boolean;
   declare locale: string;
   private declare tab: "tasks" | "history" | "heartbeat";
@@ -221,7 +223,8 @@ export class TaskProgressElement extends LitElement {
     this.threadId = null;
     this.requester = null;
     this.connectionError = null;
-    this.expanded = persisted("expanded") === "true";
+    this.expanded = false;
+    this.presentation = "popover";
     this.locale = "en";
     this.tab = "tasks";
     this.closing = false;
@@ -330,6 +333,10 @@ export class TaskProgressElement extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // Native MCP Apps are a standalone panel and must not read or write the
+    // ordinary Codex page's persisted popover preference.
+    if (this.presentation === "panel") this.expanded = true;
+    else this.expanded = persisted("expanded") === "true";
     this.ownerDocument.addEventListener("click", this.outsideClick);
     this.ownerDocument.addEventListener("focusin", this.outsideFocus);
     this.ownerDocument.addEventListener("keydown", this.escapeKey);
@@ -424,6 +431,7 @@ export class TaskProgressElement extends LitElement {
   };
 
   private closePanel(restoreFocus = true): void {
+    if (this.presentation === "panel") return;
     if (!this.expanded) return;
     const trigger = this.renderRoot.querySelector<HTMLButtonElement>(
       this.tab === "tasks" ? ".main" : `.${this.tab}-trigger`,
@@ -441,7 +449,7 @@ export class TaskProgressElement extends LitElement {
   }
 
   private async openPanel(view: "tasks" | "history" | "heartbeat"): Promise<void> {
-    if (this.expanded && this.tab === view) {
+    if (this.presentation !== "panel" && this.expanded && this.tab === view) {
       this.closePanel();
       return;
     }
@@ -449,7 +457,7 @@ export class TaskProgressElement extends LitElement {
     this.closing = false;
     this.tab = view;
     this.expanded = true;
-    persist("expanded", "true");
+    if (this.presentation !== "panel") persist("expanded", "true");
     if (view === "history") void this.loadHistory();
     if (view === "heartbeat") this.loadHeartbeatHistoryOnOpen();
     await this.updateComplete;
@@ -476,6 +484,11 @@ export class TaskProgressElement extends LitElement {
     const body = this.renderRoot.querySelector<HTMLElement>(".body");
     const window = this.ownerDocument.defaultView;
     if (!body || !window) return;
+    if (this.presentation === "panel") {
+      body.classList.remove("compact");
+      body.style.removeProperty("max-height");
+      return;
+    }
     const rect = this.getBoundingClientRect();
     const style = window.getComputedStyle(this);
     const composerTop = Number.parseFloat(style.getPropertyValue("--ctp-composer-top"));
@@ -1244,11 +1257,11 @@ export class TaskProgressElement extends LitElement {
       </div>
       <div class="sr-status" role="status" aria-live="polite" aria-atomic="true">${this.connectionError ? this.t("Checklist unavailable", "清单暂不可用") : ""}</div>
       ${
-        this.expanded || this.closing
-          ? html`<div class="body" id="task-popover" role="region" aria-labelledby="panel-title" data-state=${this.closing ? "closing" : "open"} ?inert=${this.closing}>
+        this.expanded || this.closing || this.presentation === "panel"
+          ? html`<div class=${`body${this.presentation === "panel" ? " panel-inline" : ""}`} id="task-popover" role="region" aria-labelledby="panel-title" data-state=${this.closing ? "closing" : "open"} ?inert=${this.closing}>
         <header class="panel-head" data-view=${this.tab}>
           ${this.tab === "heartbeat" ? nothing : html`<div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.t("Recorded changes", "变更记录")}</div>`}
-          <div class="panel-heading">${this.tab === "heartbeat" ? html`<span class="heartbeat-heading-icon">${this.icon("heartbeat")}</span>` : nothing}<h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat ? html`<span class="hb-status" data-status=${this.data.heartbeat.status}>${this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.data.heartbeat.certifiesCurrent ? this.t("Certified", "已认证") : this.t("Not certified", "未认证")}</span>` : nothing}<button class="close-panel" aria-label=${this.t("Close panel", "关闭面板")} @click=${() => this.closePanel()}>${this.icon("close")}</button></div>
+          <div class="panel-heading">${this.tab === "heartbeat" ? html`<span class="heartbeat-heading-icon">${this.icon("heartbeat")}</span>` : nothing}<h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat ? html`<span class="hb-status" data-status=${this.data.heartbeat.status}>${this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.data.heartbeat.certifiesCurrent ? this.t("Certified", "已认证") : this.t("Not certified", "未认证")}</span>` : nothing}${this.presentation === "panel" ? nothing : html`<button class="close-panel" aria-label=${this.t("Close panel", "关闭面板")} @click=${() => this.closePanel()}>${this.icon("close")}</button>`}</div>
           ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : this.tab === "history" ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>` : nothing}
         </header>
         <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>

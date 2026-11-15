@@ -81,6 +81,7 @@
   "optional/content.test.mjs",
   "optional/runtime.test.mjs",
   "optional/task-progress-release.test.mjs",
+  "optional/task-progress-native-panel.test.mjs",
   "optional/task-progress-startup.test.mjs",
   "install/optional.test.mjs"
 ]

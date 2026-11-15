@@ -8,12 +8,13 @@ export const GOAL_PROGRESS_STABLE_HOOK_COMMAND =
 export const GOAL_PROGRESS_STABLE_MCP_LAUNCHER = [
   "#!/bin/sh",
   "set -eu",
+  'base="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"',
   `binary="${INSTALLED_BINARY}"`,
   'if [ ! -x "$binary" ]; then',
   '  echo "GOAL_PROGRESS_UNINSTALLED_OR_DISABLED: run goal-progress install --json" >&2',
   "  exit 1",
   "fi",
-  'exec "$binary" mcp-server "$@"',
+  'GOAL_PROGRESS_PLUGIN_ROOT="$base" exec "$binary" mcp-server "$@"',
   "",
 ].join("\n");
 export const GOAL_PROGRESS_STABLE_HOOK_LAUNCHER = [

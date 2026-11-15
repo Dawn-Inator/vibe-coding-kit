@@ -139,6 +139,16 @@ export const taskPanelStyles = css`
     width: var(--ctp-popover-width, calc(100vw - 24px));
     max-height: var(--ctp-popover-height, calc(100dvh - 24px));
   }
+  .body.panel-inline {
+    position: relative;
+    inset-block-start: auto;
+    inset-inline-start: auto;
+    left: auto;
+    right: auto;
+    width: 100%;
+    max-height: var(--ctp-panel-max-height, min(640px, calc(100dvh - 72px)));
+    margin-top: 8px;
+  }
   .body[data-state="closing"], .body.is-leaving { animation: ctp-panel-leave 130ms ease-in both; pointer-events: none; }
   @keyframes ctp-panel-enter { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   @keyframes ctp-panel-leave { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-4px); } }

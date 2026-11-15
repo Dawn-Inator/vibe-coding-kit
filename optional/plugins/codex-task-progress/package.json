@@ -1,6 +1,6 @@
 {
   "name": "codex-task-progress",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -23,10 +23,11 @@
     "verify": "pnpm verify:public",
     "verify:public": "pnpm lint && pnpm typecheck && pnpm build && pnpm validate:plugin && pnpm validate:hygiene",
     "test": "tsx --test packages/tasks/test/*.test.ts packages/tasks/src/heartbeat.test.ts packages/host/test/*.test.ts packages/codex-adapter/test/*.test.ts packages/mcp/src/task-mcp.test.ts hooks/src/task-hooks.test.ts",
-    "test:ui": "node --test tests/*.test.mjs"
+    "test:ui": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
     "@lucide/icons": "^1.37.0",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "lit": "^3.3.3",
     "vibe-coding-kit": "link:../../..",

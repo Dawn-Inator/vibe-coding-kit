@@ -34,6 +34,12 @@ import {
 } from "../../tasks/src/task-types.js";
 import { completeInitialization, GoalProgressInitializeBusinessSchema } from "./initialization.js";
 import {
+  loadNativePanelHtml,
+  type NativePanelHtmlLoader,
+  TASK_PROGRESS_PANEL_RESOURCE_URI,
+  TASK_PROGRESS_PANEL_TOOL_NAME,
+} from "./native-panel-resource.js";
+import {
   type GoalProgressMcpRequestExtra,
   type RuntimeIdentityErrorCode,
   resolveTrustedToolAuthorization,
@@ -225,6 +231,7 @@ const RuntimeProofConsumeResultSchema = z.object({ valid: z.boolean() }).strict(
 interface GoalProgressMcpServerOptions {
   readonly ipcClient?: GoalProgressIpcClient;
   readonly uninstall?: () => Promise<{ code: string; statusFile: string }>;
+  readonly nativePanelHtmlLoader?: NativePanelHtmlLoader;
 }
 
 function truncateText(value: string, maximumLength: number): string {
@@ -652,6 +659,40 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     }
     return ipcClient;
   };
+  const loadPanelHtml = options.nativePanelHtmlLoader ?? loadNativePanelHtml;
+  server.registerResource(
+    "task-progress-panel",
+    TASK_PROGRESS_PANEL_RESOURCE_URI,
+    {
+      title: "Task Progress Panel",
+      description: "Static, packaged UI for the current chat's task progress.",
+      mimeType: "text/html;profile=mcp-app",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "text/html;profile=mcp-app",
+          text: await loadPanelHtml(),
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: [],
+                resourceDomains: [],
+                baseUriDomains: [],
+                frameDomains: [],
+              },
+              permissions: {},
+            },
+            "openai/ui": {
+              availableDisplayModes: ["inline", "fullscreen"],
+              preferredDisplayMode: "fullscreen",
+            },
+          },
+        },
+      ],
+    }),
+  );
   const resolveToolIdentity = (
     toolName: string,
     input: Record<string, unknown>,
@@ -674,6 +715,13 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       schema: EmptyBusinessSchema,
       description:
         "Read this ordinary chat's task, revision and current project Heartbeat. The project source is displayed automatically. A taskSource path means a related read-only Kit task record; unresolved or stale task sources do not permit parallel local writes. Otherwise initialize only if no local task exists.",
+    },
+    {
+      name: TASK_PROGRESS_PANEL_TOOL_NAME,
+      action: "get",
+      title: "Open Task Progress Panel",
+      schema: EmptyBusinessSchema,
+      description: "Read this chat's task progress for its native panel.",
     },
     {
       name: "task_progress_initialize",
@@ -754,14 +802,33 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         description: tool.description,
         inputSchema: transportSchema,
         annotations: {
-          readOnlyHint: tool.action === "get" || tool.action === "history",
+          readOnlyHint:
+            tool.action === "get" ||
+            tool.action === "history" ||
+            tool.action === "heartbeat-history",
           destructiveHint: false,
           idempotentHint: true,
           openWorldHint: false,
         },
+        ...(tool.name === TASK_PROGRESS_PANEL_TOOL_NAME
+          ? {
+              _meta: {
+                ui: { resourceUri: TASK_PROGRESS_PANEL_RESOURCE_URI },
+                "openai/ui": {
+                  entrypoints: [{ type: "thread" }],
+                },
+              },
+            }
+          : {}),
       },
       async (input, extra) => {
-        const identity = resolveToolIdentity(tool.name, input, extra);
+        // The panel is a presentation entrypoint for the existing read-only get operation.
+        // Reuse its allow-listed identity tool name rather than widening the auth contract.
+        const identity = resolveToolIdentity(
+          tool.name === TASK_PROGRESS_PANEL_TOOL_NAME ? "task_progress_get" : tool.name,
+          input,
+          extra,
+        );
         if (!identity.ok) return runtimeContextError(identity.code);
         const business = tool.schema.safeParse(businessInput(input));
         if (!business.success) {
@@ -789,6 +856,9 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
                 text: JSON.stringify({ ok: true, result: response.result }),
               },
             ],
+            ...(["get", "history", "heartbeat-history"].includes(tool.action)
+              ? { _meta: { "codex-task-progress/threadId": identity.sessionId } }
+              : {}),
           };
         } catch (error) {
           return requestError(error);

@@ -2,6 +2,7 @@ import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { buildNativePanel } from "./build_native_panel.mjs";
 import { kitRevision, kitRoot } from "./kit_root.mjs";
 import { bundleKitTaskGuidance } from "./kit_task_guidance.mjs";
 
@@ -81,6 +82,8 @@ export async function buildPluginPackage(options = {}) {
       splitting: true,
       target: "node22",
     });
+    const nativePanelPath = resolve(bundleOutput, "task-progress-panel.html");
+    await buildNativePanel({ sourceRoot, outputPath: nativePanelPath });
 
     await rm(outputRoot, { recursive: true, force: true });
     await mkdir(outputRoot, { recursive: true });
@@ -112,6 +115,8 @@ export async function buildPluginPackage(options = {}) {
       recursive: true,
       dereference: false,
     });
+    await mkdir(resolve(outputRoot, "assets"), { recursive: true });
+    await cp(nativePanelPath, resolve(outputRoot, "assets/task-progress-panel.html"));
 
     const { assertReleaseTree } = await import("./check_release_hygiene.mjs");
     await assertReleaseTree(outputRoot, "Plugin package");

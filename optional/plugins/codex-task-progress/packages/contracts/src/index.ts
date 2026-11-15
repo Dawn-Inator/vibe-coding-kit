@@ -3,6 +3,7 @@ import { z } from "zod";
 export * from "./goal-contract.js";
 export * from "./release-version.js";
 export * from "./renderer-events.js";
+export * from "./task-request-policy.js";
 export * from "./ui-preference.js";
 export * from "./update-state.js";
 
