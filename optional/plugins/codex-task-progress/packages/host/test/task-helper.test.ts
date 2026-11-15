@@ -7,7 +7,10 @@ import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
-import { HeartbeatDiscoveryIndex } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import {
+  HeartbeatDiscoveryIndex,
+  HeartbeatDiscoveryInvalidatedError,
+} from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import {
   GoalProgressIpcClient,
@@ -2111,6 +2114,92 @@ test("model Goal initialization and retrieval remain available without a desktop
       "Deliver the intended result",
     );
   } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retryable discovery blocks writes and exposes pending reads until recovery", async () => {
+  const root = await mkdtemp("/tmp/ctph-retry-discovery-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const original = HeartbeatDiscoveryIndex.prototype.discover;
+  let invalidated = true;
+  HeartbeatDiscoveryIndex.prototype.discover = async function (...args) {
+    if (invalidated) throw new HeartbeatDiscoveryInvalidatedError();
+    return original.apply(this, args);
+  };
+  let call = 0;
+  const request = (
+    action: "get" | "initialize" | "history" | "heartbeat-history",
+    input: unknown = {},
+  ) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action.replaceAll("-", "_")}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `retry-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  try {
+    await helper.start();
+    const pending = (await request("get")).result as {
+      task: unknown;
+      taskSourcePending?: boolean;
+      taskSource: { status: string; retryable?: boolean; error?: string };
+    };
+    assert.equal(pending.task, null);
+    assert.equal(pending.taskSourcePending, true);
+    assert.equal(pending.taskSource.status, "pending");
+    assert.equal(pending.taskSource.retryable, true);
+    assert.equal(pending.taskSource.error, undefined);
+    const history = (await request("history")).result as {
+      history: { source: { retryable?: boolean } };
+    };
+    assert.equal(history.history.source.retryable, true);
+    const projectHistory = (await request("heartbeat-history")).result as {
+      heartbeatHistory: { retryable?: boolean; error?: string };
+    };
+    assert.equal(projectHistory.heartbeatHistory.retryable, true);
+    assert.equal(projectHistory.heartbeatHistory.error, undefined);
+    await assert.rejects(
+      request("initialize", {
+        requestId: "blocked",
+        expectedRevision: 0,
+        title: "Local",
+        reason: "test",
+        objectives: [{ id: "A", title: "A" }],
+      }),
+      hasCode("TASK_SOURCE_UNAVAILABLE"),
+    );
+    invalidated = false;
+    const recovered = (await request("get")).result as {
+      taskSourcePending?: boolean;
+      taskSource: unknown;
+    };
+    assert.equal(recovered.taskSourcePending, undefined);
+    assert.equal(recovered.taskSource, null);
+  } finally {
+    HeartbeatDiscoveryIndex.prototype.discover = original;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

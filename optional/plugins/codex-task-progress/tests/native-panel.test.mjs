@@ -56,6 +56,7 @@ const hostPage = `<!doctype html><html><body>
 <script>
 window.hostCalls=[];
 window.currentResponse=${JSON.stringify(initialResponse)};
+window.initialTask=window.currentResponse.task;
 window.noIdentity=false;
 window.noTask=false;
 window.currentThreadId='conversation-verified-by-tool';
@@ -432,6 +433,54 @@ test("native panel MCP Apps integration", async (t) => {
         await waitForPanelThread(page, "conversation-verified-by-tool");
         assert.equal(await frame.locator("#native-panel-error").isVisible(), false);
         assert.equal(await frame.locator("#native-panel-retry").isVisible(), false);
+      }),
+    );
+
+    await t.test("retryable task discovery remains neutral across identities and recovers", () =>
+      scenario(async (page, frame) => {
+        await ready(frame);
+        await page.evaluate(() => {
+          window.currentResponse = {
+            task: null,
+            heartbeat: null,
+            taskSourcePending: true,
+            taskSource: { status: "pending", retryable: true, readOnly: true },
+          };
+        });
+        await refresh(page);
+        await frame.getByText("Refreshing task source…", { exact: true }).first().waitFor();
+        assert.equal(await frame.getByText("Reuse current task data", { exact: true }).count(), 0);
+        assert.equal(await frame.getByText("Source error", { exact: true }).count(), 0);
+        assert.equal(
+          await frame.getByText("Start a task in this chat", { exact: false }).count(),
+          0,
+        );
+        assert.equal(await frame.locator("#native-panel-error").isVisible(), false);
+        await page.evaluate(() => {
+          window.currentThreadId = "thread-b";
+          window.deliverToolResult("thread-b", window.currentResponse);
+        });
+        await waitForPanelThread(page, "thread-b");
+        assert.equal(await frame.getByText("Reuse current task data", { exact: true }).count(), 0);
+        await page.evaluate(() => {
+          window.currentResponse = {
+            task: {
+              ...window.initialTask,
+              threadId: "thread-b",
+              title: "Recovered task B",
+              objectives: [{ ...window.initialTask.objectives[0], title: "Recovered B objective" }],
+            },
+            heartbeat: null,
+          };
+        });
+        await refresh(page);
+        await frame.locator(".summary .main").waitFor();
+        if ((await frame.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
+          await frame.locator(".summary .main").click();
+        await frame.getByText("Recovered B objective", { exact: true }).waitFor();
+        await waitForPanelThread(page, "thread-b");
+        assert.equal(await frame.getByText("Reuse current task data", { exact: true }).count(), 0);
+        assert.equal(await frame.locator("#native-panel-error").isVisible(), false);
       }),
     );
 

@@ -192,7 +192,10 @@ export const taskPanelStyles = css`
   .info-card[data-tone="warning"] .info-card-title > svg { color: var(--ctp-warning-ink, #8b4c08); }
   .info-card[data-tone="error"] .info-card-title > svg { color: var(--ctp-error, #b15838); }
   .info-card-count { flex: none; border-radius: 999px; padding: 2px 7px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; font-weight: 450; }
-  .info-card-action { display: flex; flex: none; align-items: center; gap: 5px; margin-inline-start: auto; }
+  .info-card-action { display: inline-flex; flex: none; align-items: center; gap: 5px; margin-inline-start: auto; border: 1px solid var(--ctp-panel-line); border-radius: 7px; padding: 5px 8px; background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); font-size: 11px; cursor: pointer; }
+  .info-card-action:hover:not(:disabled) { background: var(--ctp-hover, #343a400a); }
+  .info-card-action:focus-visible { outline: 2px solid var(--ctp-panel-ink); outline-offset: 2px; }
+  .info-card-action:disabled { opacity: .55; cursor: default; }
   .info-card-body { min-width: 0; padding: 0 11px 10px; overflow-wrap: anywhere; }
   .info-card-body > :first-child { margin-top: 0; }
   .info-card-body > :last-child { margin-bottom: 0; }
@@ -212,18 +215,15 @@ export const taskPanelStyles = css`
   .hb-item p { margin: 3px 0 0; color: var(--ctp-muted, #697078); white-space: pre-wrap; }
   .hb-history { min-width: 0; }
   .hb-history-head { min-height: 38px; }
-  .hb-refresh { display: flex; flex: none; align-items: center; gap: 5px; margin-inline-start: auto; padding: 5px 6px; color: var(--ctp-muted, #697078); font-size: 10px; }
+  .hb-refresh { font-size: 10px; }
   .hb-refresh svg { width: 15px; height: 15px; }
-  .hb-wake { position: relative; min-width: 0; }
-  .hb-wake:not(:last-of-type) { border-bottom: 1px solid var(--ctp-panel-line); }
-  .hb-wake > summary { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; padding: 3px 5px 3px 16px; list-style: none; }
-  .hb-wake > summary::before { position: absolute; inset-inline-start: 1px; width: 9px; height: 9px; border: 2px solid var(--ctp-panel-line); border-radius: 50%; background: var(--ctp-surface, #fff); content: ""; }
-  .hb-wake[open] > summary::before, .hb-wake:first-of-type > summary::before { border-color: var(--ctp-panel-ink); background: var(--ctp-panel-tint); }
+  .hb-wake { min-width: 0; }
+  .hb-wake > summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; list-style: none; }
   .hb-wake-time { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
   .hb-wake-count { flex: none; border-radius: 999px; padding: 2px 7px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; }
   .hb-wake-chevron { width: 14px; height: 14px; margin-inline-start: auto; color: var(--ctp-muted, #697078); transition: transform 160ms var(--ctp-panel-ease); }
   .hb-wake[open] > summary .hb-wake-chevron { transform: rotate(90deg); }
-  .hb-wake-body { margin: 0 0 7px 16px; border-radius: 11px; padding: 6px 8px; background: var(--ctp-hover, #343a400a); }
+  .hb-wake-body { display: grid; gap: 6px; min-width: 0; padding: 4px 0; }
   .hb-wake-raw { margin: 3px 0 6px; }
   .hb-wake-raw > summary, .hb-record-raw > summary { color: var(--ctp-muted, #697078); font-size: 10px; text-decoration: underline; text-underline-offset: 2px; list-style: none; }
   .hb-wake-raw > summary::-webkit-details-marker, .hb-record-raw > summary::-webkit-details-marker { display: none; }
@@ -232,19 +232,17 @@ export const taskPanelStyles = css`
   .hb-wake-original code, .hb-row-original code { font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
   .hb-row-original { min-width: 190px; max-width: 100%; margin-top: 5px; border: 1px solid var(--ctp-panel-line); border-radius: 7px; padding: 6px; background: var(--ctp-surface, #fff); }
   .hb-wake-line, .hb-truncated { margin: 4px 0; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
-  .hb-record { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; padding: 4px 0; }
-  .hb-record-preview { display: flex; min-width: 0; gap: 7px; font-size: 11px; line-height: 1.55; }
-  .hb-record-preview strong { flex: none; max-width: 42%; overflow: hidden; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .hb-record .info-card-head { min-height: 32px; }
+  .hb-record-preview { min-width: 0; font-size: 11px; line-height: 1.55; }
   .hb-record-preview > span { display: -webkit-box; min-width: 0; max-height: 3.1em; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: var(--ctp-muted, #697078); overflow-wrap: anywhere; }
-  .hb-record-raw { min-width: max-content; margin: 0; }
+  .hb-record-raw { margin: 5px 0 0; }
   .hb-record-raw > summary { border-radius: 4px; }
   .hb-more-records { border-top: 1px solid var(--ctp-panel-line); padding-top: 5px; }
-  .hb-more-records > summary { color: var(--ctp-muted, #697078); font-size: 10px; }
+  .hb-more-records > summary { display: inline-flex; border: 1px solid var(--ctp-panel-line); border-radius: 7px; padding: 5px 8px; background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); font-size: 10px; list-style: none; cursor: pointer; }
+  .hb-more-records > summary::-webkit-details-marker { display: none; }
+  .hb-more-records > summary:hover { background: var(--ctp-hover, #343a400a); }
+  .hb-more-records > summary:focus-visible { outline: 2px solid var(--ctp-panel-ink); outline-offset: 2px; }
   .hb-older { display: block; width: 100%; margin: 3px 0 0; border-top: 1px solid var(--ctp-panel-line); border-radius: 0; padding: 9px 5px 2px; color: var(--ctp-muted, #697078); text-align: start; font-size: 11px; }
-  .hb-source-list { display: grid; gap: 5px; }
-  .hb-source-list > div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 7px; font-size: 10px; line-height: 1.5; }
-  .hb-source-list > div > span { color: var(--ctp-muted, #697078); }
-  .hb-source-list code { overflow-wrap: anywhere; }
   .heartbeat h3, h3 { margin: 0 0 9px; font-size: 12px; font-weight: 600; line-height: 1.5; }
   .audit-summary { display: flex; align-items: center; gap: 12px; border: 1px solid var(--ctp-panel-line); border-radius: 13px; padding: 14px; background: var(--ctp-hover, #343a400a); }
   .audit-symbol { display: grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--ctp-panel-tint); color: var(--ctp-panel-ink); }

@@ -71,6 +71,15 @@ export type HeartbeatTaskState = Omit<TaskState, "source"> & {
 	source: HeartbeatTaskSource;
 };
 
+/** A protected discovery result was invalidated; callers may retry the read. */
+export class HeartbeatDiscoveryInvalidatedError extends Error {
+	constructor(message?: string);
+	readonly code: "HEARTBEAT_DISCOVERY_INVALIDATED";
+	readonly retryable: true;
+}
+
+export function isHeartbeatDiscoveryInvalidatedError(error: unknown): error is HeartbeatDiscoveryInvalidatedError;
+
 /** Per-workspace bounded cache. Read-only reuse relies on the OS recursive watcher delivering
  * changes; watcher error or closure discards its entries. Unsupported watchers scan afresh.
  * There is no time-based refresh. Use force for write authorization, and close on owner shutdown. */

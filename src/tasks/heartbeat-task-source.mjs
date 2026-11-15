@@ -301,6 +301,21 @@ export function discoverBoundHeartbeatSource(options = {}) {
 	return discoverHeartbeatLedgerSourcesInternal(options, { boundOnly: true });
 }
 
+/** A protected discovery snapshot was invalidated before it could be delivered. */
+export class HeartbeatDiscoveryInvalidatedError extends Error {
+	constructor(message = "Heartbeat discovery changed; retry required") {
+		super(message);
+		this.name = "HeartbeatDiscoveryInvalidatedError";
+		this.code = "HEARTBEAT_DISCOVERY_INVALIDATED";
+		this.retryable = true;
+	}
+}
+
+/** Only discovery invalidations are safe to classify as transient. */
+export function isHeartbeatDiscoveryInvalidatedError(error) {
+	return error instanceof HeartbeatDiscoveryInvalidatedError;
+}
+
 /** Scan-local results are reused only while a live recursive watcher protects the root. */
 export class HeartbeatDiscoveryIndex {
 	#entries = new Map();
@@ -433,7 +448,7 @@ export class HeartbeatDiscoveryIndex {
 			// The watcher may have invalidated the snapshot after a pending scan
 			// resolved but before its awaiting caller resumed.
 			if (!entry.active || entry.value !== record || this.#versions.get(root) !== record.generation)
-				throw new Error("Heartbeat discovery changed before delivery; retry required");
+				throw new HeartbeatDiscoveryInvalidatedError("Heartbeat discovery changed before delivery; retry required");
 			const report = { ...record.report, reasons: [...record.report.reasons], limits: { ...record.report.limits },
 				candidates: record.report.candidates.map((candidate) => ({
 					path: candidate.path, associated: Boolean(threadId && record.associations.get(candidate.path) === threadId),
@@ -552,7 +567,7 @@ export class HeartbeatDiscoveryIndex {
 					}
 					if (!current.active) break;
 				}
-				throw new Error("Heartbeat discovery changed while scanning; retry required");
+				throw new HeartbeatDiscoveryInvalidatedError("Heartbeat discovery changed while scanning; retry required");
 			})();
 			current.pending = pending;
 			void pending.finally(() => { if (current.pending === pending) current.pending = null; }).catch(() => {});

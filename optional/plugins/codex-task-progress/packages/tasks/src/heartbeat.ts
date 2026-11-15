@@ -14,6 +14,10 @@ import type {
   HeartbeatLedgerDiscoveryReport,
   HeartbeatTaskState,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import {
+  HeartbeatDiscoveryInvalidatedError,
+  isHeartbeatDiscoveryInvalidatedError,
+} from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { z } from "zod";
 import {
@@ -32,7 +36,7 @@ export interface HeartbeatFinding {
   rule?: string;
 }
 export interface HeartbeatView {
-  status: "none" | "candidates" | "ready" | "stale" | "error";
+  status: "none" | "candidates" | "ready" | "stale" | "error" | "pending";
   sourcePath: string | null;
   historyPath?: string;
   candidates: HeartbeatCandidate[];
@@ -61,6 +65,7 @@ export interface HeartbeatView {
   findingsTruncated?: boolean;
   error?: string;
   warning?: string;
+  retryable?: true;
   contentHash?: string;
 }
 export interface HeartbeatHistoryPage {
@@ -72,15 +77,17 @@ export interface HeartbeatHistoryPage {
   contentHash?: string;
   itemStatuses?: Record<string, string>;
   error?: string;
+  retryable?: true;
 }
 export interface HeartbeatTaskProjection {
-  status: "none" | "candidates" | "pending-selection" | "ready" | "stale" | "error";
+  status: "none" | "candidates" | "pending-selection" | "ready" | "stale" | "error" | "pending";
   task: ProjectedHeartbeatTask | null;
   sourcePath: string | null;
   historyPath?: string;
   contentHash?: string;
   itemStatuses?: Record<string, string>;
   error?: string;
+  retryable?: true;
 }
 interface ProjectedHeartbeatTask extends Omit<HeartbeatTaskState, "source"> {
   source: HeartbeatTaskState["source"] & {
@@ -540,7 +547,7 @@ export class HeartbeatService {
       const operation = this.#readProjectView(resolvedRoot, config, now, refreshedAt)
         .then((view) => {
           // A failed source read is not cached: another call can retry immediately.
-          if (view.status !== "error") {
+          if (view.status !== "error" && view.status !== "pending") {
             this.#projectViewCache.setValue(key, resolvedRoot, epoch, {
               time: this.#now().getTime(),
               value: view,
@@ -614,7 +621,11 @@ export class HeartbeatService {
       // Refresh failures are represented by projectView's error view; no detached rejection leaks.
       void refresh.catch(() => undefined);
       const stale = key !== null && cached ? { ...cached.value, certifiesCurrent: false } : null;
-      return { view: fresh ? (cached?.value ?? null) : (failure ?? stale), pending: !fresh };
+      const fallback =
+        failure?.status === "pending" && failure.retryable === true && stale
+          ? stale
+          : (failure ?? stale);
+      return { view: fresh ? (cached?.value ?? null) : fallback, pending: !fresh };
     } catch (error) {
       const refresh = this.projectView(cwd);
       void refresh.catch(() => undefined);
@@ -749,7 +760,7 @@ export class HeartbeatService {
       return view;
     } catch (error) {
       return compactView({
-        status: "error",
+        status: isHeartbeatDiscoveryInvalidatedError(error) ? "pending" : "error",
         sourcePath: null,
         candidates: [],
         refreshedAt,
@@ -768,7 +779,9 @@ export class HeartbeatService {
         itemsTruncated: false,
         wakesTruncated: false,
         basis: "none",
-        error: String(error),
+        ...(isHeartbeatDiscoveryInvalidatedError(error)
+          ? { retryable: true as const }
+          : { error: String(error) }),
       });
     }
   }
@@ -919,7 +932,8 @@ export class HeartbeatService {
       (!index || (generation !== null && cached.generation === generation))
     )
       return cached.value;
-    const pending = this.#pending.get(threadId);
+    const pendingKey = `${threadId}\0${resolve(cwd)}`;
+    const pending = this.#pending.get(pendingKey);
     if (pending) {
       if (!options.forceDiscovery) return pending;
       await pending.catch(() => undefined);
@@ -987,9 +1001,11 @@ export class HeartbeatService {
         // canonical scan remains usable; the next request will scan again.
         if (observation.generation === null) return value;
       }
-      throw new Error("Heartbeat discovery changed while reading; retry required");
-    })().finally(() => this.#pending.delete(threadId));
-    this.#pending.set(threadId, operation);
+      throw new HeartbeatDiscoveryInvalidatedError(
+        "Heartbeat discovery changed while reading; retry required",
+      );
+    })().finally(() => this.#pending.delete(pendingKey));
+    this.#pending.set(pendingKey, operation);
     return operation;
   }
 
@@ -1068,6 +1084,7 @@ export class HeartbeatService {
                   })
                 : discoverHeartbeatLedgerSources(discoveryOptions));
       } catch (error) {
+        if (isHeartbeatDiscoveryInvalidatedError(error)) throw error;
         // An existing binding remains latched on missing, escaped or unreadable
         // sources; it must never fall back to an unrelated local checklist.
         if (boundOnly && boundPath)
@@ -1178,6 +1195,7 @@ export class HeartbeatService {
       await this.#cacheSnapshot(threadId, view);
       return view;
     } catch (error) {
+      if (isHeartbeatDiscoveryInvalidatedError(error)) throw error;
       const previous = this.#last.get(threadId);
       return compactView({
         ...(previous ?? empty),
@@ -1215,7 +1233,13 @@ export class HeartbeatService {
       ...(contentHash ? { contentHash } : {}),
       ...(error ? { error: shortened(error, 2_000) } : {}),
     });
-    const view = await this.view(threadId, cwd);
+    let view: HeartbeatView | null;
+    try {
+      view = await this.view(threadId, cwd);
+    } catch (error) {
+      if (!isHeartbeatDiscoveryInvalidatedError(error)) throw error;
+      return { ...empty(null), retryable: true };
+    }
     if (!view?.sourcePath)
       return empty(
         null,
@@ -1290,7 +1314,15 @@ export class HeartbeatService {
     options: { cursor?: string; limit?: number } = {},
   ): Promise<HeartbeatHistoryPage> {
     const view = await this.projectView(cwd);
-    if (!view.sourcePath) return { wakes: [], nextCursor: null, total: 0, sourcePath: null };
+    if (!view.sourcePath)
+      return {
+        wakes: [],
+        nextCursor: null,
+        total: 0,
+        sourcePath: null,
+        ...(view.status === "pending" ? { retryable: true as const } : {}),
+        ...(view.error ? { error: view.error } : {}),
+      };
     const before = options.cursor === undefined ? null : Number(options.cursor);
     if (before !== null && (!Number.isSafeInteger(before) || before < 0))
       throw new Error("Invalid heartbeat history cursor.");
@@ -1372,7 +1404,13 @@ export class HeartbeatService {
     cwd: string,
     options: { forceDiscovery?: boolean } = {},
   ): Promise<HeartbeatTaskProjection> {
-    const view = await this.view(threadId, cwd, options);
+    let view: HeartbeatView | null;
+    try {
+      view = await this.view(threadId, cwd, options);
+    } catch (error) {
+      if (!isHeartbeatDiscoveryInvalidatedError(error)) throw error;
+      return { status: "pending", task: null, sourcePath: null, retryable: true };
+    }
     if (view?.status === "stale" && view.sourcePath)
       return {
         status: "stale",

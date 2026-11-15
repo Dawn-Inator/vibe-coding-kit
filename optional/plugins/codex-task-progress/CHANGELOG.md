@@ -1,3 +1,9 @@
+# Task Progress 0.6.3
+
+- Present Heartbeat records in category cards and Task History as a timeline, with visible Refresh buttons.
+- Remove the bottom source-facts display while retaining the underlying records, and show a neutral empty state for a new session.
+- Recover from typed transient scan failures using the last read-only snapshot when its freshness guard permits; distinguish active working from a true external blocker.
+
 # Task Progress 0.6.2
 
 - Remove hover labels from the History and Heartbeat circle buttons.

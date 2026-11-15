@@ -12,7 +12,7 @@ body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box
 </style></head><body>
 <main id="native-panel-shell" aria-label="Task progress"><div id="messages">Native task progress panel</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,taskSourcePending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
 window.fixture.threadId = "thread-a";
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
@@ -22,7 +22,7 @@ window.__codexTaskProgressRequest = async function(request) {
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,taskSourcePending:window.fixture.taskSourcePending,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
   if(request.method==='heartbeat-history' && window.fixture.holdNextHeartbeatHistory) { window.fixture.holdNextHeartbeatHistory=false; await new Promise(resolve => { window.fixture.releaseHeldHeartbeatHistory=resolve; }); window.fixture.releaseHeldHeartbeatHistory=null; }
   if(request.method==='heartbeat-history' && window.fixture.heartbeatHistoryFailureNext) { const message=window.fixture.heartbeatHistoryFailureNext; window.fixture.heartbeatHistoryFailureNext=null; throw new Error(message); }
@@ -187,6 +187,82 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
+    await t.test(
+      "fresh onboarding excludes pending and errors; refresh controls and status labels",
+      async () => {
+        const { context, page, panel } = await open("", { locale: "en-US" });
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = null;
+          window.fixture.heartbeat = null;
+          window.fixture.heartbeatPending = false;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await panel.locator(".summary .title").innerText(), /Start a new session/);
+        await panel.locator(".summary .main").click();
+        assert.match(await panel.locator(".scroll").innerText(), /Start a task in this chat/);
+        assert.equal(await panel.locator(".scroll button").count(), 0);
+        await page.evaluate(() => {
+          window.fixture.heartbeatPending = true;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.doesNotMatch(
+          await panel.locator(".summary .title").innerText(),
+          /Start a new session/,
+        );
+        await page.evaluate(() => {
+          window.fixture.heartbeatPending = false;
+          window.fixture.taskSource = { status: "error", readOnly: true, error: "source failed" };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.doesNotMatch(
+          await panel.locator(".summary .title").innerText(),
+          /Start a new session/,
+        );
+        assert.match(await panel.locator(".scroll").innerText(), /source failed/);
+        await page.evaluate((value) => {
+          window.fixture.taskSource = null;
+          window.fixture.task = structuredClone(value);
+          window.fixture.task.objectives[0].items[0].status = "active";
+          window.fixture.task.objectives[0].items[1].status = "blocked";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.locator(".row[data-objective]").first().click();
+        assert.match(
+          await panel.locator('.node-status[data-status="active"]').first().innerText(),
+          /Working/,
+        );
+        assert.match(
+          await panel.locator('.node-status[data-status="blocked"]').first().innerText(),
+          /blocked/,
+        );
+        await panel.getByRole("button", { name: "History", exact: true }).click();
+        const refresh = panel.locator(".info-card-action");
+        const style = await refresh.evaluate((element) => {
+          const css = getComputedStyle(element);
+          return {
+            border: css.borderTopWidth,
+            padding: css.paddingInlineStart,
+            cursor: css.cursor,
+          };
+        });
+        assert.notEqual(style.border, "0px");
+        assert.notEqual(style.padding, "0px");
+        assert.equal(style.cursor, "pointer");
+        await refresh.focus();
+        await page.keyboard.press("Tab");
+        await page.keyboard.press("Shift+Tab");
+        assert.equal(
+          await refresh.evaluate((element) => element.getRootNode().activeElement === element),
+          true,
+        );
+        assert.notEqual(
+          await refresh.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
+        await context.close();
+      },
+    );
     await t.test(
       "disabled project returns an empty standalone panel; omitted flag stays enabled",
       async () => {
@@ -1739,8 +1815,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await scroll.innerText(), /taskhistory\.md:24/);
         assert.match(await scroll.innerText(), /taskhistory\.md:25/);
         await panel.getByRole("button", { name: "心跳", exact: true }).click();
-        assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
-        assert.match(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
+        assert.equal(await panel.locator(".hb-source").count(), 0);
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         await mkdir(".playwright-img", { recursive: true });
         await page.screenshot({ path: ".playwright-img/task-history-paired-preview.png" });
@@ -2497,11 +2572,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 rowCount: 10,
                 rows: [
                   {
-                    category: "剩余工作",
+                    category: "goal-derived remaining work",
                     line: 813,
                     state: "(1a) 已完成 — /tmp/hotupdate-verification-audit/result.md",
                   },
-                  { category: "验证依据", state: "记录 29/29 项检查，跨五个线程的校验均通过。" },
+                  {
+                    category: "read-only review",
+                    state: "记录 29/29 项检查，跨五个线程的校验均通过。",
+                  },
                 ],
               },
               {
@@ -2570,11 +2648,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           assert.equal(await panel.locator(".hb-items").locator("summary").count(), 1);
           assert.match(await panel.locator(".hb-items").innerText(), /10/);
           assert.equal(await panel.locator(".hb-items").getAttribute("open"), null);
-          assert.equal(
-            await panel.locator(".hb-source").evaluate((element) => element.tagName),
-            "SECTION",
-          );
-          assert.equal(await panel.locator(".hb-source details").count(), 0);
+          assert.equal(await panel.locator(".hb-source").count(), 0);
           assert.equal(await panel.locator(".hb-wake").first().getAttribute("open"), "");
           assert.equal(await panel.locator(".hb-wake").first().locator("details[open]").count(), 0);
           assert.equal(await panel.locator(".hb-wake").nth(1).getAttribute("open"), null);
@@ -2595,16 +2669,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
           assert.equal(await panel.locator(".hb-alert .info-card-title").isVisible(), true);
           assert.match(await panel.locator(".hb-alert").innerText(), /旧记录存在校验提示/);
-          assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
-          assert.match(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
-          assert.match(
-            await panel.locator(".hb-source .info-card-title").innerText(),
-            /heartbeat\.md.*taskhistory\.md|taskhistory\.md.*heartbeat\.md/,
+          assert.deepEqual(
+            await panel
+              .locator(".hb-wake")
+              .first()
+              .locator(".hb-record .info-card-title")
+              .allTextContents(),
+            ["剩余工作检查", "独立审查"],
           );
-          assert.doesNotMatch(
-            await panel.locator(".hb-source .info-card-title").innerText(),
-            /\/workspace\//,
-          );
+          assert.equal(await panel.locator(".hb-wake.event").count(), 4);
           assert.equal(
             await panel.locator(".hb-wake").first().locator(".hb-record-preview").count(),
             2,
@@ -2627,11 +2700,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await wakeRaw.locator(":scope > summary").click();
           const rowRaw = firstWake.locator(".hb-record-raw").first();
           await rowRaw.locator(":scope > summary").click();
-          assert.match(await rowRaw.innerText(), /剩余工作/);
+          assert.match(await rowRaw.innerText(), /goal-derived remaining work/);
           assert.match(await rowRaw.innerText(), /\/tmp\/hotupdate-verification-audit\/result\.md/);
           await rowRaw.locator(":scope > summary").click();
           assert.match(await panel.locator(".hb-wake").first().innerText(), /剩余工作/);
-          assert.match(await panel.locator(".hb-wake").first().innerText(), /验证依据/);
+          assert.match(await panel.locator(".hb-wake").first().innerText(), /独立审查/);
 
           await mkdir(".playwright-img", { recursive: true });
           const body = panel.locator(".body");
@@ -2755,10 +2828,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             3,
           );
 
-          assert.equal(
-            await panel.locator(".hb-source").evaluate((element) => element.tagName),
-            "SECTION",
-          );
+          assert.equal(await panel.locator(".hb-source").count(), 0);
           const heartbeatTab = panel.getByRole("button", { name: "心跳", exact: true });
           await heartbeatTab.focus();
           await heartbeatTab.press("Escape");
@@ -2842,12 +2912,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.locator(".hb-items > summary").click();
         assert.match(await panel.locator(".hb-items").innerText(), /处理阻塞/);
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
-        assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
-        assert.match(await panel.locator(".hb-source").innerText(), /depth-limit, file-limit/);
-        assert.doesNotMatch(
-          await panel.locator(".hb-source").innerText(),
-          /Project heartbeat discovery was incomplete/,
-        );
+        assert.equal(await panel.locator(".hb-source").count(), 0);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -2890,10 +2955,6 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, heartbeat);
         assert.match(
           await panel.locator(".hb-alert").innerText(),
-          /Ledger warning: signature mismatch/,
-        );
-        assert.match(
-          await panel.locator(".hb-source").innerText(),
           /Ledger warning: signature mismatch/,
         );
         await page.evaluate((value) => {
@@ -2956,11 +3017,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           window.fixture.heartbeat = { ...value, status: "ready" };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
-        assert.doesNotMatch(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
+        assert.equal(await panel.locator(".hb-source").count(), 0);
         assert.match(await panel.locator("section.panel").innerText(), /只读/);
-        assert.match(await panel.locator("section.panel").innerText(), /\/workspace\/heartbeat.md/);
-        assert.match(await panel.locator("section.panel").innerText(), /项目配置/);
         assert.match(await panel.locator(".hb-time-card").innerText(), /最近记录/);
         assert.doesNotMatch(
           await panel.locator("section.panel").innerText(),
@@ -3002,7 +3060,253 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
-      "large heartbeat history loads compact pages and displays full counts",
+      "audit categories use translated titles and preserve unknown and raw values",
+      async () => {
+        const { context, page, panel } = await open("", { locale: "en-US" });
+        const categories = [
+          "goal-derived remaining",
+          "read-only review",
+          "temporary status",
+          "knowledge artifacts",
+          "tooling fixes",
+          "release prep",
+          "worker follow-ups",
+          "centralized verification",
+          "session hygiene",
+          "deployable-unit drift",
+          "custom category",
+        ];
+        await page.evaluate(
+          ({ value, categories }) => {
+            window.fixture.heartbeat = value;
+            window.fixture.heartbeatHistory = {
+              sourcePath: value.sourcePath,
+              total: 1,
+              nextCursor: null,
+              wakes: [
+                {
+                  heading: "audit categories",
+                  rows: categories.map((category) => ({ category, state: "record" })),
+                },
+              ],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: heartbeat, categories },
+        );
+        await panel.getByRole("button", { name: "Heartbeat", exact: true }).click();
+        await panel.getByText("Remaining work check", { exact: true }).waitFor();
+        const titles = await panel.locator(".hb-record .info-card-title").allTextContents();
+        assert.deepEqual(titles, [
+          "Remaining work check",
+          "Independent review",
+          "Temporary status updates",
+          "Knowledge artifacts",
+          "Tooling and test fixes",
+          "Release and deployment preparation",
+          "Worker follow-ups",
+          "Centralized verification",
+          "Session hygiene",
+          "Deployable unit drift",
+          "custom category",
+        ]);
+        const raw = panel.locator(".hb-record-raw").first();
+        await raw.locator(":scope > summary").click();
+        assert.match(await raw.innerText(), /goal-derived remaining/);
+        await context.close();
+      },
+    );
+    await t.test(
+      "local retryable history recovers on bounded base updates and terminal failures stay manual",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.history = {
+            events: [{ reason: "verified local event" }],
+            nextCursor: null,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await showView(panel, "history");
+        await panel.getByText("verified local event", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.history = {
+            events: [],
+            nextCursor: null,
+            source: { kind: "kit-heartbeat", path: null, readOnly: true, retryable: true },
+          };
+        });
+        await panel.getByRole("button", { name: "刷新", exact: true }).click();
+        await panel.getByText(/历史记录正在刷新/).waitFor();
+        assert.equal(await panel.getByText("verified local event", { exact: true }).count(), 1);
+        const count = () =>
+          page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          );
+        const firstCount = await count();
+        await panel.evaluate(async (element) => {
+          element.requestUpdate();
+          await element.updateComplete;
+          element.requestUpdate();
+          await element.updateComplete;
+        });
+        assert.equal(await count(), firstCount, "unrelated renders must not retry");
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        await page.waitForFunction(
+          (n) => window.fixture.calls.filter((call) => call.method === "history").length === n + 1,
+          firstCount,
+        );
+        await panel
+          .getByRole("button", { name: "刷新", exact: true })
+          .waitFor({ state: "visible" });
+        await page.waitForFunction(() => !document.querySelector("codex-task-panel").busy);
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        await page.waitForFunction(
+          (n) => window.fixture.calls.filter((call) => call.method === "history").length === n + 2,
+          firstCount,
+        );
+        await page.waitForFunction(() => !document.querySelector("codex-task-panel").busy);
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.equal(await count(), firstCount + 2, "automatic retries are capped per context");
+        await page.evaluate(() => {
+          window.fixture.history = {
+            events: [{ reason: "recovered local event" }],
+            nextCursor: null,
+          };
+        });
+        await panel.getByRole("button", { name: "刷新", exact: true }).click();
+        await panel.getByText("recovered local event", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.historyFailureNext = "terminal history error";
+        });
+        await panel.getByRole("button", { name: "刷新", exact: true }).click();
+        await panel.getByText(/terminal history error/).waitFor();
+        const afterError = await count();
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        assert.equal(
+          await count(),
+          afterError,
+          "terminal failures do not trigger automatic retries",
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "retryable history pages retain verified records until a later refresh",
+      async () => {
+        const { context, page, panel } = await open();
+        const sourcePath = "/workspace/heartbeat.md";
+        await page.evaluate(
+          ({ value, sourcePath }) => {
+            window.fixture.heartbeat = { ...value, sourcePath, contentHash: "stable" };
+            window.fixture.heartbeatHistory = {
+              sourcePath,
+              contentHash: "stable",
+              total: 1,
+              nextCursor: null,
+              wakes: [{ heading: "verified wake", rows: [] }],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: heartbeat, sourcePath },
+        );
+        await showView(panel, "heartbeat");
+        await panel.getByText("verified wake", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.heartbeatHistory = {
+            retryable: true,
+            sourcePath: null,
+            total: 0,
+            nextCursor: null,
+            wakes: [],
+          };
+        });
+        await panel.getByRole("button", { name: "刷新心跳历史" }).click();
+        await panel.getByText(/心跳历史正在刷新/).waitFor();
+        assert.equal(await panel.getByText("verified wake", { exact: true }).count(), 1);
+        assert.equal(await panel.locator(".hb-history .info-card-error").count(), 0);
+        await page.evaluate(
+          ({ sourcePath }) => {
+            window.fixture.heartbeatHistory = {
+              sourcePath,
+              contentHash: "stable",
+              total: 1,
+              nextCursor: null,
+              wakes: [{ heading: "recovered wake", rows: [] }],
+            };
+          },
+          { sourcePath },
+        );
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        await panel.getByText("recovered wake", { exact: true }).waitFor();
+        assert.equal(await panel.getByText("verified wake", { exact: true }).count(), 0);
+        await page.evaluate(
+          ({ value, sourcePath }) => {
+            window.fixture.task = {
+              ...value,
+              source: {
+                kind: "kit-heartbeat",
+                path: sourcePath,
+                contentHash: "stable",
+                readOnly: true,
+              },
+            };
+            window.fixture.history = {
+              events: [],
+              wakes: [{ heading: "verified bound wake", rows: [] }],
+              total: 1,
+              nextCursor: null,
+              source: {
+                kind: "kit-heartbeat",
+                path: sourcePath,
+                contentHash: "stable",
+                readOnly: true,
+              },
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: task, sourcePath },
+        );
+        await showView(panel, "history");
+        await panel.getByText("verified bound wake", { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.fixture.history = {
+            events: [],
+            wakes: [],
+            total: 0,
+            nextCursor: null,
+            source: { kind: "kit-heartbeat", path: null, readOnly: true, retryable: true },
+          };
+        });
+        await panel.getByRole("button", { name: "刷新台账历史" }).click();
+        await panel.getByText(/台账历史正在刷新/).waitFor();
+        assert.equal(await panel.getByText("verified bound wake", { exact: true }).count(), 1);
+        assert.equal(await panel.locator(".info-card-error").count(), 0);
+        await page.evaluate(
+          ({ sourcePath }) => {
+            window.fixture.history = {
+              events: [],
+              wakes: [{ heading: "recovered bound wake", rows: [] }],
+              total: 1,
+              nextCursor: null,
+              source: {
+                kind: "kit-heartbeat",
+                path: sourcePath,
+                contentHash: "stable",
+                readOnly: true,
+              },
+            };
+          },
+          { sourcePath },
+        );
+        await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
+        await panel.getByText("recovered bound wake", { exact: true }).waitFor();
+        await context.close();
+      },
+    );
+    await t.test(
+      "large heartbeat history retains item and history totals with paging",
       async () => {
         const { context, page, panel } = await open();
         await page.evaluate((value) => {
@@ -3023,10 +3327,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await showView(panel, "heartbeat");
-        assert.match(
-          await panel.locator("section.panel").innerText(),
-          /200 · 已完成 180 · 阻塞 20/,
-        );
+        assert.equal(await panel.locator(".hb-items > summary .hb-count").innerText(), "200");
         await panel.locator(".hb-history").getByText("50000", { exact: false }).waitFor();
         await panel.locator(".hb-wake > summary").filter({ hasText: "巡检第5000轮" }).waitFor();
         await page.evaluate(() => {
@@ -3158,7 +3459,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     });
     await t.test("reopening restores persisted expansion and current task data", async () => {
       const { context, page, panel } = await open();
-      await panel.getByRole("button", { name: /任务进度/ }).click();
+      await panel.locator(".summary .main").click();
       await page.reload();
       await panel.locator(".summary .main").waitFor();
       await page.evaluate((value) => {

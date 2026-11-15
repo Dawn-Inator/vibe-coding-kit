@@ -12,6 +12,8 @@ import {
 	discoverHeartbeatLedgers,
 	discoverBoundHeartbeatSource,
 	HeartbeatDiscoveryIndex,
+	HeartbeatDiscoveryInvalidatedError,
+	isHeartbeatDiscoveryInvalidatedError,
 	discoverHeartbeatLedgerSources,
 	projectHeartbeatTask,
 } from "../../src/tasks/heartbeat-task-source.mjs";
@@ -774,6 +776,83 @@ test("unavailable watcher never reuses discovery and in-flight invalidation retr
 	indexed.close();
 });
 
+
+test("repeated scan invalidation is typed, bounded, and recovers on a quiet scan", async () => {
+	const root = projectRoot();
+	writeFileSync(join(root, "heartbeat.md"), `${ledger([["I1", "report:r", "x", "done", "", "[]"]])}\nthread: A\n`);
+	let changed;
+	let scans = 0;
+	let invalidate = true;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			scans++;
+			const result = await discoverHeartbeatLedgerSources(options);
+			if (invalidate) changed("change", "heartbeat.md");
+			return result;
+		},
+	});
+	try {
+		await assert.rejects(index.discover({ root, threadId: "A" }), (error) => {
+			assert.ok(error instanceof HeartbeatDiscoveryInvalidatedError);
+			assert.equal(error.code, "HEARTBEAT_DISCOVERY_INVALIDATED");
+			assert.equal(error.retryable, true);
+			assert.equal(isHeartbeatDiscoveryInvalidatedError(error), true);
+			assert.match(error.message, /while scanning/);
+			return true;
+		});
+		assert.equal(scans, 3);
+		invalidate = false;
+		const report = await index.discover({ root, threadId: "A" });
+		assert.equal(scans, 4);
+		assert.equal(report.candidates[0].associated, true);
+	} finally { index.close(); }
+});
+
+test("invalidation before delivery has the same transient contract; real failures do not", async () => {
+	const root = projectRoot();
+	let changed;
+	let invalidate = true;
+	const watcher = Object.assign(new EventEmitter(), { close() {} });
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory(_root, _options, callback) { changed = callback; return watcher; },
+		async scanFactory(options) {
+			const report = await discoverHeartbeatLedgerSources(options);
+			if (invalidate) queueMicrotask(() => queueMicrotask(() => changed("change", "heartbeat.md")));
+			return report;
+		},
+	});
+	try {
+		await assert.rejects(index.discover({ root }), (error) => {
+			assert.ok(error instanceof HeartbeatDiscoveryInvalidatedError);
+			assert.equal(isHeartbeatDiscoveryInvalidatedError(error), true);
+			assert.equal(error.code, "HEARTBEAT_DISCOVERY_INVALIDATED");
+			assert.equal(error.retryable, true);
+			assert.match(error.message, /before delivery/);
+			return true;
+		});
+		invalidate = false;
+		assert.equal((await index.discover({ root })).complete, true);
+		await assert.rejects(index.discover({ root, maxFiles: 0 }), (error) => {
+			assert.ok(error instanceof TypeError);
+			assert.equal(isHeartbeatDiscoveryInvalidatedError(error), false);
+			return true;
+		});
+	} finally { index.close(); }
+	const ioError = Object.assign(new Error("scan failed"), { code: "EIO" });
+	const failing = new HeartbeatDiscoveryIndex({
+		watchFactory() { return Object.assign(new EventEmitter(), { close() {} }); },
+		scanFactory() { throw ioError; },
+	});
+	try {
+		await assert.rejects(failing.discover({ root }), (error) => {
+			assert.equal(error, ioError);
+			assert.equal(isHeartbeatDiscoveryInvalidatedError(error), false);
+			return true;
+		});
+	} finally { failing.close(); }
+});
 
 test("index isolates bounds and roots, and reports creates, removals and renames", async () => {
 	const root = projectRoot();

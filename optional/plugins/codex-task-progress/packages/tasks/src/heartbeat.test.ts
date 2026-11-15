@@ -25,6 +25,7 @@ import {
 import {
   discoverHeartbeatLedgerSources,
   HeartbeatDiscoveryIndex,
+  HeartbeatDiscoveryInvalidatedError,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import { HeartbeatProjectViewCache, HeartbeatService, type HeartbeatView } from "./heartbeat.js";
 
@@ -1584,6 +1585,129 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
     await assert.rejects(service.history("chat-A", f.project, { limit: 100 }), /limit/);
   } finally {
     service?.close();
+    await f.close();
+  }
+});
+
+test("discovery invalidation is retryable for task, history and project reads and recovers", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  const original = index.discover.bind(index);
+  let invalidated = true;
+  index.discover = async (...args) => {
+    if (invalidated) throw new HeartbeatDiscoveryInvalidatedError();
+    return original(...args);
+  };
+  const service = new HeartbeatService(resolve(f.root, "retry-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const projection = await service.taskProjection("chat-A", f.project);
+    assert.equal(projection.status, "pending");
+    assert.equal(projection.retryable, true);
+    assert.equal(projection.task, null);
+    const history = await service.history("chat-A", f.project);
+    assert.equal(history.retryable, true);
+    assert.equal(history.error, undefined);
+    const project = await service.projectView(f.project);
+    assert.equal(project.status, "pending");
+    assert.equal(project.retryable, true);
+    assert.equal((await service.projectHistory(f.project)).retryable, true);
+    invalidated = false;
+    assert.equal((await service.taskProjection("chat-A", f.project)).status, "ready");
+    assert.equal((await service.projectView(f.project)).status, "ready");
+  } finally {
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("ordinary discovery failures remain terminal rather than retryable", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  index.discover = async () => {
+    throw new Error("permission denied");
+  };
+  const service = new HeartbeatService(resolve(f.root, "terminal-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    const projection = await service.taskProjection("chat-A", f.project);
+    assert.equal(projection.status, "error");
+    assert.match(projection.error ?? "", /permission denied/);
+    assert.equal(projection.retryable, undefined);
+    const project = await service.projectView(f.project);
+    assert.equal(project.status, "error");
+    assert.match(project.error ?? "", /permission denied/);
+    assert.equal(project.retryable, undefined);
+  } finally {
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("project snapshot retains same-config verified view only for retryable invalidation", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  const original = index.discover.bind(index);
+  let mode: "ready" | "pending" | "error" = "ready";
+  index.discover = async (...args) => {
+    if (mode === "pending") throw new HeartbeatDiscoveryInvalidatedError();
+    if (mode === "error") throw new Error("permission denied");
+    return original(...args);
+  };
+  let clock = 1000;
+  const service = new HeartbeatService(resolve(f.root, "snapshot-retry"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 100,
+    now: () => new Date(clock),
+    discoveryIndex: index,
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const initial = await service.projectView(f.project);
+    assert.equal(initial.status, "ready");
+    clock += 101;
+    mode = "pending";
+    assert.equal((await service.projectView(f.project)).status, "pending");
+    const pending = await service.projectViewSnapshot(f.project);
+    assert.equal(pending.pending, true);
+    assert.equal(pending.view?.sourcePath, initial.sourcePath);
+    assert.equal(pending.view?.status, "ready");
+    assert.equal(pending.view?.certifiesCurrent, false);
+    await service.projectView(f.project);
+    mode = "error";
+    assert.equal((await service.projectView(f.project)).status, "error");
+    const failed = await service.projectViewSnapshot(f.project);
+    assert.equal(failed.view?.status, "error");
+    assert.match(failed.view?.error ?? "", /permission denied/);
+    await service.projectView(f.project);
+    mode = "ready";
+    assert.equal((await service.projectView(f.project)).status, "ready");
+    const recovered = await service.projectViewSnapshot(f.project);
+    assert.equal(recovered.pending, false);
+    assert.equal(recovered.view?.status, "ready");
+    await writeFile(
+      resolve(f.project, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { ledgerPath: "other.md" } }),
+    );
+    mode = "pending";
+    assert.equal((await service.projectView(f.project)).status, "pending");
+    const changedConfig = await service.projectViewSnapshot(f.project);
+    assert.notEqual(changedConfig.view?.sourcePath, initial.sourcePath);
+  } finally {
+    service.close();
+    index.close();
     await f.close();
   }
 });

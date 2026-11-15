@@ -287,6 +287,7 @@ app.ontoolresult = (result) => {
       "execution",
       "enabled",
       "heartbeatPending",
+      "taskSourcePending",
     ].some((key) => Object.hasOwn(parsed.result, key));
     if (!hasBaseResponse) {
       if (identityChanged) {

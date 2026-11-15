@@ -1408,6 +1408,14 @@ export class GoalProgressHelper {
     }
     let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
     let localTaskRead = false;
+    if (
+      ["initialize", "update", "rescope", "bind-heartbeat"].includes(action) &&
+      sourceTask.status === "pending"
+    )
+      throw new GoalProgressIpcHandlerError(
+        "TASK_SOURCE_UNAVAILABLE",
+        "The Kit task source is refreshing. Retry after discovery completes.",
+      );
     if (action === "bind-heartbeat") {
       await workspace.ensureWritable();
       const bind = z.object({ path: z.string().max(4096).nullable() }).parse(input);
@@ -1470,6 +1478,7 @@ export class GoalProgressHelper {
       localTaskRead = !(
         sourceTask.sourcePath ||
         sourceTask.status === "error" ||
+        sourceTask.status === "pending" ||
         sourceTask.status === "pending-selection"
       );
       localTaskState = localTaskRead
@@ -1477,13 +1486,16 @@ export class GoalProgressHelper {
         : null;
       const task = sourceTask.sourcePath
         ? sourceTask.task
-        : sourceTask.status === "error" || sourceTask.status === "pending-selection"
+        : sourceTask.status === "error" ||
+            sourceTask.status === "pending" ||
+            sourceTask.status === "pending-selection"
           ? null
           : localTaskState;
       const history =
         action === "history"
           ? sourceTask.sourcePath ||
             sourceTask.status === "error" ||
+            sourceTask.status === "pending" ||
             sourceTask.status === "pending-selection"
             ? await (async () => {
                 const options = z
@@ -1509,6 +1521,7 @@ export class GoalProgressHelper {
                     ...(page.contentHash ? { contentHash: page.contentHash } : {}),
                     ...(page.itemStatuses ? { itemStatuses: page.itemStatuses } : {}),
                     ...(page.error ? { error: page.error } : {}),
+                    ...(page.retryable ? { retryable: true } : {}),
                   },
                 };
               })()
@@ -1550,9 +1563,11 @@ export class GoalProgressHelper {
         task,
         heartbeat,
         ...(heartbeatPending ? { heartbeatPending: true } : {}),
+        ...(sourceTask.status === "pending" ? { taskSourcePending: true } : {}),
         taskSource:
           sourceTask.sourcePath ||
           sourceTask.status === "error" ||
+          sourceTask.status === "pending" ||
           sourceTask.status === "pending-selection"
             ? {
                 status: sourceTask.status,
@@ -1562,6 +1577,7 @@ export class GoalProgressHelper {
                 ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
                 ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
                 ...(sourceTask.error ? { error: sourceTask.error } : {}),
+                ...(sourceTask.retryable ? { retryable: true } : {}),
               }
             : sourceTask.status === "candidates"
               ? { status: "candidates", readOnly: true }
@@ -1574,6 +1590,7 @@ export class GoalProgressHelper {
     const state =
       sourceTask.sourcePath ||
       sourceTask.status === "error" ||
+      sourceTask.status === "pending" ||
       sourceTask.status === "pending-selection"
         ? null
         : localTaskRead
@@ -1583,7 +1600,9 @@ export class GoalProgressHelper {
     return {
       revision: sourceTask.sourcePath
         ? (sourceTask.task?.revision ?? null)
-        : sourceTask.status === "error" || sourceTask.status === "pending-selection"
+        : sourceTask.status === "error" ||
+            sourceTask.status === "pending" ||
+            sourceTask.status === "pending-selection"
           ? null
           : (state?.revision ?? null),
       result: {
