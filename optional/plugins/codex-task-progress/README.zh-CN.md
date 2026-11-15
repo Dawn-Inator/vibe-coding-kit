@@ -2,7 +2,7 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
-0.5.14 增加可选的托管 Codex 启动器，用于启动 Helper 和 Codex Desktop。
+0.5.15 修复托管启动器的 AppKit 生命周期：真实 `.app` 运行 AppKit 事件循环，并异步启动 Helper，避免 Helper 启动较慢时阻塞启动器。已添加经真实 LaunchServices 启动的快速和延迟 Helper 回归覆盖；验证启动器时必须经过实际 LaunchServices，直接运行可执行文件不覆盖此路径。
 
 运行 `goal-progress launcher --install --dock --json` 会关闭旧版持久化启动恢复策略；该策略不可靠，不再推荐依赖它自动恢复。托管启动器采用显式启动流程，不会强制重启已运行的 Codex。
 
@@ -46,7 +46,7 @@
 
 使用 `goal-progress launcher --status --json` 查看状态，`--install --json` 安装，`--remove --json` 移除。只有明确选择由托管启动器替代 Dock 入口时，才运行 `goal-progress launcher --install --dock --json`；此命令也会关闭旧版启动自动观察器。不带 `--dock` 安装会保留常规 Codex Dock App。Dock 替换为显式选择，并保留其他 Dock 项和当前会话。原始 Codex App 仍可用，直接启动仍按常规方式运行；托管启动器不会拦截所有 Finder 或其他应用发起的启动，macOS 也可能同时显示两个 App 图标。
 
-如果 Codex 已运行但没有 CDP，启动器只能激活该进程；需要之后通过托管启动器进行一次完整冷启动来建立连接。它不会强制重启现有 Codex。已存在经过验证的 CDP 连接时会复用连接。启动命令本身不重启 Codex。旧版默认关闭的启动恢复策略不可靠，不再推荐使用。
+启动器作为 AppKit 应用运行，并异步启动 Helper，因此 Helper 较慢时不会阻塞启动器的事件循环。回归覆盖包含经真实 LaunchServices 启动的快速和延迟 Helper 场景；验证启动器行为必须实际经由 LaunchServices，直接运行可执行文件不覆盖此路径。如果 Codex 已运行但没有 CDP，启动器只能激活该进程；需要之后通过托管启动器进行一次完整冷启动来建立连接。它不会强制重启现有 Codex。已存在经过验证的 CDP 连接时会复用连接。启动命令本身不重启 Codex。旧版默认关闭的启动恢复策略不可靠，不再推荐使用。
 
 Kit 集成：交互式安装或可选类别向导中，若选择了 Task Progress，且已安装的 Helper 支持启动器但尚未配置，Kit 会单独询问是否以一次点击配置 Dock 启动器；默认否。拒绝不会改变插件安装或项目类别选择。这与签名确认无关。非交互运行中的已保存或自动检测偏好只复用现有安装；更新其他类别不会触发此问题。已有插件可显式使用 `--optional task-progress=on` 直接请求启动器配置。旧版 Helper 不会自动升级，缺少支持时会返回 setup-required。
 

@@ -9,6 +9,12 @@ private let managedBundleID = "com.codextaskprogress.codexlauncher"
 private let originalBundleID = "com.openai.codex"
 private var showAppAlert = false
 
+#if TASK_PROGRESS_LAUNCHER_TESTING
+private let launcherTesting = true
+#else
+private let launcherTesting = false
+#endif
+
 private func showFailureAlert(_ code: String) {
   guard showAppAlert else { return }
   let alert = NSAlert()
@@ -85,19 +91,35 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
   return result
 }
 
-private func launchHelper() -> Never {
+private func launchHelperPath() -> String {
   let home = FileManager.default.homeDirectoryForCurrentUser.path
   let expected = URL(fileURLWithPath: home).appendingPathComponent("Library/Application Support/CodexTaskProgress/install/bin/goal-progress").standardizedFileURL.path
   let configured = Bundle.main.infoDictionary?["TaskProgressHelperPath"] as? String
+  #if TASK_PROGRESS_LAUNCHER_TESTING
+  let helper = launcherTesting ? (configured ?? expected) : expected
+  let validPath = launcherTesting
+    ? (helper.hasPrefix("/") && URL(fileURLWithPath: helper).standardizedFileURL.path == helper)
+    : helper == expected
+  #else
   let helper = configured ?? expected
-  guard helper.hasPrefix("/"), URL(fileURLWithPath: helper).standardizedFileURL.path == expected else { error("HELPER_PATH_INVALID", "The managed launcher helper path is invalid.") }
+  let validPath = helper.hasPrefix("/") && URL(fileURLWithPath: helper).standardizedFileURL.path == expected
+  #endif
+  guard validPath else { error("HELPER_PATH_INVALID", "The managed launcher helper path is invalid.") }
   var helperStat = stat()
   guard lstat(helper, &helperStat) == 0, (helperStat.st_mode & S_IFMT) == S_IFREG,
         FileManager.default.isExecutableFile(atPath: helper) else { error("HELPER_NOT_INSTALLED", "Install Goal Progress from the app or command line, then try again.") }
-  invokeHelper(helper)
+  return helper
 }
 
-private func invokeHelper(_ helper: String) -> Never {
+private struct HelperResult {
+  let status: Int32
+  let stdout: Data
+  let stderr: Data
+  let timedOut: Bool
+  let launchError: String?
+}
+
+private func invokeHelper(_ helper: String) -> HelperResult {
   let process = Process()
   process.executableURL = URL(fileURLWithPath: helper)
   process.arguments = ["launch", "--json"]
@@ -129,10 +151,19 @@ private func invokeHelper(_ helper: String) -> Never {
   }
   let semaphore = DispatchSemaphore(value: 0)
   process.terminationHandler = { _ in semaphore.signal() }
-  do { try process.run() } catch { selfError("HELPER_LAUNCH_FAILED", error.localizedDescription) }
+  do { try process.run() } catch {
+    output.fileHandleForReading.readabilityHandler = nil
+    errors.fileHandleForReading.readabilityHandler = nil
+    return HelperResult(status: 1, stdout: Data(), stderr: Data(), timedOut: false, launchError: error.localizedDescription)
+  }
   if semaphore.wait(timeout: .now() + 90) == .timedOut {
     process.terminate()
-    error("HELPER_LAUNCH_TIMEOUT", "The launcher helper did not respond.")
+    // This is the launcher-owned helper child, never the real Codex application.
+    _ = kill(process.processIdentifier, SIGKILL)
+    _ = process.waitUntilExit()
+    output.fileHandleForReading.readabilityHandler = nil
+    errors.fileHandleForReading.readabilityHandler = nil
+    return HelperResult(status: 1, stdout: Data(), stderr: Data(), timedOut: true, launchError: nil)
   }
   // A child may exit before its final readability callback runs. Wait briefly for
   // EOF, but do not hang forever if a launched descendant inherited a pipe.
@@ -142,20 +173,61 @@ private func invokeHelper(_ helper: String) -> Never {
   errors.fileHandleForReading.readabilityHandler = nil
   outputLock.lock(); let stdout = outputData; outputLock.unlock()
   errorLock.lock(); let stderr = errorData; errorLock.unlock()
-  if !stdout.isEmpty { FileHandle.standardOutput.write(stdout) }
-  if !stderr.isEmpty { FileHandle.standardError.write(stderr) }
-  let helperOutput = String(decoding: stdout, as: UTF8.self)
-  if process.terminationStatus != 0 && !helperOutput.contains("CODEX_CONNECTION_REBUILD_PENDING") {
+  return HelperResult(status: process.terminationStatus, stdout: stdout, stderr: stderr, timedOut: false, launchError: nil)
+}
+
+private func finishHelper(_ result: HelperResult, appMode: Bool) -> Never {
+  if let detail = result.launchError { error("HELPER_LAUNCH_FAILED", detail) }
+  if result.timedOut { error("HELPER_LAUNCH_TIMEOUT", "The launcher helper did not respond.") }
+  if !result.stdout.isEmpty { FileHandle.standardOutput.write(result.stdout) }
+  if !result.stderr.isEmpty { FileHandle.standardError.write(result.stderr) }
+  let helperOutput = String(decoding: result.stdout, as: UTF8.self)
+  if appMode && result.status != 0 && !helperOutput.contains("CODEX_CONNECTION_REBUILD_PENDING") {
     showFailureAlert("HELPER_LAUNCH_FAILED")
   }
-  exit(process.terminationStatus)
+  exit(result.status)
+}
+
+private final class LauncherApplicationDelegate: NSObject, NSApplicationDelegate {
+  private var didLaunchHelper = false
+
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    #if TASK_PROGRESS_LAUNCHER_TESTING
+    if let statusPath = Bundle.main.infoDictionary?["TaskProgressLauncherTestStatusPath"] as? String {
+      let launched = "launched \(ProcessInfo.processInfo.processIdentifier)\n"
+      try? Data(launched.utf8).write(to: URL(fileURLWithPath: statusPath), options: .atomic)
+      // A timer proves the NSApplication run loop remains responsive while the helper is blocked.
+      Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { _ in
+        try? Data((launched + "responsive\n").utf8).write(to: URL(fileURLWithPath: statusPath), options: .atomic)
+      }
+    }
+    #endif
+    guard !didLaunchHelper else { return }
+    didLaunchHelper = true
+    let helper = launchHelperPath()
+    DispatchQueue.global(qos: .userInitiated).async {
+      let result = invokeHelper(helper)
+      DispatchQueue.main.async {
+        finishHelper(result, appMode: true)
+      }
+    }
+  }
+}
+
+private func launchApplication() -> Never {
+  showAppAlert = true
+  let application = NSApplication.shared
+  let delegate = LauncherApplicationDelegate()
+  application.delegate = delegate
+  withExtendedLifetime(delegate) { application.run() }
+  exit(0)
 }
 
 private func selfError(_ code: String, _ detail: String) -> Never { error(code, detail) }
 
 private func fixtureLaunch(_ options: [String: String]) -> Never {
   guard let helper = options["--helper"], helper.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: helper) else { error("FIXTURE_HELPER_INVALID") }
-  invokeHelper(helper)
+  finishHelper(invokeHelper(helper), appMode: false)
 }
 
 private func readDockItems() -> [[String: Any]] {
@@ -660,8 +732,8 @@ let command = argv.count > 1 ? argv[1] : "launch"
 let options = parseOptions(Array(argv.dropFirst(min(2, argv.count))), command: command)
 if command == "launch" {
   guard argv.count == 1 else { error("LAUNCHER_ARGUMENT_INVALID") }
-  showAppAlert = argv.count == 1 && Bundle.main.bundleURL.pathExtension == "app"
-  launchHelper()
+  if Bundle.main.bundleURL.pathExtension == "app" { launchApplication() }
+  finishHelper(invokeHelper(launchHelperPath()), appMode: false)
 }
 if command == "fixture-launch" { fixtureLaunch(options) }
 if command == "dock-fixture" { dockFixture(options) }

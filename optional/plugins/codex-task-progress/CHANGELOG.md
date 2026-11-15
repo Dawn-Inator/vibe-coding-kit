@@ -1,3 +1,9 @@
+# Task Progress 0.5.15
+
+- Run the managed launcher's real `.app` through the AppKit application event loop and start the Helper asynchronously so slow Helper startup does not block the launcher's event loop.
+- Add regression coverage for fast and delayed Helper startup through real LaunchServices.
+- Keep Codex-without-CDP recovery pending until a later full cold launch through the managed launcher; do not restart Codex without current authorization.
+
 # Task Progress 0.5.14
 
 - Add an optional separately signed managed Codex launcher that starts the Helper and Codex with connection arguments; keep the Codex bundle untouched and derive the launcher name/icon from the detected vendor app.

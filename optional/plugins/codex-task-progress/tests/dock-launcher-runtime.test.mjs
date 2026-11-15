@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -17,6 +18,10 @@ function assertNativeSuccess(result, context) {
     0,
     `${context}: status=${result.status} signal=${result.signal ?? "none"}\nstdout=${String(result.stdout ?? "").slice(0, 1_000)}\nstderr=${String(result.stderr ?? "").slice(0, 1_000)}`,
   );
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 async function nativeLauncherFor(t) {
@@ -40,7 +45,17 @@ async function nativeLauncherFor(t) {
     const source = fileURLToPath(new URL("../platform/macos/launcher/main.swift", import.meta.url));
     const build = spawnSync(
       "/usr/bin/xcrun",
-      ["swiftc", "-O", "-framework", "AppKit", source, "-o", compiledBinary],
+      [
+        "swiftc",
+        "-O",
+        "-D",
+        "TASK_PROGRESS_LAUNCHER_TESTING",
+        "-framework",
+        "AppKit",
+        source,
+        "-o",
+        compiledBinary,
+      ],
       { encoding: "utf8", timeout: 120_000 },
     );
     assert.equal(build.status, 0, `${build.stderr}\n${build.stdout}`);
@@ -67,6 +82,149 @@ function inspectDockFixture(nativeBinary, plistPath, context) {
 
 after(async () => {
   if (compileRoot) await rm(compileRoot, { recursive: true, force: true });
+});
+
+test("LaunchServices acknowledges the managed app and its main run loop stays responsive during helper startup", {
+  skip: process.platform !== "darwin",
+}, async (t) => {
+  const nativeBinary = await nativeLauncherFor(t);
+  if (!nativeBinary) return;
+  const root = await mkdtemp(join(tmpdir(), "codex launcher lifecycle "));
+  let openProcess;
+  let completion;
+  let release;
+  try {
+    const createAgentApp = async (name, bundleSuffix, helper, status) => {
+      const app = join(root, `${name}.app`);
+      const contents = join(app, "Contents");
+      const executable = join(contents, "MacOS", "CodexTaskProgressLauncher");
+      await mkdir(join(contents, "MacOS"), { recursive: true });
+      await copyFile(nativeBinary, executable);
+      await chmod(executable, 0o700);
+      await writeFile(
+        join(contents, "Info.plist"),
+        `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>CodexTaskProgressLauncher</string><key>CFBundleIdentifier</key><string>com.codextaskprogress.fixture.${process.pid}.${bundleSuffix}</string><key>CFBundleName</key><string>${name}</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/><key>TaskProgressHelperPath</key><string>${helper}</string><key>TaskProgressLauncherTestStatusPath</key><string>${status}</string></dict></plist>`,
+      );
+      return app;
+    };
+    const fastHelper = join(root, "fast helper");
+    await writeFile(fastHelper, "#!/bin/sh\nexit 0\n");
+    await chmod(fastHelper, 0o700);
+    const fastApp = await createAgentApp(
+      "Fast Progress Fixture",
+      "fast",
+      fastHelper,
+      join(root, "fast status"),
+    );
+    const fastOpen = spawnSync("/usr/bin/open", ["-W", "-n", "-a", fastApp], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assertNativeSuccess(fastOpen, "LaunchServices open with a fast helper");
+    assert.match(
+      await readFile(join(root, "fast status"), "utf8"),
+      /^launched \d+\n/,
+      "fast launch must reach applicationDidFinishLaunching",
+    );
+
+    const app = await createAgentApp(
+      "Progress Fixture",
+      "delayed",
+      join(root, "delayed helper"),
+      join(root, "lifecycle status"),
+    );
+    const helper = join(root, "delayed helper");
+    release = join(root, "release helper");
+    const status = join(root, "lifecycle status");
+    const helperProgram = `const fs = require("node:fs");
+const release = ${JSON.stringify(release)};
+const deadline = Date.now() + 20_000;
+const poll = () => fs.existsSync(release) ? process.exit(0) : Date.now() > deadline ? process.exit(9) : setTimeout(poll, 25);
+poll();`;
+    await writeFile(
+      helper,
+      `#!/bin/sh\nexec ${shellQuote(process.execPath)} -e ${shellQuote(helperProgram)}\n`,
+    );
+    await chmod(helper, 0o700);
+    const open = spawn("/usr/bin/open", ["-W", "-n", "-a", app], { stdio: "ignore" });
+    openProcess = open;
+    completion = new Promise((resolve, reject) => {
+      open.once("error", reject);
+      open.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    const deadline = Date.now() + 10_000;
+    let statusText = "";
+    while (Date.now() < deadline) {
+      try {
+        statusText = await readFile(status, "utf8");
+        if (statusText.includes("responsive")) break;
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(
+      statusText,
+      /^launched \d+\nresponsive\n$/,
+      "NSApplication launch and main-loop timer should run before helper release",
+    );
+    await writeFile(release, "release\n");
+    const result = await completion;
+    openProcess = undefined;
+    assert.deepEqual(
+      result,
+      { code: 0, signal: null },
+      "LaunchServices should receive a successful open acknowledgement and wait for app exit",
+    );
+  } finally {
+    // Always release the fake helper so failures cannot leave a fixture app running.
+    if (release) await writeFile(release, "release\n");
+    if (completion) {
+      await Promise.race([
+        completion.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    }
+    const fixtureExecutables = new Set(
+      ["Progress Fixture.app", "Fast Progress Fixture.app"].map((appName) =>
+        realpathSync(join(root, appName, "Contents/MacOS/CodexTaskProgressLauncher")),
+      ),
+    );
+    const ownPids = new Set();
+    const processes = spawnSync("/bin/ps", ["-axo", "pid=,comm="], { encoding: "utf8" });
+    for (const line of String(processes.stdout ?? "").split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      try {
+        const executable = realpathSync(match[2].trim());
+        if (!fixtureExecutables.has(executable)) continue;
+        ownPids.add(pid);
+        process.kill(pid, "SIGTERM");
+      } catch {}
+    }
+    const cleanupDeadline = Date.now() + 5_000;
+    while (ownPids.size && Date.now() < cleanupDeadline) {
+      for (const pid of ownPids) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          ownPids.delete(pid);
+        }
+      }
+      if (ownPids.size) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (openProcess && openProcess.exitCode === null) {
+      await Promise.race([
+        completion?.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+      if (openProcess.exitCode === null) openProcess.kill("SIGTERM");
+      await Promise.race([
+        completion?.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("native launcher forwards structured helper arguments without shell parsing", async (t) => {
