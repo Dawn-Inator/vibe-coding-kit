@@ -276,6 +276,9 @@ export class GoalProgressHelper {
     revision: number | null;
     result: Record<string, unknown>;
   }>({ now: () => Date.now() });
+  #taskPresentationEpoch = 0;
+  #stopping = false;
+  readonly #presentationLoads = new Set<Promise<unknown>>();
   readonly #runtime: CodexAppServerRuntime;
   readonly #sessionCoordinator: GoalProgressSessionCoordinator;
   readonly #enableGoalWatch: boolean;
@@ -1403,6 +1406,7 @@ export class GoalProgressHelper {
     const canonicalCwd = await realpath(cwd);
     const scope = taskPresentationScope({ threadId, cwd: canonicalCwd, projectRoot: project.root });
     if (!project.enabled) {
+      this.#taskPresentationEpoch++;
       this.#taskPresentation.delete(scope);
       if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
@@ -1762,16 +1766,24 @@ export class GoalProgressHelper {
       const snapshot = fresh
         ? existing
         : this.#taskPresentation.read(scope, async () => {
-            const loaded = await canonicalRead(performance.now());
-            const previous = this.#taskPresentation.peek(scope).value;
-            if (
-              previous?.result.history &&
-              JSON.stringify(previous.result.taskSource ?? null) ===
-                JSON.stringify(loaded.result.taskSource ?? null)
-            ) {
-              loaded.result.history = previous.result.history;
+            if (this.#stopping) throw new Error("Helper is stopping");
+            const load = canonicalRead(performance.now());
+            this.#presentationLoads.add(load);
+            try {
+              const loaded = await load;
+              const previous = this.#taskPresentation.peek(scope).value;
+              if (
+                previous?.result.history &&
+                previous.revision === loaded.revision &&
+                JSON.stringify(previous.result.taskSource ?? null) ===
+                  JSON.stringify(loaded.result.taskSource ?? null)
+              ) {
+                loaded.result.history = previous.result.history;
+              }
+              return loaded;
+            } finally {
+              this.#presentationLoads.delete(load);
             }
-            return loaded;
           });
       const error =
         snapshot.error == null
@@ -1811,19 +1823,39 @@ export class GoalProgressHelper {
         },
       };
     }
+    const readEpoch = this.#taskPresentationEpoch;
+    const beforeRead = this.#taskPresentation.peek(scope).value;
     const canonical = await canonicalRead();
     if (action === "get") {
-      this.#taskPresentation.set(scope, canonical);
+      if (readEpoch === this.#taskPresentationEpoch) this.#taskPresentation.set(scope, canonical);
     } else if (["initialize", "update", "rescope", "complete"].includes(action)) {
       // A successful mutation invalidates any older in-flight presentation read.
       // Only a previously verified display snapshot may supply the other fields.
+      this.#taskPresentationEpoch++;
       const previous = this.#taskPresentation.peek(scope).value;
       const state = canonical.result.state;
-      if (previous && state && typeof state === "object") {
+      const stateRevision =
+        state &&
+        typeof state === "object" &&
+        "revision" in state &&
+        typeof state.revision === "number"
+          ? state.revision
+          : null;
+      if (
+        previous &&
+        stateRevision !== null &&
+        previous.revision !== null &&
+        stateRevision < previous.revision
+      ) {
+        // A slower completed write must not replace a later revision; set also fences
+        // any older native refresh already in flight.
+        this.#taskPresentation.set(scope, previous);
+      } else if (previous && state && typeof state === "object" && stateRevision !== null) {
+        const { history: _history, ...currentPresentation } = previous.result;
         this.#taskPresentation.set(scope, {
-          revision: canonical.revision,
+          revision: stateRevision,
           result: {
-            ...previous.result,
+            ...currentPresentation,
             task: state,
             execution: canonical.result.execution,
             archiveCount: canonical.result.archiveCount,
@@ -1831,6 +1863,7 @@ export class GoalProgressHelper {
         });
       } else this.#taskPresentation.delete(scope);
     } else if (action === "bind-heartbeat") {
+      this.#taskPresentationEpoch++;
       this.#taskPresentation.delete(scope);
     } else if (
       action === "history" &&
@@ -1843,9 +1876,17 @@ export class GoalProgressHelper {
     ) {
       const previous = this.#taskPresentation.peek(scope).value;
       if (
+        readEpoch === this.#taskPresentationEpoch &&
+        beforeRead &&
         previous &&
+        previous.revision === beforeRead.revision &&
+        canonical.revision === beforeRead.revision &&
+        previous.result.completionBasis === beforeRead.result.completionBasis &&
+        canonical.result.completionBasis === beforeRead.result.completionBasis &&
         JSON.stringify(previous.result.taskSource ?? null) ===
-          JSON.stringify(canonical.result.taskSource ?? null)
+          JSON.stringify(beforeRead.result.taskSource ?? null) &&
+        JSON.stringify(canonical.result.taskSource ?? null) ===
+          JSON.stringify(beforeRead.result.taskSource ?? null)
       ) {
         this.#taskPresentation.set(scope, {
           ...previous,
@@ -1905,13 +1946,16 @@ export class GoalProgressHelper {
   }
 
   async stop(): Promise<void> {
-    this.#workspaceStorage.close();
+    this.#stopping = true;
     this.#ready = false;
     const server = this.#server;
     const lock = this.#lock;
     this.#server = undefined;
     this.#lock = undefined;
     await server?.stop();
+    await Promise.allSettled([...this.#presentationLoads]);
+    this.#taskPresentation.clear();
+    this.#workspaceStorage.close();
     await this.#runtime.close();
     await this.#log({
       level: "info",

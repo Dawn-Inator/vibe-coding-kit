@@ -11,6 +11,7 @@ import {
   HeartbeatDiscoveryIndex,
   HeartbeatDiscoveryInvalidatedError,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
+import type { TaskHistorySummaryPage as KitTaskHistorySummaryPage } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { TaskStore as KitTaskStore } from "vibe-coding-kit/src/tasks/task-store.mjs";
 import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
 import {
@@ -3130,6 +3131,272 @@ test("native cached pending and source errors refresh to ready without waiting f
   } finally {
     HeartbeatService.prototype.taskProjection = originalProjection;
     HeartbeatService.prototype.projectViewSnapshot = originalSnapshot;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("late canonical history and model reads cannot roll back a newer mutation", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-late-reads-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const originalGet = KitTaskStore.prototype.get;
+  const originalHistory = KitTaskStore.prototype.history;
+  let hold: "get" | "history" | null = null;
+  let release = () => {};
+  let notifyCaptured = () => {};
+  let gate = Promise.resolve();
+  let captured = Promise.resolve();
+  const arm = (kind: "get" | "history") => {
+    hold = kind;
+    gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    captured = new Promise<void>((resolveCaptured) => {
+      notifyCaptured = resolveCaptured;
+    });
+  };
+  KitTaskStore.prototype.get = async function (threadId) {
+    const value = await originalGet.call(this, threadId);
+    if (hold === "get") {
+      hold = null;
+      notifyCaptured();
+      await gate;
+    }
+    return value;
+  };
+  function delayedHistory(
+    this: KitTaskStore,
+    threadId: string,
+    options: { cursor?: string; limit?: number; projection: "summary" },
+  ): Promise<KitTaskHistorySummaryPage>;
+  function delayedHistory(
+    this: KitTaskStore,
+    threadId: string,
+    options?: { cursor?: string; limit?: number; projection?: "raw" },
+  ): Promise<TaskHistoryPage>;
+  async function delayedHistory(
+    this: KitTaskStore,
+    threadId: string,
+    options?: { cursor?: string; limit?: number; projection?: "raw" | "summary" },
+  ): Promise<TaskHistoryPage | KitTaskHistorySummaryPage> {
+    const value = (await Reflect.apply(originalHistory, this, [threadId, options])) as
+      | TaskHistoryPage
+      | KitTaskHistorySummaryPage;
+    if (hold === "history") {
+      hold = null;
+      notifyCaptured();
+      await gate;
+    }
+    return value;
+  }
+  KitTaskStore.prototype.history = delayedHistory;
+  let call = 0;
+  const model = (action: "get" | "history" | "initialize" | "update", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `late-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    await model("initialize", {
+      requestId: "seed",
+      expectedRevision: 0,
+      title: "Race",
+      reason: "Test",
+      objectives: [{ id: "I1", title: "One" }],
+    });
+    const initial = (await model("get", {})).result as { task: TaskState };
+    let revision = initial.task.revision;
+    for (const kind of ["history", "get"] as const) {
+      arm(kind);
+      const oldRead = model(kind, {});
+      await captured;
+      await model("update", {
+        requestId: `advance-${kind}`,
+        expectedRevision: revision,
+        reason: "Advance",
+        changes: [{ targetId: "I1", status: kind === "history" ? "active" : "pending" }],
+      });
+      revision++;
+      release();
+      await oldRead;
+      const displayed = (await native()).result as { task: TaskState; history?: unknown };
+      assert.equal(displayed.task.revision, revision);
+      assert.equal(displayed.history, undefined);
+    }
+  } finally {
+    release();
+    KitTaskStore.prototype.get = originalGet;
+    KitTaskStore.prototype.history = originalHistory;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("helper stop drains an active presentation read before closing workspace storage", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-stop-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const original = HeartbeatService.prototype.taskProjection;
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const running = new Promise<void>((resolveRunning) => {
+    started = resolveRunning;
+  });
+  let hold = true;
+  HeartbeatService.prototype.taskProjection = async function (threadId, cwd, options) {
+    if (hold) {
+      hold = false;
+      started();
+      await gate;
+      await writeFile(join(root, "background-finished"), "done");
+    }
+    return original.call(this, threadId, cwd, options);
+  };
+  let stopped = false;
+  let replacement: GoalProgressHelper | undefined;
+  try {
+    await helper.start();
+    await client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+    await running;
+    const stopping = helper.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    assert.equal(stopped, false);
+    release();
+    await stopping;
+    assert.equal(await readFile(join(root, "background-finished"), "utf8"), "done");
+    replacement = new GoalProgressHelper({
+      paths,
+      runtime: runtime(root),
+      resolveNativeGoal: async () => null,
+    });
+    await replacement.start();
+    const response = await client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+    assert.equal((response.result as { task: unknown }).task, null);
+    await replacement.stop();
+    replacement = undefined;
+  } finally {
+    release();
+    HeartbeatService.prototype.taskProjection = original;
+    await replacement?.stop();
+    if (!stopped) await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("disabling a project fences a model read that finishes after re-enabling", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-disable-race-");
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".vibe-coding"));
+  const config = join(root, ".vibe-coding", "project.config.json");
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const original = KitTaskStore.prototype.get;
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const running = new Promise<void>((resolveRunning) => {
+    started = resolveRunning;
+  });
+  KitTaskStore.prototype.get = async function (threadId) {
+    const value = await original.call(this, threadId);
+    started();
+    await gate;
+    return value;
+  };
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    const model = client.request({
+      method: "task.request",
+      params: {
+        action: "get",
+        input: {},
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_get",
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: "disable-race",
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+    await running;
+    await writeFile(config, JSON.stringify({ optional: { "task-progress": false } }));
+    assert.deepEqual((await native()).result, { enabled: false, task: null, heartbeat: null });
+    await writeFile(config, JSON.stringify({ optional: { "task-progress": true } }));
+    release();
+    await model;
+    const after = (await native()).result as {
+      presentation: { cached: boolean; pending: boolean };
+    };
+    assert.equal(after.presentation.cached, false);
+    assert.equal(after.presentation.pending, true);
+  } finally {
+    release();
+    KitTaskStore.prototype.get = original;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

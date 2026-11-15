@@ -67,6 +67,7 @@ window.holdGet=false;
 window.releaseHeldGet=null;
 window.archiveResponse=null;
 window.archiveIdentity=null;
+window.fullHistoryResponse=false;
 window.holdNextHistory=false;
 window.heldHistoryDelivered=false;
 window.releaseHeldHistory=null;
@@ -101,7 +102,7 @@ window.addEventListener('message', async (event) => {
       result={content:[{type:'text',text:JSON.stringify({ok:true,result:{archive:window.archiveResponse}})}],_meta:{'codex-task-progress/threadId':window.archiveIdentity || window.currentThreadId}};
     } else if(name === 'task_progress_history') {
       const {task:ignoredTask,...responseWithoutTask}=window.currentResponse;
-      result={content:[{type:'text',text:JSON.stringify({ok:true,result:{...responseWithoutTask,history:{events:[{type:'task.updated',occurredAt:'2026-11-15T11:00:00Z',reason:holdThisHistory?'STALE HISTORY':'OLD HISTORY'}],nextCursor:null}}})}],_meta:{'codex-task-progress/threadId':window.currentThreadId}};
+      result={content:[{type:'text',text:JSON.stringify({ok:true,result:{...(window.fullHistoryResponse ? window.currentResponse : responseWithoutTask),history:{events:[{type:'task.updated',occurredAt:'2026-11-15T11:00:00Z',reason:holdThisHistory?'STALE HISTORY':'OLD HISTORY'}],nextCursor:null}}})}],_meta:{'codex-task-progress/threadId':window.currentThreadId}};
     } else if(name === 'task_progress_heartbeat_history') {
       const {task:ignoredTask,...responseWithoutTask}=window.currentResponse;
       result={content:[{type:'text',text:JSON.stringify({ok:true,result:{...responseWithoutTask,heartbeatHistory:{wakes:[],nextCursor:null,total:0,sourcePath:window.currentResponse.heartbeat?.sourcePath}}})}],_meta:{'codex-task-progress/threadId':window.currentThreadId}};
@@ -1097,6 +1098,157 @@ test("native panel MCP Apps integration", async (t) => {
           .waitFor();
         await waitForPanelThread(page, "conversation-verified-by-tool");
       }),
+    );
+
+    await t.test(
+      "late full history cannot roll back a newer task revision or repaint history",
+      () =>
+        scenario(async (page, frame) => {
+          await ready(frame);
+          await page.evaluate(() => {
+            window.fullHistoryResponse = true;
+            window.currentResponse = {
+              ...window.currentResponse,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+            window.holdNextHistory = true;
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.presentation
+                ?.scope === "project-a",
+          );
+          await frame.getByRole("button", { name: "History" }).click();
+          await page.waitForFunction(() => typeof window.releaseHeldHistory === "function");
+          await page.evaluate(() => {
+            window.currentResponse = {
+              ...window.currentResponse,
+              task: { ...window.currentResponse.task, revision: 4, title: "Newer task" },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.task?.revision === 4,
+          );
+          await page.evaluate(() => {
+            window.deliverToolResult(window.currentThreadId, {
+              ...window.currentResponse,
+              task: { ...window.currentResponse.task, revision: 3, title: "Stale history task" },
+              history: {
+                events: [
+                  {
+                    type: "task.updated",
+                    occurredAt: "2026-11-15T11:00:00Z",
+                    reason: "STALE PUSH HISTORY",
+                  },
+                ],
+                nextCursor: null,
+              },
+            });
+            window.releaseHeldHistory();
+          });
+          await page.waitForFunction(() => window.heldHistoryDelivered);
+          await page
+            .locator("#app")
+            .evaluate(
+              (iframe) =>
+                new Promise((resolve) =>
+                  iframe.contentWindow.requestAnimationFrame(() =>
+                    iframe.contentWindow.requestAnimationFrame(resolve),
+                  ),
+                ),
+            );
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((panel) => panel.data.task?.title),
+            "Newer task",
+          );
+          assert.equal(await frame.getByText("STALE HISTORY", { exact: false }).count(), 0);
+          assert.equal(await frame.getByText("STALE PUSH HISTORY", { exact: false }).count(), 0);
+          await frame.getByText("OLD HISTORY", { exact: false }).waitFor();
+          await page.evaluate(() => {
+            window.deliverToolResult(window.currentThreadId, {
+              ...window.currentResponse,
+              task: {
+                ...window.currentResponse.task,
+                revision: 5,
+                title: "Completed cycle",
+                lifecycle: {
+                  id: "old-cycle",
+                  sequence: 1,
+                  startedAt: "2026-11-15T11:00:00Z",
+                  completion: { completedAt: "2026-11-15T11:59:00Z", receipt: null },
+                },
+              },
+            });
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.task?.title ===
+              "Completed cycle",
+          );
+          await page.evaluate(() => {
+            window.deliverToolResult(window.currentThreadId, {
+              ...window.currentResponse,
+              task: {
+                ...window.currentResponse.task,
+                revision: 6,
+                title: "New cycle",
+                lifecycle: {
+                  id: "new-cycle",
+                  sequence: 2,
+                  startedAt: "2026-11-15T12:00:00Z",
+                  completion: null,
+                },
+              },
+            });
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.task?.title ===
+              "New cycle",
+          );
+          await page.evaluate(() =>
+            window.deliverToolResult(window.currentThreadId, {
+              ...window.currentResponse,
+              task: {
+                ...window.currentResponse.task,
+                revision: 5,
+                title: "Late old cycle",
+                lifecycle: {
+                  id: "old-cycle",
+                  sequence: 1,
+                  startedAt: "2026-11-15T11:00:00Z",
+                  completion: { completedAt: "2026-11-15T11:59:00Z", receipt: null },
+                },
+              },
+              history: { events: [], nextCursor: null },
+            }),
+          );
+          await page
+            .locator("#app")
+            .evaluate(
+              (iframe) =>
+                new Promise((resolve) =>
+                  iframe.contentWindow.requestAnimationFrame(() =>
+                    iframe.contentWindow.requestAnimationFrame(resolve),
+                  ),
+                ),
+            );
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((panel) => panel.data.task?.title),
+            "New cycle",
+          );
+        }),
     );
 
     await t.test(

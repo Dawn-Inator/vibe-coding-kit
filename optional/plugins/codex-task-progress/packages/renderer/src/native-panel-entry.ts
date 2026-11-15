@@ -285,6 +285,41 @@ function setIdentity(threadId: string | null, scope: string | null, capture = tr
   return true;
 }
 
+// Local task revisions are global to a verified thread and scope, including
+// lifecycle changes. Bound-source projections have independent versioning.
+function taskRecord(response: TaskPanelResponse): string | null {
+  if (!response.task) return null;
+  return JSON.stringify([
+    response.task.source?.path ?? null,
+    response.taskSource?.path ?? null,
+    response.taskSource?.status ?? null,
+    response.task.lifecycle?.id ?? null,
+  ]);
+}
+function isOlderTask(response: TaskPanelResponse, current: TaskPanelResponse): boolean {
+  const incoming = response.task?.revision;
+  const existing = current.task?.revision;
+  return (
+    activeScope !== null &&
+    scopeOf(response) === activeScope &&
+    scopeOf(current) === activeScope &&
+    !!response.task &&
+    !!current.task &&
+    !response.task.source?.path &&
+    !response.taskSource?.path &&
+    !current.task.source?.path &&
+    !current.taskSource?.path &&
+    typeof incoming === "number" &&
+    Number.isFinite(incoming) &&
+    typeof existing === "number" &&
+    Number.isFinite(existing) &&
+    incoming < existing
+  );
+}
+function taskVersion(response: TaskPanelResponse): string {
+  return JSON.stringify([taskRecord(response), response.task?.revision ?? null]);
+}
+
 function applyVerifiedResponse(response: TaskPanelResponse, threadId: string): void {
   const scope = scopeOf(response);
   if (response.enabled === false) {
@@ -398,6 +433,14 @@ async function refresh(): Promise<void> {
   try {
     const { response, threadId } = await readTaskResponse(controller.signal);
     if (disposed || requestGeneration !== refreshSequence) return;
+    if (
+      threadId === element.threadId &&
+      scopeOf(response) === activeScope &&
+      isOlderTask(response, element.data)
+    ) {
+      schedule(element.data);
+      return;
+    }
     applyVerifiedResponse(response, threadId);
     schedule(response);
   } catch (error) {
@@ -432,31 +475,41 @@ element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse
     ...(request.taskId ? { taskId: request.taskId } : {}),
     ...(request.limit !== undefined ? { limit: request.limit } : {}),
   };
-  const raw = await callTool(toolName, args);
-  const parsed = envelope(raw);
-  if (!parsed) throw new Error("Task history returned an unreadable response.");
-  if (!parsed.ok) {
-    const message = parsed.summary ?? "Task history is unavailable.";
-    if (
-      identityGeneration === expectedIdentityGeneration &&
-      failureInvalidatesIdentity(parsed, raw, expectedThreadId)
-    ) {
-      invalidateIdentity();
-      element.connectionError = message;
-      showError(message);
-      schedule();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const expectedTaskVersion = taskVersion(element.data);
+    const raw = await callTool(toolName, args);
+    const parsed = envelope(raw);
+    if (!parsed) throw new Error("Task history returned an unreadable response.");
+    if (!parsed.ok) {
+      const message = parsed.summary ?? "Task history is unavailable.";
+      if (
+        identityGeneration === expectedIdentityGeneration &&
+        failureInvalidatesIdentity(parsed, raw, expectedThreadId)
+      ) {
+        invalidateIdentity();
+        element.connectionError = message;
+        showError(message);
+        schedule();
+      }
+      throw new Error(message);
     }
-    throw new Error(message);
+    if (
+      identityGeneration !== expectedIdentityGeneration ||
+      element.threadId !== expectedThreadId ||
+      trustedThreadId(raw) !== expectedThreadId ||
+      (scopeOf(parsed.result) !== null && scopeOf(parsed.result) !== expectedScope) ||
+      (parsed.result.task?.threadId && parsed.result.task.threadId !== expectedThreadId)
+    )
+      throw new Error("Task history identity changed. Refresh the panel to continue.");
+    if (
+      expectedTaskVersion === taskVersion(element.data) &&
+      !isOlderTask(parsed.result, element.data)
+    )
+      return parsed.result;
+    // A cursor belongs to the old task snapshot and cannot be replayed safely.
+    if (request.cursor) break;
   }
-  if (
-    identityGeneration !== expectedIdentityGeneration ||
-    element.threadId !== expectedThreadId ||
-    trustedThreadId(raw) !== expectedThreadId ||
-    (scopeOf(parsed.result) !== null && scopeOf(parsed.result) !== expectedScope) ||
-    (parsed.result.task?.threadId && parsed.result.task.threadId !== expectedThreadId)
-  )
-    throw new Error("Task history identity changed. Refresh the panel to continue.");
-  return parsed.result;
+  throw new Error("Task history became stale. Refresh the panel to continue.");
 };
 
 app.ontoolresult = (result) => {
@@ -503,6 +556,7 @@ app.ontoolresult = (result) => {
       }
       return;
     }
+    if (!identityChanged && isOlderTask(parsed.result, element.data)) return;
     invalidatePendingRefresh();
     applyVerifiedResponse(parsed.result, verifiedThreadId);
     schedule(parsed.result);
