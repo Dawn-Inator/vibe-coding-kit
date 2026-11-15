@@ -129,7 +129,9 @@ let connected = false;
 let disposed = false;
 let refreshSequence = 0;
 let identityGeneration = 0;
-let requiresFreshRead = false;
+// Once trust has been revoked, unordered host pushes cannot prove they were
+// produced after revocation. Only a new native read may update the panel.
+let hostPushRequiresRead = false;
 let busy = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 const pendingDelays = [150, 250, 500, 1_000];
@@ -197,7 +199,7 @@ function clearPresentationAttributes(): void {
   element.removeAttribute("data-presentation-updated-at");
 }
 function invalidateIdentity(): void {
-  requiresFreshRead = true;
+  hostPushRequiresRead = true;
   clearPresentationAttributes();
   retained.clear();
   invalidatePendingRefresh();
@@ -325,7 +327,7 @@ function taskVersion(response: TaskPanelResponse): string {
 function applyVerifiedResponse(response: TaskPanelResponse, threadId: string): void {
   const scope = scopeOf(response);
   if (response.enabled === false) {
-    requiresFreshRead = true;
+    hostPushRequiresRead = true;
     retained.clear();
     invalidatePendingRefresh();
     for (const active of activeToolControllers) active.abort();
@@ -444,7 +446,6 @@ async function refresh(): Promise<void> {
       schedule(element.data);
       return;
     }
-    if (response.enabled !== false) requiresFreshRead = false;
     applyVerifiedResponse(response, threadId);
     schedule(response);
   } catch (error) {
@@ -540,7 +541,7 @@ app.ontoolresult = (result) => {
       schedule();
       return;
     }
-    if (requiresFreshRead && parsed.result.enabled !== false) {
+    if (hostPushRequiresRead && parsed.result.enabled !== false) {
       void refresh();
       return;
     }

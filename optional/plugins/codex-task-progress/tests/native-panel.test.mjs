@@ -465,6 +465,33 @@ test("native panel MCP Apps integration", async (t) => {
         });
         await frame.getByRole("heading", { name: "Native task panel" }).waitFor();
         await page.evaluate(() => {
+          window.holdGet = true;
+          window.releaseHeldGet = null;
+          window.deliverToolResult(window.currentThreadId, {
+            ...window.currentResponse,
+            task: {
+              ...window.currentResponse.task,
+              title: "Late bound source",
+              source: { kind: "kit-heartbeat", path: "/old/ledger", readOnly: true },
+            },
+            history: { events: [], nextCursor: null },
+          });
+        });
+        await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+        assert.equal(
+          await frame.locator("codex-task-panel").evaluate((panel) => panel.data.task?.title),
+          "Native task panel",
+        );
+        await page.evaluate(() => {
+          window.holdGet = false;
+          window.releaseHeldGet();
+        });
+        await page.waitForFunction(
+          () =>
+            !document.getElementById("app").contentWindow.document.querySelector("codex-task-panel")
+              .refreshing,
+        );
+        await page.evaluate(() => {
           window.deliverToolResult(null, window.currentResponse);
           window.holdGet = true;
           window.releaseHeldGet = null;
