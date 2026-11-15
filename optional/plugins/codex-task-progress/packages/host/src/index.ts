@@ -1324,18 +1324,20 @@ export class GoalProgressHelper {
           "TASK_TOOL_MISMATCH",
           "Task action does not match tool identity",
         );
-      const identity = await measureStage("native-identity", () =>
-        this.#sessionCoordinator.authorizeSessionRequest(request.params.auth),
+      const authorized = await measureStage("native-identity", () =>
+        this.#sessionCoordinator.authorizeSessionRequestWithThread(request.params.auth),
       );
-      threadId = identity.threadId;
-      cwd = identity.cwd;
+      threadId = authorized.identity.threadId;
+      cwd = authorized.identity.cwd;
       input = request.params.input;
-      nativeStatus = await measureStage("native-identity", () =>
-        this.#runtime
-          .readThreadIdentity(threadId)
-          .then((thread) => thread.status)
-          .catch(() => undefined),
-      );
+      nativeStatus = authorized.thread
+        ? authorized.thread.status
+        : await measureStage("native-identity", () =>
+            this.#runtime
+              .readThreadIdentity(threadId)
+              .then((thread) => thread.status)
+              .catch(() => undefined),
+          );
     } else {
       threadId = request.params.threadId;
       const identity = await measureStage("native-identity", () =>
@@ -1398,7 +1400,7 @@ export class GoalProgressHelper {
     let heartbeatPending = false;
     if (action === "get")
       sourceTask = await measureStage("task-projection", () =>
-        heartbeatService.taskProjection(threadId, cwd),
+        heartbeatService.taskProjection(threadId, cwd, { maxWaitMs: 200 }),
       );
     else {
       [sourceTask, heartbeat] = await Promise.all([
@@ -1506,11 +1508,15 @@ export class GoalProgressHelper {
       );
     } else {
       if (action === "get") {
-        const snapshot = await measureStage("project-view-snapshot", () =>
-          heartbeatService.projectViewSnapshot(cwd),
-        );
-        heartbeat = snapshot.view;
-        heartbeatPending = snapshot.pending;
+        if (sourceTask.status === "pending") {
+          heartbeatPending = true;
+        } else {
+          const snapshot = await measureStage("project-view-snapshot", () =>
+            heartbeatService.projectViewSnapshot(cwd),
+          );
+          heartbeat = snapshot.view;
+          heartbeatPending = snapshot.pending;
+        }
       }
       localTaskRead = !(
         sourceTask.sourcePath ||

@@ -57,6 +57,7 @@ const hostPage = `<!doctype html><html><body>
 window.hostCalls=[];
 window.currentResponse=${JSON.stringify(initialResponse)};
 window.initialTask=window.currentResponse.task;
+if (new URL(location.href).searchParams.has('pending')) window.currentResponse={task:null,heartbeat:null,taskSourcePending:true};
 window.noIdentity=false;
 window.noTask=false;
 window.currentThreadId='conversation-verified-by-tool';
@@ -160,7 +161,7 @@ test("native panel MCP Apps integration", async (t) => {
     const url = `http://127.0.0.1:${server.address().port}`;
 
     // Isolate each protocol scenario so a failure cannot hide later coverage.
-    async function scenario(run, suffix = "") {
+    async function scenario(run, suffix = "", virtualClock = false) {
       const preferredColorScheme = new URLSearchParams(suffix).get("theme");
       const context = await browser.newContext({
         viewport: { width: 350, height: 740 },
@@ -172,6 +173,7 @@ test("native panel MCP Apps integration", async (t) => {
       );
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
+      if (virtualClock) await page.clock.install();
       const requests = [];
       const pageErrors = [];
       page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
@@ -187,6 +189,95 @@ test("native panel MCP Apps integration", async (t) => {
         await context.close();
       }
     }
+    await t.test(
+      "pending discovery uses bounded non-overlapping retries and stops when hidden or disposed",
+      () =>
+        scenario(
+          async (page, frame) => {
+            const count = () =>
+              page.evaluate(
+                () => window.hostCalls.filter((call) => call.name === "task_progress_get").length,
+              );
+            await page.waitForFunction(() => window.hostCalls.length === 1);
+            await frame.getByText("Refreshing task source…", { exact: true }).first().waitFor();
+            await page.evaluate((response) => {
+              window.currentResponse = response;
+            }, initialResponse);
+            await page.clock.fastForward(150);
+            await frame
+              .getByRole("heading", { level: 2, name: "Native task panel", exact: true })
+              .waitFor();
+            assert.equal(await count(), 2, "ready data arrives after the first 150 ms retry");
+
+            await page.evaluate(() => {
+              window.currentResponse = { task: null, heartbeat: null, heartbeatPending: true };
+              window.deliverToolResult(window.currentThreadId, window.currentResponse);
+              window.holdGet = true;
+            });
+            await page.waitForFunction(
+              () =>
+                document
+                  .getElementById("app")
+                  .contentWindow.document.querySelector("codex-task-panel")?.data
+                  ?.heartbeatPending === true,
+            );
+            await page.clock.fastForward(150);
+            await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+            const held = await count();
+            await page.clock.fastForward(10_000);
+            assert.equal(await count(), held, "slow requests never overlap");
+            await page.evaluate(() => {
+              window.holdGet = false;
+              window.releaseHeldGet();
+            });
+            await page.waitForFunction(
+              () =>
+                !document
+                  .getElementById("app")
+                  .contentWindow.document.querySelector("codex-task-panel").refreshing,
+            );
+            for (const delay of [250, 500, 1000]) {
+              const next = (await count()) + 1;
+              await page.clock.fastForward(delay);
+              await page.waitForFunction(
+                (n) =>
+                  window.hostCalls.filter((call) => call.name === "task_progress_get").length >= n,
+                next,
+              );
+              await page.waitForFunction(
+                () =>
+                  !document
+                    .getElementById("app")
+                    .contentWindow.document.querySelector("codex-task-panel").refreshing,
+              );
+            }
+            // The installed clock normally keeps ticking during protocol calls.
+            // Freeze it at the boundary so the final millisecond cannot elapse
+            // while the test sends the visibility event.
+            await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+            const bounded = await count();
+            await page.clock.fastForward(4_000);
+            assert.equal(await count(), bounded, "long pending falls back to five seconds");
+            await page.locator("#app").evaluate((iframe) => {
+              Object.defineProperty(iframe.contentDocument, "visibilityState", {
+                configurable: true,
+                value: "hidden",
+              });
+              iframe.contentDocument.dispatchEvent(new Event("visibilitychange"));
+            });
+            await page.clock.fastForward(10_000);
+            assert.equal(await count(), bounded, "hidden panel does not poll");
+            await page
+              .locator("#app")
+              .evaluate((iframe) => iframe.contentWindow.dispatchEvent(new Event("pagehide")));
+            await page.clock.fastForward(10_000);
+            assert.equal(await count(), bounded, "disposed panel does not poll");
+          },
+          "/?pending",
+          true,
+        ),
+    );
+
     await t.test("native archive is lazy and uses trusted tool identity", async () => {
       await scenario(async (page, frame) => {
         await frame.locator(".summary .main").waitFor();

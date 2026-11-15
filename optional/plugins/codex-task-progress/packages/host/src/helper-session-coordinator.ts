@@ -416,15 +416,24 @@ export class GoalProgressSessionCoordinator {
     claimedSessionId?: string,
     turnId?: string,
   ): Promise<RuntimeIdentity> {
+    return (await this.authorizeSessionRequestWithThread(auth, claimedSessionId, turnId)).identity;
+  }
+
+  async authorizeSessionRequestWithThread(
+    auth: GoalProgressIpcAuthorization,
+    claimedSessionId?: string,
+    turnId?: string,
+  ): Promise<{ identity: RuntimeIdentity; thread?: CodexThreadIdentity }> {
     if (auth.kind === "codex-request") {
       return this.#authorizeCodexRequest(auth.identity, auth.toolName, claimedSessionId, turnId);
     }
-    return this.#authorizeHookRequest(
+    const identity = await this.#authorizeHookRequest(
       auth.runtimeContext,
       auth.runtimeProof,
       claimedSessionId ?? auth.runtimeContext.hookSessionId,
       turnId,
     );
+    return { identity };
   }
 
   async #authorizeHookRequest(
@@ -465,7 +474,7 @@ export class GoalProgressSessionCoordinator {
     toolName: string,
     claimedSessionId?: string,
     turnId?: string,
-  ): Promise<RuntimeIdentity> {
+  ): Promise<{ identity: RuntimeIdentity; thread: CodexThreadIdentity }> {
     if (
       (claimedSessionId !== undefined && claimedSessionId !== requestIdentity.threadId) ||
       (turnId !== undefined && turnId !== requestIdentity.turnId)
@@ -520,12 +529,12 @@ export class GoalProgressSessionCoordinator {
       model: requestIdentity.model,
       cwd: thread.cwd,
     };
-    await this.#log({
+    void this.#log({
       level: "info",
       event: "ipc.request",
       ...identityLogFields(identity),
-    });
-    return identity;
+    }).catch(() => undefined);
+    return { identity, thread };
   }
 
   #consumeCodexRequest(identity: CodexRequestIdentity, toolName: string): boolean {

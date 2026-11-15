@@ -124,7 +124,26 @@ let disposed = false;
 let refreshSequence = 0;
 let identityGeneration = 0;
 let busy = false;
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
+const pendingDelays = [150, 250, 500, 1_000];
+let pendingAttempts = 0;
+
+function clearTimer(): void {
+  if (timer !== null) clearTimeout(timer);
+  timer = null;
+}
+
+function schedule(response?: TaskPanelResponse): void {
+  clearTimer();
+  if (disposed || !connected || document.visibilityState !== "visible") return;
+  const pending = response?.heartbeatPending === true || response?.taskSourcePending === true;
+  const delay = pending ? (pendingDelays[pendingAttempts++] ?? 5_000) : 5_000;
+  if (!pending) pendingAttempts = 0;
+  timer = setTimeout(() => {
+    timer = null;
+    void refresh();
+  }, delay);
+}
 let controller: AbortController | null = null;
 const activeToolControllers = new Set<AbortController>();
 
@@ -139,8 +158,7 @@ function dispose(): void {
   controller = null;
   for (const active of activeToolControllers) active.abort();
   activeToolControllers.clear();
-  if (timer) clearInterval(timer);
-  timer = null;
+  clearTimer();
   document.removeEventListener("visibilitychange", onVisibilityChange);
   app.ontoolresult = undefined;
   app.onhostcontextchanged = undefined;
@@ -153,6 +171,8 @@ function setIdentity(threadId: string | null): void {
   if (element.threadId === threadId) return;
   identityGeneration++;
   refreshSequence++;
+  pendingAttempts = 0;
+  clearTimer();
   controller?.abort();
   controller = null;
   for (const active of activeToolControllers) active.abort();
@@ -171,6 +191,10 @@ function invalidatePendingRefresh(): void {
 
 function onVisibilityChange(): void {
   if (document.visibilityState === "visible") void refresh();
+  else {
+    clearTimer();
+    invalidatePendingRefresh();
+  }
 }
 
 async function callTool(
@@ -219,6 +243,7 @@ async function readTaskResponse(
 
 async function refresh(): Promise<void> {
   if (disposed || busy || document.visibilityState !== "visible") return;
+  clearTimer();
   busy = true;
   element.refreshing = true;
   const requestGeneration = ++refreshSequence;
@@ -232,6 +257,7 @@ async function refresh(): Promise<void> {
     element.observed = true;
     element.connectionError = null;
     showError("");
+    schedule(response);
   } catch (error) {
     if (disposed || requestGeneration !== refreshSequence) return;
     setIdentity(null);
@@ -241,6 +267,7 @@ async function refresh(): Promise<void> {
     const message = error instanceof Error ? error.message : "Task progress is unavailable.";
     element.connectionError = message;
     showError(message);
+    schedule();
   } finally {
     if (requestGeneration === refreshSequence) {
       busy = false;
@@ -295,6 +322,7 @@ app.ontoolresult = (result) => {
       element.connectionError =
         "Trusted conversation identity was not returned or did not match. Reload the current task to retry.";
       showError(element.connectionError);
+      schedule();
       return;
     }
     const hasBaseResponse = [
@@ -319,6 +347,7 @@ app.ontoolresult = (result) => {
     element.observed = true;
     element.connectionError = null;
     showError("");
+    schedule(parsed.result);
   }
 };
 app.onhostcontextchanged = applyContext;
@@ -349,7 +378,6 @@ async function connectApp(): Promise<void> {
       return;
     }
     void refresh();
-    timer ??= setInterval(() => void refresh(), 5_000);
   } catch (error) {
     if (disposed) return;
     element.observed = true;

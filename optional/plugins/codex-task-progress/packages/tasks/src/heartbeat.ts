@@ -921,6 +921,9 @@ export class HeartbeatService {
     cwd: string,
     options: { forceDiscovery?: boolean } = {},
   ): Promise<HeartbeatView | null> {
+    const pendingKey = `${threadId}\0${resolve(cwd)}`;
+    const alreadyPending = this.#pending.get(pendingKey);
+    if (alreadyPending && !options.forceDiscovery) return alreadyPending;
     const index = this.#options.discoveryIndex;
     const root = index ? await this.#project(cwd) : null;
     const cached = this.#cache.get(threadId);
@@ -951,7 +954,6 @@ export class HeartbeatService {
       (!index || (generation !== null && cached.generation === generation))
     )
       return cached.value;
-    const pendingKey = `${threadId}\0${resolve(cwd)}`;
     const pending = this.#pending.get(pendingKey);
     if (pending) {
       if (!options.forceDiscovery) return pending;
@@ -1421,11 +1423,34 @@ export class HeartbeatService {
   async taskProjection(
     threadId: string,
     cwd: string,
-    options: { forceDiscovery?: boolean } = {},
+    options: { forceDiscovery?: boolean; maxWaitMs?: number } = {},
   ): Promise<HeartbeatTaskProjection> {
+    if (
+      options.maxWaitMs !== undefined &&
+      (!Number.isFinite(options.maxWaitMs) || options.maxWaitMs < 0)
+    )
+      throw new TypeError("maxWaitMs must be a nonnegative finite number");
     let view: HeartbeatView | null;
     try {
-      view = await this.view(threadId, cwd, options);
+      const reading = this.view(threadId, cwd, options);
+      if (options.maxWaitMs !== undefined && !options.forceDiscovery) {
+        const pending = Symbol("pending heartbeat discovery");
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let result: HeartbeatView | null | typeof pending;
+        try {
+          result = await Promise.race([
+            reading,
+            new Promise<typeof pending>((resolve) => {
+              timer = setTimeout(() => resolve(pending), options.maxWaitMs);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (result === pending)
+          return { status: "pending", task: null, sourcePath: null, retryable: true };
+        view = result;
+      } else view = await reading;
     } catch (error) {
       if (!isHeartbeatDiscoveryInvalidatedError(error)) throw error;
       return { status: "pending", task: null, sourcePath: null, retryable: true };

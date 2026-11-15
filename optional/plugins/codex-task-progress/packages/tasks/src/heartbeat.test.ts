@@ -1757,6 +1757,120 @@ test("discovery invalidation is retryable for task, history and project reads an
   }
 });
 
+test("a bounded projection returns pending until discovery resolves and never exposes a local task", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  const discover = index.discover.bind(index);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  index.discover = async (...args) => {
+    await gate;
+    return discover(...args);
+  };
+  const service = new HeartbeatService(resolve(f.root, "bounded-projection"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    discoveryIndex: index,
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const pending = await service.taskProjection("chat-A", f.project, { maxWaitMs: 0 });
+    assert.deepEqual(pending, { status: "pending", task: null, sourcePath: null, retryable: true });
+    release();
+    assert.equal((await service.taskProjection("chat-A", f.project)).status, "ready");
+    assert.equal((await service.taskProjection("chat-B", f.project)).status, "candidates");
+  } finally {
+    release();
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("concurrent reads join discovery before repeating root and generation checks", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  const discover = index.discover.bind(index);
+  const generation = index.generation.bind(index);
+  let checks = 0;
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const scanning = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  index.generation = async (...args) => {
+    checks++;
+    return generation(...args);
+  };
+  index.discover = async (...args) => {
+    started();
+    await gate;
+    return discover(...args);
+  };
+  const service = new HeartbeatService(resolve(f.root, "pending-dedup"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    discoveryIndex: index,
+  });
+  try {
+    const first = service.view("chat-A", f.project);
+    await scanning;
+    const before = checks;
+    const second = service.view("chat-A", f.project);
+    await Promise.resolve();
+    assert.equal(checks, before);
+    release();
+    assert.deepEqual(await first, await second);
+  } finally {
+    release();
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("a projection deadline cannot shorten forced authority checks", async () => {
+  const f = await fixture();
+  const index = new HeartbeatDiscoveryIndex();
+  const discover = index.discover.bind(index);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  index.discover = async (...args) => {
+    await gate;
+    return discover(...args);
+  };
+  const service = new HeartbeatService(resolve(f.root, "forced-bounded"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    discoveryIndex: index,
+  });
+  try {
+    let settled = false;
+    const read = service
+      .taskProjection("chat-A", f.project, { forceDiscovery: true, maxWaitMs: 0 })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(settled, false);
+    release();
+    assert.notEqual((await read).status, "pending");
+  } finally {
+    release();
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
 test("ordinary discovery failures remain terminal rather than retryable", async () => {
   const f = await fixture();
   const index = new HeartbeatDiscoveryIndex();

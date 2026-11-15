@@ -33,6 +33,7 @@ import {
   type TaskState,
   TaskStore,
 } from "../../tasks/src/index.js";
+import { GoalProgressSessionCoordinator } from "../src/helper-session-coordinator.js";
 import { GoalProgressHelper } from "../src/index.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
@@ -857,6 +858,154 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     projectReads.restore();
     await helper.stop();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authorized task requests read the exact thread once per request", async () => {
+  const root = await mkdtemp("/tmp/ctph-auth-read-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const mocked = runtime(root);
+  let reads = 0;
+  mocked.readThreadIdentity = async (threadId) => {
+    reads++;
+    return identity(threadId, root);
+  };
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    await helper.start();
+    for (const callId of ["first", "second"]) {
+      await client.request({
+        method: "task.request",
+        params: {
+          action: "get",
+          auth: {
+            kind: "codex-request",
+            toolName: "task_progress_get",
+            identity: {
+              threadId: "chat",
+              sessionId: "chat",
+              turnId: "turn",
+              callId,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input: {},
+        },
+      });
+    }
+    assert.equal(reads, 2);
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex authorization does not wait for or fail on informational logging", async () => {
+  for (const log of [
+    () => new Promise<void>(() => {}),
+    async () => {
+      throw new Error("log failed");
+    },
+  ]) {
+    let reads = 0;
+    const coordinator = new GoalProgressSessionCoordinator({
+      store: null as never,
+      resolveNativeGoal: async () => null,
+      resolveCurrentThread: async () => {
+        throw new Error("unexpected hook resolution");
+      },
+      readThreadIdentity: async (threadId) => {
+        reads++;
+        return identity(threadId, "/tmp");
+      },
+      consumeRuntimeProof: async () => false,
+      log,
+    });
+    const auth = {
+      kind: "codex-request" as const,
+      toolName: "task_progress_get",
+      identity: {
+        threadId: "chat",
+        sessionId: "chat",
+        turnId: "turn",
+        callId: "call",
+        model: "test",
+        threadSource: "user" as const,
+        cwd: "/tmp",
+      },
+    } satisfies GoalProgressIpcAuthorization;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        coordinator.authorizeSessionRequestWithThread(auth),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("logging blocked authorization")), 500);
+        }),
+      ]);
+      assert.equal(result.thread?.status.type, "idle");
+      assert.equal(reads, 1);
+      await assert.rejects(coordinator.authorizeSessionRequest(auth), {
+        code: "CODEX_REQUEST_REPLAYED",
+      });
+      await assert.rejects(
+        coordinator.authorizeSessionRequest(
+          { ...auth, identity: { ...auth.identity, callId: "bad" } },
+          "different",
+        ),
+        { code: "THREAD_MISMATCH" },
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+});
+
+test("Codex authorization still rejects conflicting and untrusted thread records", async () => {
+  const base = identity("chat", "/tmp");
+  const cases: Array<[Partial<CodexThreadIdentity>, string]> = [
+    [{ id: "other" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
+    [{ sessionId: "other" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
+    [{ cwd: "/other" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
+    [{ threadSource: "system" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
+    [{ agentRole: "worker" }, "CODEX_REQUEST_THREAD_UNTRUSTED"],
+    [{ ephemeral: true }, "CODEX_REQUEST_THREAD_UNTRUSTED"],
+  ];
+  for (const [change, code] of cases) {
+    const coordinator = new GoalProgressSessionCoordinator({
+      store: null as never,
+      resolveNativeGoal: async () => null,
+      resolveCurrentThread: async () => {
+        throw new Error("unexpected hook resolution");
+      },
+      readThreadIdentity: async () => ({ ...base, ...change }),
+      consumeRuntimeProof: async () => false,
+      log: async () => {},
+    });
+    const auth = {
+      kind: "codex-request" as const,
+      toolName: "task_progress_get",
+      identity: {
+        threadId: "chat",
+        sessionId: "chat",
+        turnId: "turn",
+        callId: "call",
+        model: "test",
+        threadSource: "user" as const,
+        cwd: "/tmp",
+      },
+    } satisfies GoalProgressIpcAuthorization;
+    await assert.rejects(coordinator.authorizeSessionRequest(auth), { code });
+    await assert.rejects(coordinator.authorizeSessionRequest(auth), {
+      code: "CODEX_REQUEST_REPLAYED",
+    });
   }
 });
 
@@ -2362,6 +2511,109 @@ test("model Goal initialization and retrieval remain available without a desktop
       "Deliver the intended result",
     );
   } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("slow source discovery bounds both GET paths while writes await authority", async () => {
+  const root = await mkdtemp("/tmp/ctph-bounded-discovery-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const options = { paths, runtime: runtime(root), resolveNativeGoal: async () => null };
+  let helper = new GoalProgressHelper(options);
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const request = (action: "get" | "initialize" | "update", input: unknown = {}) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat",
+            sessionId: "chat",
+            turnId: "turn",
+            callId: `bounded-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const original = HeartbeatDiscoveryIndex.prototype.discover;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await helper.start();
+    await request("initialize", {
+      requestId: "seed",
+      expectedRevision: 0,
+      title: "Private local task",
+      reason: "test",
+      objectives: [{ id: "A", title: "A" }],
+    });
+    await helper.stop();
+    HeartbeatDiscoveryIndex.prototype.discover = async function (...args) {
+      await gate;
+      return original.apply(this, args);
+    };
+    helper = new GoalProgressHelper(options);
+    await helper.start();
+    const started = Date.now();
+    const bounded = Promise.all([
+      request("get"),
+      client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId: "chat", input: {} },
+      }),
+    ]);
+    const responses = await Promise.race([
+      bounded,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("GET waited for discovery")), 2_000);
+      }),
+    ]);
+    assert.ok(Date.now() - started < 2_000);
+    for (const response of responses) {
+      const result = response.result as {
+        task: unknown;
+        heartbeat: unknown;
+        taskSourcePending: boolean;
+        taskSource: { status: string; path?: string };
+      };
+      assert.equal(result.task, null);
+      assert.equal(result.heartbeat, null);
+      assert.equal(result.taskSourcePending, true);
+      assert.equal(result.taskSource.status, "pending");
+      assert.equal(result.taskSource.path, undefined);
+    }
+    let writeSettled = false;
+    const write = request("update", {
+      requestId: "after-discovery",
+      expectedRevision: 1,
+      reason: "test",
+      changes: [{ targetId: "A", status: "active" }],
+    }).finally(() => {
+      writeSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(writeSettled, false);
+    release();
+    await write;
+    const recovered = (await request("get")).result as { task: { title: string } };
+    assert.equal(recovered.task.title, "Private local task");
+  } finally {
+    release();
+    if (timer) clearTimeout(timer);
+    HeartbeatDiscoveryIndex.prototype.discover = original;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
