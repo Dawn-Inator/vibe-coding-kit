@@ -21,10 +21,7 @@ import {
 import { resolveNativeReadIdentity, resolveTrustedToolAuthorization } from "./runtime-identity.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
-  assert.equal(
-    TASK_PROGRESS_PANEL_RESOURCE_URI,
-    createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
-  );
+  assert.equal(TASK_PROGRESS_PANEL_RESOURCE_URI, "ui://codex-task-progress/panel-v1.html");
   assert.notEqual(
     createTaskProgressPanelResourceUri("0.6.0"),
     createTaskProgressPanelResourceUri("0.6.1"),
@@ -165,7 +162,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       "ui://codex-task-progress/panel-0.6.7.html",
       "ui://codex-task-progress/panel-0.6.3.html",
       "ui://codex-task-progress/panel-0.6.1.html",
-      "ui://codex-task-progress/panel-v1.html",
+      createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
     ];
     for (const uri of compatiblePanelUris) {
       const compatiblePanel = await client.readResource({ uri });
@@ -186,6 +183,13 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
         frameDomains: [],
       });
       assert.deepEqual(compatibilityMetadata?.ui?.permissions, {});
+    }
+    for (const uri of [
+      `${TASK_PROGRESS_PANEL_RESOURCE_URI}?query=1`,
+      createTaskProgressPanelResourceUri("999.0.0"),
+      "ui://codex-task-progress/../codex-task-progress/panel-v1.html",
+    ]) {
+      await assert.rejects(client.readResource({ uri }), { message: /Resource .* not found/ }, uri);
     }
     assert.ok(initialize);
     assert.equal(initialize.inputSchema.additionalProperties, false);
@@ -516,8 +520,23 @@ test("native panel resource URI compatibility accepts only shipped same-origin v
     assert.equal(isCompatibleTaskProgressPanelResourceUri(uri), true, uri);
   }
 
+  // Existing 0.6.7 transports accept the stable address advertised by newer catalogs.
+  assert.equal(
+    isCompatibleTaskProgressPanelResourceUri(TASK_PROGRESS_PANEL_RESOURCE_URI, "0.6.7"),
+    true,
+  );
+  assert.equal(
+    isCompatibleTaskProgressPanelResourceUri(
+      createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
+      "0.6.7",
+    ),
+    false,
+  );
+
   const rejected = [
     "ui://other-host/panel-0.6.3.html",
+    "ui://codex-task-progress/panel-v1.html?query=1",
+    "ui://codex-task-progress/panel-v1.html#fragment",
     "ui://codex-task-progress/other-0.6.3.html",
     "ui://codex-task-progress/panel-0.6.3.html?query=1",
     "ui://codex-task-progress/panel-0.6.3.html#fragment",

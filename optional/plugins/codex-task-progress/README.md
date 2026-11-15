@@ -2,9 +2,9 @@
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.7.6. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.7.7. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
 
-Version 0.6.2 introduced immutable MCP UI resources with versioned URIs derived from the release version constant. Since 0.6.7, compatible older Heartbeat panel addresses, including the legacy `panel-v1` and 0.6.3 address, resolve to the same current embedded HTML asset; only the current release URI is advertised. If the native view still looks stale after an update, reopen the chat or switch to another chat and back so the host can refresh its MCP catalog/resource. Closing and reopening the panel tab alone may not refresh it. Do not restart Codex. These resource changes do not alter authentication, task authority, or canonical data formats.
+Version 0.7.7 advertises the stable `ui://codex-task-progress/panel-v1.html` resource URI across patch releases. A strict read-only template also accepts compatible previously shipped semver panel aliases from 0.5.16 through the server release, serving that server’s matching panel HTML. This stable address lets a new catalog reach a compatible older live MCP server, but that server can still serve its own older embedded asset; it does not guarantee a hot reload. Check the rendered element’s `data-task-progress-version` to identify the actual frontend. If necessary, reenter the chat or switch away and back to refresh the host catalog; closing the panel tab alone may not suffice. Do not restart Codex. Actual native host visibility and data require separate verification.
 
 ## Native panel
 
@@ -20,13 +20,6 @@ These are snapshots, not live counts. The ten audit categories and full Items re
 ledger for audit rather than the main view. A first session or older wake without producer-supplied snapshots
 shows unknown; it cannot reconstruct past activity. The supervising producer records snapshots through the Kit
 heartbeat writer, and the plugin only reads them.
-
-In 0.7.0, a strict read-only resource template accepts compatible Heartbeat panel addresses from releases
-0.5.16 through the current release and serves the current matching panel HTML, while advertising only the
-current release URI. If the host retains an older URI or displays stale panel spacing after upgrade, reopen
-the chat or switch away to another chat and return so the host can refresh its MCP catalog/resource; closing
-and reopening the panel tab alone may not refresh it. Do not restart Codex. Actual native host acceptance
-still needs verification.
 
 In 0.6.6, the project Heartbeat summary uses two outlined white timecards. The left card contains the latest
 recorded date; the next-time card shows the actual time or “Not recorded” when the value is unknown. The

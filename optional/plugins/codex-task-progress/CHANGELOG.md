@@ -1,3 +1,8 @@
+# Task Progress 0.7.7
+
+- Advertise the stable `ui://codex-task-progress/panel-v1.html` resource across patch releases. Strict compatible legacy semver aliases still resolve to the serving release’s panel HTML. A new catalog can therefore reach a compatible older live MCP server, but may receive that server’s older embedded asset; this does not guarantee hot reload. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. Reenter the chat or switch away and back when needed; do not restart Codex. Actual native host behavior remains to be verified.
+- Retain 0.7.6’s scoped in-memory snapshot display and independent five-second polling, with canonical authority for models and writes.
+
 # Task Progress 0.7.6
 
 - Retain a bounded in-memory read-only snapshot for verified thread, canonical working directory and Git-root scopes. Returning to a known scope displays its last snapshot while canonical refresh runs when due; background errors retain that display without claiming it is current. Unsupported, untrusted, moved and disabled contexts do not inherit another scope.
