@@ -263,8 +263,7 @@ test("native Dock removal failure keeps the owned app and receipts and does not 
       if (args[0] === "dock-remove")
         return {
           code: 1,
-          stdout:
-            '{"ok":false,"code":"DOCK_RELOAD_FAILED","details":{"domain":"Dock","message":"reload refused"}}\n',
+          stdout: '{"ok":false,"code":"DOCK_RELOAD_FAILED","detail":"reload refused"}\n',
           stderr: "",
         };
       if (args[0] === "dock-status")
