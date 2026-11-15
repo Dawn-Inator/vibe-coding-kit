@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -23,7 +22,7 @@ window.__codexTaskProgressRequest = async function(request) {
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.task,taskSource:window.fixture.taskSource,heartbeat:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
   if(request.method==='heartbeat-history' && window.fixture.holdNextHeartbeatHistory) { window.fixture.holdNextHeartbeatHistory=false; await new Promise(resolve => { window.fixture.releaseHeldHeartbeatHistory=resolve; }); window.fixture.releaseHeldHeartbeatHistory=null; }
   if(request.method==='heartbeat-history' && window.fixture.heartbeatHistoryFailureNext) { const message=window.fixture.heartbeatHistoryFailureNext; window.fixture.heartbeatHistoryFailureNext=null; throw new Error(message); }
@@ -107,8 +106,6 @@ window.__CODEX_TASK_PROGRESS__ = {
     const requestId = ++requestSequence;
     const threadId = window.fixture.threadId || null;
     if (element.threadId !== threadId) element.resetThread(threadId);
-    if (window.fixture.disabled) { element.hidden = true; return; }
-    element.hidden = false;
     try {
       const response = await window.__codexTaskProgressRequest({ method: "get", threadId });
       if (requestId !== requestSequence || element.threadId !== threadId) return;
@@ -157,11 +154,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     res.end(req.url === "/bundle.js" ? bundle : fixture);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  const browser = await chromium.launch({
-    headless: true,
-    ...(existsSync(chrome) ? { executablePath: chrome } : {}),
-  });
+  const browser = await chromium.launch({ headless: true });
   const url = `http://127.0.0.1:${server.address().port}`;
   const contexts = new Set();
   const showView = async (panel, view) => {
@@ -174,17 +167,28 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
   const open = async (query = "", contextOptions = {}) => {
     const context = await browser.newContext({
       viewport: { width: 1100, height: 850 },
+      locale: "zh-CN",
       ...contextOptions,
     });
     contexts.add(context);
     const page = await context.newPage();
+    page.setDefaultTimeout(5_000);
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
     await page.goto(`${url}${query}`);
     await page.locator("codex-task-panel").waitFor({ state: "visible" });
+    await page
+      .locator("codex-task-panel .summary .main")
+      .waitFor()
+      .catch((error) => {
+        if (pageErrors.length) error.message += `\nPage errors: ${pageErrors.join("\n")}`;
+        throw error;
+      });
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
     await t.test(
-      "disabled project hides panel without stale data; omitted legacy flag stays enabled",
+      "disabled project returns an empty standalone panel; omitted flag stays enabled",
       async () => {
         const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
         contexts.add(context);
@@ -195,7 +199,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await page.waitForFunction(
           () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
         );
-        assert.equal(await panel.isVisible(), false);
+        assert.equal(await panel.count(), 1);
+        assert.equal(await panel.isVisible(), true);
         await page.evaluate((value) => {
           window.fixture.task = value;
           return window.__CODEX_TASK_PROGRESS__.refresh();
@@ -203,8 +208,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await page.waitForFunction(
           () => window.__CODEX_TASK_PROGRESS__.diagnostics().status === "connected",
         );
-        assert.equal(await panel.isVisible(), false);
+        assert.equal(await panel.count(), 1);
+        assert.equal(await panel.isVisible(), true);
         assert.equal(await panel.getByText("实现普通任务面板", { exact: false }).count(), 0);
+        assert.equal(await panel.locator(".row[data-objective]").count(), 0);
         await context.close();
         const legacy = await open();
         assert.equal(await legacy.panel.isVisible(), true);
@@ -884,6 +891,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               window.fixture.threadId = "thread-b";
               window.fixture.task = { ...value, threadId: "thread-b", title: "B same project" };
               window.fixture.heartbeatHistory = bHistory;
+              return window.__CODEX_TASK_PROGRESS__.refresh();
             },
             { value: task, bHistory },
           );
@@ -968,6 +976,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             error: "台账文件已删除",
           };
           window.fixture.heartbeat = null;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel
           .locator(".summary")
@@ -990,6 +999,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             readOnly: true,
             error: "Kit source helper unavailable",
           };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel
           .locator(".summary")
@@ -1004,6 +1014,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             readOnly: true,
             error: "Multiple heartbeat ledgers match this chat",
           };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel
           .locator(".summary")
@@ -1043,6 +1054,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               linkRisks: ["P1: missing child C1"],
             },
           };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel
           .locator(".summary")
@@ -1329,7 +1341,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       assert.equal(await panel.locator(".body").isVisible(), true);
       assert.equal(
         await panel.evaluate((element) =>
-          element.shadowRoot.activeElement?.classList.contains("main"),
+          element.shadowRoot.activeElement?.classList.contains("row"),
         ),
         true,
       );
@@ -1413,6 +1425,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const { context, page, panel } = await open();
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.setViewportSize({ width: 390, height: 400 });
+        await page
+          .locator("#messages, #composer")
+          .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
         const title = "长标题".repeat(300);
         const reference = `/workspace/${"long-unbroken-evidence-reference-".repeat(25)}acceptance.md`;
         await page.evaluate(
@@ -2672,6 +2687,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
 
           await page.setViewportSize({ width: 320, height: 380 });
+          await page
+            .locator("#messages, #composer")
+            .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
           await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
           const narrow = await panel.locator(".body").boundingBox();
           assert.ok(narrow && narrow.x >= 0 && narrow.x + narrow.width <= 320);

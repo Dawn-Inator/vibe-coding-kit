@@ -73,6 +73,44 @@ test("workspace presentation history requests Kit summaries without changing can
   assert.equal((await context.taskStore.get("thread"))?.revision, 1);
 });
 
+test("an older project Kit supplies only its storage contract, not its raw history implementation", async () => {
+  const { cwd, legacy } = await setup();
+  const projectKit = join(cwd, ".vibe-coding/kit/src");
+  await mkdir(join(projectKit, "contracts"), { recursive: true });
+  await mkdir(join(projectKit, "tasks"), { recursive: true });
+  const contractPath = join(projectKit, "contracts/task-progress-storage.mjs");
+  await writeFile(
+    contractPath,
+    `
+    import { resolve } from "node:path";
+    export function resolveTaskProgressStorage({ cwd }) {
+      const workspaceRoot = resolve(cwd, ".workspace");
+      return { schemaVersion: 1, mode: "workspace", cwd, workspaceRoot,
+        storageRoot: resolve(workspaceRoot, "codex-task-progress") };
+    }
+  `,
+  );
+  // This simulates an old project-local implementation that ignores projection.
+  // Loading it would fail the test: routing may import only the local contract.
+  await writeFile(
+    join(projectKit, "tasks/task-store.mjs"),
+    `
+    throw new Error("project-local legacy TaskStore must not be loaded");
+    export class TaskStore { async history() { return { events: [{ state: {} }], nextCursor: null }; } }
+  `,
+  );
+  const router = new WorkspaceTaskStorage(legacy, { heartbeat: { fallbackKitPath: null } });
+  managers.push(router);
+  const context = await router.forThread("thread", cwd);
+  assert.equal(context.storage.contractSource, await realpath(contractPath));
+  await initialize(context.taskStore);
+  const page = await context.taskStore.history("thread");
+  const event = page.events[0];
+  assert.ok(event);
+  assert.equal("state" in event, false);
+  assert.equal(page.canonicalHistoryPath, context.storage.taskhistoryPath);
+});
+
 test("legacy JSONL migrates to canonical Markdown while full replay and source bytes remain exact", async () => {
   const { cwd, legacy, legacyStore } = await setup();
   await initialize(legacyStore);

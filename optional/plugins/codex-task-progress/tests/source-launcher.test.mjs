@@ -32,6 +32,7 @@ test("source launcher builds and refreshes the native MCP resource without prebu
   const actualPlugin = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const actualKit = resolve(actualPlugin, "../../..");
   const data = resolve(scratch, "data");
+  const home = resolve(scratch, "home");
   const pnpm = resolve(scratch, "pnpm");
   try {
     await mkdir(plugin, { recursive: true });
@@ -63,7 +64,7 @@ test("source launcher builds and refreshes the native MCP resource without prebu
     await chmod(pnpm, 0o700);
     const env = {
       ...process.env,
-      HOME: resolve(scratch, "home"),
+      HOME: home,
       GOAL_PROGRESS_PLUGIN_DATA: data,
       GOAL_PROGRESS_CODEX_HOME: resolve(scratch, "codex"),
       GOAL_PROGRESS_PNPM: pnpm,
@@ -147,6 +148,28 @@ test("source launcher builds and refreshes the native MCP resource without prebu
     const second = await readResource();
     assert.match(second, /source-refresh-marker/u);
     assert.doesNotMatch(first, /source-refresh-marker/u);
+
+    const legacyMarker = resolve(
+      home,
+      "Library/Application Support/CodexTaskProgress/launcher/dock-receipt.plist",
+    );
+    await mkdir(dirname(legacyMarker), { recursive: true });
+    await writeFile(legacyMarker, "fixture ownership record");
+    const blockedEnv = { ...env };
+    delete blockedEnv.GOAL_PROGRESS_SOURCE_SKIP_SETUP;
+    for (const mode of ["mcp-server", "prepare"]) {
+      await assert.rejects(
+        execFileAsync(process.execPath, [resolve(plugin, "runtime/bootstrap.mjs"), mode], {
+          env: blockedEnv,
+        }),
+        (error) =>
+          /GOAL_PROGRESS_LEGACY_LAUNCHER_CLEANUP_REQUIRED/u.test(error.stderr) &&
+          /previous version's CLI uninstall --keep-history --human/u.test(error.stderr),
+      );
+      assert.equal(await readFile(legacyMarker, "utf8"), "fixture ownership record");
+      await assert.rejects(lstat(resolve(home, "Library/LaunchAgents")), { code: "ENOENT" });
+      await assert.rejects(lstat(resolve(data, "runtime")), { code: "ENOENT" });
+    }
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

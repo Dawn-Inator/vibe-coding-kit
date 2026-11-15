@@ -2,18 +2,26 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
-import { GOAL_PROGRESS_IPC_PROTOCOL_VERSION } from "../packages/ipc/src/index.ts";
-import { parseMacosCommand } from "../platform/macos/src/command-protocol.ts";
-import {
-  evaluateHelperReadiness,
-  nativeVerification,
-} from "../platform/macos/src/installed-inspection.ts";
-import { assertLegacyLauncherRemoved } from "../platform/macos/src/legacy-cleanup-preflight.ts";
-import {
-  parseNativeMcpFeatureStatus,
-  retireLegacyControlFiles,
-} from "../platform/macos/src/native-install-prerequisites.ts";
+import test, { after } from "node:test";
+import { register } from "tsx/esm/api";
+
+// Keep TypeScript resolution scoped to this suite, including imports made by fixtures.
+const loader = register({ namespace: "native-installer-contract" });
+after(async () => {
+  await loader.unregister();
+});
+const [ipc, protocol, inspection, legacy, prerequisites] = await Promise.all([
+  loader.import("../packages/ipc/src/index.ts", import.meta.url),
+  loader.import("../platform/macos/src/command-protocol.ts", import.meta.url),
+  loader.import("../platform/macos/src/installed-inspection.ts", import.meta.url),
+  loader.import("../platform/macos/src/legacy-cleanup-preflight.ts", import.meta.url),
+  loader.import("../platform/macos/src/native-install-prerequisites.ts", import.meta.url),
+]);
+const { GOAL_PROGRESS_IPC_PROTOCOL_VERSION } = ipc;
+const { parseMacosCommand } = protocol;
+const { evaluateHelperReadiness, nativeVerification } = inspection;
+const { assertLegacyLauncherRemoved } = legacy;
+const { parseNativeMcpFeatureStatus, retireLegacyControlFiles } = prerequisites;
 
 test("native install accepts no legacy connection or Codex restart options", () => {
   const result = parseMacosCommand(["install", "--json"]);
@@ -122,10 +130,17 @@ test("legacy control retirement is bounded, idempotent and preserves user data",
 
 async function nativeInstallFixture(home, feature = "enabled", helperHealthy = true) {
   const { createHash } = await import("node:crypto");
-  const { createInstallCommand } = await import("../platform/macos/src/install-command.ts");
-  const { resolveGoalProgressPaths } = await import("../packages/store/src/index.ts");
-  const { GOAL_PROGRESS_STABLE_HOOK_COMMAND } = await import(
-    "../platform/macos/src/plugin-release.ts"
+  const { createInstallCommand } = await loader.import(
+    "../platform/macos/src/install-command.ts",
+    import.meta.url,
+  );
+  const { resolveGoalProgressPaths } = await loader.import(
+    "../packages/store/src/index.ts",
+    import.meta.url,
+  );
+  const { GOAL_PROGRESS_STABLE_HOOK_COMMAND } = await loader.import(
+    "../platform/macos/src/plugin-release.ts",
+    import.meta.url,
   );
   const releaseRoot = join(home, "fixture-release");
   const paths = resolveGoalProgressPaths({ platform: "darwin", homeDirectory: home });

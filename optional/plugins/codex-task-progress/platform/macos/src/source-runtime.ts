@@ -25,6 +25,7 @@ import {
 import { requireSingleCodexMacosApp } from "./app-discovery.js";
 import type { MacosCommandName, MacosCommandResult } from "./command-protocol.js";
 import { GOAL_PROGRESS_LAUNCH_AGENT_LABEL } from "./install-layout.js";
+import { assertLegacyLauncherRemoved } from "./legacy-cleanup-preflight.js";
 import { inspectInstalledHelper, nativeVerification } from "./installed-inspection.js";
 import {
   createLaunchAgentController,
@@ -270,6 +271,20 @@ export interface SourceRuntimeEnsureResult {
 }
 
 export async function ensureSourceRuntime(): Promise<SourceRuntimeEnsureResult> {
+  try {
+    await assertLegacyLauncherRemoved(homedir());
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "GOAL_PROGRESS_LEGACY_LAUNCHER_CLEANUP_REQUIRED"
+    ) {
+      throw new Error(
+        "GOAL_PROGRESS_LEGACY_LAUNCHER_CLEANUP_REQUIRED: Use the previous version's CLI uninstall --keep-history --human to remove its launcher, then retry.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     throw new Error("GOAL_PROGRESS_SOURCE_RUNTIME_MACOS_ARM64_REQUIRED");
   }
