@@ -3038,3 +3038,99 @@ test("a newer mutation wins an older pending display read and writes still valid
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("native cached pending and source errors refresh to ready without waiting for the lease", async () => {
+  const root = await mkdtemp("/tmp/ctph-pending-cache-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const originalProjection = HeartbeatService.prototype.taskProjection;
+  const originalSnapshot = HeartbeatService.prototype.projectViewSnapshot;
+  let source: "pending" | "error" | "none" = "pending";
+  let heartbeatPending = false;
+  let reads = 0;
+  HeartbeatService.prototype.taskProjection = async () => {
+    reads++;
+    return {
+      status: source,
+      task: null,
+      sourcePath: null,
+      ...(source === "error" ? { error: "source unavailable", retryable: true as const } : {}),
+    };
+  };
+  HeartbeatService.prototype.projectViewSnapshot = async () => ({
+    view: null,
+    pending: heartbeatPending,
+  });
+  let call = 0;
+  const model = () =>
+    client.request({
+      method: "task.request",
+      params: {
+        action: "get",
+        input: {},
+        auth: {
+          kind: "codex-request",
+          toolName: "task_progress_get",
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `refresh-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  try {
+    await helper.start();
+    for (const condition of ["pending", "error", "heartbeat"] as const) {
+      source = condition === "heartbeat" ? "none" : condition;
+      heartbeatPending = condition === "heartbeat";
+      await model(); // Canonical result primes the same cache without waiting for the lease.
+      const before = reads;
+      source = "none";
+      heartbeatPending = false;
+      const first = (await native()).result as { presentation: { pending: boolean } };
+      assert.equal(first.presentation.pending, true);
+      let ready = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const response = (await native()).result as {
+          taskSourcePending?: boolean;
+          heartbeatPending?: boolean;
+          taskSource: { status?: string } | null;
+          presentation: { pending: boolean };
+        };
+        if (
+          !response.presentation.pending &&
+          !response.taskSourcePending &&
+          !response.heartbeatPending &&
+          !response.taskSource
+        ) {
+          ready = true;
+          break;
+        }
+        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      }
+      assert.equal(ready, true, `${condition} should refresh promptly`);
+      assert.ok(reads > before);
+    }
+  } finally {
+    HeartbeatService.prototype.taskProjection = originalProjection;
+    HeartbeatService.prototype.projectViewSnapshot = originalSnapshot;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});

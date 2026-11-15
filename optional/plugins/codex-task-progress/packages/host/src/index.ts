@@ -1743,8 +1743,17 @@ export class GoalProgressHelper {
     };
     if (nativeRead && action === "get") {
       const existing = this.#taskPresentation.peek(scope);
+      const cachedSource = existing.value?.result.taskSource;
+      const sourceStatus =
+        cachedSource && typeof cachedSource === "object" && "status" in cachedSource
+          ? cachedSource.status
+          : undefined;
       const fresh =
         existing.value !== null &&
+        existing.value.result.taskSourcePending !== true &&
+        existing.value.result.heartbeatPending !== true &&
+        sourceStatus !== "pending" &&
+        sourceStatus !== "error" &&
         existing.error === null &&
         !existing.pending &&
         existing.updatedAt !== null &&

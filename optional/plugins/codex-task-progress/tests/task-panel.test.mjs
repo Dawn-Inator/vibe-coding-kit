@@ -250,6 +250,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             snapshot.heartbeatHistory.wakes[0].heading = "snapshot copy";
             const originalUnchanged = panel.heartbeatHistory.wakes[0].heading === "cached wake";
             panel.resetThread("thread-b");
+            const tabAfterReset = panel.tab;
+            panel.tab = "tasks";
             panel.data = { ...data, task: { ...data.task, threadId: "thread-b" } };
             panel.restoreViewState(snapshot);
             const otherThread = { tab: panel.tab, selected: panel.selectedObjective };
@@ -290,6 +292,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             const nullThread = panel.captureViewState();
             return {
               originalUnchanged,
+              tabAfterReset,
               cachedWakeVisible,
               cachedHistoryVisible,
               otherThread,
@@ -302,6 +305,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { task, heartbeat },
         );
         assert.equal(result.originalUnchanged, true);
+        assert.equal(result.tabAfterReset, "heartbeat");
         assert.equal(result.cachedWakeVisible, true);
         assert.equal(result.cachedHistoryVisible, true);
         assert.deepEqual(result.otherThread, { tab: "tasks", selected: null });

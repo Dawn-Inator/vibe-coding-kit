@@ -1099,28 +1099,73 @@ test("native panel MCP Apps integration", async (t) => {
       }),
     );
 
-    await t.test("history-only push for a new thread immediately refreshes its data", () =>
-      scenario(async (page, frame) => {
-        await ready(frame);
-        await page.evaluate(() => {
-          window.currentThreadId = "thread-b";
-          window.currentResponse = {
-            ...window.currentResponse,
-            task: { ...window.currentResponse.task, threadId: "thread-b", title: "Fresh thread B" },
-          };
-          window.deliverToolResult("thread-b", { history: { events: [], nextCursor: null } });
-        });
-        // The five-second poll must not be responsible for loading the new thread.
-        await page.waitForFunction(
-          () => window.hostCalls.filter((call) => call.name === "task_progress_get").length >= 2,
-          null,
-          { timeout: 2_000 },
-        );
-        await waitForPanelThread(page, "thread-b");
-        await frame
-          .getByRole("heading", { level: 2, name: "Fresh thread B", exact: true })
-          .waitFor({ timeout: 2_000 });
-      }),
+    await t.test(
+      "history-only push with presentation preserves the base and refreshes a new thread",
+      () =>
+        scenario(async (page, frame) => {
+          await ready(frame);
+          await page.evaluate(() => {
+            const presentation = {
+              scope: "project-a",
+              pending: false,
+              cached: false,
+              updatedAt: 10,
+            };
+            window.currentResponse = { ...window.currentResponse, presentation };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+            window.deliverToolResult(window.currentThreadId, {
+              history: { events: [], nextCursor: null },
+              presentation,
+            });
+          });
+          await page.waitForFunction(() => {
+            const panel = document
+              .getElementById("app")
+              .contentWindow.document.querySelector("codex-task-panel");
+            return (
+              panel.data.task?.title === "Native task panel" &&
+              panel.data.presentation?.scope === "project-a"
+            );
+          });
+          await page.locator("#app").evaluate(
+            (iframe) =>
+              new Promise((resolve) => {
+                iframe.contentWindow.requestAnimationFrame(() =>
+                  iframe.contentWindow.requestAnimationFrame(resolve),
+                );
+              }),
+          );
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((panel) => panel.data.task?.title),
+            "Native task panel",
+          );
+          await page.evaluate(() => {
+            window.currentThreadId = "thread-b";
+            window.currentResponse = {
+              ...window.currentResponse,
+              task: {
+                ...window.currentResponse.task,
+                threadId: "thread-b",
+                title: "Fresh thread B",
+              },
+              presentation: { scope: "project-b", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult("thread-b", {
+              history: { events: [], nextCursor: null },
+              presentation: window.currentResponse.presentation,
+            });
+          });
+          // The five-second poll must not be responsible for loading the new thread.
+          await page.waitForFunction(
+            () => window.hostCalls.filter((call) => call.name === "task_progress_get").length >= 2,
+            null,
+            { timeout: 2_000 },
+          );
+          await waitForPanelThread(page, "thread-b");
+          await frame
+            .getByRole("heading", { level: 2, name: "Fresh thread B", exact: true })
+            .waitFor({ timeout: 2_000 });
+        }),
     );
 
     await t.test("new same-thread host data wins over an earlier pending get", () =>

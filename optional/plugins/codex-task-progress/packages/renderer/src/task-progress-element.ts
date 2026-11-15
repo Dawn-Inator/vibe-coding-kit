@@ -500,7 +500,6 @@ export class TaskProgressElement extends LitElement {
     this.historyContext = null;
     this.historyRequest++;
     this.selectedObjective = null;
-    this.tab = "tasks";
     this.connectionError = null;
     this.busy = false;
   }
