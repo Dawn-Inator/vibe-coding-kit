@@ -4209,7 +4209,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           window.fixture.heartbeat.error = "台账文件已删除";
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.match(await panel.locator("section.panel").innerText(), /已过期/);
+        await assertNoHeaderStatus();
+        assert.equal(await panel.locator(".hb-time-card").count(), 1);
+        assert.ok((await panel.locator(".hb-wake").count()) > 0);
         const projectError = panel
           .locator(".scroll .info-card-title")
           .filter({ hasText: "项目心跳错误" });
