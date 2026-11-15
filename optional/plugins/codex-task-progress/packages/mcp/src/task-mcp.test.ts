@@ -280,6 +280,25 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       assert.equal(rejected.isError, true);
       assert.equal(rejected._meta?.["codex-task-progress/threadId"], undefined);
     }
+    for (const [field, value] of [
+      ["callId", "model-call"],
+      ["sessionId", "other-chat"],
+      ["itemId", "model-item"],
+      ["windowId", "model-window"],
+    ] as const) {
+      const rejected = await client.callTool({
+        name: "task_progress_panel",
+        arguments: {},
+        _meta: { threadId: "native-chat", thread_id: "native-chat", [field]: value },
+      });
+      assert.equal(rejected.isError, true);
+      const error: unknown = rejected.structuredContent;
+      assert.ok(error && typeof error === "object" && "code" in error);
+      if (error && typeof error === "object" && "code" in error) {
+        assert.equal(error.code, "CODEX_REQUEST_METADATA_REQUIRED");
+      }
+      assert.equal(rejected._meta?.["codex-task-progress/threadId"], undefined);
+    }
     const businessId = await client.callTool({
       name: "task_progress_panel",
       arguments: { threadId: "business-chat" },
@@ -372,6 +391,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
 
 test("native identity never downgrades partial Hook or turn metadata", () => {
   const validNativeMeta = { threadId: "native-chat", thread_id: "native-chat" };
+  const modelOnlyFields = ["callId", "sessionId", "itemId", "windowId"] as const;
   assert.equal(
     resolveNativeReadIdentity("get", { _runtimeContext: undefined }, { _meta: validNativeMeta })
       ?.ok,
@@ -388,6 +408,23 @@ test("native identity never downgrades partial Hook or turn metadata", () => {
     assert.equal(resolveNativeReadIdentity("get", {}, extra), undefined);
     assert.equal(resolveTrustedToolAuthorization("task_progress_get", {}, extra).ok, false);
   }
+  for (const field of modelOnlyFields) {
+    for (const value of [null, undefined]) {
+      const extra = {
+        _meta: { ...validNativeMeta, [field]: value },
+      } as Parameters<typeof resolveNativeReadIdentity>[2];
+      assert.equal(resolveNativeReadIdentity("get", {}, extra), undefined);
+      assert.equal(resolveTrustedToolAuthorization("task_progress_get", {}, extra).ok, false);
+    }
+  }
+  const mismatchedSession = {
+    _meta: { ...validNativeMeta, sessionId: "other-chat" },
+  } as Parameters<typeof resolveNativeReadIdentity>[2];
+  assert.equal(resolveNativeReadIdentity("get", {}, mismatchedSession), undefined);
+  assert.equal(
+    resolveTrustedToolAuthorization("task_progress_get", {}, mismatchedSession).ok,
+    false,
+  );
   const malformedAlias = resolveNativeReadIdentity(
     "get",
     {},

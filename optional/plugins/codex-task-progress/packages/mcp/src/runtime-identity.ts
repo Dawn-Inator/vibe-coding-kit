@@ -17,6 +17,7 @@ const EXPECTED_PLUGIN_ID = `codex-task-progress@${
 const boundedId = z.string().trim().min(1).max(512);
 const boundedModel = z.string().trim().min(1).max(256);
 const boundedCwd = z.string().trim().min(1).max(4_096);
+const nativeReadExcludedMetadataKeys = ["callId", "sessionId", "itemId", "windowId"] as const;
 const looseRecordSchema = z.record(z.string(), z.unknown());
 const turnMetadataSchema = z
   .object({
@@ -106,7 +107,9 @@ export function resolveNativeReadIdentity(
   if (
     input._runtimeContext !== undefined ||
     input._runtimeProof !== undefined ||
-    (meta !== null && Object.hasOwn(meta, "x-codex-turn-metadata"))
+    (meta !== null &&
+      (Object.hasOwn(meta, "x-codex-turn-metadata") ||
+        nativeReadExcludedMetadataKeys.some((key) => Object.hasOwn(meta, key))))
   ) {
     return undefined;
   }
