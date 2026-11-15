@@ -910,6 +910,295 @@ test("native launcher rejects unknown, duplicate, and cross-mode options with fr
   }
 });
 
+test("shared native Dock transaction fixture resumes each interruption without duplicate reloads", async (t) => {
+  const nativeBinary = await nativeLauncherFor(t);
+  if (!nativeBinary) return;
+  const root = await mkdtemp(join(tmpdir(), "codex dock transaction fixture "));
+  try {
+    const originalApp = join(root, "Vendor", "Codex.app");
+    const legacyApp = join(root, "Applications", "Codex Task Progress.app");
+    const managedApp = join(root, "Applications", "Codex.app");
+    // Production installation has created the replacement bundle before the Dock transaction
+    // asks LaunchServices to make security-scoped bookmarks for it.
+    await mkdir(managedApp, { recursive: true });
+    const seed = join(root, "Dock before plugin.plist");
+    const legacyDock = join(root, "Dock legacy managed.plist");
+    const legacyReceipt = join(root, "Dock legacy receipt.plist");
+    const seedResult = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture-seed",
+        "--plist",
+        seed,
+        "--original-app",
+        originalApp,
+        "--managed-app",
+        legacyApp,
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(seedResult, "seed shared transaction preferences");
+    const originalPreferences = inspectDockFixture(
+      nativeBinary,
+      seed,
+      "inspect pre-plugin preferences",
+    );
+    const legacyPlan = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture",
+        "--plist",
+        seed,
+        "--original-app",
+        originalApp,
+        "--managed-app",
+        legacyApp,
+        "--output-plist",
+        legacyDock,
+        "--receipt-output",
+        legacyReceipt,
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(legacyPlan, "prepare legacy receipt and managed Dock state");
+
+    const transaction = (
+      operation,
+      inputPlist,
+      inputReceipt,
+      outputPlist,
+      outputReceipt,
+      flags = [],
+      managedOverride,
+    ) => {
+      const args = [
+        "dock-fixture-transaction",
+        "--operation",
+        operation,
+        "--plist",
+        inputPlist,
+        "--original-app",
+        operation === "migrate" ? legacyApp : originalApp,
+        "--managed-app",
+        managedOverride ??
+          (operation === "migrate" ? managedApp : operation === "remove" ? legacyApp : managedApp),
+        ...(inputReceipt ? ["--receipt", inputReceipt] : []),
+        "--output-plist",
+        outputPlist,
+        "--receipt-output",
+        outputReceipt,
+        ...flags,
+        "--json",
+      ];
+      const result = spawnSync(nativeBinary, args, { encoding: "utf8", timeout: 15_000 });
+      assert.ok(result.stdout.endsWith("\n"), `${operation}: response should be newline-framed`);
+      return { result, value: JSON.parse(result.stdout) };
+    };
+
+    const cases = [
+      { operation: "install", plist: seed, receipt: null, managed: managedApp },
+      { operation: "migrate", plist: legacyDock, receipt: legacyReceipt, managed: managedApp },
+      { operation: "remove", plist: legacyDock, receipt: legacyReceipt, managed: legacyApp },
+    ];
+    for (const { operation, plist, receipt, managed } of cases) {
+      for (const [stageFlag, expectedPhase, expectedReloads] of [
+        ["--stage-only", "prepared", 0],
+        ["--dock-only", "dock-written", 0],
+        ["--reload-only", "reloaded-pending", 1],
+      ]) {
+        const prefix = `${operation}-${stageFlag.slice(2)}`;
+        const stagedPlist = join(root, `${prefix} pending Dock.plist`);
+        const stagedReceipt = join(root, `${prefix} pending receipt.plist`);
+        const first = transaction(operation, plist, receipt, stagedPlist, stagedReceipt, [
+          stageFlag,
+        ]);
+        assertNativeSuccess(first.result, `${operation} ${stageFlag}`);
+        assert.equal(first.value.ok, true);
+        assert.equal(first.value.phase, expectedPhase);
+        assert.equal(first.value.reloadCount, expectedReloads);
+        assert.equal(first.value.receiptRetained, true);
+        const interruptedPreferences = inspectDockFixture(
+          nativeBinary,
+          stagedPlist,
+          `${operation} ${stageFlag} preferences`,
+        );
+        if (stageFlag === "--stage-only") {
+          assert.deepEqual(
+            interruptedPreferences,
+            inspectDockFixture(nativeBinary, plist, `${operation} input preferences`),
+          );
+        } else {
+          const managedEntries = interruptedPreferences.persistentApps.filter(
+            (entry) => entry.bundleId === "com.codextaskprogress.codexlauncher",
+          );
+          assert.equal(managedEntries.length > 0, operation !== "remove");
+          for (const entry of managedEntries) assert.equal(entry.bookmarkPath, managed);
+        }
+
+        const resumedPlist = join(root, `${prefix} resumed Dock.plist`);
+        const resumedReceipt = join(root, `${prefix} resumed receipt.plist`);
+        const resumed = transaction(
+          operation,
+          stagedPlist,
+          stagedReceipt,
+          resumedPlist,
+          resumedReceipt,
+        );
+        assertNativeSuccess(resumed.result, `${operation} resume ${stageFlag}`);
+        assert.equal(resumed.value.ok, true);
+        assert.equal(resumed.value.phase, "complete");
+        assert.equal(resumed.value.reloadCount, 1);
+        assert.equal(resumed.value.receiptRetained, operation !== "remove");
+
+        if (operation === "remove") {
+          assert.equal(resumed.value.receiptRetained, false);
+        } else {
+          const restoredPath = join(root, `${prefix} restored Dock.plist`);
+          const restoredReceipt = join(root, `${prefix} removed receipt.plist`);
+          const remove = transaction(
+            "remove",
+            resumedPlist,
+            resumedReceipt,
+            restoredPath,
+            restoredReceipt,
+            [],
+            managed,
+          );
+          assertNativeSuccess(remove.result, `${operation} cleanup restore`);
+          assert.deepEqual(
+            inspectDockFixture(nativeBinary, restoredPath, `${operation} restored preferences`),
+            originalPreferences,
+            `${operation} should restore the pre-plugin preferences and preserve unrelated ordering`,
+          );
+          assert.equal(remove.value.receiptRetained, false);
+        }
+        if (operation === "migrate") {
+          const migrated = inspectDockFixture(nativeBinary, resumedPlist, "inspect migrated Dock");
+          for (const entry of migrated.persistentApps.filter(
+            (item) => item.bundleId === "com.codextaskprogress.codexlauncher",
+          ))
+            assert.equal(entry.bookmarkPath, managedApp);
+        }
+      }
+
+      const pendingDock = join(root, `${operation} reload failure Dock.plist`);
+      const pendingReceipt = join(root, `${operation} reload failure receipt.plist`);
+      const failure = transaction(operation, plist, receipt, pendingDock, pendingReceipt, [
+        "--reload-fail",
+      ]);
+      assert.equal(failure.result.status, 1, `${operation} reload failure must fail`);
+      assert.equal(failure.value.ok, false);
+      assert.equal(failure.value.code, "DOCK_RELOAD_FAILED");
+      assert.equal(failure.value.reloadCount, 1);
+      assert.equal(failure.value.receiptRetained, true);
+      assert.equal(failure.value.phase, "reloaded-pending");
+    }
+
+    const completedDock = join(root, "Completed install Dock.plist");
+    const completedReceipt = join(root, "Completed install receipt.plist");
+    const install = transaction("install", seed, null, completedDock, completedReceipt);
+    assertNativeSuccess(install.result, "complete initial install");
+    const repeatedDock = join(root, "Repeated completed install Dock.plist");
+    const repeatedReceipt = join(root, "Repeated completed install receipt.plist");
+    const repeated = transaction(
+      "install",
+      completedDock,
+      completedReceipt,
+      repeatedDock,
+      repeatedReceipt,
+    );
+    assertNativeSuccess(repeated.result, "repeat completed install");
+    assert.equal(repeated.value.reloadCount, 0);
+    assert.equal(repeated.value.phase, "complete");
+    assert.deepEqual(
+      inspectDockFixture(nativeBinary, repeatedDock, "inspect repeated completed install"),
+      inspectDockFixture(nativeBinary, completedDock, "inspect first completed install"),
+      "a completed install retry must not churn Dock preferences",
+    );
+
+    const pendingDock = join(root, "User edit pending Dock.plist");
+    const pendingReceipt = join(root, "User edit pending receipt.plist");
+    const stage = transaction("install", seed, null, pendingDock, pendingReceipt, ["--dock-only"]);
+    assertNativeSuccess(stage.result, "write pending Dock state for user-edit check");
+    const editedDock = join(root, "User edited pending Dock.plist");
+    const edited = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture",
+        "--plist",
+        pendingDock,
+        "--original-app",
+        originalApp,
+        "--managed-app",
+        managedApp,
+        "--output-plist",
+        editedDock,
+        "--customize-managed-label",
+        "User Codex",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(edited, "edit pending managed tile");
+    const rejected = transaction(
+      "install",
+      editedDock,
+      pendingReceipt,
+      join(root, "Rejected user edit.plist"),
+      join(root, "Rejected user edit receipt.plist"),
+    );
+    assert.notEqual(
+      rejected.result.status,
+      0,
+      "resume must preserve user edits instead of overwriting them",
+    );
+    assert.equal(rejected.value.ok, false);
+    await access(pendingReceipt);
+
+    const cachePendingDock = join(root, "Managed cache pending Dock.plist");
+    const cachePendingReceipt = join(root, "Managed cache pending receipt.plist");
+    const cacheStage = transaction("install", seed, null, cachePendingDock, cachePendingReceipt, [
+      "--dock-only",
+    ]);
+    assertNativeSuccess(cacheStage.result, "write pending Dock state for managed cache refresh");
+    const cacheRefreshedDock = join(root, "Managed cache refreshed Dock.plist");
+    const refresh = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture",
+        "--plist",
+        cachePendingDock,
+        "--original-app",
+        originalApp,
+        "--managed-app",
+        managedApp,
+        "--output-plist",
+        cacheRefreshedDock,
+        "--refresh-managed-caches",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    assertNativeSuccess(refresh, "refresh only managed Dock cache fields");
+    const cacheResumeDock = join(root, "Managed cache resumed Dock.plist");
+    const cacheResumeReceipt = join(root, "Managed cache resumed receipt.plist");
+    const cacheResume = transaction(
+      "install",
+      cacheRefreshedDock,
+      cachePendingReceipt,
+      cacheResumeDock,
+      cacheResumeReceipt,
+    );
+    assertNativeSuccess(cacheResume.result, "resume after managed cache refresh");
+    assert.equal(cacheResume.value.reloadCount, 1);
+    assert.equal(cacheResume.value.ok, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("ad-hoc signing accepts the staged managed app bundle shape", {
   skip: process.platform !== "darwin",
 }, async () => {

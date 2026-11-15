@@ -226,6 +226,7 @@ test("legacy launcher migration preserves the old app when Dock migration fails 
       return fixtureRunner(command, args);
     };
     const failed = await manageCodexDockLauncher(input, { runner: failingRunner });
+    assert.equal(failed.ok, false);
     assert.equal(failed.code, "DOCK_LAUNCHER_DOCK_CONFIGURE_FAILED");
     assert.equal((await lstat(legacy)).isDirectory(), true);
     assert.equal((await lstat(paths.launcherAppPath)).isDirectory(), true);
@@ -236,6 +237,55 @@ test("legacy launcher migration preserves the old app when Dock migration fails 
     assert.equal(conflict.code, "DOCK_LAUNCHER_DESTINATION_CONFLICT");
     assert.equal(await readFile(join(paths.launcherAppPath, "user-file"), "utf8"), "preserve");
     assert.equal((await lstat(legacy)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native Dock removal failure keeps the owned app and receipts and does not report success", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dock launcher remove transaction "));
+  try {
+    const fixture = await makeFixture(root);
+    const paths = resolveCodexDockLauncherPaths(fixture.home);
+    await mkdir(join(paths.launcherAppPath, "Contents/Resources"), { recursive: true });
+    await writeFile(
+      join(paths.launcherAppPath, CODEX_MANAGED_LAUNCHER_MARKER),
+      JSON.stringify({
+        owner: "codex-task-progress-managed-launcher-v1",
+        bundleId: CODEX_MANAGED_LAUNCHER_BUNDLE_ID,
+      }),
+    );
+    await mkdir(join(paths.dockReceiptPath, ".."), { recursive: true });
+    await writeFile(paths.dockReceiptPath, "fixture Dock receipt");
+    await writeFile(paths.appInstallReceiptPath, "fixture app receipt");
+
+    const failingRunner: DockLauncherRunner = async (command, args) => {
+      if (args[0] === "dock-remove")
+        return {
+          code: 1,
+          stdout: '{"ok":false,"code":"DOCK_RELOAD_FAILED"}\n',
+          stderr: "Dock reload failed",
+        };
+      if (args[0] === "dock-status")
+        return { code: 0, stdout: JSON.stringify({ ok: true, dockConfigured: true }), stderr: "" };
+      return fixtureRunner(command, args);
+    };
+    const removed = await manageCodexDockLauncher(
+      {
+        action: "remove",
+        homeDirectory: fixture.home,
+        releaseRoot: fixture.release,
+        codex: { realAppPath: fixture.codex, bundleId: "com.openai.codex", teamId: "2DC432GLL2" },
+        configureDock: true,
+      },
+      { runner: failingRunner },
+    );
+
+    assert.equal(removed.ok, false);
+    assert.equal(removed.code, "DOCK_LAUNCHER_DOCK_RESTORE_FAILED");
+    assert.equal((await lstat(paths.launcherAppPath)).isDirectory(), true);
+    assert.equal(await readFile(paths.dockReceiptPath, "utf8"), "fixture Dock receipt");
+    assert.equal(await readFile(paths.appInstallReceiptPath, "utf8"), "fixture app receipt");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

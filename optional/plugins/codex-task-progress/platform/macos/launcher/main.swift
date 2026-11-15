@@ -56,6 +56,7 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
     "dock-fixture": ["--plist", "--original-app", "--managed-app", "--output-plist", "--receipt-output", "--customize-managed-label"],
     "dock-fixture-remove": ["--plist", "--managed-app", "--receipt", "--output-plist"],
     "dock-fixture-migrate": ["--plist", "--original-app", "--managed-app", "--receipt", "--output-plist", "--receipt-output"],
+    "dock-fixture-transaction": ["--operation", "--plist", "--original-app", "--managed-app", "--receipt", "--output-plist", "--receipt-output"],
     "dock-fixture-inspect": ["--plist"],
   ]
   let booleanOptions: [String: Set<String>] = [
@@ -67,6 +68,7 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
     "dock-fixture": ["--refresh-managed-caches", "--insert-unrelated-before-managed", "--append-original", "--json"],
     "dock-fixture-remove": ["--json"],
     "dock-fixture-migrate": ["--json", "--stage-only", "--dock-only"],
+    "dock-fixture-transaction": ["--json", "--stage-only", "--dock-only", "--reload-only", "--reload-fail"],
     "dock-fixture-inspect": ["--json"],
   ]
   guard let allowedValues = valueOptions[command], let allowedBooleans = booleanOptions[command] else {
@@ -542,12 +544,112 @@ private func atomicWrite(_ data: Data, path: String) throws {
   try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
 }
 
-private func restartDock() {
-  let process = Process()
-  process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-  process.arguments = ["Dock"]
-  try? process.run()
-  process.waitUntilExit()
+private func checkedDockReload() throws {
+  let bundleID = "com.apple.dock"
+  let prior = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+  let priorPIDs = Set(prior.map { $0.processIdentifier })
+  guard !priorPIDs.isEmpty else { throw NSError(domain: "DockReload", code: 1, userInfo: [NSLocalizedDescriptionKey: "Dock was not running before reload."]) }
+  for pid in priorPIDs {
+    if kill(pid, SIGTERM) != 0 && errno != ESRCH {
+      throw NSError(domain: "DockReload", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Could not signal Dock (errno \(errno))."])
+    }
+  }
+  let deadline = Date().addingTimeInterval(15)
+  while Date() < deadline {
+    let current = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+    let oldStillRunning = current.contains { priorPIDs.contains($0.processIdentifier) }
+    if !oldStillRunning, let replacement = current.first(where: { !priorPIDs.contains($0.processIdentifier) }), replacement.isFinishedLaunching { return }
+    _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+  }
+  throw NSError(domain: "DockReload", code: 2, userInfo: [NSLocalizedDescriptionKey: "Dock did not relaunch and finish launching within 15 seconds."])
+}
+
+private struct DockTransaction {
+  let kind: String
+  let before: [[String: Any]]
+  let after: [[String: Any]]
+  let beforePath: String
+  let afterPath: String
+  let finalReceipt: [String: Any]?
+  let receipt: [String: Any]
+  let needsWrite: Bool
+}
+
+private func transactionEntriesMatch(_ expected: [[String: Any]], _ actual: [[String: Any]], path: String) -> Bool {
+  guard expected.count == actual.count else { return false }
+  return zip(expected, actual).allSatisfy { lhs, rhs in
+    if isTile(lhs, bundle: managedBundleID, path: path) { return sameManagedTile(lhs, rhs, managedPath: path) }
+    return samePlist(lhs, rhs)
+  }
+}
+
+private func makePendingTransaction(kind: String, before: [[String: Any]], after: [[String: Any]], beforePath: String, afterPath: String, finalReceipt: [String: Any]?, baseReceipt: [String: Any]) -> [String: Any] {
+  var pendingReceipt = receiptWithoutPending(baseReceipt)
+  pendingReceipt.removeValue(forKey: "pendingTransaction")
+  var transaction: [String: Any] = [
+    "kind": kind, "before": before, "after": after,
+    "beforePath": beforePath, "afterPath": afterPath,
+    "hasFinalReceipt": finalReceipt != nil,
+  ]
+  if let finalReceipt { transaction["finalReceipt"] = finalReceipt }
+  pendingReceipt["pendingTransaction"] = transaction
+  return pendingReceipt
+}
+
+private func resumeTransaction(current: [[String: Any]], receipt: [String: Any], expectedKind: String) -> DockTransaction? {
+  guard let pending = receipt["pendingTransaction"] as? [String: Any],
+        pending["kind"] as? String == expectedKind,
+        let before = pending["before"] as? [[String: Any]], let after = pending["after"] as? [[String: Any]],
+        let beforePath = pending["beforePath"] as? String, let afterPath = pending["afterPath"] as? String else { return nil }
+  let finalReceipt = pending["finalReceipt"] as? [String: Any]
+  guard (pending["hasFinalReceipt"] as? Bool) == (finalReceipt != nil) else { return nil }
+  let oldState = transactionEntriesMatch(before, current, path: beforePath)
+  let newState = transactionEntriesMatch(after, current, path: afterPath)
+  guard oldState || newState else { return nil }
+  return DockTransaction(kind: expectedKind, before: before, after: after, beforePath: beforePath, afterPath: afterPath,
+                         finalReceipt: finalReceipt, receipt: receipt, needsWrite: oldState && !newState)
+}
+
+private enum DockTransactionFailure: Error {
+  case preferencesChanged
+  case receiptWrite(String)
+}
+
+private enum DockTransactionPhase {
+  case complete, stageOnly, dockOnly, reloadOnly
+}
+
+private struct DockTransactionResult {
+  let reloadCount: Int
+  let phase: String
+}
+
+private func completeDockTransaction(
+  _ transaction: DockTransaction,
+  phase: DockTransactionPhase = .complete,
+  persistPending: () throws -> Void = {},
+  readDock: () -> [[String: Any]],
+  writeDock: (_ entries: [[String: Any]], _ expected: [[String: Any]]) -> Bool,
+  reloadDock: () throws -> Void,
+  commit: (_ finalReceipt: [String: Any]?) throws -> Void
+) throws -> DockTransactionResult {
+  try persistPending()
+  if case .stageOnly = phase { return DockTransactionResult(reloadCount: 0, phase: "prepared") }
+  var current = readDock()
+  guard let resumable = resumeTransaction(current: current, receipt: transaction.receipt, expectedKind: transaction.kind) else { throw DockTransactionFailure.preferencesChanged }
+  if resumable.needsWrite {
+    guard writeDock(resumable.after, current) else { throw DockTransactionFailure.preferencesChanged }
+  }
+  if case .dockOnly = phase { return DockTransactionResult(reloadCount: 0, phase: "dock-written") }
+  current = readDock()
+  guard transactionEntriesMatch(resumable.after, current, path: resumable.afterPath) else { throw DockTransactionFailure.preferencesChanged }
+  try reloadDock()
+  current = readDock()
+  guard transactionEntriesMatch(resumable.after, current, path: resumable.afterPath) else { throw DockTransactionFailure.preferencesChanged }
+  if case .reloadOnly = phase { return DockTransactionResult(reloadCount: 1, phase: "reloaded-pending") }
+  do { try commit(resumable.finalReceipt) }
+  catch { throw DockTransactionFailure.receiptWrite(error.localizedDescription) }
+  return DockTransactionResult(reloadCount: 1, phase: "complete")
 }
 
 private func dockStatus(_ managedPath: String?) -> Never {
@@ -566,22 +668,53 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
   let before = readDockItems()
   let existingReceipt = readReceipt(receiptPath)
   let legacyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex Task Progress.app").standardizedFileURL.path
+  if let receipt = existingReceipt, receipt["pendingMigration"] != nil {
+    guard let legacyPending = receipt["pendingMigration"] as? [String: Any],
+          let oldEntries = legacyPending["before"] as? [[String: Any]],
+          let resume = migrationResume(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt) else {
+      error("DOCK_USER_EDIT_PRESERVED", "Legacy migration recovery state no longer matches Dock; recovery record retained.")
+    }
+    let upgraded = makePendingTransaction(kind: "migrate", before: oldEntries, after: resume.entries, beforePath: legacyPath, afterPath: managedPath, finalReceipt: resume.finalReceipt, baseReceipt: receipt)
+    do { try atomicWrite(try plistData(upgraded), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+    guard let transaction = resumeTransaction(current: before, receipt: upgraded, expectedKind: "migrate") else { error("DOCK_USER_EDIT_PRESERVED", "Legacy migration recovery state changed; receipt retained.") }
+    do {
+      try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { finalReceipt in
+        guard let finalReceipt else { throw NSError(domain: "DockReceipt", code: 1) }
+        try atomicWrite(try plistData(finalReceipt), path: receiptPath)
+      }
+    } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed; recovery record retained. Retry the install command.") }
+      catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+      catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
+    emit(["ok": true, "code": "DOCK_MIGRATED", "changed": true, "dockConfigured": true])
+  }
+  if let receipt = existingReceipt, receipt["pendingTransaction"] != nil {
+    let kind = ((receipt["pendingTransaction"] as? [String: Any])?["kind"] as? String) ?? ""
+    guard kind == "install" || kind == "migrate" else { error("DOCK_TRANSACTION_PENDING", "A Dock removal is pending; finish removal with the uninstall command before installing.") }
+    guard let transaction = resumeTransaction(current: before, receipt: receipt, expectedKind: kind) else { error("DOCK_USER_EDIT_PRESERVED", "Dock changed during the pending transaction; recovery record retained.") }
+    do {
+      try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { finalReceipt in
+        guard let finalReceipt else { throw NSError(domain: "DockReceipt", code: 1) }
+        try atomicWrite(try plistData(finalReceipt), path: receiptPath)
+      }
+    } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed; recovery record retained. Retry the install command.") }
+      catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+      catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
+    emit(["ok": true, "code": kind == "migrate" ? "DOCK_MIGRATED" : "DOCK_CONFIGURED", "changed": true, "dockConfigured": true])
+  }
   if let receipt = existingReceipt, let receiptApp = receipt["managedAppPath"] as? String, receiptApp != managedPath {
     guard receiptApp == legacyPath, managedPath == FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex.app").standardizedFileURL.path else { error("DOCK_RECEIPT_INVALID") }
-    let pending: [String: Any]
-    if receipt["pendingMigration"] != nil { pending = receipt }
-    else {
-      guard let prepared = prepareMigration(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt) else { error("DOCK_USER_EDIT_PRESERVED", "Legacy Dock tile or its position changed; migration was not applied.") }
-      do { try atomicWrite(try plistData(prepared), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
-      pending = prepared
-    }
-    guard let resume = migrationResume(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: pending) else { error("DOCK_USER_EDIT_PRESERVED", "Dock changed during migration; the recovery record was preserved.") }
-    if resume.needsDockWrite {
-      guard writeDockItems(resume.entries, expected: before) else { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; retry.") }
-    }
-    guard migrationEntriesMatch(resume.entries, readDockItems(), managedPath: managedPath) else { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; recovery record retained.") }
-    do { try atomicWrite(try plistData(resume.finalReceipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
-    if resume.needsDockWrite { restartDock() }
+    guard let plan = migrateDockReceipt(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt) else { error("DOCK_USER_EDIT_PRESERVED", "Legacy Dock tile or its position changed; migration was not applied.") }
+    let pending = makePendingTransaction(kind: "migrate", before: before, after: plan.entries, beforePath: legacyPath, afterPath: managedPath, finalReceipt: plan.receipt, baseReceipt: receipt)
+    do { try atomicWrite(try plistData(pending), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+    guard let transaction = resumeTransaction(current: before, receipt: pending, expectedKind: "migrate") else { error("DOCK_USER_EDIT_PRESERVED") }
+    do {
+      try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { finalReceipt in
+        guard let finalReceipt else { throw NSError(domain: "DockReceipt", code: 1) }
+        try atomicWrite(try plistData(finalReceipt), path: receiptPath)
+      }
+    } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; recovery record retained.") }
+      catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+      catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
     emit(["ok": true, "code": "DOCK_MIGRATED", "changed": true, "dockConfigured": true])
   }
   if before.contains(where: { isTile($0, bundle: managedBundleID, path: legacyPath) }) && legacyPath != managedPath {
@@ -593,14 +726,14 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
   let originalPositions = plan.originalPositions
   let replaced = plan.replaced
   let changed = plan.changed
-  let previousReceiptData = FileManager.default.contents(atPath: receiptPath)
   let previousOriginals = existingReceipt?["originalEntries"] as? [[String: Any]] ?? []
   let previousPositions = existingReceipt?["originalPositions"] as? [Int] ?? []
   let installedPairs = entries.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: managedPath) }
   let mergedOriginals = previousOriginals + originalEntries
   let mergedPositions = previousPositions + originalPositions
+  var finalReceipt = existingReceipt ?? [:]
   if existingReceipt == nil || !originalEntries.isEmpty {
-    let receipt: [String: Any] = [
+    finalReceipt = [
       "schemaVersion": 1,
       "originalEntries": mergedOriginals,
       "originalPositions": mergedPositions,
@@ -608,15 +741,22 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
       "installedPositions": (existingReceipt?["installedPositions"] as? [Int] ?? []) + (existingReceipt == nil ? installedPairs.map(\.offset) : originalPositions),
       "managedAppPath": managedPath,
     ]
-    do { try atomicWrite(try plistData(receipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
   }
-  guard changed else { emit(["ok": true, "code": "DOCK_ALREADY_CONFIGURED", "changed": false, "dockConfigured": true]) }
-  guard writeDockItems(entries, expected: before) else {
-    if let previousReceiptData { try? atomicWrite(previousReceiptData, path: receiptPath) }
-    else { try? FileManager.default.removeItem(atPath: receiptPath) }
-    error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during install; retry.")
+  guard changed else {
+    if existingReceipt == nil { do { try atomicWrite(try plistData(finalReceipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) } }
+    emit(["ok": true, "code": "DOCK_ALREADY_CONFIGURED", "changed": false, "dockConfigured": true])
   }
-  restartDock()
+  let pending = makePendingTransaction(kind: "install", before: before, after: entries, beforePath: managedPath, afterPath: managedPath, finalReceipt: finalReceipt, baseReceipt: finalReceipt)
+  do { try atomicWrite(try plistData(pending), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+  guard let transaction = resumeTransaction(current: before, receipt: pending, expectedKind: "install") else { error("DOCK_RECEIPT_INVALID") }
+  do {
+    try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { finalReceipt in
+      guard let finalReceipt else { throw NSError(domain: "DockReceipt", code: 1) }
+      try atomicWrite(try plistData(finalReceipt), path: receiptPath)
+    }
+  } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed; recovery record retained. Retry the install command.") }
+    catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+    catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
   emit(["ok": true, "code": "DOCK_CONFIGURED", "changed": true, "dockConfigured": true, "replaced": replaced, "appended": plan.appended])
 }
 
@@ -712,6 +852,108 @@ private func migrateDockFixture(_ options: [String: String]) -> Never {
   } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
   emit(["ok": true, "code": "DOCK_FIXTURE_MIGRATED"])
 
+}
+
+private func dockFixtureTransaction(_ options: [String: String]) -> Never {
+  guard let operation = options["--operation"], ["install", "migrate", "remove"].contains(operation),
+        let input = options["--plist"], let original = options["--original-app"], let managed = options["--managed-app"],
+        let output = options["--output-plist"], let receiptOutput = options["--receipt-output"],
+        let data = FileManager.default.contents(atPath: input),
+        var root = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
+        let current = root["persistent-apps"] as? [[String: Any]] else { error("DOCK_FIXTURE_INVALID") }
+  var receipt = options["--receipt"].flatMap(readReceipt)
+  var kind = operation
+  var beforePath = managed
+  var afterPath = managed
+  var after = current
+  var finalReceipt: [String: Any]? = receipt
+  if let receipt, receipt["pendingTransaction"] != nil {
+    guard let pendingKind = (receipt["pendingTransaction"] as? [String: Any])?["kind"] as? String, pendingKind == operation else { error("DOCK_TRANSACTION_PENDING", "Finish the pending \(((receipt["pendingTransaction"] as? [String: Any])?["kind"] as? String) ?? "") transaction first.") }
+    kind = pendingKind
+  } else if operation == "migrate" {
+    guard let receipt, let plan = migrateDockReceipt(before: current, legacyPath: original, managedPath: managed, receipt: receipt) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
+    beforePath = original
+    after = plan.entries
+    finalReceipt = plan.receipt
+  } else if operation == "install" {
+    let plan = DockInstallPlan(before: current, originalPath: original, managedPath: managed)
+    after = plan.entries
+    if receipt == nil || !plan.originalEntries.isEmpty {
+      let installedPairs = after.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: managed) }
+      let oldOriginals = receipt?["originalEntries"] as? [[String: Any]] ?? []
+      let oldPositions = receipt?["originalPositions"] as? [Int] ?? []
+      finalReceipt = [
+        "schemaVersion": 1, "originalEntries": oldOriginals + plan.originalEntries,
+        "originalPositions": oldPositions + plan.originalPositions,
+        "installedEntries": (receipt?["installedEntries"] as? [[String: Any]] ?? []) + (receipt == nil ? installedPairs.map(\.element) : plan.originalPositions.map { after[$0] }),
+        "installedPositions": (receipt?["installedPositions"] as? [Int] ?? []) + (receipt == nil ? installedPairs.map(\.offset) : plan.originalPositions),
+        "managedAppPath": managed,
+      ]
+    }
+  } else if operation == "remove" {
+    guard let receipt, receipt["managedAppPath"] as? String == managed else { error("DOCK_RECEIPT_INVALID") }
+    let plan = DockRestorePlan(before: current, managedPath: managed, receipt: receipt)
+    guard !plan.keepManagedApp else { error("DOCK_USER_EDIT_PRESERVED") }
+    after = plan.entries
+    finalReceipt = nil
+  }
+
+  if (receipt?["pendingTransaction"] == nil) && (receipt?["pendingMigration"] == nil) && samePlist(current, after) {
+    do {
+      try atomicWrite(try plistData(root), path: output)
+      if let finalReceipt { try atomicWrite(try plistData(finalReceipt), path: receiptOutput) }
+      else if FileManager.default.fileExists(atPath: receiptOutput) { try FileManager.default.removeItem(atPath: receiptOutput) }
+    } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
+    emit(["ok": true, "code": "DOCK_FIXTURE_TRANSACTION", "reloadCount": 0, "receiptRetained": finalReceipt != nil, "phase": "complete"])
+  }
+
+  if let existing = receipt, existing["pendingTransaction"] != nil {
+    guard let resumed = resumeTransaction(current: current, receipt: existing, expectedKind: kind) else { error("DOCK_USER_EDIT_PRESERVED", "Dock changed outside the recorded transaction; pending receipt retained.") }
+    beforePath = resumed.beforePath
+    afterPath = resumed.afterPath
+    after = resumed.after
+    finalReceipt = resumed.finalReceipt
+  } else {
+    guard let baseReceipt = receipt ?? finalReceipt else { error("DOCK_RECEIPT_INVALID") }
+    receipt = makePendingTransaction(kind: kind, before: current, after: after, beforePath: beforePath, afterPath: afterPath, finalReceipt: finalReceipt, baseReceipt: baseReceipt)
+  }
+  guard let pendingReceipt = receipt else { error("DOCK_RECEIPT_INVALID") }
+  let stageOnly = options["--stage-only"] != nil
+  let dockOnly = options["--dock-only"] != nil
+  let reloadOnly = options["--reload-only"] != nil
+  let reloadFail = options["--reload-fail"] != nil
+  guard let transaction = resumeTransaction(current: current, receipt: pendingReceipt, expectedKind: kind) else { error("DOCK_USER_EDIT_PRESERVED") }
+  var simulatedDock = current
+  var simulatedRoot = root
+  var actualReloadAttempts = 0
+  let phase: DockTransactionPhase = stageOnly ? .stageOnly : (dockOnly ? .dockOnly : (reloadOnly ? .reloadOnly : .complete))
+  var result: DockTransactionResult
+  do {
+    result = try completeDockTransaction(transaction, phase: phase, persistPending: {
+      try atomicWrite(try plistData(pendingReceipt), path: receiptOutput)
+    }, readDock: { simulatedDock }, writeDock: { entries, expected in
+      guard transactionEntriesMatch(expected, simulatedDock, path: transaction.beforePath) else { return false }
+      simulatedDock = entries
+      simulatedRoot["persistent-apps"] = entries
+      do { try atomicWrite(try plistData(simulatedRoot), path: output); return true }
+      catch { return false }
+    }, reloadDock: {
+      actualReloadAttempts += 1
+      if reloadFail { throw NSError(domain: "DockReload", code: 1, userInfo: [NSLocalizedDescriptionKey: "Injected Dock reload failure."]) }
+    }, commit: { final in
+      if let final { try atomicWrite(try plistData(final), path: receiptOutput) }
+      else if FileManager.default.fileExists(atPath: receiptOutput) { try FileManager.default.removeItem(atPath: receiptOutput) }
+    })
+  } catch {
+    do { try atomicWrite(try plistData(simulatedRoot), path: output) } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
+    if reloadFail {
+      emit(["ok": false, "code": "DOCK_RELOAD_FAILED", "reloadCount": actualReloadAttempts, "receiptRetained": true, "phase": "reloaded-pending"], status: 1)
+    }
+    selfError("DOCK_FIXTURE_TRANSACTION_FAILED", error.localizedDescription)
+  }
+  do { try atomicWrite(try plistData(simulatedRoot), path: output) } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
+  emit(["ok": true, "code": "DOCK_FIXTURE_TRANSACTION", "reloadCount": actualReloadAttempts,
+        "receiptRetained": stageOnly || dockOnly || reloadOnly || kind != "remove", "phase": result.phase])
 }
 
 private func inspectDockFixture(_ options: [String: String]) -> Never {
@@ -816,15 +1058,38 @@ private func removeDock(managedPath: String, receiptPath: String) -> Never {
     if before.contains(where: { isTile($0, bundle: managedBundleID, path: managedPath) }) { error("DOCK_RECEIPT_MISSING", "The managed Dock tile is present but its restore record is unavailable.") }
     emit(["ok": true, "code": "DOCK_RECEIPT_MISSING", "changed": false, "dockConfigured": false, "keepManagedApp": false])
   }
-  guard receipt["pendingMigration"] == nil else { error("DOCK_MIGRATION_PENDING", "Complete launcher installation before restoring the Dock.") }
+  if receipt["pendingTransaction"] != nil {
+    let kind = ((receipt["pendingTransaction"] as? [String: Any])?["kind"] as? String) ?? ""
+    guard kind == "remove" else { error("DOCK_TRANSACTION_PENDING", "A Dock install or migration is pending; finish it with the install command before uninstalling.") }
+    guard let transaction = resumeTransaction(current: before, receipt: receipt, expectedKind: "remove") else { error("DOCK_USER_EDIT_PRESERVED", "Dock changed during removal; recovery record retained.") }
+    do {
+      try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { _ in
+        try FileManager.default.removeItem(atPath: receiptPath)
+      }
+    } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed; recovery record retained. Retry the uninstall command.") }
+      catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+      catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
+    emit(["ok": true, "code": "DOCK_RESTORED", "changed": true, "dockConfigured": false, "keepManagedApp": false])
+  }
+  guard receipt["pendingMigration"] == nil else { error("DOCK_TRANSACTION_PENDING", "A Dock migration is pending; finish installation before uninstalling.") }
   guard receipt["managedAppPath"] as? String == managedPath else { error("DOCK_RECEIPT_INVALID") }
   let plan = DockRestorePlan(before: before, managedPath: managedPath, receipt: receipt)
   guard !plan.keepManagedApp else { emit(["ok": true, "code": "DOCK_USER_EDIT_PRESERVED", "changed": false, "dockConfigured": true, "keepManagedApp": true]) }
   if plan.changed {
-    guard writeDockItems(plan.entries, expected: before) else { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during restore; retry.") }
-    restartDock()
+    let pending = makePendingTransaction(kind: "remove", before: before, after: plan.entries, beforePath: managedPath, afterPath: managedPath, finalReceipt: nil, baseReceipt: receipt)
+    do { try atomicWrite(try plistData(pending), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+    guard let transaction = resumeTransaction(current: before, receipt: pending, expectedKind: "remove") else { error("DOCK_RECEIPT_INVALID") }
+    do {
+      try completeDockTransaction(transaction, readDock: readDockItems, writeDock: writeDockItems, reloadDock: checkedDockReload) { _ in
+        try FileManager.default.removeItem(atPath: receiptPath)
+      }
+    } catch DockTransactionFailure.preferencesChanged { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed; recovery record retained. Retry the uninstall command.") }
+      catch DockTransactionFailure.receiptWrite(let detail) { selfError("DOCK_RECEIPT_WRITE_FAILED", detail) }
+      catch { selfError("DOCK_RELOAD_FAILED", error.localizedDescription) }
   }
-  try? FileManager.default.removeItem(atPath: receiptPath)
+  if !plan.changed {
+    do { try FileManager.default.removeItem(atPath: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+  }
   emit(["ok": true, "code": "DOCK_RESTORED", "changed": plan.changed, "dockConfigured": false, "keepManagedApp": false])
 }
 
@@ -855,5 +1120,6 @@ if command == "dock-fixture-remove" { dockFixtureRemove(options) }
 if command == "dock-fixture-seed" { seedDockFixture(options) }
 if command == "dock-fixture-inspect" { inspectDockFixture(options) }
 if command == "dock-fixture-migrate" { migrateDockFixture(options) }
+if command == "dock-fixture-transaction" { dockFixtureTransaction(options) }
 if command.hasPrefix("dock-") { runDockCommand(command, options: options) }
 error("LAUNCHER_MODE_INVALID")
