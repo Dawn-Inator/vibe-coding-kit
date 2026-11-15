@@ -63,15 +63,15 @@ Key flags:
   (`installCommand`/`testCommand`/`typecheckCommand`) instead of hardcoding client names
   into the CLI. Refused together with `--install`.
 
-After `--with-deps=<client>`, the worker's only sanctioned heavy command for that client
+After `--with-deps=<client>`, the supported client verification command
 is `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> [--typecheck] <files...>`, which runs
 that client's registered `testCommand` (or `typecheckCommand` with `--typecheck`) against
 the given files. It refuses a client not registered in `config.clients` and a worktree
 whose deps for that client were never installed — a worktree missing a client's deps is
 recreated by the orchestrator with `--with-deps=<client>` (or `=all`), never repaired by
-a manual install. Anything heavier (full suites, builds, dev servers, other packages)
-stays with the orchestrator; see `agent-orchestration-guardrails` for the exact lane
-rules governing what a worker may and may not run.
+a manual install. Other module checks require an explicit command/environment/resource grant under
+`agent-orchestration-guardrails` and compatibility with project guards; `--with-deps` alone grants none.
+Shared full-workspace checks and final gates remain orchestrator-controlled.
 
 Rules:
 

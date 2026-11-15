@@ -25,19 +25,14 @@ See your project's tutorial for the incident that motivated this rule.
 ## Quota-Aware Wake And Review Cadence
 
 This section pairs with `agent-task-supervision`'s heartbeat mechanics — that skill owns the audit
-workflow and the merged wake cycle; this section states the caps and rationale the orchestrator applies
+workflow and the merged wake cycle; this section states batching preferences and rationale the orchestrator applies
 while running it. See your project's tutorial for the incident that motivated it.
 
-- **One merged wake cycle handles both jobs — don't run a separate always-fire backstop timer and a
-  separate notification-batching window.** Every dispatch/landing/background-shell notification since the
-  last cycle is accumulated with zero tool calls; the cycle itself (see `agent-task-supervision`'s wake
-  registration) both guarantees a check-in during a quiet stretch and processes whatever accumulated,
-  combining the resulting dispatches into a single tool batch. **An `audit` line is never printed
-  synchronously at the moment of a dispatch or a landing — it is printed only at the next merged wake cycle
-  pass, and only when that pass actually has something to report** (a new dispatch, a landing/finish, a
-  direction switch, an overreach finding since the last printed line); a pass with nothing new to report
-  prints nothing. **A new message from the human is never accumulated into this cycle** — it is answered
-  immediately, on its own turn, regardless of where the cycle currently stands.
+- **One session wake mechanism, with batched routine progress.** Do not add a separate backstop timer or
+  per-worker notification window. Handle human requests, candidate/checkpoint finals, returned findings and
+  blockers when they arrive; run the full audit when the supervision due probe requires it. Only routine
+  interim activity can accumulate for a later batch. Do not claim quiet-time wake delivery without a delivered
+  timer probe. Print an audit line only after an actual full audit; ordinary event handling is not an audit.
 - **A notification is a full context re-read, not a free event — collapse a multi-step background sequence
   into one script that emits exactly one notification, not one notification per step.** The cost model is
   simple: one notification arriving = one model turn = one full re-read of whatever context has accumulated
@@ -50,46 +45,41 @@ while running it. See your project's tutorial for the incident that motivated it
   discipline applies to polling itself: polling is also a round-trip, so the wait/poll loop belongs inside
   the same backgrounded script, emitting its one notification only when the whole thing is actually done,
   never a notification per poll.
-- **Worker dispatch has a granularity floor — don't split what could be one notification into several.**
-  A day with 80 worker landings is 80 wake-and-re-read cycles regardless of how cheap the merged-cycle
-  batching makes any single one of them. Small packages with non-overlapping write sets but the same
-  feature line must be merged into one dispatch, not fanned out separately — a concrete floor: **if a
-  package's expected runtime is under ~15 minutes AND it shares a feature line or write set with another
-  pending package, merge them into one dispatch rather than dispatching separately.** The one exception is
-  when the packages genuinely need to run in parallel to occupy different scarce resources (a physical
-  board, a phone, a server) at the same time — that parallelism has its own payoff independent of
-  notification count. **The floor merges only items that share both the write set and the same blocking
-  dependency** — sharing a feature line alone is not enough. Items on one feature line with different
-  dependencies (a different host, a different upstream deploy, a different scarce resource) stay separate
-  dispatches even when small, so an unblocked item is never folded into a package whose tightest sibling
-  dependency then blocks all of it. See project incident record for a worked counter-example.
+- **Keep a module's implementation/test/fix loop with one delivery owner.** Avoid turning its short
+  sequential steps into separate dispatches and notifications. Merge small packages only when they share
+  the write set and blocking dependency; a shared feature-line label alone is insufficient. Keep genuinely
+  independent scopes/dependencies or different scarce resources separate when parallel execution helps;
+  otherwise one blocked package can unnecessarily stop its unblocked sibling. Exact shared-file writes
+  still have one owner and cannot run concurrently.
 - **Never call `date` just to stamp a status line.** Use a timestamp already present in tool output or a
   notification; omit the time field if none exists.
-- **Cadence caps**: centralized verification at most once per hour or once per 3 landings; opus/independent
-  review once per feature line plus one re-review (accumulate later minor findings into that re-review);
-  temporary status batches (heartbeat category 3) at most hourly.
+- **Batching targets, not acceptance exemptions**: prefer shared verification once per hour or per three
+  landings when dependencies permit; combine optional deep-review findings into one pass plus one re-review.
+  These targets never delay required module checks/acceptance or waive commit-bound pre-review after a
+  candidate changes. Repeated rework means diagnose the bottleneck, not accept stale evidence. Keep routine
+  temporary status batches (heartbeat category 3) at most hourly; material events still get prompt handling.
 
-See `agent-task-supervision`'s "Measured timestamps," "Status line," and "Cadence caps" sections for the
-full mechanics these caps apply to.
+Use `agent-task-supervision`'s wake/due rules for full audit cadence and reporting.
 
-## Review Fan-Out: Scope Reviews To Four Categories, Falsify Only Blocking/Major
+## Review fan-out: prioritize risk, falsify only blocking/major
 
 Independent review/falsification fan-out is valuable but not free, and its cost does not scale linearly
 with the value it returns — most of the value concentrates in a small number of genuinely load-bearing
 findings.
 
-- **Scope review budget to four categories**: money/billing paths, security boundaries, SQL that has never
+- **Prioritize additional review budget for four categories**: money/billing paths, security boundaries, SQL that has never
   been executed against a real database, and interactions only verifiable on a real device or a real
   browser. Reviewing everything else at the same depth mostly produces noise rather than catching real
-  defects.
+  defects. This prioritizes extra deep-review fan-out; it does not narrow module acceptance criteria or
+  the required independent pre-review of an integrated candidate. Every module receives requirements-based acceptance.
 - **The reviewer self-rates severity (blocking / major / minor) before anything else happens.** Only a
   self-rated **blocking** or **major** finding gets its own independent falsifier worker. A **minor**
   finding goes straight into the findings list marked "unfalsified" — falsifying every minor finding
   individually burns the same independent-worker budget a blocking finding needs, for a finding that, even
   if wrong, costs little to leave unconfirmed.
-- **A reviewer must read the pushed candidate** (`origin/<branch>` or the equivalent up-to-date ref), never
-  a possibly-stale primary/shared worktree — a stale read can report a false failure that doesn't exist on
-  the real candidate, wasting a round of investigation chasing a phantom.
+- **A reviewer must read the exact candidate commit**, from its managed worktree or a verified immutable
+  ref, never a possibly-stale primary/shared working tree. A pre-review may precede push; bind its result
+  to that SHA and invalidate it when the candidate changes.
 - **State your project's standing "not a defect" conventions explicitly in the review dispatch prompt.**
   Without them, a reviewer surfaces a pile of generic hardening suggestions the project has already decided
   against, diluting the small number of findings that actually matter.

@@ -43,6 +43,10 @@ line:
 Use the configured sweeper/checker as evidence, then reconcile its output manually into the registry. A probe
 that is absent or unavailable is recorded as unchecked or blocked; it is not silently treated as complete.
 
+For delegated implementation, also run the [module delivery audit](module-delivery-audit.md): inspect each
+module owner's requirements/implementation/test/fix/acceptance loop in its linked packet, pending candidate
+acceptance and resource queues. A final report may be a checkpoint; it does not discharge module ownership.
+
 `Sources` examples must keep every channel and mark each check as completed. Replace `<read-at>` with the
 actual ISO timestamp when the external tracker was read:
 
@@ -64,7 +68,9 @@ disposition (`dispatched`, `continuing`, `blocked`, `owner`, or `deferred`), own
 evidence-backed reason. `deferred` is first-class and unfinished: both its `## Items` status and Decomposition
 disposition are `deferred`. It is inactive; it cannot hide a current writer or missing new-dispatch proof. Each
 deferred Item still receives its own proof-backed re-split verdict. Split each free independent unit and dispatch
-it during this wake when capacity exists. Use one clear owner per unit, name repository and worktree, and provide an exact JSON
+it during this wake when authorized execution and acceptance capacity exist. Drain the current acceptance,
+repair and test queues first when they are the bottleneck. Use one persistent delivery owner per module,
+name repository and worktree, and provide an exact JSON
 array of relative file paths for the write set. Re-split after a worker goes stale, reports a blocker, or its
 remaining work no longer matches the accepted task.
 
@@ -73,14 +79,23 @@ Every leaf dispatch gets an accepted receipt path in `dispatch_ref`. Validate th
 owner. The receipt shows request acceptance only. At later audits, separately establish whether the unit is
 active, has a terminal report, and landed. Do not inflate active or landed counts from acceptance metadata.
 
-For a true aggregate coordinator, the single `## Items` registry may append an optional `children` JSON array
-after `dispatch_ref`. The parent uses `status: tracking`, a nonempty array of unique IDs of existing Items,
-honest owner/repository/worktree metadata, `mode: read-only`, `write_set: []`, and empty or `-` `dispatch_ref`;
-it has no worker acceptance receipt. Leaves use `status: dispatched`, accurate mode/exact write set, and a real
-accepted dispatch receipt. Leaves may omit `children` or use `[]`. Reject self-links, cycles, and dangling IDs.
-Parent rows remain unfinished until their own coordination acceptance criteria pass, even when every child is
-done. Do not force a parent to spawn or count it active, claim acceptance/write authority, bypass leaf
-delivery/receipts, or hide unknown legacy child state.
+## Parent and leaf roles
+
+An optional `children` JSON-array column may be appended after `dispatch_ref` for aggregate coordination. Keep
+the two roles distinct:
+
+| Role | Items status and children | Metadata and receipt | Decomposition and `rows(...)` |
+| --- | --- | --- | --- |
+| Parent coordinator | `tracking`; nonempty `children` array | honest owner/repository/worktree; `mode: read-only`, `write_set: []`, `dispatch_ref` empty or `-`; no worker acceptance receipt | disposition `continuing`; `continuing: tracking <source-ref>` cites current child-state evidence; never count it active |
+| Leaf worker | `dispatched`; omit `children` or use `[]` | owner/repository/worktree/mode/exact `write_set`; real accepted receipt in `dispatch_ref` | disposition `continuing`; `continuing: active <source-ref>` or `continuing: private-final <source-ref>` cites leaf evidence |
+
+Parent `children` arrays must contain unique existing Item IDs; reject self-links, cycles, and dangling IDs.
+Keep both roles in this one registry. Children completing does not complete a parent: keep it unfinished until
+its own criteria pass. Do not force parents to spawn, claim worker acceptance/write authority, bypass leaf work
+or receipts, count parents active, or hide unknown legacy state behind tracking. Each leaf needs an accepted
+receipt path matching its owner and dispatch; an orchestrator uses the same receipt for its own dispatches.
+Parent tracking has no receipt. Acceptance does not prove that work is active, complete, or landed. Use the receipt and verdict rules in this reference for validation.
+
 
 At the end of the decomposition section write `re-split: rows(...)` and `splittable: D/P`. The v2 `rows(...)`
 group accepts three verdict classes: `split->dispatched <new unit>`, `cannot-split: <tagged proof>`, or a typed

@@ -1,15 +1,13 @@
 ---
 name: agent-task-supervision
-description: Use for long-running autonomous or multi-agent work that needs a recurring coordination audit, and whenever an active heartbeat ledger must be maintained.
+description: Use for long-running autonomous or multi-agent work to audit module delivery loops, worker health, pending acceptance and backlog, and whenever an active heartbeat ledger must be maintained.
 ---
 
 # Agent task supervision
 
-This shared policy coordinates work; it does not grant authority. It does not authorize restricted actions,
-finish or merge work, archive sessions, delete branches or worktrees, kill or restart workers, or veto a
-session finish. A project adapter may expose read-only probes and project-approved command strings. Those
-commands change how a probe is invoked, never what the audit must cover or what the orchestrator is allowed
-to do. Follow the repository and current-turn authorization rules for every action.
+This policy coordinates work, not authority: no permission to finish/merge, archive, delete, kill/restart,
+or veto a session finish. Project adapters may expose read-only probes and approved command strings;
+invocation overrides change neither audit duties nor repository/current-turn authorization.
 
 ## When to activate
 
@@ -64,8 +62,9 @@ At every timer wake, the orchestrator itself must:
    project. Do not invent thresholds.
 2. Count actual active workers using the configured in-flight probe, not ledger row count. Review every worker
    event since the prior wake. Distinguish a request accepted by a tool from work that is active, a terminal
-   report, and work landed on its target. A worker that reported interim progress but has no live child or
-   session is stale: record the evidence and re-split or report a blocker. For native probes over large histories,
+   report, and work landed on its target. A report with no live child/session needs reconciliation: a durable
+   queued-check or awaiting-acceptance checkpoint is unfinished and inactive, not proof of death. An unsupported
+   announcement is stale; resume its owner or record a blocker. For native probes over large histories,
    query exact canonical agent path prefixes; partial name matches are not identity. Presence in an available-agent
    or world-state catalog is not live activity evidence. Accepted receipts, final reports, and send-message events
    are not live counts. A delay beyond twice the expected
@@ -73,36 +72,33 @@ At every timer wake, the orchestrator itself must:
 3. Run configured discovery and branch/session probes. Ingest each newly found task in `## Items` and check
    each listed owner against current evidence. Probes are evidence sources only. Do not kill, restart, finish,
    merge, archive, clean, or delete based on this shared policy.
-4. Audit the complete backlog with the [backlog audit](references/backlog-audit.md). Decompose every current
-   non-done item into a concrete next step. If the active worker count is below the free independent work units,
-   dispatch the free units during this wake; do not wait to be asked. Give each unit a clear owner, repository,
-   worktree, mode, and exact relative file write set. Re-split idle, stale, or newly blocked work when its
-   current decomposition no longer holds.
+4. Audit the complete backlog with the [backlog audit](references/backlog-audit.md) and
+   [module delivery audit](references/module-delivery-audit.md). Decompose every non-done item into a concrete
+   next step; delegated implementation units need persistent module owners through tests, fixes and acceptance.
+   Drain pending acceptance, repair and verification queues before expanding work that would add to the same
+   bottleneck. Dispatch free independent units when authorized and execution plus acceptance capacity exists;
+   do not wait to be asked. Name repository, worktree, mode and exact relative write set. Re-split only when
+   the current boundary no longer holds; a new wake does not itself require replacing an owner.
 5. Check direction against known project signals and record the evidence. An unsubstantiated impression is
    not a signal. On initial resume or a Kit upgrade, read the skill from the session's actual pinned managed
    tree. Distinguish installed, projected/generated, and actually read copies; a stale primary projection is
    not evidence of the active policy.
-6. Record actual countable progress and blockers. Do not use subjective percentages. A ratio is acceptable
-   only when both counts and the counted scope are stated.
+6. Record actual countable progress and blockers, including modules self-verified, awaiting acceptance,
+   accepted and landed separately. Active agent count is capacity evidence, not delivery progress. Do not use
+   subjective percentages. A ratio needs both counts and the counted scope.
+
+Candidate finals and returned findings get immediate normal event handling; do not delay acceptance or
+same-owner repair until a timer. A full audit still follows the due-probe cadence. Keep one session ledger
+and wake mechanism; child modules do not each create a heartbeat, timer or parallel task registry.
 
 ## Orchestration snapshot
 
-For each new v2 wake, capture an evidence-backed orchestration snapshot for the read-only Heartbeat view.
-Probe actual running child agents before the audit and again after re-splitting and dispatching; record each
-observation's count, ISO time and evidence reference. Exclude the orchestrator, available-agent catalogs,
-completed children and accepted-only dispatches. Audit the actual blocked tasks and record whether each
-requires Owner intervention only when known; use `null` when unknown. An empty blocked task array means the
-complete blocked-task audit found none; use `null` if it was not established. Never infer counts, blockers or
-Owner intervention from the ten audit rows, the Items registry, or a status alone.
-
-Pass the optional `orchestration` object to Kit's `appendHeartbeatWake` or `writeHeartbeatLedgerPair` when
-writing the completed wake: `{scope, before, after, blockedTasks, blockersEvidence}`. `scope` describes the
-observed work; `before` and `after` are either `null` or `{activeAgents, observedAt, evidence}`; `blockedTasks`
-is `null` or an array of `{id, title, reason, requiresOwner, evidence?}`; `blockersEvidence` is a nonblank
-audit reference or `null`. Use nonblank references for observed counts, nonnegative integer counts, ISO times,
-and `true`, `false`, or `null` for `requiresOwner`. The Kit writer records the optional v2 metadata in the
-same wake; do not create a parallel plugin record. Retain the ten raw audit rows for compatibility and audit,
-not as the main UI. Missing historical snapshots remain unknown: do not guess or rewrite old wakes.
+For each new v2 wake, probe actual running children before and after coordination; record each count, ISO
+time and evidence. Exclude the orchestrator, catalogs, completed children and acceptance-only receipts.
+Audit blocked tasks and Owner intervention from evidence, using unknown when not established. Use the
+optional Kit `orchestration` metadata in the same wake, never a parallel plugin record. Read the exact
+[snapshot fields and writer contract](references/ledger-api.md#orchestration-snapshot) before writing one.
+Keep ten raw rows; do not infer snapshots from them or rewrite historical wakes.
 
 ## Ledger contract
 
@@ -112,38 +108,28 @@ older wake bytes as historical records. Do not rewrite the file. The current `##
 existing `id | source | item | status | evidence` fields and adds, in order,
 `owner | repository | worktree | mode | write_set | dispatch_ref`.
 
-An optional `children` JSON-array column may be appended after `dispatch_ref` for aggregate coordination. Keep
-the two roles distinct:
+Parents are read-only `tracking` coordinators with unique existing child links and no worker receipt;
+leaves need real owner-matching accepted receipts and exact write scopes. Children finishing does not
+complete a parent, and receipts do not prove activity, acceptance or landing. Read the
+[parent/leaf contract](references/backlog-audit.md#parent-and-leaf-roles) before writing those rows.
 
-| Role | Items status and children | Metadata and receipt | Decomposition and `rows(...)` |
-| --- | --- | --- | --- |
-| Parent coordinator | `tracking`; nonempty `children` array | honest owner/repository/worktree; `mode: read-only`, `write_set: []`, `dispatch_ref` empty or `-`; no worker acceptance receipt | disposition `continuing`; `continuing: tracking <source-ref>` cites current child-state evidence; never count it active |
-| Leaf worker | `dispatched`; omit `children` or use `[]` | owner/repository/worktree/mode/exact `write_set`; real accepted receipt in `dispatch_ref` | disposition `continuing`; `continuing: active <source-ref>` or `continuing: private-final <source-ref>` cites leaf evidence |
+Keep module delivery phase, candidate, check/queue evidence and acceptance decision in the existing task
+packet/checkpoint linked from `evidence`. These are distinct from Items status and Decomposition disposition;
+do not introduce new status tokens or rewrite legacy records to infer missing phases. This adds no ledger
+schema or certification claim; the orchestrator checks the underlying evidence.
 
-Parent `children` arrays must contain unique existing Item IDs; reject self-links, cycles, and dangling IDs.
-Keep both roles in this one registry. Children completing does not complete a parent: keep it unfinished until
-its own criteria pass. Do not force parents to spawn, claim worker acceptance/write authority, bypass leaf work
-or receipts, count parents active, or hide unknown legacy state behind tracking. Each leaf needs an accepted
-receipt path matching its owner and dispatch; an orchestrator uses the same receipt for its own dispatches.
-Parent tracking has no receipt. Acceptance does not prove that work is active, complete, or landed. See the
-[backlog audit](references/backlog-audit.md) for validation details.
+Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) for
+all non-done Items. Use `dispatched`, `continuing`, `blocked`, `owner`, `deferred`, or `done`, never `ready`.
+Each unfinished row needs a concrete next step, owner and evidence-backed reason. `deferred` is inactive,
+also `deferred` in Items, and needs its own proof-backed re-split verdict; it cannot hide a writer or missing receipt.
 
-Every wake includes a `### Decomposition` table (`item | next_step | disposition | owner | evidence`) for all
-non-done Items. Dispositions are `dispatched`, `continuing`, `blocked`, `owner`, `deferred`, or `done` (never
-`ready`). Every unfinished row needs a concrete next step, owner, and evidence-backed reason. `deferred` is
-unfinished and inactive; its `## Items` status must also be `deferred`. It cannot hide a current writer or missing
-dispatch proof, and each deferred Item needs its own proof-backed re-split verdict. Details for irrecoverable
-legacy audit evidence are in the
-[backlog audit](references/backlog-audit.md). With no new split assessment, `rows()` / `0/0` is valid only when
-Decomposition covers all unfinished Items and none is deferred; do not redispatch to fill the count. Write the
-exact markers `re-split: rows()` and `splittable: 0/0`.
-For v2 verdict syntax see the [backlog audit](references/backlog-audit.md). `D` counts distinct newly dispatched
-units, not source rows. Resolve `split->dispatched` to exactly one real `status: dispatched` Item with a valid
-accepted receipt, using its exact `unitItemID`, dispatch reference, or unique owner as aliases for the same canonical
-unit; free text is not a dispatch. `P` counts unique assessed verdicts keyed by exact stable Item ID or dispatch
-reference, never variable prose. The wake contract
-determines the denominator, not CLI mode: unmarked legacy wakes keep the proof-only denominator; `heartbeat/v2`
-uses all valid assessed rows even under non-certifying `--history`. Preserve historical wake bytes.
+Before preparing the wake, read the [backlog audit](references/backlog-audit.md) for typed `rows(...)`
+verdicts, receipt resolution and legacy evidence recovery. End with `re-split: rows(...)` and `splittable: D/P`:
+`D` counts distinct newly dispatched canonical units; `P` counts unique assessed Item/dispatch verdicts,
+including continuing and deferred. Free text is not a dispatch. With no new split assessment, write
+`re-split: rows()` and `splittable: 0/0` only when Decomposition covers all unfinished Items and none is deferred.
+The wake marker selects denominator semantics: v2 counts all valid assessed rows even under `--history`;
+unmarked legacy wakes retain their proof-only denominator. Preserve historical bytes; never redispatch for a count.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). For new ledger reads and writes use
 the Kit heartbeat pair API; do not append to a split ledger's head file directly. Run strict current mode

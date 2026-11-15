@@ -7,7 +7,9 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 Ordinary tasks may be implemented directly. Delegate independent work when authorized and doing so has a
 measurable wall-clock benefit; do not infer a mandate from duration or task size alone. Give each worker a
 self-contained packet and a non-overlapping write scope. Under threshold B, dispatch every implementation
-write unit as specified in the skill entry; if delegation is unavailable, report the blocker.
+write unit as specified in the skill entry; if delegation is unavailable, report the blocker. For delegated
+implementation use [module delivery ownership](module-delivery.md) from the first packet, regardless of
+heartbeat duration thresholds. Exploration/review support does not discharge module delivery.
 
 ## Orchestration Mode Selection
 
@@ -80,13 +82,12 @@ unchanged cap. Resume only the authorized, useful parallel work; 99 is capacity,
 Quota rules and per-host heavy-process limits still apply.
 <!-- END: agent-only -->
 
-Implementation fan-out follows the canonical loop: **parallel write (workers only read/grep/edit, disjoint
-responsibility areas, zero heavy processes) → orchestrator merges and runs the full verification ONCE,
-ideally on a dedicated test host → feed each worker back its own failures to fix**, iterate to green.
-Verification belongs in the orchestrator, not in every worker. Parallel responsibility areas must touch
-disjoint files; overlapping work is serialized or merged into one worker. Remote execution also does not
-widen what gets run — scope should stay driven by whatever change-selection convention your test tooling
-uses, not a default full-suite run.
+Implementation fan-out follows the module loop: **parallel implementation in disjoint scopes → owners
+test/fix in authorized lanes → orchestrator independently accepts each candidate → integrates and runs
+selected shared checks → returns failures to the same owners**. A private final may be an unfinished
+checkpoint; follow up with that owner rather than dropping its obligation or waiting for a timer.
+Overlapping files are serialized or assigned one owner. Remote execution does not widen test selection
+or grant a resource slot. See [verification lanes](worker-selfcheck.md).
 
 ## Independent/Spawned Windows Do Not Inherit Context
 
@@ -105,7 +106,7 @@ action through a session that genuinely doesn't know better.
   workflow mechanism or per-turn dispatch instead. The right to fork a fan-out stays with the top
   orchestrator.
 - If a window truly must spawn one more level, its prompt must carry an explicit guardrail header: the
-  heavy-process limit, the ban on self-running heavy processes (local or remote), environment boundaries,
+  heavy-process limit, exact verification grants and queue behavior (local or remote), environment boundaries,
   secrets always redacted, the finish/merge convention, and "do not re-spawn."
 - Periodically check for "blind" windows and inject missing guardrail context by message rather than
   killing outright, unless the host is at a resource-exhaustion edge.

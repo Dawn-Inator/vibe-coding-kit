@@ -1,6 +1,6 @@
 ---
 name: agent-orchestration-guardrails
-description: Use before subagent dispatch or heavy commands to choose independent write scopes, worker models, platform contracts, and host limits.
+description: Use before subagent dispatch or heavy commands to assign module delivery owners, verification lanes, independent acceptance, worker models, and host limits.
 ---
 # Agent Orchestration Guardrails
 
@@ -24,6 +24,12 @@ Ordinary tasks: the main agent may investigate, edit, and test directly. Delegat
 when authorized and parallelism offers measurable wall-clock benefit; task size alone does not require it.
 Give every in-flight writer exclusive ownership of its write scope.
 
+For authorized parallel implementation, assign **module delivery owners**, not just exploration, editing,
+or test-running steps. Each owner carries a bounded, independently acceptable function through requirements,
+implementation, tests, fixes and resubmission. This applies from the first dispatch, not after two hours.
+Explorers and reviewers support delivery; their reports do not replace an implementation owner.
+Read [module delivery](references/module-delivery.md) before decomposing or dispatching implementation.
+
 **Threshold B:** when a single-agent autonomous session has run or is expected to run over two hours
 (including overnight or unattended work), the orchestrator switches to dispatch-only: delegate each
 implementation write unit to a worker; retain decomposition, dispatch, integration, verification, and
@@ -35,15 +41,17 @@ of silently self-implementing. This mode does not depend on heartbeat tooling be
 
 - Every dispatch sets `model` explicitly (plus effort/context-carry on Codex), at **every** level of the
   chain; a worker that fans out lists each sub-agent and its model.
-- Workers never run package-level/full tests, tsc, build, e2e, dev server, browser suite, install or other
-  heavy commands, locally or remotely — only the exact light check named in the packet; never host-sync
-  commands, shared-resource cleanup, another worktree's dependency symlinks, or whole-env/secret dumps.
+- Workers run only the checks authorized in their packet. Module tests, typechecks, builds or scoped
+  integration/E2E need an exact command, prepared environment and a granted per-host resource slot when
+  heavy; without a slot, queue a checkpoint. No unassigned full suites, installs, host-sync, shared-resource
+  cleanup, another worktree's dependency symlinks, or whole-env/secret dumps. See
+  [verification lanes](references/worker-selfcheck.md); never bypass an existing project guard.
 - Workers never write into the human primary checkout; facts come from origin refs or their managed worktree.
 - Default to one worker layer. A top orchestrator may explicitly authorize one nested worker layer for a bounded submodule when the runtime supports it and parallelism benefits the task. No deeper nesting or independent windows; see task-packet.
 - On finish a worker stops every background shell/loop/watcher it started and attaches `ps` proof; a
   report without it is invalid.
-- Quota is hard: ≥95% stop new dispatch, ≥97% stop all, merge, hand off. Reviews cover four categories only
-  (money, security boundary, never-run SQL, real-device-only).
+- Quota is hard: ≥95% stop new dispatch, ≥97% stop all, merge, hand off. Prioritize extra review for money,
+  security boundaries, never-run SQL and real-device behavior; every module still needs full criteria-based acceptance.
 
 ## Orchestration Mode Selection
 
@@ -77,15 +85,17 @@ another.
 - Disjoint areas, waves; limit recovery in `references/dispatch-decision.md`.
 <!-- END: agent-only -->
 
-Loop: parallel write (disjoint files, zero heavy processes) → orchestrator merges and verifies ONCE →
-feed each worker back its own failures.
+Loop: parallel module implementation → owner tests/fixes in authorized lanes → orchestrator independently
+accepts each candidate → integrates and runs selected shared checks → returns failures to the same owners.
+One private final per invocation can be a resumable checkpoint; it does not end module ownership.
 
 ## Coordinated Worker Protocol (frontier orchestrator + delegated workers)
 
 Whichever platform and model you use as the top-level orchestrator, keep goal interpretation, dependency
 ordering, conflict resolution, architecture forks, integration, and final semantic acceptance **in the
 orchestrator**. When delegating, assign bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Terra on
-Codex); Luna is read-only exploration. Return architectural decisions to the top orchestrator.
+Codex); Luna is read-only exploration. Owners decide local implementation within approved contracts;
+return cross-module architectural or authority changes to the top orchestrator.
 
 After an implementation candidate is committed, and before final acceptance of a non-trivial integrated
 multi-agent candidate, dispatch an **independent pre-review worker** (Terra on Codex; Opus/Fable-tier on
@@ -102,7 +112,7 @@ Read [coordinated-worker-protocol](references/coordinated-worker-protocol.md) fo
 seats and acceptance split when they apply.
 
 Before the first broad wave, dispatch one representative low-risk task as a health check: confirm one
-private structured final, respected write scope, no heavy processes, usable evidence.
+private structured final, respected write scope and verification grants, usable evidence.
 Nested delegation requires explicit top-level authorization and is limited to two worker layers; reviewers never delegate.
 
 ### Task Packet Reference
@@ -131,16 +141,18 @@ setting.
 ## Worker Prompt Requirements (checklist)
 
 - Explorer: `write_scope: none`, no edits/commits/finish/publish/git writes.
-- No heavy commands; missing deps are reported, not installed; pre-created worktree only.
+- Module owner: implement/test/fix/resubmit until accepted or specifically blocked; do not stop at code written.
+- Exact checks and resource grants only; missing deps are reported, not installed; pre-created worktree only.
 - Temp files in the worker's own scratchpad subdirectory; checkpoint green units on its own branch.
   In a shared managed checkout, return the patch to the orchestrator for serial commits instead.
 - Name the offload directory; commands >~2 min run detached; verify landed hashes by ancestor check.
 - Exactly one private structured final; report blocked rather than message elsewhere.
-- In ordinary tasks the main agent may fix bugs directly; under threshold B or another applicable dispatch-only policy, assign a fixer with an oracle. Gate finish on the actual result.
+- Return delegated-module failures to their owner; explicitly transfer ownership if necessary. In ordinary
+  undelegated tasks the main agent may fix directly; threshold B remains dispatch-only. Gate finish on results.
 
 ## References Index
 
 Read `references/<name>.md` only when the scenario applies: `heavy-processes` (limits, memory watch) ·
 `quota-and-cadence` · `dispatch-decision` (modes, Codex limit recovery, spawned windows) ·
 `coordinated-worker-protocol` · `task-packet` · `model-selection` · `worker-prompt` · `context-offloading`
-· `ownership-and-recovery` · `worker-selfcheck` · `orchestrator-duties`.
+· `ownership-and-recovery` · `worker-selfcheck` · `orchestrator-duties` · `module-delivery`.

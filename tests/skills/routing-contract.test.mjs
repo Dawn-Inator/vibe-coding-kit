@@ -115,7 +115,7 @@ test('copied installation finds retired-entry and dispatch rules without cwd or 
   const projected = readFileSync(join(project, '.agents', 'skills', GUARDRAILS_SKILL, 'SKILL.md'), 'utf8');
   assert.match(projected, /Every dispatch sets `model` explicitly/);
   const claudeProjection = readFileSync(join(project, '.claude', 'skills', GUARDRAILS_SKILL, 'SKILL.md'), 'utf8');
-  assert.match(claudeProjection, /Workers never run package-level\/full tests/);
+  assert.match(claudeProjection, /Workers run only the checks authorized in their packet/);
 
   const installedTests = join(project, 'tests');
   mkdirSync(join(installedTests, 'skills'), { recursive: true });

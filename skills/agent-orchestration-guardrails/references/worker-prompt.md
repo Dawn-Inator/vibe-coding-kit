@@ -14,17 +14,20 @@ When delegating implementation or workflow worker tasks, explicitly say:
   `write_scope: none` means no edits *and* no git write commands. `stash` is doubly dangerous in a shared
   worktree since the stash ref is typically shared across every worktree of a repo. Read another commit's
   file with `git show <sha>:<path>`; diff refs directly — never check out a shared worktree.
-- No package-level/full test, type-checking, build, e2e, dev server, browser suite, install, or other heavy
-  command — locally or via a remote runner. Workers run only the exact focused light check named in their
-  task packet.
+- You own the bounded module through implementation, authorized tests, fixes and resubmission; include
+  the obligation from [module delivery](module-delivery.md). Report requirements coverage and real wiring,
+  not merely changed files. Returned acceptance findings remain your responsibility.
+- Run only named checks in the packet's [verification lane](worker-selfcheck.md), with a granted per-host
+  slot for heavy work. No unassigned full suite, manual install or guard bypass. Queue a resumable checkpoint
+  when no slot is granted; the orchestrator follows up with the same owner or a permitted verifier.
 - Give write-capable workers only a pre-created worker worktree path; workers must not create their own
   worktree with an install flag — missing dependencies are reported, not repaired by installing.
   **Pre-create the worker's worktree with the per-client dependency lane** (`agent-worktree-lifecycle`'s
   `--with-deps=<client>`/`=all` plus a `client-check` command): `--worker --with-deps=<client>`, and name
   the exact verification command in its packet — e.g. `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> <the
   files you touched>` and `node .vibe-coding/kit/cli.mjs worktree client-check --app <client> --typecheck` — rather than leaving
-  the worker to guess whether it may run its own install/test/typecheck commands. That named command is the
-  one sanctioned exception to the heavy-process ban below, not a general license to run other heavy commands.
+  the worker to guess whether it may run its own install/test/typecheck commands. Other module lanes need
+  their own explicit check/environment/resource grant and compatibility with the project's guards.
 - **Every worker writes its own temp files (commit messages, logs, monitor output) under its own
   scratchpad subdirectory named after its task/worktree slug — never a bare generic filename at the
   scratchpad root** (`commit-msg.txt`, `worktree-end.log`). Concurrent sibling workers sharing one
@@ -47,8 +50,8 @@ When delegating implementation or workflow worker tasks, explicitly say:
 - **A worker/subagent must never run shared-resource cleanup commands** (aggressive worktree pruning, a
   package-manager/container-runtime global prune) — such a sweep can't tell an idle worktree from another
   session's active one. Report "short by how much, blocked on what" instead.
-- Read/grep/import-target inspection and small file-local checks only; do not revert other workers'
-  changes; report changed files and any verification skipped because of the heavy-process guardrail.
+- Respect exact file ownership during implementation and verification; do not revert other workers'
+  changes. Report changed files, actual check results and queued/unverified checks without claiming acceptance.
 - For an isolated-agent-spawn-style worker: one final structured handoff privately to the orchestrator, no
   message to any other task/UI, no intermediate updates; a liveness signal is lifecycle-only; report
   blocked rather than substitute a visible task message if the private final can't be delivered.
@@ -58,7 +61,8 @@ When delegating implementation or workflow worker tasks, explicitly say:
 The following are worth restating explicitly in every non-trivial dispatch prompt, not something a worker
 is expected to already know from having read this skill once.
 
-- Apply the active bug-fix ownership mode and gate finish/merge on the acceptance oracle result.
+- Return module failures to their existing owner; use explicit handoff for ownership transfer. Gate
+  finish/merge on the actual acceptance result.
 
 - **Name the canvas path and the offload directory in every non-trivial dispatch prompt** (see "Context
   Offloading" above), and on a re-dispatch after a dead worker, the same scratch directory plus "read the canvas
@@ -104,8 +108,8 @@ recorded approval from a human.
 ### Shared test-host dispatch discipline
 
 If your project has a dedicated remote/cloud test host, restate its lane discipline in every dispatch
-prompt: separate "heavy" (frozen-candidate-only, never two at once) and "light" (worker self-verification)
-lanes, one remote session per worker at a time, production-like build mode for any UI/locator/shared-asset
+prompt: separate heavy and light lanes, frozen candidate inputs and the actual per-host slot grant/limit,
+one remote session per worker at a time, production-like build mode for any UI/locator/shared-asset
 change, every test referencing a touched shared asset run remotely (not only the one originally red), and
 count in-flight remote-type workers before dispatching a wave that adds another. See your project's
 tutorial for the full checklist and the rationale behind each point.

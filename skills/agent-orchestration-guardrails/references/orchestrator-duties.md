@@ -4,7 +4,9 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 
 ## Bug-Fix Ownership
 
-In ordinary tasks the main agent may implement a fix directly with an explicit acceptance oracle. Under threshold B or another applicable dispatch-only policy, assign fixes to a write-capable worker.
+In ordinary undelegated tasks the main agent may implement a fix directly with an explicit acceptance
+oracle. For a delegated module, return findings to its persistent delivery owner; resume that owner until
+acceptance or record an explicit transfer. Under threshold B, implementation remains dispatch-only.
 
 - In dispatch-only mode, the orchestrator limits its own edits to permitted orchestration artifacts and integration.
 - **A finish/merge chain must be gated on the verification result — never `build; finish` unconditionally.**
@@ -20,16 +22,22 @@ process limit are stated in full above (see "Bug-Fix Ownership", "Worker Prompt
 Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule") — restate all of them in every
 dispatch prompt rather than assuming a worker already knows them. Additional orchestrator-only duties:
 
-- Pre-create and mark worker worktrees, pass exact paths, and keep dependency preparation plus batch
-  verification in the top session. Treat a worker's direct heavy shell command as a guardrail violation
-  even when the command happens to succeed.
+- Pre-create worker worktrees and dependencies, pass exact paths and name module verification lanes and
+  actual per-host grants. Unauthorized heavy commands are violations even when they succeed. Keep selected
+  shared checks and final acceptance centralized; the [module owner](module-delivery.md) owns tests and repairs.
+- Independently accept each module against its criteria and exact candidate before recording acceptance.
+  Inspect real wiring and critical negative/recovery behavior; reviewer findings are evidence, not the
+  final decision. Record self-verification, acceptance and landing separately. Drain pending acceptance
+  and check queues before expanding a wave that would only add more unfinished candidates.
 - For long-running commands, redirect output directly to a log file; avoid shell pipelines that can
   silently block progress.
 - **A background task's completion notification is not itself the exit code — treat its reported status as
   a claim, and verify it against the log file the command was told to write to.** Read the log's own exit
   indication at least once per command class before trusting that class of notification going forward.
 - **A worker notification that is only an announcement, with no background child actually running for that
-  worker, is a stall — nudge it immediately in the same wake, not on a later pass.** Distinguish this from
+  worker, is a stall — nudge it immediately in the same wake, not on a later pass.** An explicit resource-queue
+  checkpoint with a named pending command, queue owner and continuation is legitimate unfinished work;
+  resume it on capacity rather than treating its lack of a running child as death. Distinguish this from
   a worker that correctly ended its turn to wait on a real backgrounded command it started (a worktree
   finish/merge, a remote preflight): that case has a live/queued background child and must be left alone to
   be woken by its own notification. An announcement with no such child behind it never resolves on its own.
