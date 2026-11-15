@@ -1,3 +1,7 @@
+# Task Progress 0.7.3
+
+- Place one icon-only Refresh button in the upper-right of the outer total card in the Current task, History, and Heartbeat views, including refresh of the current-task/base `get`. Keep it outside the History and Heartbeat inner cards, with accessible naming and existing busy/disabled behavior.
+
 # Task Progress 0.7.2
 
 - Reuse the History description row in the Heartbeat header, with the same shared padding and title spacing plus breathing room below the heading.

@@ -99,11 +99,16 @@ const element = document.createElement(elementName);
 element.locale = navigator.language || "en";
 element.threadId = window.fixture.threadId;
 element.requester = (request) => window.__codexTaskProgressRequest(request);
+element.refreshTask = () => window.__CODEX_TASK_PROGRESS__.refresh();
 document.querySelector("#native-panel-shell").append(element);
 let requestSequence = 0;
 let lastError = null;
+let refreshDepth = 0;
 window.__CODEX_TASK_PROGRESS__ = {
   async refresh() {
+    refreshDepth++;
+    element.refreshing = true;
+    try {
     const requestId = ++requestSequence;
     const threadId = window.fixture.threadId || null;
     if (element.threadId !== threadId) element.resetThread(threadId);
@@ -121,6 +126,11 @@ window.__CODEX_TASK_PROGRESS__ = {
       lastError = "TASK_PROGRESS_ERROR";
     }
     await element.updateComplete;
+    } finally {
+      refreshDepth--;
+      element.refreshing = refreshDepth > 0;
+      await element.updateComplete;
+    }
   },
   diagnostics() {
     return {
@@ -311,6 +321,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               const kicker = root.querySelector(".panel-kicker");
               const heading = root.querySelector(".panel-heading");
               const title = root.querySelector(".panel-title");
+              const refresh = root.querySelector(".panel-refresh");
               const scroll = root.querySelector(".scroll");
               const first = scroll.firstElementChild;
               const body = root.querySelector(".body");
@@ -326,6 +337,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 kickerBottom: getComputedStyle(kicker).marginBottom,
                 headingGap: getComputedStyle(heading).gap,
                 titleSize: getComputedStyle(title).fontSize,
+                refreshSize: [
+                  refresh.getBoundingClientRect().width,
+                  refresh.getBoundingClientRect().height,
+                ],
+                refreshTitleGap:
+                  title.getBoundingClientRect().top - refresh.getBoundingClientRect().bottom,
                 kickerInset:
                   kicker.getBoundingClientRect().left - body.getBoundingClientRect().left,
                 titleInset: title.getBoundingClientRect().left - body.getBoundingClientRect().left,
@@ -347,6 +364,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(measurements[0].kickerBottom, "9px");
         assert.equal(measurements[0].headingGap, "8px");
         assert.equal(measurements[0].contentGap, 0);
+        assert.deepEqual(measurements[0].refreshSize, [30, 30]);
+        assert.ok(
+          measurements[0].refreshTitleGap >= 0,
+          "header refresh does not overlap the title",
+        );
         await context.close();
       }
     });
@@ -419,18 +441,23 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /blocked/,
         );
         await panel.getByRole("button", { name: "History", exact: true }).click();
-        const refresh = panel.locator(".info-card-action");
+        const refresh = panel.locator(".panel-refresh");
+        assert.equal(await refresh.getAttribute("aria-label"), "Refresh");
         const style = await refresh.evaluate((element) => {
           const css = getComputedStyle(element);
           return {
             border: css.borderTopWidth,
-            padding: css.paddingInlineStart,
             cursor: css.cursor,
+            width: element.getBoundingClientRect().width,
+            height: element.getBoundingClientRect().height,
           };
         });
         assert.notEqual(style.border, "0px");
-        assert.notEqual(style.padding, "0px");
         assert.equal(style.cursor, "pointer");
+        assert.deepEqual([style.width, style.height], [30, 30]);
+        assert.equal(await refresh.innerText(), "");
+        assert.equal(await refresh.getAttribute("title"), null);
+        assert.equal(await refresh.locator("svg").count(), 1);
         await refresh.focus();
         await page.keyboard.press("Tab");
         await page.keyboard.press("Shift+Tab");
@@ -443,6 +470,336 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "none",
         );
         await context.close();
+      },
+    );
+    await t.test(
+      "one compact header refresh routes through the active view and ignores stale chat results",
+      async () => {
+        for (const width of [1100, 390]) {
+          const { context, page, panel } = await open("", {
+            viewport: { width, height: 850 },
+            reducedMotion: "reduce",
+          });
+          const assertRefresh = async (label, { disabled = false, busy = false } = {}) => {
+            const button = panel.locator(".panel-refresh");
+            await page.waitForFunction(
+              ({ expectedDisabled, expectedBusy }) => {
+                const current = document
+                  .querySelector("codex-task-panel")
+                  ?.shadowRoot?.querySelector(".panel-refresh");
+                return (
+                  current &&
+                  current.disabled === expectedDisabled &&
+                  current.getAttribute("aria-busy") === String(expectedBusy)
+                );
+              },
+              { expectedDisabled: disabled, expectedBusy: busy },
+            );
+            assert.equal(await button.getAttribute("aria-label"), label);
+            assert.equal(await button.getAttribute("aria-busy"), String(busy));
+            assert.equal(await button.isDisabled(), disabled);
+            assert.equal(await button.getAttribute("title"), null);
+            assert.equal(await button.innerText(), "");
+            assert.equal(await button.locator("svg").count(), 1);
+            assert.deepEqual(
+              await button.evaluate((element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return {
+                  width: rect.width,
+                  height: rect.height,
+                  radius: style.borderTopLeftRadius,
+                  border: style.borderTopWidth,
+                  hidden: style.visibility === "hidden" || style.display === "none",
+                };
+              }),
+              { width: 30, height: 30, radius: "50%", border: "1px", hidden: false },
+            );
+            return button;
+          };
+
+          await page.evaluate((value) => {
+            window.fixture.task = value;
+            window.fixture.history = { events: [], nextCursor: null };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, task);
+          await assertRefresh("刷新当前任务");
+          await page.evaluate((value) => {
+            window.fixture.task = { ...value, title: "header task refresh updated data" };
+          }, task);
+          const initialGetCount = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          );
+          await panel.locator(".panel-refresh").click();
+          await panel
+            .getByRole("heading", {
+              level: 2,
+              name: "header task refresh updated data",
+              exact: true,
+            })
+            .waitFor();
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "get").length,
+            ),
+            initialGetCount + 1,
+          );
+
+          await panel.getByRole("button", { name: "历史", exact: true }).click();
+          await panel.locator('.info-card[aria-label="历史记录"]').waitFor();
+          await assertRefresh("刷新");
+          assert.equal(await panel.locator(".scroll .info-card-action").count(), 0);
+          await page.evaluate(() => {
+            window.fixture.history = {
+              events: [{ reason: "outer history refresh updated data" }],
+              nextCursor: null,
+            };
+          });
+          const historyCallsBefore = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          );
+          const getCallsBeforeHistoryRefresh = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          );
+          await panel.locator(".panel-refresh").click();
+          await panel
+            .locator(".scroll")
+            .getByText("outer history refresh updated data", { exact: true })
+            .waitFor();
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "get").length,
+            ),
+            getCallsBeforeHistoryRefresh + 1,
+          );
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "history").length,
+            ),
+            historyCallsBefore + 1,
+          );
+
+          const source = {
+            kind: "kit-heartbeat",
+            path: "/repo/.workspace/task/session/heartbeat.md",
+            readOnly: true,
+            contentHash: "hash-a",
+          };
+          await page.evaluate(
+            ({ value, source }) => {
+              window.fixture.task = { ...value, source };
+              window.fixture.history = {
+                events: [],
+                wakes: [{ heading: "bound ledger refresh old" }],
+                total: 1,
+                nextCursor: null,
+                source,
+              };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: task, source },
+          );
+          await panel
+            .locator(".scroll")
+            .getByText("bound ledger refresh old", { exact: true })
+            .waitFor();
+          await assertRefresh("刷新台账历史");
+          assert.equal(await panel.locator(".scroll .info-card-action").count(), 0);
+          const boundHistoryCallsBefore = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          );
+          const getCallsBeforeBoundRefresh = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          );
+          await page.evaluate(() => {
+            window.fixture.history = {
+              events: [],
+              wakes: [{ heading: "bound ledger refresh updated data" }],
+              total: 2,
+              nextCursor: null,
+              source: { ...window.fixture.task.source },
+            };
+          });
+          await panel.locator(".panel-refresh").click();
+          await panel
+            .locator(".scroll")
+            .getByText("bound ledger refresh updated data", { exact: true })
+            .waitFor();
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "get").length,
+            ),
+            getCallsBeforeBoundRefresh + 1,
+          );
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "history").length,
+            ),
+            boundHistoryCallsBefore + 1,
+          );
+
+          await page.evaluate(() => {
+            window.fixture.heartbeat = null;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          await panel.getByRole("button", { name: "心跳", exact: true }).click();
+          await assertRefresh("刷新心跳历史");
+          assert.equal(await panel.locator(".scroll .info-card-action").count(), 0);
+
+          await page.evaluate((value) => {
+            window.fixture.heartbeat = value;
+            window.fixture.heartbeatHistory = {
+              wakes: [{ heading: "heartbeat refresh old" }],
+              total: 1,
+              nextCursor: null,
+              sourcePath: value.sourcePath,
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, heartbeat);
+          await panel
+            .locator(".scroll")
+            .getByText("heartbeat refresh old", { exact: true })
+            .waitFor();
+          assert.equal(await panel.locator(".scroll .info-card-action").count(), 0);
+          const heartbeatHistoryCallsBefore = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+          );
+          const getCallsBeforeHeartbeatRefresh = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          );
+          await page.evaluate(() => {
+            window.fixture.heartbeatHistory = {
+              wakes: [{ heading: "heartbeat refresh updated data" }],
+              total: 2,
+              nextCursor: null,
+              sourcePath: window.fixture.heartbeat.sourcePath,
+            };
+          });
+          await panel.locator(".panel-refresh").click();
+          await panel
+            .locator(".scroll")
+            .getByText("heartbeat refresh updated data", { exact: true })
+            .waitFor();
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "get").length,
+            ),
+            getCallsBeforeHeartbeatRefresh + 1,
+          );
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+            ),
+            heartbeatHistoryCallsBefore + 1,
+          );
+
+          await page.evaluate((value) => {
+            window.fixture.task = value;
+            window.fixture.history = { events: [], nextCursor: null };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, task);
+
+          const heartbeatCallsBeforeViewSwitch = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+          );
+          await page.evaluate(() => {
+            window.fixture.holdNextGetSuccess = true;
+          });
+          await panel.locator(".panel-refresh").click();
+          await page.waitForFunction(
+            () => typeof window.fixture.releaseHeldGetSuccess === "function",
+          );
+          await panel.locator(".history-trigger").click();
+          await panel.locator(".scroll").getByText("暂无变更记录。", { exact: true }).waitFor();
+          const historyCallsAfterViewSwitch = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          );
+          await page.evaluate(() => window.fixture.releaseHeldGetSuccess());
+          await page.waitForFunction(
+            () =>
+              !document
+                .querySelector("codex-task-panel")
+                ?.shadowRoot?.querySelector(".panel-refresh")?.disabled,
+          );
+          assert.equal(
+            await page.evaluate(
+              () =>
+                window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+            ),
+            heartbeatCallsBeforeViewSwitch,
+            "a refresh started in Heartbeat cannot reload it after switching to History",
+          );
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "history").length,
+            ),
+            historyCallsAfterViewSwitch,
+            "the switched view's automatic load is not duplicated by the previous refresh",
+          );
+
+          await page.evaluate(() => {
+            window.fixture.holdNextGetSuccess = true;
+          });
+          await assertRefresh("刷新");
+          await panel.locator(".panel-refresh").click();
+          await page.waitForFunction(
+            () => typeof window.fixture.releaseHeldGetSuccess === "function",
+          );
+          await assertRefresh("刷新", { disabled: true, busy: true });
+          const heldGetCalls = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "get").length,
+          );
+          await panel.locator(".panel-refresh").evaluate((element) => element.click());
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "get").length,
+            ),
+            heldGetCalls,
+            "a busy outer refresh cannot enqueue a duplicate task read",
+          );
+          await page.evaluate(
+            ({ value, threadId, title }) => {
+              window.fixture.threadId = threadId;
+              window.fixture.task = { ...value, threadId, title };
+              window.fixture.history = { events: [], nextCursor: null };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: task, threadId: "thread-b", title: "thread b" },
+          );
+          await panel.locator(".summary .title").waitFor();
+          assert.equal(await panel.locator(".summary .title").innerText(), "thread b");
+          await page.evaluate(
+            ({ value, threadId, title }) => {
+              window.fixture.threadId = threadId;
+              window.fixture.task = { ...value, threadId, title };
+              window.fixture.history = { events: [], nextCursor: null };
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: task, threadId: "thread-a", title: "thread a current" },
+          );
+          await panel.locator(".summary .title").waitFor();
+          assert.equal(await panel.locator(".summary .title").innerText(), "thread a current");
+          await panel.locator(".scroll").getByText("暂无变更记录。", { exact: true }).waitFor();
+          const historyCallsBeforeOldResponse = await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "history").length,
+          );
+          await page.evaluate(() => window.fixture.releaseHeldGetSuccess());
+          await page.waitForFunction(
+            () =>
+              !document
+                .querySelector("codex-task-panel")
+                ?.shadowRoot?.querySelector(".panel-refresh")?.disabled,
+          );
+          assert.equal(
+            await page.evaluate(
+              () => window.fixture.calls.filter((call) => call.method === "history").length,
+            ),
+            historyCallsBeforeOldResponse,
+            "late refresh from the prior A identity cannot start a second history read after an A-to-B-to-A identity reset",
+          );
+          await context.close();
+        }
       },
     );
     await t.test(

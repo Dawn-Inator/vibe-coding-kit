@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.7.2。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
+这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.7.3。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
 
 0.6.2 引入不可变 MCP UI resource，并使用唯一发布版本常量生成版本化 URI。自 0.6.7 起，兼容的旧版 Heartbeat 面板地址（包括旧版 `panel-v1` 和 0.6.3 地址）会返回同一份当前内嵌 HTML；对外只公布当前发布版本的 URI。如果更新后原生面板仍显示旧样式，请重新打开聊天，或切换到另一个聊天再切回来，让宿主刷新 MCP catalog/resource。仅关闭并重新打开面板标签可能无法触发刷新。不要重启 Codex。这些资源更新不改变认证、任务权限、规范数据格式或 Kit API。
 

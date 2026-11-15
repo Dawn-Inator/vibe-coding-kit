@@ -111,7 +111,13 @@ export const taskPanelStyles = css`
   }
   @keyframes ctp-panel-enter { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .panel-head { flex: none; padding: 19px 20px 14px; }
+  .panel-topline { display: flex; align-items: flex-start; justify-content: space-between; min-height: 30px; }
   .panel-kicker { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; }
+  .panel-refresh { display: grid; flex: none; place-items: center; width: 30px; height: 30px; margin: 0; border: 1px solid var(--ctp-panel-line); border-radius: 50%; padding: 0; background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); }
+  .panel-refresh:hover:not(:disabled) { background: var(--ctp-hover, #343a400a); }
+  .panel-refresh:focus-visible { outline: 2px solid var(--ctp-panel-ink); outline-offset: 2px; }
+  .panel-refresh:disabled { opacity: .55; cursor: default; }
+  .panel-refresh svg { width: 15px; height: 15px; }
   .panel-kicker svg { width: 12px; height: 12px; }
   .panel-heading { display: flex; align-items: center; gap: 8px; }
   .panel-title { display: -webkit-box; min-width: 0; max-height: 2.8em; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; font-size: 17px; font-weight: 600; line-height: 1.4; letter-spacing: -.4px; overflow-wrap: anywhere; }
@@ -214,8 +220,6 @@ export const taskPanelStyles = css`
   .hb-alert p { margin: 0 0 6px; overflow-wrap: anywhere; }
   .hb-history { min-width: 0; }
   .hb-history-head { min-height: 38px; }
-  .hb-refresh { font-size: 10px; }
-  .hb-refresh svg { width: 15px; height: 15px; }
   .hb-wake { min-width: 0; }
   .hb-wake > summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; list-style: none; }
   .hb-wake-time { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
@@ -280,7 +284,6 @@ export const taskPanelStyles = css`
     .hb-time-label svg { width: 15px; height: 15px; }
     .info-card-head { padding-inline: 8px; }
     .info-card-body { padding-inline: 8px; }
-    .hb-refresh { gap: 3px; padding-inline: 4px; }
     .hb-wake-body { margin-inline-start: 8px; padding: 7px; }
     .hb-record { grid-template-columns: minmax(0, 1fr); }
   }

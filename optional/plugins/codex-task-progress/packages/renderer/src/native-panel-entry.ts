@@ -19,6 +19,8 @@ type PanelElement = HTMLElement & {
   observed: boolean;
   threadId: string | null;
   requester: (request: TaskPanelRequest) => Promise<TaskPanelResponse>;
+  refreshTask: (() => Promise<void>) | null;
+  refreshing: boolean;
   connectionError: string | null;
   locale: string;
   presentation: "panel";
@@ -108,6 +110,8 @@ element.setAttribute("presentation", "panel");
 element.locale = navigator.language || "en";
 element.data = { task: null, heartbeat: null };
 element.observed = false;
+element.refreshTask = null;
+element.refreshing = false;
 document.getElementById("native-panel-shell")?.append(element);
 
 const app = new App(
@@ -129,6 +133,8 @@ function dispose(): void {
   disposed = true;
   refreshSequence++;
   identityGeneration++;
+  busy = false;
+  element.refreshing = false;
   controller?.abort();
   controller = null;
   for (const active of activeToolControllers) active.abort();
@@ -151,6 +157,7 @@ function setIdentity(threadId: string | null): void {
   controller = null;
   for (const active of activeToolControllers) active.abort();
   busy = false;
+  element.refreshing = false;
   element.resetThread(threadId);
 }
 
@@ -159,6 +166,7 @@ function invalidatePendingRefresh(): void {
   controller?.abort();
   controller = null;
   busy = false;
+  element.refreshing = false;
 }
 
 function onVisibilityChange(): void {
@@ -212,6 +220,7 @@ async function readTaskResponse(
 async function refresh(): Promise<void> {
   if (disposed || busy || document.visibilityState !== "visible") return;
   busy = true;
+  element.refreshing = true;
   const requestGeneration = ++refreshSequence;
   controller?.abort();
   controller = new AbortController();
@@ -235,10 +244,13 @@ async function refresh(): Promise<void> {
   } finally {
     if (requestGeneration === refreshSequence) {
       busy = false;
+      element.refreshing = false;
       controller = null;
     }
   }
 }
+
+element.refreshTask = refresh;
 
 element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse> => {
   if (disposed || !element.threadId)

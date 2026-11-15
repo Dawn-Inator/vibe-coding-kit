@@ -274,7 +274,9 @@ test("native panel MCP Apps integration", async (t) => {
           };
           window.deliverToolResult(window.currentThreadId, window.currentResponse);
         });
-        await panel.getByRole("heading", { name: "Next native task", exact: true }).waitFor();
+        await panel
+          .getByRole("heading", { level: 2, name: "Next native task", exact: true })
+          .waitFor();
         assert.equal(await archive.getAttribute("aria-expanded"), "false");
         await archive.click();
         await panel.getByText(/identity changed/i).waitFor();
@@ -384,7 +386,9 @@ test("native panel MCP Apps integration", async (t) => {
             const status = element.shadowRoot.querySelector(".hb-status[data-status='ready']");
             return {
               status: getComputedStyle(status).color,
-              muted: getComputedStyle(element.shadowRoot.querySelector(".hb-refresh")).color,
+              muted: getComputedStyle(
+                element.shadowRoot.querySelector(".panel-head .panel-refresh"),
+              ).color,
               certification: status.getAttribute("data-certification"),
             };
           });
@@ -525,6 +529,141 @@ test("native panel MCP Apps integration", async (t) => {
       }),
     );
 
+    await t.test("outer task refresh reloads the trusted task and updates visible progress", () =>
+      scenario(async (page, frame) => {
+        await ready(frame);
+        const refreshButton = frame.locator(".panel-head .panel-refresh");
+        await refreshButton.waitFor();
+        const before = await page.evaluate(
+          () => window.hostCalls.filter((call) => call.name === "task_progress_get").length,
+        );
+        await page.evaluate(() => {
+          window.currentResponse = {
+            ...window.currentResponse,
+            task: {
+              ...window.currentResponse.task,
+              title: "Manually refreshed task",
+              progress: { completed: 2, total: 3, percent: 67 },
+            },
+          };
+        });
+        await refreshButton.click();
+        await frame
+          .getByRole("heading", { level: 2, name: "Manually refreshed task", exact: true })
+          .waitFor();
+        await page.waitForFunction(
+          (previous) =>
+            window.hostCalls.filter((call) => call.name === "task_progress_get").length > previous,
+          before,
+        );
+        await frame.getByRole("progressbar").waitFor();
+        assert.equal(await frame.getByRole("progressbar").getAttribute("aria-valuenow"), "67");
+      }),
+    );
+
+    await t.test("one refresh icon stays on the outer header across History and Heartbeat", () =>
+      scenario(async (_page, frame) => {
+        await ready(frame);
+        const outerRefresh = frame.locator(".panel-head .panel-refresh");
+        await outerRefresh.waitFor();
+        for (const tab of ["History", "Heartbeat"]) {
+          await frame.getByRole("button", { name: tab, exact: true }).click();
+          await frame.locator(".info-card-head").first().waitFor();
+          assert.equal(await frame.locator(".panel-head .panel-refresh").count(), 1);
+          assert.equal(
+            await frame.locator(".info-card-head button[aria-label*='Refresh']").count(),
+            0,
+          );
+        }
+      }),
+    );
+
+    await t.test("manual refresh ignores stale response after the host changes identity", () =>
+      scenario(async (page, frame) => {
+        await ready(frame);
+        await page.evaluate(() => {
+          window.holdGet = true;
+          window.currentResponse = {
+            ...window.currentResponse,
+            task: { ...window.currentResponse.task, title: "STALE MANUAL REFRESH" },
+          };
+        });
+        const refreshButton = frame.locator(".panel-head .panel-refresh");
+        await refreshButton.click();
+        await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+        await page.evaluate(() => {
+          const response = {
+            ...window.currentResponse,
+            task: {
+              ...window.currentResponse.task,
+              threadId: "thread-b",
+              title: "Host identity B",
+            },
+          };
+          window.currentResponse = response;
+          window.currentThreadId = "thread-b";
+          window.deliverToolResult("thread-b", response);
+        });
+        await frame
+          .getByRole("heading", { level: 2, name: "Host identity B", exact: true })
+          .waitFor();
+        await page.evaluate(() => {
+          window.holdGet = false;
+          window.releaseHeldGet();
+        });
+        await page.waitForTimeout(150);
+        assert.equal(
+          await frame
+            .getByRole("heading", { level: 2, name: "STALE MANUAL REFRESH", exact: true })
+            .count(),
+          0,
+        );
+        await frame
+          .getByRole("heading", { level: 2, name: "Host identity B", exact: true })
+          .waitFor();
+        await waitForPanelThread(page, "thread-b");
+      }),
+    );
+
+    await t.test("manual refresh disables duplicate clicks while its native read is pending", () =>
+      scenario(async (page, frame) => {
+        await ready(frame);
+        await page.evaluate(() => {
+          window.holdGet = true;
+        });
+        const refreshButton = frame.locator(".panel-head .panel-refresh");
+        await refreshButton.click();
+        await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+        await page.waitForFunction(
+          () =>
+            document.getElementById("app").contentWindow.document.querySelector("codex-task-panel")
+              ?.refreshing === true,
+        );
+        const during = await page.evaluate(
+          () => window.hostCalls.filter((call) => call.name === "task_progress_get").length,
+        );
+        assert.equal(await refreshButton.isDisabled(), true);
+        await frame.locator("codex-task-panel").evaluate(async (element) => {
+          await element.refreshTask();
+        });
+        assert.equal(
+          await page.evaluate(
+            () => window.hostCalls.filter((call) => call.name === "task_progress_get").length,
+          ),
+          during,
+        );
+        await page.evaluate(() => {
+          window.holdGet = false;
+          window.releaseHeldGet();
+        });
+        await page.waitForFunction(
+          () =>
+            document.getElementById("app").contentWindow.document.querySelector("codex-task-panel")
+              ?.refreshing === false,
+        );
+      }),
+    );
+
     await t.test("taskless response accepts trusted metadata", () =>
       scenario(async (page, frame) => {
         await ready(frame);
@@ -660,9 +799,17 @@ test("native panel MCP Apps integration", async (t) => {
         await page.waitForFunction(() => window.heldHistoryDelivered);
         await page.waitForTimeout(150);
         assert.equal(await frame.getByText("STALE HISTORY", { exact: false }).count(), 0);
-        assert.equal(await frame.getByText("STALE REFRESH", { exact: true }).count(), 0);
         await frame.locator(".summary .main").click();
         await ready(frame);
+        assert.equal(
+          await frame
+            .getByRole("heading", { level: 2, name: "STALE REFRESH", exact: true })
+            .count(),
+          0,
+        );
+        await frame
+          .getByRole("heading", { level: 2, name: "Native task panel", exact: true })
+          .waitFor();
         await waitForPanelThread(page, "conversation-verified-by-tool");
       }),
     );
@@ -686,7 +833,7 @@ test("native panel MCP Apps integration", async (t) => {
         );
         await waitForPanelThread(page, "thread-b");
         await frame
-          .getByRole("heading", { name: "Fresh thread B", exact: true })
+          .getByRole("heading", { level: 2, name: "Fresh thread B", exact: true })
           .waitFor({ timeout: 2_000 });
       }),
     );
@@ -706,16 +853,23 @@ test("native panel MCP Apps integration", async (t) => {
           };
           window.deliverToolResult("conversation-verified-by-tool", window.currentResponse);
         });
-        await frame.getByRole("heading", { name: "New host update", exact: true }).waitFor();
+        await frame
+          .getByRole("heading", { level: 2, name: "New host update", exact: true })
+          .waitFor();
         await page.evaluate(() => {
           window.holdGet = false;
           window.releaseHeldGet();
         });
         await page.waitForTimeout(150);
         await frame
-          .getByRole("heading", { name: "New host update", exact: true })
+          .getByRole("heading", { level: 2, name: "New host update", exact: true })
           .waitFor({ timeout: 2_000 });
-        assert.equal(await frame.getByText("Native task panel", { exact: true }).count(), 0);
+        assert.equal(
+          await frame
+            .getByRole("heading", { level: 2, name: "Native task panel", exact: true })
+            .count(),
+          0,
+        );
         await waitForPanelThread(page, "conversation-verified-by-tool");
       }),
     );
@@ -740,7 +894,9 @@ test("native panel MCP Apps integration", async (t) => {
           window.holdGet = false;
           window.releaseHeldGet();
         });
-        await frame.getByRole("heading", { name: "Slow trusted response", exact: true }).waitFor();
+        await frame
+          .getByRole("heading", { level: 2, name: "Slow trusted response", exact: true })
+          .waitFor();
         await waitForPanelThread(page, "conversation-verified-by-tool");
         assert.equal(await frame.locator("#native-panel-error").isVisible(), false);
       }),
