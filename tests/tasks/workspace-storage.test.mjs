@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
@@ -263,19 +264,18 @@ test('reopening existing chat contexts does not invalidate the shared discovery 
   first.close();
   let scans = 0;
   const index = new HeartbeatDiscoveryIndex({
+    // Keep this regression focused on context reopens; native startup rename events are covered in heartbeat-task-source.test.mjs.
+    watchFactory() { return Object.assign(new EventEmitter(), { close() {} }); },
     async scanFactory(options) { scans++; return discoverHeartbeatLedgerSources(options); },
   });
   try {
     await index.discover({ root: cwd, threadId: 'chat-a' });
-    // Initial discovery may retry while the watcher subscription settles; only reopens must be scan-free.
     const scansAfterInitialDiscover = scans;
     const before = await index.generation(cwd);
-    if (before === null) return; // Recursive watch is unavailable on this platform.
+    assert.notEqual(before, null);
     const resumed = manager(app);
     await resumed.forThread('chat-a', cwd);
     await resumed.forThread('chat-b', cwd);
-    // Give the native watcher an opportunity to deliver metadata events.
-    await new Promise((resolve) => setTimeout(resolve, 200));
     await index.discover({ root: cwd, threadId: 'chat-b' });
     assert.equal(await index.generation(cwd), before);
     assert.equal(scans, scansAfterInitialDiscover);

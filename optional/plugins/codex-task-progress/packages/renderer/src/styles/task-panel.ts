@@ -111,15 +111,10 @@ export const taskPanelStyles = css`
   }
   @keyframes ctp-panel-enter { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .panel-head { flex: none; padding: 19px 20px 14px; }
-  .panel-head[data-view="heartbeat"] { padding: 10px 16px 8px; }
   .panel-kicker { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; }
   .panel-kicker svg { width: 12px; height: 12px; }
   .panel-heading { display: flex; align-items: center; gap: 8px; }
-  .panel-head[data-view="heartbeat"] .panel-heading { gap: 8px; }
-  .heartbeat-heading-icon { display: grid; flex: none; place-items: center; width: 21px; height: 21px; color: var(--ctp-panel-ink); }
-  .heartbeat-heading-icon svg { width: 20px; height: 20px; }
   .panel-title { display: -webkit-box; min-width: 0; max-height: 2.8em; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; font-size: 17px; font-weight: 600; line-height: 1.4; letter-spacing: -.4px; overflow-wrap: anywhere; }
-  .panel-head[data-view="heartbeat"] .panel-title { font-size: 16px; }
   .panel-title:focus { outline: none; }
   .panel-subtitle { margin: 7px 0 0; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
   .total-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 14px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
@@ -129,8 +124,7 @@ export const taskPanelStyles = css`
   .track { margin-top: 9px; }
   .fill, .module-fill { display: block; height: 100%; border-radius: inherit; background: var(--ctp-panel-fill); transform-origin: left center; }
   .scroll { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 10px 10px; scrollbar-width: thin; scrollbar-color: var(--ctp-panel-line) transparent; }
-  .scroll > .empty, .scroll > .diagnostic, .scroll > .heartbeat, .scroll > .error { margin-inline: 10px; }
-  .scroll > button { margin: 7px 4px 0; border: 1px solid var(--ctp-panel-line); font-size: 11px; }
+  .scroll > .empty, .scroll > .diagnostic, .scroll > .error { margin-inline: 10px; }
   .row { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; margin: 0 0 8px; border: 1px solid var(--ctp-panel-line); border-radius: 999px; padding: 12px 14px; background: var(--ctp-panel-glass); text-align: start; }
   .row:hover, .row[aria-expanded="true"] { background: var(--ctp-hover, #343a400a); }
   .row:focus-visible { outline-offset: -2px; }
@@ -274,7 +268,6 @@ export const taskPanelStyles = css`
     .summary-state { font-size: 10px; }
     .percent { font-size: 18px; }
     .panel-head { padding: 16px 15px 13px; }
-    .panel-head[data-view="heartbeat"] { padding: 8px 14px 7px; }
     .panel-title { font-size: 15px; }
     .row { gap: 9px; padding-inline: 10px; }
     .module-icon { width: 30px; height: 30px; }
