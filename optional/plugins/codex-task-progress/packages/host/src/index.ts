@@ -1772,6 +1772,39 @@ export class GoalProgressHelper {
             try {
               const loaded = await load;
               const previous = this.#taskPresentation.peek(scope).value;
+              const currentSource = loaded.result.taskSource;
+              const sourceError =
+                currentSource &&
+                typeof currentSource === "object" &&
+                (("status" in currentSource && currentSource.status === "error") ||
+                  ("error" in currentSource && currentSource.error));
+              const previousSource = previous?.result.taskSource;
+              const previousSourceError =
+                previousSource &&
+                typeof previousSource === "object" &&
+                "status" in previousSource &&
+                previousSource.status === "error";
+              if (
+                previous &&
+                previous.result.task &&
+                loaded.result.taskSourcePending === true &&
+                !sourceError &&
+                !previousSourceError
+              ) {
+                loaded.result.task = previous.result.task;
+                loaded.result.taskSource = previous.result.taskSource;
+                loaded.revision = previous.revision;
+              }
+              if (
+                previous &&
+                previous.result.heartbeat &&
+                loaded.result.heartbeatPending === true &&
+                loaded.result.heartbeat == null
+              ) {
+                loaded.result.heartbeat = previous.result.heartbeat;
+                if (previous.result.heartbeatHistory)
+                  loaded.result.heartbeatHistory = previous.result.heartbeatHistory;
+              }
               if (
                 previous?.result.history &&
                 previous.revision === loaded.revision &&

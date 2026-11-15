@@ -3401,3 +3401,105 @@ test("disabling a project fences an in-flight model read and its response", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("native cache keeps the last task during source discovery and replaces it on resolution", async () => {
+  const root = await mkdtemp("/tmp/ctph-cache-source-pending-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const originalProjection = HeartbeatService.prototype.taskProjection;
+  const originalSnapshot = HeartbeatService.prototype.projectViewSnapshot;
+  const originalGet = KitTaskStore.prototype.get;
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  let pending = false;
+  let override: TaskState | null | undefined;
+  HeartbeatService.prototype.taskProjection = async () => ({
+    status: pending ? "pending" : "none",
+    task: null,
+    sourcePath: null,
+  });
+  HeartbeatService.prototype.projectViewSnapshot = async () => ({ view: null, pending: false });
+  KitTaskStore.prototype.get = async function (threadId) {
+    return override === undefined ? originalGet.call(this, threadId) : override;
+  };
+  let call = 0;
+  const model = (action: "get" | "initialize", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-A",
+            sessionId: "chat-A",
+            turnId: "turn-1",
+            callId: `preserve-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: root,
+          },
+        },
+      },
+    });
+  const native = () =>
+    client.request({
+      method: "task.native-read",
+      params: { action: "get", threadId: "chat-A", input: {} },
+    });
+  type Display = {
+    task: TaskState | null;
+    taskSourcePending?: boolean;
+    presentation: { pending: boolean };
+  };
+  const waitFor = async (condition: (value: Display) => boolean) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const value = (await native()).result as Display;
+      if (condition(value)) return value;
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    }
+    assert.fail("presentation did not converge");
+  };
+  try {
+    await helper.start();
+    await model("initialize", {
+      requestId: "seed",
+      expectedRevision: 0,
+      title: "Known task",
+      reason: "Preserve while refreshing",
+      objectives: [{ id: "I1", title: "One" }],
+    });
+    const initial = (await model("get", {})).result as { task: TaskState };
+    pending = true;
+    now += 5_001;
+    await native();
+    const held = await waitFor((value) => value.taskSourcePending === true);
+    assert.equal(held.task?.title, "Known task");
+    assert.equal(held.task?.revision, initial.task.revision);
+    override = { ...initial.task, title: "Updated task", revision: initial.task.revision + 1 };
+    pending = false;
+    const updated = await waitFor((value) => value.task?.title === "Updated task");
+    assert.notEqual(updated.taskSourcePending, true);
+    override = null;
+    now += 5_001;
+    await native();
+    const empty = await waitFor((value) => value.task === null && !value.presentation.pending);
+    assert.equal(empty.task, null);
+  } finally {
+    Date.now = originalNow;
+    HeartbeatService.prototype.taskProjection = originalProjection;
+    HeartbeatService.prototype.projectViewSnapshot = originalSnapshot;
+    KitTaskStore.prototype.get = originalGet;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
