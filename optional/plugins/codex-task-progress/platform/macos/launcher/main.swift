@@ -55,6 +55,7 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
     "dock-fixture-seed": ["--plist", "--original-app", "--managed-app"],
     "dock-fixture": ["--plist", "--original-app", "--managed-app", "--output-plist", "--receipt-output", "--customize-managed-label"],
     "dock-fixture-remove": ["--plist", "--managed-app", "--receipt", "--output-plist"],
+    "dock-fixture-migrate": ["--plist", "--original-app", "--managed-app", "--receipt", "--output-plist", "--receipt-output"],
     "dock-fixture-inspect": ["--plist"],
   ]
   let booleanOptions: [String: Set<String>] = [
@@ -65,6 +66,7 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
     "dock-fixture-seed": ["--without-canonical", "--include-remote-original", "--json"],
     "dock-fixture": ["--refresh-managed-caches", "--insert-unrelated-before-managed", "--append-original", "--json"],
     "dock-fixture-remove": ["--json"],
+    "dock-fixture-migrate": ["--json"],
     "dock-fixture-inspect": ["--json"],
   ]
   guard let allowedValues = valueOptions[command], let allowedBooleans = booleanOptions[command] else {
@@ -449,6 +451,22 @@ private func sameManagedTile(_ current: [String: Any], _ installed: [String: Any
     .isEqual(to: ["v": comparableManagedTile(installed, managedPath: managedPath)])
 }
 
+// Migrate only the exact managed tiles recorded by the old installer. Retain the
+// original pre-plugin snapshot so removal still restores the user's Dock.
+private func migrateDockReceipt(before: [[String: Any]], legacyPath: String, managedPath: String, receipt: [String: Any]) -> (entries: [[String: Any]], receipt: [String: Any])? {
+  guard !before.contains(where: { isTile($0, bundle: managedBundleID, path: managedPath) }) else { return nil }
+  let restore = DockRestorePlan(before: before, managedPath: legacyPath, receipt: receipt)
+  let pairs = before.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: legacyPath) }
+  guard !restore.keepManagedApp, !pairs.isEmpty else { return nil }
+  var entries = before
+  for pair in pairs { entries[pair.offset] = canonicalDockEntry(pair.element, originalPath: legacyPath, managedPath: managedPath) }
+  var updated = receipt
+  updated["managedAppPath"] = managedPath
+  updated["installedEntries"] = pairs.map { entries[$0.offset] }
+  updated["installedPositions"] = pairs.map(\.offset)
+  return (entries, updated)
+}
+
 private func plistData(_ value: Any) throws -> Data {
   try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
 }
@@ -486,8 +504,9 @@ private func restartDock() {
 
 private func dockStatus(_ managedPath: String?) -> Never {
   if let managedPath {
-    let expected = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex Task Progress.app").standardizedFileURL.path
-    guard URL(fileURLWithPath: managedPath).standardizedFileURL.path == expected else { error("DOCK_PATH_INVALID") }
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let expected = ["Applications/Codex.app", "Applications/Codex Task Progress.app"].map { home.appendingPathComponent($0).standardizedFileURL.path }
+    guard expected.contains(URL(fileURLWithPath: managedPath).standardizedFileURL.path) else { error("DOCK_PATH_INVALID") }
   }
   let entries = readDockItems()
   let configured = managedPath.map { path in entries.contains { isTile($0, bundle: managedBundleID, path: path) } } ?? entries.contains { tileData($0)?["bundle-identifier"] as? String == managedBundleID }
@@ -497,6 +516,24 @@ private func dockStatus(_ managedPath: String?) -> Never {
 private func installDock(originalPath: String, managedPath: String, receiptPath: String) -> Never {
   validateManagedPath(managedPath, receiptPath: receiptPath)
   let before = readDockItems()
+  let existingReceipt = readReceipt(receiptPath)
+  let legacyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex Task Progress.app").standardizedFileURL.path
+  if let receipt = existingReceipt, let receiptApp = receipt["managedAppPath"] as? String, receiptApp != managedPath {
+    guard receiptApp == legacyPath, managedPath == FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex.app").standardizedFileURL.path else { error("DOCK_RECEIPT_INVALID") }
+    let migration = migrateDockReceipt(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt)
+    guard let migration else { error("DOCK_USER_EDIT_PRESERVED", "Legacy Dock tile or its position changed; migration was not applied.") }
+    let previousData = FileManager.default.contents(atPath: receiptPath)
+    do { try atomicWrite(try plistData(migration.receipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+    guard writeDockItems(migration.entries, expected: before) else {
+      if let previousData { try? atomicWrite(previousData, path: receiptPath) }
+      error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; retry.")
+    }
+    restartDock()
+    emit(["ok": true, "code": "DOCK_MIGRATED", "changed": true, "dockConfigured": true])
+  }
+  if before.contains(where: { isTile($0, bundle: managedBundleID, path: legacyPath) }) && legacyPath != managedPath {
+    error("DOCK_RECEIPT_INVALID", "Legacy managed tile requires its original migration receipt.")
+  }
   let plan = DockInstallPlan(before: before, originalPath: originalPath, managedPath: managedPath)
   let entries = plan.entries
   let originalEntries = plan.originalEntries
@@ -504,7 +541,6 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
   let replaced = plan.replaced
   let changed = plan.changed
   let previousReceiptData = FileManager.default.contents(atPath: receiptPath)
-  let existingReceipt = readReceipt(receiptPath)
   let previousOriginals = existingReceipt?["originalEntries"] as? [[String: Any]] ?? []
   let previousPositions = existingReceipt?["originalPositions"] as? [Int] ?? []
   let installedPairs = entries.enumerated().filter { isTile($0.element, bundle: managedBundleID, path: managedPath) }
@@ -601,6 +637,22 @@ private func jsonSafePlistValue(_ value: Any) -> Any {
   return String(describing: value)
 }
 
+private func migrateDockFixture(_ options: [String: String]) -> Never {
+  guard let input = options["--plist"], let old = options["--original-app"], let target = options["--managed-app"],
+        let receiptPath = options["--receipt"], let output = options["--output-plist"], let receiptOutput = options["--receipt-output"],
+        let data = FileManager.default.contents(atPath: input),
+        var root = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
+        let entries = root["persistent-apps"] as? [[String: Any]], let receipt = readReceipt(receiptPath),
+        receipt["managedAppPath"] as? String == old,
+        let migration = migrateDockReceipt(before: entries, legacyPath: old, managedPath: target, receipt: receipt) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
+  root["persistent-apps"] = migration.entries
+  do {
+    try atomicWrite(try plistData(root), path: output)
+    try atomicWrite(try plistData(migration.receipt), path: receiptOutput)
+  } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
+  emit(["ok": true, "code": "DOCK_FIXTURE_MIGRATED"])
+}
+
 private func inspectDockFixture(_ options: [String: String]) -> Never {
   guard let inputPath = options["--plist"], let data = FileManager.default.contents(atPath: inputPath),
         let root = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
@@ -690,9 +742,9 @@ private func seedDockFixture(_ options: [String: String]) -> Never {
 
 private func validateManagedPath(_ managedPath: String, receiptPath: String) {
   let home = FileManager.default.homeDirectoryForCurrentUser
-  let expectedApp = home.appendingPathComponent("Applications/Codex Task Progress.app").standardizedFileURL.path
+  let expectedApps = ["Applications/Codex.app", "Applications/Codex Task Progress.app"].map { home.appendingPathComponent($0).standardizedFileURL.path }
   let expectedReceipt = home.appendingPathComponent("Library/Application Support/CodexTaskProgress/launcher/dock-receipt.plist").standardizedFileURL.path
-  guard URL(fileURLWithPath: managedPath).standardizedFileURL.path == expectedApp,
+  guard expectedApps.contains(URL(fileURLWithPath: managedPath).standardizedFileURL.path),
         URL(fileURLWithPath: receiptPath).standardizedFileURL.path == expectedReceipt else { error("DOCK_PATH_INVALID") }
 }
 
@@ -740,5 +792,6 @@ if command == "dock-fixture" { dockFixture(options) }
 if command == "dock-fixture-remove" { dockFixtureRemove(options) }
 if command == "dock-fixture-seed" { seedDockFixture(options) }
 if command == "dock-fixture-inspect" { inspectDockFixture(options) }
+if command == "dock-fixture-migrate" { migrateDockFixture(options) }
 if command.hasPrefix("dock-") { runDockCommand(command, options: options) }
 error("LAUNCHER_MODE_INVALID")

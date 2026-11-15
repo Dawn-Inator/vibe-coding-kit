@@ -16,7 +16,8 @@ import { createCodesignArgs, resolveReleaseSigning } from "../../../scripts/rele
 import type { CodexInstallIdentity } from "./verified-release.js";
 import { readVerifiedRelease } from "./verified-release.js";
 
-export const CODEX_MANAGED_LAUNCHER_APP_NAME = "Codex Task Progress.app";
+export const CODEX_MANAGED_LAUNCHER_APP_NAME = "Codex.app";
+const LEGACY_LAUNCHER_APP_NAME = "Codex Task Progress.app";
 export const CODEX_MANAGED_LAUNCHER_BUNDLE_ID = "com.codextaskprogress.codexlauncher";
 export const CODEX_MANAGED_LAUNCHER_MARKER = join(
   "Contents",
@@ -290,17 +291,23 @@ export async function manageCodexDockLauncher(
   } = paths;
   const releaseLauncher = resolve(input.releaseRoot, dockLauncher.path);
   const owned = await isOwnedApp(appPath);
+  const legacyPath = resolve(input.homeDirectory, "Applications", LEGACY_LAUNCHER_APP_NAME);
+  const legacyMeta = await lstat(legacyPath).catch(() => null);
+  const legacyOwned = legacyMeta !== null && (await isOwnedApp(legacyPath));
+  const targetMeta = await lstat(appPath).catch(() => null);
   const applicationsMeta = await lstat(dirname(appPath)).catch(() => null);
   if (applicationsMeta && (!applicationsMeta.isDirectory() || applicationsMeta.isSymbolicLink())) {
     return result(false, "DOCK_LAUNCHER_DESTINATION_PARENT_CONFLICT", false, appPath, false, false);
   }
   if (input.action === "status") {
+    const statusPath = !owned && legacyOwned ? legacyPath : appPath;
+    const statusOwned = statusPath === legacyPath ? legacyOwned : owned;
     const iconPath = await safeIconPath(input.codex.realAppPath, runner);
     const launcherInstalled =
-      owned &&
+      statusOwned &&
       iconPath !== null &&
       (await installedAppMatches(
-        appPath,
+        statusPath,
         dockLauncher.sha256,
         helperPath,
         input.codex.realAppPath,
@@ -308,7 +315,12 @@ export async function manageCodexDockLauncher(
         appInstallReceiptPath,
         runner,
       ));
-    const dock = await runner(releaseLauncher, ["dock-status", "--managed-app", appPath, "--json"]);
+    const dock = await runner(releaseLauncher, [
+      "dock-status",
+      "--managed-app",
+      statusPath,
+      "--json",
+    ]);
     if (dock.code !== 0)
       return result(
         false,
@@ -324,7 +336,7 @@ export async function manageCodexDockLauncher(
       true,
       launcherInstalled
         ? "DOCK_LAUNCHER_STATUS"
-        : owned
+        : statusOwned
           ? "DOCK_LAUNCHER_REPAIR_REQUIRED"
           : "DOCK_LAUNCHER_NOT_INSTALLED",
       false,
@@ -333,15 +345,19 @@ export async function manageCodexDockLauncher(
       dockConfigured,
       {
         currentCodex: "untouched",
-        ...(owned && !launcherInstalled
+        ...(statusOwned && !launcherInstalled
           ? { nextStep: "Run launcher --install to repair the managed app." }
           : {}),
       },
     );
   }
   if (input.action === "remove") {
-    const appMeta = await lstat(appPath).catch(() => null);
-    if (appMeta && !owned)
+    if ((targetMeta && !owned) || (legacyMeta && !legacyOwned) || (owned && legacyOwned))
+      return result(false, "DOCK_LAUNCHER_DESTINATION_CONFLICT", false, appPath, owned, false);
+    const removePath = legacyOwned ? legacyPath : appPath;
+    const removeOwned = legacyOwned || owned;
+    const appMeta = await lstat(removePath).catch(() => null);
+    if (appMeta && !removeOwned)
       return result(false, "DOCK_LAUNCHER_DESTINATION_CONFLICT", false, appPath, false, false);
     let dockConfigured = false;
     let keepApp = false;
@@ -349,7 +365,7 @@ export async function manageCodexDockLauncher(
       const dock = await runner(releaseLauncher, [
         "dock-remove",
         "--managed-app",
-        appPath,
+        removePath,
         "--receipt",
         receiptPath,
         "--json",
@@ -362,11 +378,11 @@ export async function manageCodexDockLauncher(
       dockConfigured = Boolean(native.dockConfigured);
       keepApp = Boolean(native.keepManagedApp);
     }
-    if (owned) {
+    if (removeOwned) {
       const dock = await runner(releaseLauncher, [
         "dock-status",
         "--managed-app",
-        appPath,
+        removePath,
         "--json",
       ]);
       if (dock.code !== 0)
@@ -389,21 +405,37 @@ export async function manageCodexDockLauncher(
         retainedForUserEdit: true,
         currentCodex: "untouched",
       });
-    if (owned && !keepApp) {
-      await rm(appPath, { recursive: true });
+    if (removeOwned && !keepApp) {
+      await rm(removePath, { recursive: true });
       await rm(appInstallReceiptPath, { force: true });
       if (!dockConfigured) await rm(receiptPath, { force: true });
     }
-    return result(true, "DOCK_LAUNCHER_REMOVED", owned, appPath, false, dockConfigured, {
+    return result(true, "DOCK_LAUNCHER_REMOVED", removeOwned, appPath, false, dockConfigured, {
       retainedForUserEdit: false,
       currentCodex: "untouched",
     });
   }
 
-  const existingMeta = await lstat(appPath).catch(() => null);
+  if (legacyMeta && !legacyOwned)
+    return result(false, "DOCK_LAUNCHER_LEGACY_CONFLICT", false, appPath, owned, false);
+  const existingMeta = targetMeta;
   if (existingMeta && (!existingMeta.isDirectory() || existingMeta.isSymbolicLink() || !owned)) {
     return result(false, "DOCK_LAUNCHER_DESTINATION_CONFLICT", false, appPath, false, false);
   }
+  const finishLegacyMigration = async (): Promise<boolean> => {
+    if (!legacyOwned || !input.configureDock) return false;
+    const status = await runner(releaseLauncher, [
+      "dock-status",
+      "--managed-app",
+      legacyPath,
+      "--json",
+    ]);
+    if (status.code !== 0 || parseNativeResult(status.stdout).dockConfigured)
+      throw new Error("DOCK_LAUNCHER_LEGACY_STILL_PINNED");
+    if (!(await isOwnedApp(legacyPath))) throw new Error("DOCK_LAUNCHER_LEGACY_OWNERSHIP_CHANGED");
+    await rm(legacyPath, { recursive: true });
+    return true;
+  };
   const launcherSource = resolve(input.releaseRoot, dockLauncher.path);
   const iconPath = await safeIconPath(input.codex.realAppPath, runner);
   if (!iconPath)
@@ -440,10 +472,24 @@ export async function manageCodexDockLauncher(
         });
       const native = parseNativeResult(dock.stdout);
       dockConfigured = Boolean(native.dockConfigured);
+      let legacyRemoved = false;
+      try {
+        legacyRemoved = await finishLegacyMigration();
+      } catch (error) {
+        return result(
+          false,
+          "DOCK_LAUNCHER_MIGRATION_INCOMPLETE",
+          Boolean(native.changed),
+          appPath,
+          true,
+          dockConfigured,
+          { reason: error instanceof Error ? error.message : String(error) },
+        );
+      }
       return result(
         true,
         "DOCK_LAUNCHER_INSTALLED",
-        Boolean(native.changed),
+        Boolean(native.changed) || legacyRemoved,
         appPath,
         true,
         dockConfigured,
@@ -569,6 +615,19 @@ export async function manageCodexDockLauncher(
     const native = parseNativeResult(dock.stdout);
     dockConfigured = Boolean(native.dockConfigured);
     if (native.changed) changed = true;
+    try {
+      if (await finishLegacyMigration()) changed = true;
+    } catch (error) {
+      return result(
+        false,
+        "DOCK_LAUNCHER_MIGRATION_INCOMPLETE",
+        changed,
+        appPath,
+        true,
+        dockConfigured,
+        { reason: error instanceof Error ? error.message : String(error) },
+      );
+    }
   }
   return result(true, "DOCK_LAUNCHER_INSTALLED", changed, appPath, true, dockConfigured, {
     currentCodex: "untouched",

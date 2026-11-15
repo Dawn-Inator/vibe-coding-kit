@@ -2,6 +2,7 @@
 
 - Run the managed launcher's real `.app` through the AppKit application event loop and start the Helper asynchronously so slow Helper startup does not block the launcher's event loop.
 - Add regression coverage for fast and delayed Helper startup through real LaunchServices.
+- Name the managed launcher `~/Applications/Codex.app` so Finder and Dock display “Codex”. The bundle identifier and application-support data remain stable; after upgrading an existing launcher, run `goal-progress launcher --install --dock --json` to migrate its owned Dock entry in place while preserving the original Dock restore information and task history.
 - Keep Codex-without-CDP recovery pending until a later full cold launch through the managed launcher; do not restart Codex without current authorization.
 
 # Task Progress 0.5.14

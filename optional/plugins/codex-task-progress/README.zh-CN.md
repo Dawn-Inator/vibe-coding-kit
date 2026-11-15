@@ -44,7 +44,7 @@
 
 支持的 macOS 版本提供 `goal-progress launch --json` 和单独管理的签名启动器 App。它会带上已配置的连接参数启动 Helper 与 Codex Desktop。启动器使用独立于 Codex 的 bundle ID，显示名称和图标取自检测到的 Codex 厂商 App，不修改 Codex 应用本身。
 
-使用 `goal-progress launcher --status --json` 查看状态，`--install --json` 安装，`--remove --json` 移除。只有明确选择由托管启动器替代 Dock 入口时，才运行 `goal-progress launcher --install --dock --json`；此命令也会关闭旧版启动自动观察器。不带 `--dock` 安装会保留常规 Codex Dock App。Dock 替换为显式选择，并保留其他 Dock 项和当前会话。原始 Codex App 仍可用，直接启动仍按常规方式运行；托管启动器不会拦截所有 Finder 或其他应用发起的启动，macOS 也可能同时显示两个 App 图标。
+托管启动器安装在 `~/Applications/Codex.app`，在 Finder 和 Dock 中显示为“Codex”。启动器 bundle ID 与 Codex 保持区分，应用支持数据在更名后保持不变。使用 `goal-progress launcher --status --json` 查看状态，`--install --json` 安装，`--remove --json` 移除。只有明确选择由托管启动器替代 Dock 入口时，才运行 `goal-progress launcher --install --dock --json`；从旧版 `~/Applications/Codex Task Progress.app` 升级后，此命令会原位迁移其拥有的 Dock 项，并保留原 Dock 恢复信息及任务历史。此命令也会关闭旧版启动自动观察器。不带 `--dock` 安装会保留常规 Codex Dock App。Dock 替换为显式选择，并保留其他 Dock 项和当前会话。原始 Codex App 仍可用，直接启动仍按常规方式运行；托管启动器不会拦截所有 Finder 或其他应用发起的启动，macOS 也可能同时显示两个 App 图标。
 
 启动器作为 AppKit 应用运行，并异步启动 Helper，因此 Helper 较慢时不会阻塞启动器的事件循环。回归覆盖包含经真实 LaunchServices 启动的快速和延迟 Helper 场景；验证启动器行为必须实际经由 LaunchServices，直接运行可执行文件不覆盖此路径。如果 Codex 已运行但没有 CDP，启动器只能激活该进程；需要之后通过托管启动器进行一次完整冷启动来建立连接。它不会强制重启现有 Codex。已存在经过验证的 CDP 连接时会复用连接。启动命令本身不重启 Codex。旧版默认关闭的启动恢复策略不可靠，不再推荐使用。
 

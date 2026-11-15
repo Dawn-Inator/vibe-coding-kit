@@ -199,3 +199,44 @@ test("managed launcher refuses a symlinked Applications parent", async (t) => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("legacy launcher migration preserves the old app when Dock migration fails and rejects conflicting paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dock launcher migration "));
+  try {
+    const fixture = await makeFixture(root);
+    const paths = resolveCodexDockLauncherPaths(fixture.home);
+    const legacy = join(fixture.home, "Applications", "Codex Task Progress.app");
+    await mkdir(join(legacy, "Contents/Resources"), { recursive: true });
+    await writeFile(
+      join(legacy, CODEX_MANAGED_LAUNCHER_MARKER),
+      JSON.stringify({
+        owner: "codex-task-progress-managed-launcher-v1",
+        bundleId: CODEX_MANAGED_LAUNCHER_BUNDLE_ID,
+      }),
+    );
+    const input = {
+      action: "install" as const,
+      homeDirectory: fixture.home,
+      releaseRoot: fixture.release,
+      codex: { realAppPath: fixture.codex, bundleId: "com.openai.codex", teamId: "2DC432GLL2" },
+      configureDock: true,
+    };
+    const failingRunner: DockLauncherRunner = async (command, args) => {
+      if (args[0] === "dock-install") return { code: 1, stdout: "", stderr: "migration rejected" };
+      return fixtureRunner(command, args);
+    };
+    const failed = await manageCodexDockLauncher(input, { runner: failingRunner });
+    assert.equal(failed.code, "DOCK_LAUNCHER_DOCK_CONFIGURE_FAILED");
+    assert.equal((await lstat(legacy)).isDirectory(), true);
+    assert.equal((await lstat(paths.launcherAppPath)).isDirectory(), true);
+    await rm(paths.launcherAppPath, { recursive: true });
+    await mkdir(paths.launcherAppPath);
+    await writeFile(join(paths.launcherAppPath, "user-file"), "preserve");
+    const conflict = await manageCodexDockLauncher(input, { runner: fixtureRunner });
+    assert.equal(conflict.code, "DOCK_LAUNCHER_DESTINATION_CONFLICT");
+    assert.equal(await readFile(join(paths.launcherAppPath, "user-file"), "utf8"), "preserve");
+    assert.equal((await lstat(legacy)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

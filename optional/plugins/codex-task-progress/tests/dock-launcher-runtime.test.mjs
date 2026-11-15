@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -22,6 +22,66 @@ function assertNativeSuccess(result, context) {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function cleanupLauncherFixture({ root, release, completion, openProcess }) {
+  try {
+    if (release) await writeFile(release, "release\n").catch(() => undefined);
+    if (completion) {
+      await Promise.race([
+        completion.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    }
+
+    const fixtureExecutables = new Set();
+    for (const appName of ["Progress Fixture.app", "Fast Progress Fixture.app"]) {
+      try {
+        fixtureExecutables.add(
+          realpathSync(join(root, appName, "Contents/MacOS/CodexTaskProgressLauncher")),
+        );
+      } catch {}
+    }
+    const ownPids = new Set();
+    if (process.platform === "darwin" && fixtureExecutables.size) {
+      const processes = spawnSync("/bin/ps", ["-axo", "pid=,comm="], { encoding: "utf8" });
+      for (const line of String(processes.stdout ?? "").split("\n")) {
+        const match = line.trim().match(/^(\d+)\s+(.+)$/);
+        if (!match) continue;
+        const pid = Number(match[1]);
+        try {
+          const executable = realpathSync(match[2].trim());
+          if (!fixtureExecutables.has(executable)) continue;
+          ownPids.add(pid);
+          process.kill(pid, "SIGTERM");
+        } catch {}
+      }
+    }
+    const cleanupDeadline = Date.now() + 5_000;
+    while (ownPids.size && Date.now() < cleanupDeadline) {
+      for (const pid of ownPids) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          ownPids.delete(pid);
+        }
+      }
+      if (ownPids.size) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (openProcess && openProcess.exitCode === null) {
+      await Promise.race([
+        completion?.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+      if (openProcess.exitCode === null) openProcess.kill("SIGTERM");
+      await Promise.race([
+        completion?.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 async function nativeLauncherFor(t) {
@@ -82,6 +142,25 @@ function inspectDockFixture(nativeBinary, plistPath, context) {
 
 after(async () => {
   if (compileRoot) await rm(compileRoot, { recursive: true, force: true });
+});
+
+test("launcher fixture cleanup handles partial app construction and preserves the originating failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex launcher partial fixture "));
+  const firstExecutable = join(
+    root,
+    "Fast Progress Fixture.app",
+    "Contents/MacOS/CodexTaskProgressLauncher",
+  );
+  await mkdir(join(root, "Fast Progress Fixture.app", "Contents/MacOS"), { recursive: true });
+  await writeFile(firstExecutable, "partial fixture\n");
+  await assert.rejects(async () => {
+    try {
+      throw new Error("fixture construction failed");
+    } finally {
+      await cleanupLauncherFixture({ root });
+    }
+  }, /fixture construction failed/);
+  await assert.rejects(access(root), { code: "ENOENT" });
 });
 
 test("LaunchServices acknowledges the managed app and its main run loop stays responsive during helper startup", {
@@ -175,55 +254,7 @@ poll();`;
       "LaunchServices should receive a successful open acknowledgement and wait for app exit",
     );
   } finally {
-    // Always release the fake helper so failures cannot leave a fixture app running.
-    if (release) await writeFile(release, "release\n");
-    if (completion) {
-      await Promise.race([
-        completion.catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-    }
-    const fixtureExecutables = new Set(
-      ["Progress Fixture.app", "Fast Progress Fixture.app"].map((appName) =>
-        realpathSync(join(root, appName, "Contents/MacOS/CodexTaskProgressLauncher")),
-      ),
-    );
-    const ownPids = new Set();
-    const processes = spawnSync("/bin/ps", ["-axo", "pid=,comm="], { encoding: "utf8" });
-    for (const line of String(processes.stdout ?? "").split("\n")) {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/);
-      if (!match) continue;
-      const pid = Number(match[1]);
-      try {
-        const executable = realpathSync(match[2].trim());
-        if (!fixtureExecutables.has(executable)) continue;
-        ownPids.add(pid);
-        process.kill(pid, "SIGTERM");
-      } catch {}
-    }
-    const cleanupDeadline = Date.now() + 5_000;
-    while (ownPids.size && Date.now() < cleanupDeadline) {
-      for (const pid of ownPids) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          ownPids.delete(pid);
-        }
-      }
-      if (ownPids.size) await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (openProcess && openProcess.exitCode === null) {
-      await Promise.race([
-        completion?.catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, 2_000)),
-      ]);
-      if (openProcess.exitCode === null) openProcess.kill("SIGTERM");
-      await Promise.race([
-        completion?.catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, 1_000)),
-      ]);
-    }
-    await rm(root, { recursive: true, force: true });
+    await cleanupLauncherFixture({ root, release, completion, openProcess });
   }
 });
 
@@ -376,6 +407,75 @@ test("native Dock fixture preserves unknown preferences and removes bookmarks fo
     assert.equal(restoredEntries[1].fileLabel, "ChatGPT");
     assert.deepEqual(restoredEntries[3].unknownEntryValue, ["preserve", 9]);
 
+    const renamed = join(root, "Applications", "Codex.app");
+    await mkdir(renamed, { recursive: true });
+    const migrated = join(root, "Dock migrated.plist");
+    const migratedReceipt = join(root, "Dock migrated receipt.plist");
+    const migratedRestored = join(root, "Dock migrated restored.plist");
+    const migrateArgs = [
+      "dock-fixture-migrate",
+      "--plist",
+      transformed,
+      "--original-app",
+      managed,
+      "--managed-app",
+      renamed,
+      "--receipt",
+      receipt,
+      "--output-plist",
+      migrated,
+      "--receipt-output",
+      migratedReceipt,
+      "--json",
+    ];
+    assertNativeSuccess(
+      spawnSync(nativeBinary, migrateArgs, { encoding: "utf8" }),
+      "migrate legacy Dock receipt",
+    );
+    const migratedEntries = inspectDockFixture(
+      nativeBinary,
+      migrated,
+      "inspect migrated Dock fixture",
+    ).persistentApps;
+    assert.equal(migratedEntries.length, entries.length);
+    for (const index of [0, 1]) {
+      assert.equal(migratedEntries[index].fileURL, new URL(`file://${renamed}/`).href);
+      assert.equal(migratedEntries[index].bookmarkPath, renamed);
+    }
+    assertNativeSuccess(
+      spawnSync(
+        nativeBinary,
+        [
+          "dock-fixture-remove",
+          "--plist",
+          migrated,
+          "--managed-app",
+          renamed,
+          "--receipt",
+          migratedReceipt,
+          "--output-plist",
+          migratedRestored,
+          "--json",
+        ],
+        { encoding: "utf8" },
+      ),
+      "restore original after migration",
+    );
+    assert.deepEqual(
+      inspectDockFixture(nativeBinary, migratedRestored, "inspect migrated restore").persistentApps,
+      restoredEntries,
+    );
+    const retry = spawnSync(
+      nativeBinary,
+      [...migrateArgs.slice(0, 2), migrated, ...migrateArgs.slice(3)],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(
+      retry.status,
+      0,
+      "a migrated Dock must not be migrated a second time using the legacy receipt",
+    );
+
     const repinned = join(root, "Dock repinned.plist");
     const repinRestored = join(root, "Dock repin restored.plist");
     const repin = spawnSync(
@@ -527,6 +627,27 @@ test("native Dock fixture preserves unknown preferences and removes bookmarks fo
       { encoding: "utf8", timeout: 15_000 },
     );
     assertNativeSuccess(customize, "customize Dock tile fixture");
+    const editedMigration = spawnSync(
+      nativeBinary,
+      [
+        "dock-fixture-migrate",
+        "--plist",
+        customized,
+        "--original-app",
+        managed,
+        "--managed-app",
+        renamed,
+        "--receipt",
+        receipt,
+        "--output-plist",
+        join(root, "rejected migration.plist"),
+        "--receipt-output",
+        join(root, "rejected receipt.plist"),
+        "--json",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(editedMigration.status, 0, "customized legacy tile must remain untouched");
     const preserve = spawnSync(
       nativeBinary,
       [
