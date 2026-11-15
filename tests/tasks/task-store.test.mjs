@@ -5,10 +5,11 @@ import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { TaskStore, TaskStoreError } from "../../src/tasks/task-store.mjs";
+import { TaskStore, TaskStoreError, validateTaskEventStructure } from "../../src/tasks/task-store.mjs";
 import { z } from "zod";
 import {
 	calculateTaskProgress,
+	calculateTaskLifecycleProgress,
 	createTaskProgressSchemas,
 } from "../../src/tasks/task-contract.mjs";
 const schemas = createTaskProgressSchemas(z);
@@ -731,6 +732,47 @@ test("managed lifecycle closes explicitly, archives prior cycles and isolates th
 	assert.equal(page2.nodes[0].id, "i");
 	await assert.rejects(store.archive("other", archives.tasks[0].id, { cursor: page.nextCursor }), hasCode("TASK_ARCHIVE_CURSOR_INVALID"));
 	assert.equal((await new TaskStore(root, { schemas }).archives("managed")).total, 1);
+});
+
+test("replay and import reject completion that changes scope or closes open work without rewriting history", async () => {
+	const { store: source } = await setup();
+	const { store: target } = await setup();
+	const proof = [{ summary: "Delivered", verification: "verified", reference: "test:proof" }];
+	const check = { status: "done", evidence: proof };
+	await source.initialize("thread", { requestId: "init", expectedRevision: 0, reason: "start", title: "Original", lifecycle: true, objectives: [{ id: "a", title: "A", status: "completed", evidence: proof }] });
+	await source.complete("thread", { requestId: "close", expectedRevision: 1, reason: "done", closeout: { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof } });
+	const events = (await source.history("thread")).events.reverse();
+	await target.initialize("thread", { requestId: "target", expectedRevision: 0, reason: "existing", title: "Target", objectives: [{ id: "target", title: "Target" }] });
+	const sourcePaths = source.paths("thread");
+	const targetPaths = target.paths("thread");
+	const sourceHeartbeat = await readFile(sourcePaths.heartbeat, "utf8");
+	const targetHistory = await readFile(targetPaths.history, "utf8");
+	const targetHeartbeat = await readFile(targetPaths.heartbeat, "utf8");
+	const { writeMarkdownRecords } = await import("../../src/tasks/markdown-records.mjs");
+	for (const alter of [
+		([initial]) => {
+			initial.state.objectives[0].status = "pending";
+			initial.state.objectives[0].evidence = [];
+			initial.state.progress = calculateTaskLifecycleProgress(initial.state.objectives, false);
+			initial.after = initial.state.progress;
+		},
+		([, closed]) => { closed.state.title = "Changed title"; },
+		([, closed]) => { closed.state.objectives[0].title = "Changed objective"; },
+		([, closed]) => { closed.state.createdAt = "2020-01-01T00:00:00.000Z"; },
+	]) {
+		const forged = structuredClone(events);
+		alter(forged);
+		assert.ok(forged.every((event) => validateTaskEventStructure(event)));
+		for (const event of forged) schemas.TaskEventSchema.parse(event);
+		await writeMarkdownRecords(sourcePaths.history, { kind: "task-progress", identity: "thread", records: forged.map((event) => ({ type: "task-event", event })) });
+		const forgedHistory = await readFile(sourcePaths.history, "utf8");
+		await assert.rejects(source.get("thread"), hasCode("TASK_HISTORY_CORRUPT"));
+		await assert.rejects(target.importFrom("thread", sourcePaths.directory), hasCode("TASK_HISTORY_CORRUPT"));
+		assert.equal(await readFile(sourcePaths.history, "utf8"), forgedHistory);
+		assert.equal(await readFile(sourcePaths.heartbeat, "utf8"), sourceHeartbeat);
+		assert.equal(await readFile(targetPaths.history, "utf8"), targetHistory);
+		assert.equal(await readFile(targetPaths.heartbeat, "utf8"), targetHeartbeat);
+	}
 });
 
 test("managed archive and source bindings survive import and repeated import without rewriting the source", async () => {

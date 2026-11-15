@@ -276,7 +276,12 @@ export function isValidTaskLifecycleTransition(previous, event) {
 				life.sequence === old.sequence + 1 &&
 				life.id !== old.id &&
 				life.completion === null
-			: life.sequence === old.sequence && life.id === old.id && life.startedAt === old.startedAt
+			: life.sequence === old.sequence && life.id === old.id && life.startedAt === old.startedAt &&
+				(event.kind !== "task.completed" ||
+					(!hasOpenTaskWork(previous.objectives) &&
+						event.state.title === previous.title &&
+						event.state.createdAt === previous.createdAt &&
+						canonical(event.state.objectives) === canonical(previous.objectives)))
 		: life.sequence === 1 && life.completion === null;
 }
 /** The Helper is the sole writer across processes. */

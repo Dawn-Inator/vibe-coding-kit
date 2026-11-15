@@ -267,6 +267,8 @@ test('reopening existing chat contexts does not invalidate the shared discovery 
   });
   try {
     await index.discover({ root: cwd, threadId: 'chat-a' });
+    // Initial discovery may retry while the watcher subscription settles; only reopens must be scan-free.
+    const scansAfterInitialDiscover = scans;
     const before = await index.generation(cwd);
     if (before === null) return; // Recursive watch is unavailable on this platform.
     const resumed = manager(app);
@@ -276,7 +278,7 @@ test('reopening existing chat contexts does not invalidate the shared discovery 
     await new Promise((resolve) => setTimeout(resolve, 200));
     await index.discover({ root: cwd, threadId: 'chat-b' });
     assert.equal(await index.generation(cwd), before);
-    assert.equal(scans, 1);
+    assert.equal(scans, scansAfterInitialDiscover);
   } finally { index.close(); }
 });
 
