@@ -14,7 +14,17 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify release version `0.5.16`. This release includes an experimental native conversation-panel resource served through the official MCP Apps UI bridge. It reads the same Kit records and needs no custom launcher when the host supports the MCP Apps desktop entrypoint. Ordinary-chat visibility has not yet been verified. The existing CDP injected panel remains available through its configured launcher path. For a launcher-first setup, run `dist/release/macos-arm64/bin/goal-progress install --defer-connection --json`; this prepares the Helper and plugin without requiring CDP so the managed launcher can be configured. The ordinary `install --json` path never restarts Codex automatically, but it may return `INSTALL_RESTART_REQUIRED` when the existing connection cannot be established. Do not interpret its success as a guarantee that no connection setup remains.
+The release is under `dist/release/macos-arm64`. Verify release version `0.5.17`. This release includes compatibility aliases for the experimental native conversation-panel resource served through the official MCP Apps UI bridge. It reads the same Kit records and needs no custom launcher when the host supports the MCP Apps desktop entrypoint. Ordinary-chat visibility has not yet been verified. The existing CDP injected panel remains available through its configured launcher path. For a launcher-first setup, run `dist/release/macos-arm64/bin/goal-progress install --defer-connection --json`; this prepares the Helper and plugin without requiring CDP so the managed launcher can be configured. The ordinary `install --json` path never restarts Codex automatically, but it may return `INSTALL_RESTART_REQUIRED` when the existing connection cannot be established. Do not interpret its success as a guarantee that no connection setup remains.
+
+## Native-panel trial prerequisites
+
+The native panel needs host support for the MCP Apps desktop entrypoint and Codex's optional `enable_mcp_apps` feature. Inspect the public feature state with `codex features list`. Enable it only when the user chooses to try the native panel:
+
+```sh
+codex features enable enable_mcp_apps
+```
+
+The installer does not change Codex feature settings or force-restart Codex; a running app may not immediately reflect a feature change. Verify that the panel actually appears in an ordinary chat. A registered tool or successful build is not proof that the UI is visible. The managed-launcher/CDP path is a separate legacy mode and does not prove whether the native panel works.
 
 After a successful install, use `doctor --json` and `verify --json`, and keep their results distinct from CDP and visible panel checks. If a legacy install requires a Codex restart to create CDP, never restart it automatically; report the reason and ask before restarting. The independent application data name is `CodexTaskProgress`.
 

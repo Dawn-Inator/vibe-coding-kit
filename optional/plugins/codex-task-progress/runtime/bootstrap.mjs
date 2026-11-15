@@ -7,6 +7,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -173,6 +174,69 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function sourceInputs() {
+  const packagedSource = resolve(runtimeRoot, "source");
+  if (existsSync(resolve(packagedSource, "packages"))) {
+    return {
+      sourceRoot: packagedSource,
+      kitSource: resolve(packagedSource, "kit/src"),
+    };
+  }
+  const repositoryRoot = [pluginRoot, resolve(pluginRoot, "../..")].find(
+    (candidate) =>
+      existsSync(resolve(candidate, "packages")) &&
+      existsSync(resolve(candidate, "platform")) &&
+      existsSync(resolve(candidate, "hooks/src")),
+  );
+  if (!repositoryRoot) throw new Error("GOAL_PROGRESS_SOURCE_TREE_MISSING");
+  return {
+    sourceRoot: repositoryRoot,
+    kitSource: resolve(repositoryRoot, "../../../src"),
+  };
+}
+
+function sourceInputHash() {
+  const { sourceRoot, kitSource } = sourceInputs();
+  const hash = createHash("sha256");
+  function add(path, label, scriptsOnly = false, includeAll = false) {
+    const metadata = statSync(path);
+    if (
+      scriptsOnly &&
+      label !== "scripts" &&
+      (basename(path).startsWith(".") ||
+        (!metadata.isDirectory() && !/\.(?:mjs|cjs|js|mts|ts|py|sh)$/u.test(path)))
+    )
+      return;
+    if (metadata.isDirectory()) {
+      for (const entry of readdirSync(path).sort()) {
+        if (!includeAll && (entry === "node_modules" || entry === "dist")) continue;
+        add(resolve(path, entry), `${label}/${entry}`, scriptsOnly, includeAll);
+      }
+    } else if (metadata.isFile()) {
+      hash.update(`${label}\0${metadata.size}\0`);
+      hash.update(readFileSync(path));
+    }
+  }
+  for (const directory of ["packages", "platform", "hooks"])
+    add(resolve(sourceRoot, directory), directory);
+  add(resolve(sourceRoot, "scripts"), "scripts", true);
+  add(kitSource, "kit/src", false, true);
+  for (const file of [
+    "build-runtime.mjs",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "node-runtime.sh",
+    "helper-launcher.sh",
+    "startup-listener-launcher.sh",
+    "startup-listener-bridge.mjs",
+    "startup-listener.mjs",
+    "startup-listener.jxa",
+  ])
+    add(resolve(runtimeRoot, file), `runtime/${file}`);
+  return hash.digest("hex");
+}
+
 function runtimeIsReady(root = versionRoot) {
   const manifestPath = resolve(root, "manifest.json");
   if (!existsSync(manifestPath)) {
@@ -187,6 +251,8 @@ function runtimeIsReady(root = versionRoot) {
   if (
     manifest.schemaVersion !== 1 ||
     manifest.releaseVersion !== version ||
+    manifest.inputHash !== sourceInputHash() ||
+    !manifest.files?.["assets/task-progress-panel.html"] ||
     !manifest.files ||
     typeof manifest.files !== "object"
   ) {
@@ -321,22 +387,20 @@ function copyBuildInputs(stagingRoot) {
     return;
   }
   mkdirSync(destinationSource, { recursive: true, mode: 0o700 });
-  const sourceCandidates = [pluginRoot, resolve(pluginRoot, "../..")];
-  const repositoryRoot = sourceCandidates.find(
-    (candidate) =>
-      existsSync(resolve(candidate, "packages")) &&
-      existsSync(resolve(candidate, "platform")) &&
-      existsSync(resolve(candidate, "hooks/src")),
-  );
-  if (!repositoryRoot) {
-    throw new Error("GOAL_PROGRESS_SOURCE_TREE_MISSING");
-  }
+  const { sourceRoot: repositoryRoot, kitSource } = sourceInputs();
   for (const directory of ["packages", "platform", "hooks"]) {
     cpSync(resolve(repositoryRoot, directory), resolve(destinationSource, directory), {
       recursive: true,
     });
   }
-  const kitSource = resolve(repositoryRoot, "../../../src");
+  cpSync(resolve(repositoryRoot, "scripts"), resolve(destinationSource, "scripts"), {
+    recursive: true,
+    filter: (path) =>
+      path === resolve(repositoryRoot, "scripts") ||
+      (!basename(path).startsWith(".") &&
+        !["node_modules", "dist"].includes(basename(path)) &&
+        (statSync(path).isDirectory() || /\.(?:mjs|cjs|js|mts|ts|py|sh)$/u.test(path))),
+  });
   if (!existsSync(resolve(kitSource, "tasks/task-contract.mjs"))) {
     throw new Error("GOAL_PROGRESS_KIT_SOURCE_MISSING");
   }
@@ -371,6 +435,8 @@ async function buildRuntime() {
       stagingRoot,
       "GOAL_PROGRESS_SOURCE_DEPENDENCY_INSTALL_FAILED",
     );
+    const inputHash = sourceInputHash();
+    process.env.GOAL_PROGRESS_SOURCE_INPUT_HASH = inputHash;
     runChecked(
       process.execPath,
       [

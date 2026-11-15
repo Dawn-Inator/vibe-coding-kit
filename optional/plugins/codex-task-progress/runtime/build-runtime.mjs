@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)));
@@ -47,6 +47,7 @@ const rendererBuild = await build({
   format: "iife",
   legalComments: "none",
   minify: true,
+  nodePaths: [resolve(runtimeRoot, "node_modules")],
   outfile: resolve(outputRoot, "renderer/goal-progress.js"),
   platform: "browser",
   target: "chrome120",
@@ -90,6 +91,15 @@ await build({
     sourcefile: "goal-progress-source-runtime-entry.js",
   },
   target: "node22",
+});
+
+const { buildNativePanel } = await import(
+  pathToFileURL(resolve(sourceRoot, "scripts/build_native_panel.mjs")).href
+);
+await buildNativePanel({
+  sourceRoot,
+  outputPath: resolve(outputRoot, "assets/task-progress-panel.html"),
+  nodePaths: [resolve(runtimeRoot, "node_modules")],
 });
 
 const rendererPath = resolve(outputRoot, "renderer/goal-progress.js");
@@ -156,12 +166,14 @@ for (const relativePath of [
   "bin/startup-listener.jxa",
   "renderer/goal-progress.js",
   "renderer/goal-progress.manifest.json",
+  "assets/task-progress-panel.html",
 ]) {
   files[relativePath] = await fileRecord(relativePath);
 }
 const manifest = {
   schemaVersion: 1,
   releaseVersion,
+  inputHash: process.env.GOAL_PROGRESS_SOURCE_INPUT_HASH,
   nodeVersion: process.version,
   builtAt: new Date().toISOString(),
   files,

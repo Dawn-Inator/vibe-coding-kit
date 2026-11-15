@@ -783,6 +783,9 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     },
   ] as const;
   for (const tool of taskTools) {
+    const readOnly =
+      tool.action === "get" || tool.action === "history" || tool.action === "heartbeat-history";
+    const isPanel = tool.name === TASK_PROGRESS_PANEL_TOOL_NAME;
     const jsonSchema = z.toJSONSchema(tool.schema, { target: "draft-07", io: "input" });
     const transportSchema = z
       .object(
@@ -802,24 +805,25 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         description: tool.description,
         inputSchema: transportSchema,
         annotations: {
-          readOnlyHint:
-            tool.action === "get" ||
-            tool.action === "history" ||
-            tool.action === "heartbeat-history",
+          readOnlyHint: readOnly,
           destructiveHint: false,
           idempotentHint: true,
           openWorldHint: false,
         },
-        ...(tool.name === TASK_PROGRESS_PANEL_TOOL_NAME
-          ? {
-              _meta: {
-                ui: { resourceUri: TASK_PROGRESS_PANEL_RESOURCE_URI },
-                "openai/ui": {
-                  entrypoints: [{ type: "thread" }],
-                },
-              },
-            }
-          : {}),
+        _meta: {
+          ui: {
+            visibility: readOnly ? ["model", "app"] : ["model"],
+            ...(isPanel ? { resourceUri: TASK_PROGRESS_PANEL_RESOURCE_URI } : {}),
+          },
+          ...(readOnly ? { "openai/widgetAccessible": true } : {}),
+          ...(isPanel
+            ? {
+                "ui/resourceUri": TASK_PROGRESS_PANEL_RESOURCE_URI,
+                "openai/outputTemplate": TASK_PROGRESS_PANEL_RESOURCE_URI,
+                "openai/ui": { entrypoints: [{ type: "thread" }] },
+              }
+            : {}),
+        },
       },
       async (input, extra) => {
         // The panel is a presentation entrypoint for the existing read-only get operation.

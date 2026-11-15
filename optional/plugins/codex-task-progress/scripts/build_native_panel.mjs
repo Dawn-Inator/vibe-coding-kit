@@ -28,6 +28,7 @@ export async function buildNativePanel(options = {}) {
     format: "iife",
     legalComments: "none",
     minify: true,
+    nodePaths: options.nodePaths,
     platform: "browser",
     target: "chrome120",
     write: false,

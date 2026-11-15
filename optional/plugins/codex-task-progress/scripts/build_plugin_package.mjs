@@ -1,5 +1,5 @@
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { buildNativePanel } from "./build_native_panel.mjs";
@@ -109,6 +109,16 @@ export async function buildPluginPackage(options = {}) {
         dereference: false,
       });
     }
+    const scriptsRoot = resolve(sourceRoot, "scripts");
+    await assertNoSymbolicLinks(scriptsRoot, sourceRoot);
+    await cp(scriptsRoot, resolve(sourceRuntimeRoot, "scripts"), {
+      recursive: true,
+      filter: async (path) =>
+        path === scriptsRoot ||
+        (!basename(path).startsWith(".") &&
+          !["node_modules", "dist"].includes(basename(path)) &&
+          ((await lstat(path)).isDirectory() || /\.(?:mjs|cjs|js|mts|ts|py|sh)$/u.test(path))),
+    });
     await cp(resolve(kitRoot, "src"), resolve(sourceRuntimeRoot, "kit/src"), { recursive: true });
     await mkdir(resolve(outputRoot, "dist"), { recursive: true });
     await cp(bundleOutput, resolve(outputRoot, "dist/plugin"), {

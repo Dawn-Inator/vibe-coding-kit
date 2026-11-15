@@ -1,6 +1,6 @@
 {
   "name": "codex-task-progress-source-runtime",
-  "version": "0.5.16",
+  "version": "0.5.17",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@lucide/icons": "1.37.0",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.31.0",
     "esbuild": "0.28.2",
     "lit": "3.3.3",

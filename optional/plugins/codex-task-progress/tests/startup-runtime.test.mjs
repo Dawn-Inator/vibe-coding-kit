@@ -2,10 +2,21 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import vm from "node:vm";
 import {
@@ -578,4 +589,186 @@ test("runtime dispatcher routes launch events through IPC and forwards valid out
   assert.match(output[2], /codex\.willLaunch/u);
   assert.match(output[3], /codex\.didLaunch/u);
   bridge.close();
+});
+
+test("source launcher builds and refreshes the native MCP resource without prebuilt assets", async (context) => {
+  const optionalPackages = [
+    "@modelcontextprotocol/sdk/client/index.js",
+    "@modelcontextprotocol/sdk/client/stdio.js",
+    "@modelcontextprotocol/ext-apps",
+    "@lucide/icons",
+    "esbuild",
+    "lit",
+    "zod",
+  ];
+  try {
+    for (const packageName of optionalPackages) import.meta.resolve(packageName);
+  } catch {
+    context.skip("optional source-runtime dependencies are unavailable");
+    return;
+  }
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const scratch = await mkdtemp(join(tmpdir(), "task-source-panel-"));
+  const plugin = resolve(scratch, "kit/optional/plugins/codex-task-progress");
+  const actualPlugin = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const actualKit = resolve(actualPlugin, "../../..");
+  const data = resolve(scratch, "data");
+  const pnpm = resolve(scratch, "pnpm");
+  try {
+    await mkdir(plugin, { recursive: true });
+    for (const entry of [".codex-plugin", "runtime", "packages", "platform", "hooks", "scripts"]) {
+      const target = resolve(plugin, entry);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(resolve(actualPlugin, entry), target, {
+        recursive: true,
+        filter: async (path) => {
+          const parts = path.split(/[\\/]/u);
+          if (parts.includes("node_modules")) return false;
+          if (entry !== "scripts" || path === resolve(actualPlugin, "scripts")) return true;
+          const name = basename(path);
+          return (
+            !name.startsWith(".") &&
+            name !== "dist" &&
+            ((await lstat(path)).isDirectory() || /\.(?:mjs|cjs|js|mts|ts|py|sh)$/u.test(path))
+          );
+        },
+      });
+    }
+    await mkdir(resolve(scratch, "kit/src"), { recursive: true });
+    await cp(resolve(actualKit, "src"), resolve(scratch, "kit/src"), { recursive: true });
+    // Avoid network and use the already-installed development dependencies in the fixture.
+    await writeFile(
+      pnpm,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 11.19.0; else ln -s "$TEST_DEPENDENCIES" node_modules; fi\n',
+    );
+    await chmod(pnpm, 0o700);
+    const env = {
+      ...process.env,
+      HOME: resolve(scratch, "home"),
+      GOAL_PROGRESS_PLUGIN_DATA: data,
+      GOAL_PROGRESS_CODEX_HOME: resolve(scratch, "codex"),
+      GOAL_PROGRESS_PNPM: pnpm,
+      GOAL_PROGRESS_NODE_BINARY: process.execPath,
+      GOAL_PROGRESS_SOURCE_SKIP_SETUP: "1",
+      TEST_DEPENDENCIES: resolve(actualPlugin, "node_modules"),
+    };
+    delete env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+    async function readResource() {
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [resolve(plugin, "runtime/bootstrap.mjs"), "mcp-server"],
+        env,
+        stderr: "pipe",
+      });
+      const client = new Client({ name: "source-panel-test", version: "1" });
+      let stderr = "";
+      transport.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      try {
+        await client.connect(transport);
+        const manifest = JSON.parse(
+          await readFile(resolve(plugin, ".codex-plugin/plugin.json"), "utf8"),
+        );
+        assert.deepEqual(client.getServerVersion(), {
+          name: "codex-task-progress",
+          version: manifest.version,
+        });
+        const tools = await client.listTools();
+        assert.ok(
+          tools.tools.some((tool) => tool.name === "task_progress_panel"),
+          "native panel tool missing",
+        );
+        const result = await client.readResource({ uri: "ui://codex-task-progress/panel-v1.html" });
+        return result.contents[0].text;
+      } catch (error) {
+        const log = await readFile(resolve(data, "source-runtime/bootstrap.log"), "utf8").catch(
+          () => "(no bootstrap log)",
+        );
+        throw new Error(
+          `source MCP launcher failed: ${error instanceof Error ? error.stack : String(error)}\nstderr: ${stderr}\nbootstrap log: ${log}`,
+        );
+      } finally {
+        await client.close();
+      }
+    }
+    const first = await readResource();
+    assert.match(first, /<script>/u);
+    const runtimeManifest = resolve(
+      data,
+      "source-runtime/versions",
+      JSON.parse(await readFile(resolve(plugin, ".codex-plugin/plugin.json"), "utf8")).version,
+      "manifest.json",
+    );
+    const firstHash = JSON.parse(await readFile(runtimeManifest, "utf8")).inputHash;
+    const signingScript = resolve(plugin, "scripts/release-signing.mjs");
+    await writeFile(
+      signingScript,
+      `${await readFile(signingScript, "utf8")}\n// source input change\n`,
+    );
+    await readResource();
+    const secondHash = JSON.parse(await readFile(runtimeManifest, "utf8")).inputHash;
+    assert.notEqual(secondHash, firstHash, "script changes must invalidate the source runtime");
+    const kitContract = resolve(scratch, "kit/src/tasks/task-contract.mjs");
+    await writeFile(
+      kitContract,
+      `${await readFile(kitContract, "utf8")}\n// kit source input change\n`,
+    );
+    await readResource();
+    const kitHash = JSON.parse(await readFile(runtimeManifest, "utf8")).inputHash;
+    assert.notEqual(kitHash, secondHash, "Kit source changes must invalidate the source runtime");
+    const template = resolve(plugin, "packages/renderer/src/native-panel.html");
+    await writeFile(
+      template,
+      `${await readFile(template, "utf8")}\n<!-- source-refresh-marker -->\n`,
+    );
+    const second = await readResource();
+    assert.match(second, /source-refresh-marker/u);
+    assert.doesNotMatch(first, /source-refresh-marker/u);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("source launcher fixture loads without the optional dependency toolchain", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "task-source-no-deps-"));
+  const testDir = resolve(scratch, "tests");
+  const runtimeDir = resolve(scratch, "runtime");
+  try {
+    await mkdir(testDir, { recursive: true });
+    await mkdir(runtimeDir, { recursive: true });
+    await cp(fileURLToPath(import.meta.url), resolve(testDir, "startup-runtime.test.mjs"));
+    await cp(
+      resolve(fileURLToPath(runtimeRoot), "startup-listener-bridge.mjs"),
+      resolve(runtimeDir, "startup-listener-bridge.mjs"),
+    );
+    const childEnv = { ...process.env, NODE_PATH: "" };
+    delete childEnv.NODE_TEST_CONTEXT;
+    delete childEnv.NODE_OPTIONS;
+    let result;
+    try {
+      result = await execFileAsync(
+        process.execPath,
+        [
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=^source launcher builds",
+          resolve(testDir, "startup-runtime.test.mjs"),
+        ],
+        { cwd: scratch, env: childEnv },
+      );
+    } catch (error) {
+      throw new Error(
+        `clean source fixture failed: ${error.message}\nstdout: ${error.stdout ?? ""}\nstderr: ${error.stderr ?? ""}`,
+      );
+    }
+    assert.match(
+      result.stdout,
+      /SKIP optional source-runtime dependencies are unavailable/u,
+      `stdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });

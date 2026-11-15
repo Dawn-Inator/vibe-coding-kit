@@ -2,7 +2,7 @@
 
 基于 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的Kit 中维护的改造，保留原始 Git 历史、作者归属和 MIT 许可证。
 
-0.5.16 增加实验性的原生会话面板资源，通过官方 MCP Apps UI bridge 展示，并读取相同的 Kit 任务记录；宿主支持 MCP Apps 桌面入口时无需自定义启动器。普通聊天中的实际可见性仍待验证。现有 CDP 面板及其启动器配置继续可用；CDP 注入界面使用的是 Codex 不支持的接口。
+0.5.17 为实验性的原生会话面板资源增加兼容别名，通过官方 MCP Apps UI bridge 展示，并读取相同的 Kit 任务记录；宿主支持 MCP Apps 桌面入口时无需自定义启动器。普通聊天中的实际可见性仍待验证。现有 CDP 面板及其启动器配置继续可用；CDP 注入界面使用的是 Codex 不支持的接口。
 
 运行 `goal-progress launcher --install --dock --json` 会关闭旧版持久化启动恢复策略；该策略不可靠，不再推荐依赖它自动恢复。托管启动器采用显式启动流程，不会强制重启已运行的 Codex。
 

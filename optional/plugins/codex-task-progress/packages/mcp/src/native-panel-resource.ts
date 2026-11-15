@@ -14,8 +14,11 @@ export type NativePanelHtmlLoader = () => Promise<string>;
 export async function loadNativePanelHtml(
   pluginRoot = process.env.GOAL_PROGRESS_PLUGIN_ROOT,
 ): Promise<string> {
-  const resourcePath = pluginRoot
-    ? resolve(pluginRoot, "assets/task-progress-panel.html")
-    : fileURLToPath(new URL("./task-progress-panel.html", import.meta.url));
+  const sourceRuntimeRoot = process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+  const resourcePath = sourceRuntimeRoot
+    ? resolve(sourceRuntimeRoot, "assets/task-progress-panel.html")
+    : pluginRoot
+      ? resolve(pluginRoot, "assets/task-progress-panel.html")
+      : fileURLToPath(new URL("./task-progress-panel.html", import.meta.url));
   return readFile(resourcePath, "utf8");
 }

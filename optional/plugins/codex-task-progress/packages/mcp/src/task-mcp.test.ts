@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
   GoalProgressIpcServer,
 } from "../../ipc/src/index.js";
 import { createGoalProgressMcpServer } from "./index.js";
+import { loadNativePanelHtml } from "./native-panel-resource.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
   const directory = await mkdtemp(join(tmpdir(), "task-mcp-"));
@@ -36,17 +37,47 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.deepEqual(panel.inputSchema.properties, {});
     const panelMetadata = panel._meta as
       | {
-          ui?: { resourceUri?: string };
+          ui?: { resourceUri?: string; visibility?: string[] };
+          "ui/resourceUri"?: string;
+          "openai/outputTemplate"?: string;
+          "openai/widgetAccessible"?: boolean;
           "openai/ui"?: { entrypoints?: unknown[]; displayModes?: unknown[] };
         }
       | undefined;
     assert.equal(panelMetadata?.ui?.resourceUri, "ui://codex-task-progress/panel-v1.html");
+    assert.deepEqual(panelMetadata?.ui?.visibility, ["model", "app"]);
+    assert.equal(panelMetadata?.["ui/resourceUri"], panelMetadata?.ui?.resourceUri);
+    assert.equal(panelMetadata?.["openai/outputTemplate"], panelMetadata?.ui?.resourceUri);
+    assert.equal(panelMetadata?.["openai/widgetAccessible"], true);
     assert.deepEqual(panelMetadata?.["openai/ui"]?.entrypoints, [{ type: "thread" }]);
     assert.equal(panelMetadata?.["openai/ui"]?.displayModes, undefined);
+    const getTool = tools.tools.find((tool) => tool.name === "task_progress_get");
+    const historyTool = tools.tools.find((tool) => tool.name === "task_progress_history");
+    const getMetadata = getTool?._meta as
+      | { ui?: { visibility?: string[] }; "openai/widgetAccessible"?: boolean }
+      | undefined;
+    const historyMetadata = historyTool?._meta as
+      | { ui?: { visibility?: string[] }; "openai/widgetAccessible"?: boolean }
+      | undefined;
+    assert.deepEqual(getMetadata?.ui?.visibility, ["model", "app"]);
+    assert.equal(getMetadata?.["openai/widgetAccessible"], true);
+    assert.deepEqual(historyMetadata?.ui?.visibility, ["model", "app"]);
+    assert.equal(historyMetadata?.["openai/widgetAccessible"], true);
     const heartbeatHistory = tools.tools.find(
       (tool) => tool.name === "task_progress_heartbeat_history",
     );
     assert.equal(heartbeatHistory?.annotations?.readOnlyHint, true);
+    const heartbeatMetadata = heartbeatHistory?._meta as
+      | { ui?: { visibility?: string[] }; "openai/widgetAccessible"?: boolean }
+      | undefined;
+    assert.deepEqual(heartbeatMetadata?.ui?.visibility, ["model", "app"]);
+    assert.equal(heartbeatMetadata?.["openai/widgetAccessible"], true);
+    const initialize = tools.tools.find((tool) => tool.name === "task_progress_initialize");
+    const initializeMetadata = initialize?._meta as
+      | { ui?: { visibility?: string[] }; "openai/widgetAccessible"?: boolean }
+      | undefined;
+    assert.deepEqual(initializeMetadata?.ui?.visibility, ["model"]);
+    assert.equal(initializeMetadata?.["openai/widgetAccessible"], undefined);
     const resources = await client.listResources();
     assert.ok(
       resources.resources.some(
@@ -86,7 +117,6 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       assert.equal(contentMetadata?.["openai/ui"]?.entrypoints, undefined);
       assert.equal(contentMetadata?.["openai/ui"]?.displayModes, undefined);
     }
-    const initialize = tools.tools.find((tool) => tool.name === "task_progress_initialize");
     assert.ok(initialize);
     assert.equal(initialize.inputSchema.additionalProperties, false);
     assert.ok(initialize.inputSchema.required?.includes("requestId"));
@@ -176,5 +206,26 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await server.close();
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native panel loader selects packaged and source-runtime assets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "panel-resource-"));
+  const previous = process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+  try {
+    const packaged = join(root, "packaged");
+    const source = join(root, "source");
+    await mkdir(join(packaged, "assets"), { recursive: true });
+    await mkdir(join(source, "assets"), { recursive: true });
+    await writeFile(join(packaged, "assets/task-progress-panel.html"), "packaged");
+    await writeFile(join(source, "assets/task-progress-panel.html"), "source");
+    delete process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+    assert.equal(await loadNativePanelHtml(packaged), "packaged");
+    process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT = source;
+    assert.equal(await loadNativePanelHtml(packaged), "source");
+  } finally {
+    if (previous === undefined) delete process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+    else process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT = previous;
+    await rm(root, { recursive: true, force: true });
   }
 });
