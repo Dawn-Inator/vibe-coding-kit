@@ -1,3 +1,7 @@
+# Task Progress 0.7.4
+
+- Remove the Heartbeat header's “Record validated” badge and the background-refresh notice paragraph. Keep the last snapshot visible and update it in place without a layout jump; preserve error states, underlying records, and validation behavior.
+
 # Task Progress 0.7.3
 
 - Place one icon-only Refresh button in the upper-right of the outer total card in the Current task, History, and Heartbeat views, including refresh of the current-task/base `get`. Keep it outside the History and Heartbeat inner cards, with accessible naming and existing busy/disabled behavior.

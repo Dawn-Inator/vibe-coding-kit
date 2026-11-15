@@ -884,9 +884,7 @@ export class TaskProgressElement extends LitElement {
         : history?.error;
     const wakes = history?.wakes ?? [...heartbeat.wakes].reverse();
     const count = history?.total ?? heartbeat.wakeCount ?? heartbeat.wakes.length;
-    const retrying = this.heartbeatHistoryRetryContext === this.currentHeartbeatHistoryContext();
     const body = html`
-      ${retrying ? html`<p class="muted" role="status">${this.t("Heartbeat history is refreshing. Refresh to try again.", "心跳历史正在刷新，可再次点击刷新重试。")}</p>` : nothing}
       ${
         !heartbeat.sourcePath
           ? html`<p class="empty">${this.t("Heartbeat history is unavailable without a current source.", "没有当前心跳来源，无法读取巡检历史。")}</p>`
@@ -913,7 +911,7 @@ export class TaskProgressElement extends LitElement {
       ${historyError ? html`<div class="info-card-error"><strong>${this.t("Heartbeat history error", "心跳历史错误")}</strong><pre class="diagnostic-text">${historyError}</pre></div>` : nothing}
       ${history?.nextCursor ? html`<button class="hb-older" ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
       ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
-      ${!wakes.length && !historyError && !retrying && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
+      ${!wakes.length && !historyError && this.heartbeatHistoryRetryContext !== this.currentHeartbeatHistoryContext() && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
     `;
     return this.framedCard(this.t("Heartbeat history", "巡检记录"), List, body, {
       count,
@@ -1014,7 +1012,6 @@ export class TaskProgressElement extends LitElement {
       (heartbeat.warning && !incompleteDiscoveryOnly) || heartbeat.findings.length,
     );
     return html`<div class="heartbeat hb-panel">
-      ${this.data.heartbeatPending === true || heartbeat.status === "pending" || heartbeat.retryable ? html`<p class="muted" role="status" aria-live="polite">${heartbeat.sourcePath && !(heartbeat.status === "error" && !heartbeat.retryable) ? this.t("Refreshing the project heartbeat; showing its last verified snapshot.", "正在刷新项目心跳；当前显示最近一次已验证的快照。") : this.t("Refreshing the project heartbeat…", "正在刷新项目心跳…")}</p>` : nothing}
       ${
         sourcePath
           ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>
@@ -1061,31 +1058,6 @@ export class TaskProgressElement extends LitElement {
       heartbeat.warning ===
       `Project heartbeat discovery was incomplete (${reasonText}); the displayed record is the best available result.`
     );
-  }
-
-  private heartbeatCertification(heartbeat: TaskPanelHeartbeat): {
-    state: "certified" | "record-validated" | "limited-source" | "current-unknown";
-    label: string;
-    labelZh: string;
-  } {
-    const cadenceIsValid =
-      typeof heartbeat.cadenceMinutes === "number" &&
-      Number.isFinite(heartbeat.cadenceMinutes) &&
-      heartbeat.cadenceMinutes > 0;
-    if (
-      heartbeat.status === "ready" &&
-      heartbeat.certifiesCurrent === true &&
-      heartbeat.passed === true &&
-      heartbeat.discoveryComplete === true &&
-      heartbeat.nextWakeAt &&
-      cadenceIsValid
-    )
-      return { state: "certified", label: "Certified current", labelZh: "当前已认证" };
-    if (heartbeat.passed === true && heartbeat.basis !== "configured")
-      return { state: "record-validated", label: "Record validated", labelZh: "记录已校验" };
-    if (heartbeat.discoveryComplete === false)
-      return { state: "limited-source", label: "Limited source", labelZh: "来源不完整" };
-    return { state: "current-unknown", label: "Current unknown", labelZh: "当前状态未知" };
   }
 
   private renderHistory() {
@@ -1507,9 +1479,6 @@ export class TaskProgressElement extends LitElement {
           ? this.t("Task history", "任务历史")
           : this.t("Project heartbeat", "项目心跳");
     const execution = this.executionLabel(checklistComplete);
-    const heartbeatCertification = this.data.heartbeat
-      ? this.heartbeatCertification(this.data.heartbeat)
-      : null;
     const refreshBusy = this.refreshing || this.refreshViewBusy || this.busy || this.heartbeatBusy;
     const refreshLabel =
       this.tab === "tasks"
@@ -1534,7 +1503,7 @@ export class TaskProgressElement extends LitElement {
       <div class="body" id="task-panel-content" role="region" aria-labelledby="panel-title" data-state="open">
         <header class="panel-head" data-view=${this.tab}>
           <div class="panel-topline"><div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.tab === "history" ? this.t("Recorded changes", "变更记录") : this.t("Project activity", "项目动态")}</div><button class="panel-refresh" aria-label=${refreshLabel} aria-busy=${String(refreshBusy)} ?disabled=${!this.refreshTask || !this.threadId || refreshBusy} @click=${() => void this.refreshCurrentView()}>${this.lucideIcon(RefreshCw)}</button></div>
-          <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat && heartbeatCertification ? html`<span class="hb-status" data-status=${this.data.heartbeat.status} data-certification=${heartbeatCertification.state}>${this.data.heartbeat.status === "pending" ? this.t("Refreshing", "刷新中") : this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.t(heartbeatCertification.label, heartbeatCertification.labelZh)}</span>` : nothing}</div>
+          <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2></div>
           ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : this.tab === "history" ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>` : this.tab === "heartbeat" ? html`<p class="panel-subtitle">${this.t("Agent activity and tasks that need attention.", "Agent 活动与需要关注的任务。")}</p>` : nothing}
         </header>
         <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>

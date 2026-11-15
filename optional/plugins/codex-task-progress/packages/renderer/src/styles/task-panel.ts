@@ -170,11 +170,7 @@ export const taskPanelStyles = css`
   .hb-panel { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
   .hb-panel details { margin-top: 0; }
   .hb-panel h3 { margin: 0; }
-  .hb-status, .hb-count { display: inline-flex; flex: none; align-items: center; border-radius: 999px; padding: 3px 8px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.35; }
-  .panel-heading > .hb-status { margin-inline-start: auto; }
-  .hb-status[data-certification="certified"] { background: var(--ctp-panel-tint); color: var(--ctp-panel-ink); }
-  .hb-status[data-certification="record-validated"] { border: 1px solid var(--ctp-panel-line); background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); }
-  .hb-status[data-status="stale"], .hb-status[data-status="error"] { background: color-mix(in srgb, var(--ctp-error, #b15838) 10%, var(--ctp-surface, #fff)); color: var(--ctp-error, #b15838); }
+  .hb-count { display: inline-flex; flex: none; align-items: center; border-radius: 999px; padding: 3px 8px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.35; }
   .hb-time-card { min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; }
   .hb-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .hb-time { min-width: 0; min-height: 118px; border: 1px solid var(--ctp-panel-line); border-radius: 16px; padding: 14px; background: var(--ctp-surface, #fff); }

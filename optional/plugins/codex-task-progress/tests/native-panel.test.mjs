@@ -381,26 +381,26 @@ test("native panel MCP Apps integration", async (t) => {
             return getComputedStyle(event, "::before").borderTopColor;
           });
           await frame.getByRole("button", { name: "Heartbeat" }).click();
-          await frame.locator(".hb-status[data-status=ready]").waitFor();
+          await frame.locator(".hb-time-latest .hb-time-label").waitFor();
           const heartbeatColor = await frame.locator("codex-task-panel").evaluate((element) => {
-            const status = element.shadowRoot.querySelector(".hb-status[data-status='ready']");
+            const root = element.shadowRoot;
+            const timeLabel = root.querySelector(".hb-time-latest .hb-time-label");
+            const refresh = root.querySelector(".panel-head .panel-refresh");
             return {
-              status: getComputedStyle(status).color,
-              muted: getComputedStyle(
-                element.shadowRoot.querySelector(".panel-head .panel-refresh"),
-              ).color,
-              certification: status.getAttribute("data-certification"),
+              timeLabel: getComputedStyle(timeLabel).color,
+              refresh: getComputedStyle(refresh).color,
+              hasHeaderStatusBadge: root.querySelector(".hb-status") !== null,
             };
           });
-          const [history, status, muted] = await normalizeColors(frame, [
+          const [history, timeLabel, refresh] = await normalizeColors(frame, [
             historyColor,
-            heartbeatColor.status,
-            heartbeatColor.muted,
+            heartbeatColor.timeLabel,
+            heartbeatColor.refresh,
           ]);
           assert.ok(sameColor(history, percent));
-          assert.equal(heartbeatColor.certification, "current-unknown");
-          assert.ok(sameColor(status, muted));
-          assert.ok(!sameColor(status, green));
+          assert.equal(heartbeatColor.hasHeaderStatusBadge, false);
+          assert.ok(sameColor(timeLabel, refresh));
+          assert.ok(!sameColor(timeLabel, green));
         }, `?theme=${theme}`);
       }
     });

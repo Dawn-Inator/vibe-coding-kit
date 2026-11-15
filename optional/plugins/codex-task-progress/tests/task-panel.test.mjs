@@ -1178,9 +1178,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
-      "heartbeat notice keeps the verified project view and history through a pending refresh, then fences terminal responses",
+      "background Heartbeat refresh keeps verified cards and records stable, then fences terminal responses",
       async () => {
-        const { context, page, panel } = await open();
+        const { context, page, panel } = await open("", { reducedMotion: "reduce" });
         const sourcePath = "/workspace/shared-project/heartbeat.md";
         const oldHistory = {
           wakes: [
@@ -1227,6 +1227,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await panel.locator(".hb-alert").innerText(),
             /Project heartbeat refresh notice/,
           );
+          const cardRects = async () =>
+            panel.evaluate((element) =>
+              [".hb-time-card", ".hb-history"].map((selector) => {
+                const rect = element.shadowRoot.querySelector(selector).getBoundingClientRect();
+                return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+              }),
+            );
+          const readyCardRects = await cardRects();
 
           await page.evaluate(() => {
             window.fixture.heartbeat = {
@@ -1237,12 +1245,16 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             window.fixture.heartbeatPending = true;
             return window.__CODEX_TASK_PROGRESS__.refresh();
           });
-          await panel.getByText(/正在刷新项目心跳；当前显示最近一次已验证的快照/).waitFor();
           await panel
             .locator(".hb-wake")
             .getByText("verified cached record", { exact: true })
             .waitFor();
+          assert.doesNotMatch(
+            await panel.locator(".scroll").innerText(),
+            /正在刷新项目心跳|Refreshing the project heartbeat|心跳历史正在刷新|Heartbeat history is refreshing/,
+          );
           assert.equal(await panel.locator(".hb-history .hb-count").innerText(), "1");
+          assert.deepEqual(await cardRects(), readyCardRects);
           const historyCallsBeforeRefresh = await page.evaluate(
             () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
           );
@@ -1253,6 +1265,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               count + 1,
             historyCallsBeforeRefresh,
           );
+          await page.waitForFunction(() => {
+            const button = document
+              .querySelector("codex-task-panel")
+              ?.shadowRoot?.querySelector(".panel-refresh");
+            return button && !button.disabled && button.getAttribute("aria-busy") === "false";
+          });
 
           await page.evaluate(
             ({ value, sourcePath }) => {
@@ -3680,11 +3698,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
           assert.match(await latestTime.locator(".hb-time-date").innerText(), /13/);
           assert.doesNotMatch(await timeSection.innerText(), /heartbeat\.md/);
-          assert.equal(
-            await panel.locator(".hb-status").getAttribute("data-certification"),
-            "record-validated",
-          );
-          assert.match(await panel.locator(".hb-status").innerText(), /记录已校验/);
+          assert.equal(await panel.locator(".panel-head .hb-status").count(), 0);
           assert.equal(await nextTime.getAttribute("data-missing"), "true");
           assert.equal(await nextTime.locator("strong").count(), 1);
           assert.match(await nextTime.innerText(), /未记录/);
@@ -3813,20 +3827,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           assert.equal(wrapperStyle.background, "rgba(0, 0, 0, 0)");
           assert.deepEqual(wrapperStyle.padding, ["0px", "0px", "0px", "0px"]);
-          const statusStyle = await panel.locator(".hb-status").evaluate((element) => {
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return {
-              borderWidth: Number.parseFloat(style.borderTopWidth),
-              radius: Number.parseFloat(style.borderTopLeftRadius),
-              height: rect.height,
-            };
-          });
-          assert.ok(statusStyle.borderWidth > 0, "heartbeat status remains outlined");
-          assert.ok(
-            statusStyle.radius >= statusStyle.height / 2,
-            "heartbeat status has a pill silhouette",
-          );
+          assert.equal(await panel.locator(".panel-head .hb-status").count(), 0);
           await page.addStyleTag({
             content: `
             html.dark { color: #eee; color-scheme: dark; --ctp-surface: #252525; --ctp-text: #eee; }
@@ -4037,11 +4038,19 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       "automatic project Heartbeat status, stale state, findings, history and source details",
       async () => {
         const { context, page, panel } = await open();
+        const assertNoHeaderStatus = async () => {
+          assert.equal(
+            await panel.locator(".panel-head .hb-status").count(),
+            0,
+            "Heartbeat header shows no certification or status badge",
+          );
+        };
         await page.evaluate((value) => {
           window.fixture.heartbeat = { ...value, status: "candidates", sourcePath: null };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await showView(panel, "heartbeat");
+        await assertNoHeaderStatus();
         await panel.locator(".panel-head .panel-title").waitFor();
         assert.match(
           await panel.locator("section.panel").innerText(),
@@ -4060,14 +4069,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await panel.getByRole("heading", { name: "项目心跳", exact: true }).waitFor();
+        await assertNoHeaderStatus();
         assert.equal(
           await panel.getByRole("heading", { name: "项目心跳", exact: true }).count(),
           1,
-        );
-        assert.match(await panel.locator(".hb-status").innerText(), /当前状态未知/);
-        assert.equal(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "current-unknown",
         );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
@@ -4083,19 +4088,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.equal(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "limited-source",
-        );
-        assert.match(await panel.locator(".hb-status").innerText(), /来源不完整/);
-        assert.notEqual(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "certified",
-        );
+        await assertNoHeaderStatus();
         assert.equal(await panel.locator(".hb-alert").count(), 0);
         assert.equal(await panel.locator(".hb-items").count(), 0);
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
         assert.equal(await panel.locator(".hb-source").count(), 0);
+        assert.match(await panel.locator(".hb-time-card").innerText(), /最近记录/);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -4113,6 +4111,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await panel.locator(".hb-alert .info-card-title").waitFor();
+        await assertNoHeaderStatus();
         assert.match(await panel.locator(".hb-alert").innerText(), /Ledger format invalid/);
         assert.doesNotMatch(
           await panel
@@ -4136,6 +4135,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
+        await assertNoHeaderStatus();
         assert.match(
           await panel.locator(".hb-alert").innerText(),
           /Ledger warning: signature mismatch/,
@@ -4153,11 +4153,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.equal(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "record-validated",
-        );
-        assert.match(await panel.locator(".hb-status").innerText(), /记录已校验/);
+        await assertNoHeaderStatus();
+        assert.match(await panel.locator(".hb-time-card").innerText(), /最近记录/);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -4170,10 +4167,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.equal(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "current-unknown",
-        );
+        await assertNoHeaderStatus();
+        assert.equal(await panel.locator(".hb-time-next").getAttribute("data-missing"), "true");
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -4186,20 +4181,18 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.equal(
-          await panel.locator(".hb-status").getAttribute("data-certification"),
-          "certified",
-        );
-        assert.match(await panel.locator(".hb-status").innerText(), /当前已认证/);
+        await assertNoHeaderStatus();
+        assert.equal(await panel.locator(".hb-time-next").getAttribute("data-missing"), "false");
         await page.evaluate((value) => {
           window.fixture.heartbeat = { ...value, status: "stale", certifiesCurrent: true };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.match(await panel.locator(".hb-status").innerText(), /已过期/);
+        await assertNoHeaderStatus();
         await page.evaluate((value) => {
           window.fixture.heartbeat = { ...value, status: "ready" };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
+        await assertNoHeaderStatus();
         assert.equal(await panel.locator(".hb-source").count(), 0);
         assert.match(await panel.locator("section.panel").innerText(), /只读/);
         assert.match(await panel.locator(".hb-time-card").innerText(), /最近记录/);
@@ -4231,6 +4224,39 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "台账文件已删除",
         );
         assert.equal(await panel.getByRole("button", { name: /解除关联并隐藏心跳/ }).count(), 0);
+        await page.evaluate((value) => {
+          window.fixture.heartbeatPending = true;
+          window.fixture.heartbeat = {
+            ...value,
+            status: "pending",
+            retryable: true,
+            sourcePath: "/workspace/heartbeat.md",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await assertNoHeaderStatus();
+        assert.equal(await panel.locator(".hb-time-card").count(), 1);
+        assert.ok((await panel.locator(".hb-wake").count()) > 0);
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /正在刷新项目心跳|Refreshing the project heartbeat|心跳历史正在刷新|Heartbeat history is refreshing/,
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeatPending = false;
+          window.fixture.heartbeat = {
+            ...value,
+            status: "error",
+            sourcePath: "/workspace/heartbeat.md",
+            error: "heartbeat source reader failed",
+            retryable: false,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        await assertNoHeaderStatus();
+        await panel
+          .locator(".scroll .diagnostic-text")
+          .filter({ hasText: "heartbeat source reader failed" })
+          .waitFor();
         await context.close();
       },
     );
@@ -4474,7 +4500,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     await t.test(
       "retryable history pages retain verified records until a later refresh",
       async () => {
-        const { context, page, panel } = await open();
+        const { context, page, panel } = await open("", { reducedMotion: "reduce" });
         const sourcePath = "/workspace/heartbeat.md";
         await page.evaluate(
           ({ value, sourcePath }) => {
@@ -4495,6 +4521,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           .locator(".hb-wake > summary")
           .getByText("verified wake", { exact: true })
           .waitFor();
+        const getCardRects = async () =>
+          panel.evaluate((element) =>
+            [".hb-time-card", ".hb-history"].map((selector) => {
+              const rect = element.shadowRoot.querySelector(selector).getBoundingClientRect();
+              return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+            }),
+          );
+        const readyCardRects = await getCardRects();
         await page.evaluate(() => {
           window.fixture.heartbeatHistory = {
             retryable: true,
@@ -4504,8 +4538,26 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             wakes: [],
           };
         });
+        const historyCallsBeforeRetry = await page.evaluate(
+          () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+        );
         await panel.getByRole("button", { name: "刷新心跳历史" }).click();
-        await panel.getByText(/心跳历史正在刷新/).waitFor();
+        await page.waitForFunction(() => {
+          const button = document
+            .querySelector("codex-task-panel")
+            ?.shadowRoot?.querySelector(".panel-refresh");
+          return button && !button.disabled && button.getAttribute("aria-busy") === "false";
+        });
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "heartbeat-history").length,
+          ),
+          historyCallsBeforeRetry + 1,
+        );
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /心跳历史正在刷新|Heartbeat history is refreshing/,
+        );
         assert.equal(
           await panel
             .locator(".hb-wake > summary")
@@ -4514,6 +4566,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           1,
         );
         assert.equal(await panel.locator(".hb-history .info-card-error").count(), 0);
+        assert.deepEqual(await getCardRects(), readyCardRects);
         await page.evaluate(
           ({ sourcePath }) => {
             window.fixture.heartbeatHistory = {
