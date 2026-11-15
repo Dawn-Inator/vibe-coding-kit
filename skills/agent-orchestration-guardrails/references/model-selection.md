@@ -37,6 +37,9 @@ Opus is reserved for exactly three cases:
 - (c) **Security-boundary design decisions** the worker itself must make — not implementation of an
   already-decided design.
 
+These scope additional frontier-tier review spend, not the criteria for ordinary module acceptance or the
+required independent pre-review; the orchestrator still accepts each module against its full approved goal.
+
 If a task packet mixes an (a)/(b)/(c) decision with a larger chunk of ordinary implementation or
 scripting, split it: a small Opus design/decision package plus a separate Sonnet implementation package.
 Never send the whole bundle to Opus because one part of it qualifies.

@@ -11,7 +11,9 @@ Claude, Terra on Codex); **escalate to Claude Opus / Codex Sol** when the task m
 an uncertain subsystem boundary or global consistency a narrowly-bounded worker cannot retain, **or when
 the task needs an architectural fix at the submodule level**. If your project documents a durable version
 of this contract and its escalation ladder elsewhere, apply that; this skill states the pattern to apply at
-dispatch time.
+dispatch time. Assign [module delivery owners](module-delivery.md) that implement, test, fix and resubmit;
+local implementation choices inside the approved boundary belong to that owner. The orchestrator retains
+cross-module decisions, independent acceptance of each candidate and integration.
 
 After an implementation candidate is committed, and before final semantic acceptance of a non-trivial,
 integrated multi-agent candidate, dispatch an **independent pre-review worker** (Terra on Codex; an Opus-
@@ -22,7 +24,8 @@ returns commit-bound findings and a fix/blocked recommendation; the orchestrator
 approved goal and centralized validation for the final call. A changed candidate commit makes the
 pre-review stale; redo it. Skip pre-review only for a bounded single-worker candidate with an exact, strong
 pass/fail oracle, and only when the orchestrator records why an independent cross-check adds no value —
-"final" and general task importance alone never justify a review worker; only a genuine judgment fork does.
+For other optional review fan-out, a "final" label or general task importance alone does not justify an
+extra reviewer; identify the judgment question. This does not narrow the required pre-review above.
 
 For Claude-side work: delegate read-only exploration/search/inventory/classification to Haiku only with
 `write_scope: none`; delegate every task that may edit anything to Sonnet, including mechanical edits and
@@ -40,7 +43,7 @@ a Fable orchestrator's context wherever you can, except anything touching money,
 secrets, or an irreversible action — that reaches the orchestrator verbatim regardless of context budget.
 
 Before the first broad wave, dispatch one representative low-risk task as a health check: confirm exactly
-one private structured final, respected write scope and no-heavy-process rules, and usable evidence with no
+one private structured final, respected write scope and verification grants, and usable evidence with no
 cross-task/UI message — a successful tool call or bare liveness signal is not a health check by itself.
 Then fill available concurrency in waves.
 

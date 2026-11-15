@@ -217,3 +217,22 @@ their original goal, history, and unknown provenance; do not mass-mark done or d
 certification only describes the checked ledger content; it grants no permission, deployment authority,
 merge/finish permission, cleanup authority, or veto over ending work. Project authorization rules still
 govern every action.
+
+## Orchestration snapshot
+
+For each new v2 wake, capture an evidence-backed orchestration snapshot for the read-only Heartbeat view.
+Probe actual running child agents before the audit and again after re-splitting and dispatching; record each
+observation's count, ISO time and evidence reference. Exclude the orchestrator, available-agent catalogs,
+completed children and accepted-only dispatches. Audit the actual blocked tasks and record whether each
+requires Owner intervention only when known; use `null` when unknown. An empty blocked task array means the
+complete blocked-task audit found none; use `null` if it was not established. Never infer counts, blockers or
+Owner intervention from the ten audit rows, the Items registry, or a status alone.
+
+Pass the optional `orchestration` object to Kit's `appendHeartbeatWake` or `writeHeartbeatLedgerPair` when
+writing the completed wake: `{scope, before, after, blockedTasks, blockersEvidence}`. `scope` describes the
+observed work; `before` and `after` are either `null` or `{activeAgents, observedAt, evidence}`; `blockedTasks`
+is `null` or an array of `{id, title, reason, requiresOwner, evidence?}`; `blockersEvidence` is a nonblank
+audit reference or `null`. Use nonblank references for observed counts, nonnegative integer counts, ISO times,
+and `true`, `false`, or `null` for `requiresOwner`. The Kit writer records the optional v2 metadata in the
+same wake; do not create a parallel plugin record. Retain the ten raw audit rows for compatibility and audit,
+not as the main UI. Missing historical snapshots remain unknown: do not guess or rewrite old wakes.

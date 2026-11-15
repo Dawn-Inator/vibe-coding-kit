@@ -63,7 +63,7 @@ test('copied installation keeps core contracts and projects the right platform r
   assert.match(read('.agents'), /spawn_agent.*shares the current directory/);
   assert.match(read('.agents'), /fork_turns: "none"/);
   assert.doesNotMatch(read('.claude'), /fork_turns: "none"/);
-  assert.match(read('.claude'), /Workers never run package-level\/full tests/);
+  assert.match(read('.claude'), /Workers run only the checks authorized in their packet/);
   // Run only the pure entry probe to avoid recursively launching this installation test.
   const result = spawnSync(
     process.execPath,

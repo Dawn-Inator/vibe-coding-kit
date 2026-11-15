@@ -50,7 +50,9 @@ Further worker prompt requirements:
   fix.", "Now let's update doc/…", "I'll check X next") — ending the turn stops the worker; nothing
   executes the announced step until the orchestrator notices the silence and nudges it, which can be a long
   wait. A worker's turn may end only with (a) its final report, (b) a genuine blocker report, or (c) an
-  explicit wait on a background task it itself started, naming that task. (c) stays fully allowed and is
+  explicit wait on a background task it itself started, naming that task, or (d) a durable resource-queue
+  checkpoint naming the exact pending check, queue owner and continuation for same-owner follow-up. A
+  checkpoint is unfinished, not a completed module. (c) stays fully allowed and is
   not the same failure mode: a worker that starts a genuinely long-running background command (a worktree
   finish/merge, a remote/cloud preflight) and then ends its turn to be woken by that command's own
   notification is waiting correctly, not stalling — the distinguishing fact is whether a background child
@@ -61,8 +63,8 @@ Further worker prompt requirements:
   waiting" sentence. State this explicitly in every dispatch prompt; it is a
   distinct rule from "no mid-task status messages" above, since an announcement-then-stop is not a status
   message sent mid-task, it is the turn's own last action with nothing behind it.
-- Name the light self-checks explicitly in the dispatch prompt (see below) — don't assume a worker already
-  knows this section exists.
+- Name exact self-checks and any controlled module verification grants in the dispatch prompt — do not
+  assume the owner can infer commands, resource permission or prepared dependencies.
 - **For a large rewrite/cleanup shard, require "commit once per file/unit as it turns green" plus an
   explicit hard time limit**, sized so the shard fits inside it. A retry that respawns "the same shard"
   after a dead worker carries forward what the dead worker actually committed, not a restart from zero.

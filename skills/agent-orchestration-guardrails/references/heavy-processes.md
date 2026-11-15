@@ -39,10 +39,10 @@ of MB. Speed comes from agent parallelism; memory safety comes from heavy-proces
 a worktree/lifecycle guard, have it: reject an installer flag before it can spawn dependencies inside a
 worker worktree, mark worker worktrees so heavy steps (like a full workspace typecheck) are automatically
 skipped during finish/merge, and default a shared test runner to low concurrency unless a controlled lane
-explicitly raises it after acquiring a host lock. This does not claim to identify an agent that invokes
-arbitrary shell commands directly — a worker that runs installs or bumps concurrency by hand remains a
-residual gap that supervision must detect and terminate, not something a guard script alone can fully
-close.
+explicitly raises it after acquiring a host lock. Authorized module checks use the same host accounting;
+permission in a packet alone is not a slot. This does not identify arbitrary direct shell commands —
+unauthorized installs or concurrency changes remain a gap to report and resolve under project authority,
+not permission for supervision to kill another session's processes.
 
 ## Memory Watch
 
@@ -68,9 +68,9 @@ done
 
 ## Verification Shape
 
-- An agent wave can run while heavy groups are running (within each host's limit) if the wave itself does
-  not launch heavy commands.
-- Type-checking is run once centrally after a batch, not once per worker, and ideally on a dedicated test
-  host rather than the orchestrator's own local machine.
+- Agent implementation continues outside frozen validation inputs while named module checks share the
+  per-host resource queue. See [verification lanes](worker-selfcheck.md) for grants and checkpoints.
+- Select module checks before handoff; deduplicate shared typechecking/build/integration at a stable batch
+  candidate under orchestrator control. Do not force every worker through an identical full-workspace check.
 - If a workflow hits session/usage limits, keep completed checkpointed changes and rerun only the failed
   batch after cleaning up any partial edits.
