@@ -62,6 +62,8 @@ window.noTask=false;
 window.currentThreadId='conversation-verified-by-tool';
 window.holdGet=false;
 window.releaseHeldGet=null;
+window.archiveResponse=null;
+window.archiveIdentity=null;
 window.holdNextHistory=false;
 window.heldHistoryDelivered=false;
 window.releaseHeldHistory=null;
@@ -92,6 +94,8 @@ window.addEventListener('message', async (event) => {
     if(name === 'task_progress_get') {
       const value=window.noIdentity ? {task:null,heartbeat:null} : window.noTask ? {...window.currentResponse,task:null} : window.currentResponse;
       result={content:[{type:'text',text:JSON.stringify({ok:true,result:value})}],_meta:window.noIdentity?{}:{'codex-task-progress/threadId':window.currentThreadId}};
+    } else if(name === 'task_progress_archive') {
+      result={content:[{type:'text',text:JSON.stringify({ok:true,result:{archive:window.archiveResponse}})}],_meta:{'codex-task-progress/threadId':window.archiveIdentity || window.currentThreadId}};
     } else if(name === 'task_progress_history') {
       const {task:ignoredTask,...responseWithoutTask}=window.currentResponse;
       result={content:[{type:'text',text:JSON.stringify({ok:true,result:{...responseWithoutTask,history:{events:[{type:'task.updated',occurredAt:'2026-11-15T11:00:00Z',reason:holdThisHistory?'STALE HISTORY':'OLD HISTORY'}],nextCursor:null}}})}],_meta:{'codex-task-progress/threadId':window.currentThreadId}};
@@ -160,6 +164,7 @@ test("native panel MCP Apps integration", async (t) => {
       const preferredColorScheme = new URLSearchParams(suffix).get("theme");
       const context = await browser.newContext({
         viewport: { width: 350, height: 740 },
+        locale: "en-US",
         ...(preferredColorScheme ? { colorScheme: preferredColorScheme } : {}),
       });
       await context.addInitScript(() =>
@@ -182,6 +187,106 @@ test("native panel MCP Apps integration", async (t) => {
         await context.close();
       }
     }
+    await t.test("native archive is lazy and uses trusted tool identity", async () => {
+      await scenario(async (page, frame) => {
+        await frame.locator(".summary .main").waitFor();
+        const current = {
+          ...task,
+          schemaVersion: 4,
+          lifecycle: {
+            id: "native-cycle",
+            sequence: 2,
+            startedAt: "2026-11-15T12:00:00Z",
+            completion: null,
+          },
+          progress: { completed: 2, total: 3, percent: 66.67 },
+        };
+        await page.evaluate((currentTask) => {
+          window.currentResponse = {
+            ...window.currentResponse,
+            task: currentTask,
+            archiveCount: 1,
+            completionBasis: "task-lifecycle",
+          };
+          window.archiveResponse = {
+            kind: "tasks",
+            tasks: [
+              {
+                id: "native-old",
+                title: "Native archived task",
+                completedAt: "2026-11-14T12:00:00Z",
+                completionRevision: 2,
+                progress: { completed: 2, total: 2, percent: 100 },
+                objectiveCount: 1,
+                itemCount: 1,
+              },
+            ],
+            total: 1,
+            nextCursor: null,
+            currentTaskId: "native-cycle",
+            threadId: window.currentThreadId,
+          };
+          window.deliverToolResult(window.currentThreadId, window.currentResponse);
+        }, current);
+        const panel = frame.locator("codex-task-panel");
+        await panel.locator(".summary .main").waitFor();
+        if ((await panel.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
+          await panel.locator(".summary .main").click();
+        const archive = panel.locator(".archive-toggle");
+        await archive.waitFor();
+        assert.equal(await archive.getAttribute("aria-expanded"), "false");
+        assert.equal(
+          await page.evaluate(
+            () => window.hostCalls.filter((call) => call.name === "task_progress_archive").length,
+          ),
+          0,
+        );
+        await archive.click();
+        await panel
+          .locator(".archive-cycle-toggle")
+          .filter({ hasText: "Native archived task" })
+          .waitFor();
+        assert.equal(
+          await panel.locator(".archive-cycle-toggle").getAttribute("aria-expanded"),
+          "false",
+        );
+        const calls = await page.evaluate(() =>
+          window.hostCalls.filter((call) => call.name === "task_progress_archive"),
+        );
+        assert.equal(calls.length, 1);
+        assert.equal("threadId" in calls[0].args, false);
+        assert.equal("path" in calls[0].args, false);
+        assert.equal(calls[0].args.limit, 50);
+        await page.evaluate(() => {
+          window.archiveIdentity = "untrusted-other-thread";
+          window.currentResponse = {
+            ...window.currentResponse,
+            task: {
+              ...window.currentResponse.task,
+              title: "Next native task",
+              lifecycle: { ...window.currentResponse.task.lifecycle, id: "next-native-cycle" },
+            },
+          };
+          window.archiveResponse = {
+            ...window.archiveResponse,
+            currentTaskId: "next-native-cycle",
+            tasks: [{ ...window.archiveResponse.tasks[0], title: "Untrusted archive" }],
+          };
+          window.deliverToolResult(window.currentThreadId, window.currentResponse);
+        });
+        await panel.getByRole("heading", { name: "Next native task", exact: true }).waitFor();
+        assert.equal(await archive.getAttribute("aria-expanded"), "false");
+        await archive.click();
+        await panel.getByText(/identity changed/i).waitFor();
+        assert.equal(
+          await panel
+            .locator(".archive-cycle-toggle")
+            .filter({ hasText: "Untrusted archive" })
+            .count(),
+          0,
+        );
+      });
+    });
     async function ready(frame) {
       const main = frame.locator(".summary .main");
       await main.waitFor();

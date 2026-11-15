@@ -578,3 +578,52 @@ test("incomplete discovery rejects schema-invalid timestamps and normalized dupl
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("source associations preserve managed closeout, new cycle, revisions and legacy history", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-lifecycle-"));
+	try {
+		const schemas = createTaskProgressSchemas(z);
+		const store = new TaskStore(root, { schemas });
+		const relations = new TaskSourceRelations(root, { schemas });
+		const binding = { path: join(root, "ledger.md"), origin: "explicit" };
+		await relations.set("thread", binding);
+		await store.initialize("thread", { requestId: "legacy", expectedRevision: 0, reason: "start", title: "Legacy", objectives: [{ id: "old", title: "Old" }] });
+		const proof = [{ summary: "Audited", verification: "verified", reference: "receipt:verified" }];
+		await store.update("thread", { requestId: "adopt", expectedRevision: 1, reason: "finish", lifecycle: true, changes: [{ targetId: "old", status: "completed", evidence: proof }] });
+		assert.equal((await store.archives("thread")).total, 0);
+		const check = { status: "done", evidence: proof };
+		await store.complete("thread", { requestId: "close", expectedRevision: 2, reason: "delivered", closeout: { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof } });
+		assert.deepEqual((await relations.get("thread")).binding, binding);
+		await relations.set("thread", null);
+		await store.rescope("thread", { requestId: "next", expectedRevision: 3, reason: "new cycle", objectives: [{ id: "new", title: "New" }] });
+		await assert.rejects(store.update("thread", { requestId: "stale", expectedRevision: 3, reason: "stale", changes: [{ targetId: "new", status: "active" }] }), { code: "TASK_REVISION_CONFLICT" });
+		await store.update("thread", { requestId: "current", expectedRevision: 4, reason: "continue", changes: [{ targetId: "new", status: "active" }] });
+		assert.deepEqual(await new TaskSourceRelations(root).get("thread"), { found: true, binding: null });
+		const events = (await store.history("thread")).events;
+		assert.deepEqual(events.map((e) => e.revision), [5, 4, 3, 2, 1]);
+		assert.deepEqual(events.map((e) => e.schemaVersion), [4, 4, 4, 4, 3]);
+		assert.equal((await store.archives("thread")).total, 1);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("invalid managed closure cannot be rewritten through source binding", async () => {
+	const root = await mkdtemp(join(tmpdir(), "relation-lifecycle-corrupt-"));
+	try {
+		const schemas = createTaskProgressSchemas(z);
+		const store = new TaskStore(root, { schemas });
+		const proof = [{ summary: "Audited", verification: "verified", reference: "receipt:verified" }];
+		const check = { status: "done", evidence: proof };
+		await store.initialize("thread", { requestId: "init", expectedRevision: 0, reason: "start", title: "Task", lifecycle: true, objectives: [{ id: "a", title: "A", status: "completed", evidence: proof }] });
+		await store.complete("thread", { requestId: "close", expectedRevision: 1, reason: "delivered", closeout: { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof } });
+		const { taskMarkdownPaths } = await import("../../src/tasks/task-store.mjs");
+		const { readMarkdownRecords, writeMarkdownRecords } = await import("../../src/tasks/markdown-records.mjs");
+		const paths = taskMarkdownPaths(root, "thread");
+		const data = await readMarkdownRecords(paths.history, { kind: "task-progress", identity: "thread" });
+		data.records.at(-1).event.state.lifecycle.completion.receipt.auditEvidence[0].verification = "reported";
+		await writeMarkdownRecords(paths.history, { kind: "task-progress", identity: "thread", records: data.records });
+		await rm(paths.heartbeat);
+		const before = await readFile(paths.history, "utf8");
+		await assert.rejects(new TaskSourceRelations(root).set("thread", null), /Invalid task event/);
+		assert.equal(await readFile(paths.history, "utf8"), before);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});

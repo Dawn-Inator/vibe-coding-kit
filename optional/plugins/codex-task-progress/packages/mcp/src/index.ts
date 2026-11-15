@@ -29,6 +29,8 @@ import {
 } from "../../ipc/src/index.js";
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
 import {
+  TaskArchiveInputSchema,
+  TaskCompleteInputSchema,
   TaskInitializeInputSchema,
   TaskRescopeInputSchema,
   TaskUpdateInputSchema,
@@ -764,6 +766,22 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         "Extend or correct a local checklist. A related Kit task source is read-only; update that canonical source through its normal project workflow. Preserve stable IDs and previous work.",
     },
     {
+      name: "task_progress_complete",
+      action: "complete",
+      title: "Complete Task Progress",
+      schema: TaskCompleteInputSchema,
+      description:
+        "Record verified delivery and a zero remaining-work and Owner-action audit for the current local task. Read the revision first; retry identical requests with the same requestId.",
+    },
+    {
+      name: "task_progress_archive",
+      action: "archive",
+      title: "Read Task Archive",
+      schema: TaskArchiveInputSchema,
+      description:
+        "Read bounded pages of earlier completed task cycles or their subtasks. Bound Heartbeat sources do not support formal cycle archives.",
+    },
+    {
       name: "task_progress_history",
       action: "history",
       title: "Read Task History",
@@ -800,7 +818,10 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
   ] as const;
   for (const tool of taskTools) {
     const readOnly =
-      tool.action === "get" || tool.action === "history" || tool.action === "heartbeat-history";
+      tool.action === "get" ||
+      tool.action === "history" ||
+      tool.action === "heartbeat-history" ||
+      tool.action === "archive";
     const isPanel = tool.name === TASK_PROGRESS_PANEL_TOOL_NAME;
     const jsonSchema = z.toJSONSchema(tool.schema, { target: "draft-07", io: "input" });
     const transportSchema = z
@@ -910,7 +931,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
                 text: JSON.stringify({ ok: true, result: response.result }),
               },
             ],
-            ...(["get", "history", "heartbeat-history"].includes(tool.action)
+            ...(["get", "history", "heartbeat-history", "archive"].includes(tool.action)
               ? { _meta: { "codex-task-progress/threadId": identity.sessionId } }
               : {}),
           };

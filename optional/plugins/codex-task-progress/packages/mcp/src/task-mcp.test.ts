@@ -53,7 +53,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = await client.listTools();
-    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 8);
+    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 10);
     const panel = tools.tools.find((tool) => tool.name === "task_progress_panel");
     assert.ok(panel);
     assert.deepEqual(panel.inputSchema.properties, {});
@@ -94,6 +94,17 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       | undefined;
     assert.deepEqual(heartbeatMetadata?.ui?.visibility, ["model", "app"]);
     assert.equal(heartbeatMetadata?.["openai/widgetAccessible"], true);
+    const archiveTool = tools.tools.find((tool) => tool.name === "task_progress_archive");
+    const completeTool = tools.tools.find((tool) => tool.name === "task_progress_complete");
+    assert.equal(archiveTool?.annotations?.readOnlyHint, true);
+    assert.deepEqual((archiveTool?._meta as { ui?: { visibility?: string[] } })?.ui?.visibility, [
+      "model",
+      "app",
+    ]);
+    assert.notEqual(completeTool?.annotations?.readOnlyHint, true);
+    assert.deepEqual((completeTool?._meta as { ui?: { visibility?: string[] } })?.ui?.visibility, [
+      "model",
+    ]);
     const initialize = tools.tools.find((tool) => tool.name === "task_progress_initialize");
     const initializeMetadata = initialize?._meta as
       | { ui?: { visibility?: string[] }; "openai/widgetAccessible"?: boolean }
@@ -151,6 +162,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       assert.equal(contentMetadata?.["openai/ui"]?.displayModes, undefined);
     }
     const compatiblePanelUris = [
+      "ui://codex-task-progress/panel-0.6.7.html",
       "ui://codex-task-progress/panel-0.6.3.html",
       "ui://codex-task-progress/panel-0.6.1.html",
       "ui://codex-task-progress/panel-v1.html",
@@ -260,6 +272,57 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
         action: "history",
         input: { limit: 3 },
       });
+    }
+    const nativeArchive = await client.callTool({
+      name: "task_progress_archive",
+      arguments: { taskId: "old", limit: 2 },
+      _meta: nativeMeta,
+    });
+    assert.notEqual(nativeArchive.isError, true);
+    const archiveRequest = received.at(-1);
+    assert.equal(archiveRequest?.method, "task.native-read");
+    if (archiveRequest?.method === "task.native-read") {
+      assert.deepEqual(archiveRequest.params, {
+        threadId: "native-chat",
+        action: "archive",
+        input: { taskId: "old", limit: 2 },
+      });
+    }
+    const proof = [{ summary: "Verified", verification: "verified", reference: "test:delivery" }];
+    const check = { status: "done", evidence: proof };
+    const closeout = {
+      branch: check,
+      merge: check,
+      push: check,
+      remainingWork: 0,
+      ownerActions: 0,
+      auditEvidence: proof,
+    };
+    const completeInput = {
+      requestId: "close",
+      expectedRevision: 1,
+      reason: "Delivered",
+      closeout,
+    };
+    const beforeUntrusted = received.length;
+    const untrustedComplete = await client.callTool({
+      name: "task_progress_complete",
+      arguments: completeInput,
+      _meta: nativeMeta,
+    });
+    assert.equal(untrustedComplete.isError, true);
+    assert.equal(received.length, beforeUntrusted);
+    const trustedComplete = await client.callTool({
+      name: "task_progress_complete",
+      arguments: completeInput,
+      _meta: { ...metadata, callId: "call-close" },
+    });
+    assert.notEqual(trustedComplete.isError, true);
+    const completeRequest = received.at(-1);
+    assert.equal(completeRequest?.method, "task.request");
+    if (completeRequest?.method === "task.request") {
+      assert.equal(completeRequest.params.action, "complete");
+      assert.deepEqual(completeRequest.params.input, completeInput);
     }
     const nativeHeartbeatHistory = await client.callTool({
       name: "task_progress_heartbeat_history",

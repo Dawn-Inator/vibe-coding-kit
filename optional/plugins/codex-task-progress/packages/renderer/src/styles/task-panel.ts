@@ -184,6 +184,19 @@ export const taskPanelStyles = css`
   .hb-time-date { margin-top: 7px; color: var(--ctp-muted, #697078); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
   .hb-time-caption { margin-top: 4px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
   .hb-time-next[data-missing="true"] > strong { color: var(--ctp-muted, #697078); font-size: 17px; font-weight: 450; letter-spacing: 0; }
+  .archive-toggle, .archive-cycle-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; text-align: start; }
+  .archive-toggle { min-height: 40px; padding: 7px 11px; font-size: 12px; font-weight: 550; }
+  .archive-toggle .info-card-count { margin-inline-start: auto; }
+  .archive-chevron { width: 14px; height: 14px; transition: transform 180ms var(--ctp-panel-ease); }
+  [aria-expanded="true"] > .archive-chevron { transform: rotate(90deg); }
+  .archive-cycle { border-top: 1px solid var(--ctp-panel-line); }
+  .archive-cycle-toggle { font-size: 11px; overflow-wrap: anywhere; }
+  .archive-cycle-toggle > span:nth-child(2) { min-width: 0; flex: 1; }
+  .archive-date, .archive-note { color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
+  .archive-nodes { padding: 0 8px 8px 22px; }
+  .archive-node { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 11px; overflow-wrap: anywhere; }
+  .archive-node[data-kind="item"] { padding-inline-start: 14px; }
+  .archive-node > span:last-child { flex: none; color: var(--ctp-muted, #697078); }
   .info-card { min-width: 0; overflow: hidden; border: 1px solid var(--ctp-panel-line); border-radius: 14px; background: var(--ctp-surface, #fff); }
   .info-card[data-tone="warning"] { border-color: color-mix(in srgb, #d98216 30%, var(--ctp-panel-line)); background: color-mix(in srgb, #f6a93a 7%, var(--ctp-surface, #fff)); }
   .info-card[data-tone="error"] { border-color: color-mix(in srgb, var(--ctp-error, #b15838) 28%, var(--ctp-panel-line)); }

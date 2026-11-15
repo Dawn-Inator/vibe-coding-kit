@@ -9,7 +9,12 @@ import {
 	verifyTaskHistoryHead,
 	writeTaskHistoryHead,
 } from "./markdown-records.mjs";
-import { calculateTaskProgress } from "./task-contract.mjs";
+import {
+	calculateTaskProgress,
+	calculateTaskLifecycleProgress,
+	hasOpenTaskWork,
+	isTaskLifecycleComplete,
+} from "./task-contract.mjs";
 
 // Leave room for the surrounding IPC envelope. The raw journal is never truncated.
 const SUMMARY_PAGE_BYTES = 512 * 1024;
@@ -68,6 +73,46 @@ export function taskMarkdownPaths(root, threadId) {
 		legacySnapshot: resolve(directory, "snapshot.json"),
 	};
 }
+function validReceipt(receipt) {
+	const evidence = (items) =>
+		Array.isArray(items) &&
+		items.length > 0 &&
+		items.length <= 20 &&
+		items.every(
+			(e) =>
+				e &&
+				typeof e === "object" &&
+				Object.keys(e).every((k) => ["summary", "verification", "kind", "reference"].includes(k)) &&
+				typeof e.summary === "string" &&
+				e.summary.trim() &&
+				e.summary.length <= 2000 &&
+				e.verification === "verified" &&
+				typeof e.reference === "string" &&
+				e.reference.trim() &&
+				e.reference.length <= 4096 &&
+				(e.kind === undefined ||
+					(typeof e.kind === "string" && e.kind.trim() && e.kind.length <= 100)),
+		);
+	const check = (v) =>
+		v &&
+		typeof v === "object" &&
+		Object.keys(v).every((k) => ["status", "evidence"].includes(k)) &&
+		["done", "not-applicable"].includes(v.status) &&
+		evidence(v.evidence);
+	return (
+		receipt &&
+		typeof receipt === "object" &&
+		Object.keys(receipt).every((k) =>
+			["branch", "merge", "push", "remainingWork", "ownerActions", "auditEvidence"].includes(k),
+		) &&
+		check(receipt.branch) &&
+		check(receipt.merge) &&
+		check(receipt.push) &&
+		receipt.remainingWork === 0 &&
+		receipt.ownerActions === 0 &&
+		evidence(receipt.auditEvidence)
+	);
+}
 // A dependency-free structural guard shared by readers before any history rewrite.
 // TaskStore additionally applies the caller's full TaskEventSchema.
 export function validateTaskEventStructure(e) {
@@ -104,8 +149,7 @@ export function validateTaskEventStructure(e) {
 			!str(v.title, 1000) ||
 			ids.has(v.id) ||
 			(v.status !== undefined && !statuses.includes(v.status)) ||
-			(v.evidence !== undefined &&
-				(!Array.isArray(v.evidence) || v.evidence.length > 100))
+			(v.evidence !== undefined && (!Array.isArray(v.evidence) || v.evidence.length > 100))
 		)
 			return false;
 		ids.add(v.id);
@@ -154,8 +198,13 @@ export function validateTaskEventStructure(e) {
 			"after",
 			"state",
 		]) ||
-		e.schemaVersion !== 3 ||
-		!["task.initialized", "task.updated", "task.rescoped"].includes(e.kind) ||
+		![3, 4].includes(e.schemaVersion) ||
+		![
+			"task.initialized",
+			"task.updated",
+			"task.rescoped",
+			...(e.schemaVersion === 4 ? ["task.completed"] : []),
+		].includes(e.kind) ||
 		![e.eventId, e.threadId, e.requestId, e.fingerprint, e.reason].every(
 			(v) => typeof v === "string",
 		) ||
@@ -179,8 +228,9 @@ export function validateTaskEventStructure(e) {
 			"objectives",
 			"progress",
 			"phase",
+			...(e.schemaVersion === 4 ? ["lifecycle"] : []),
 		]) &&
-		state.schemaVersion === 3 &&
+		state.schemaVersion === e.schemaVersion &&
 		state.kind === "task" &&
 		str(state.threadId, 512) &&
 		str(state.title, 1000) &&
@@ -192,8 +242,42 @@ export function validateTaskEventStructure(e) {
 		state.objectives.length <= 100 &&
 		state.objectives.every((v) => entry(v, true)) &&
 		progress(state.progress) &&
-		["active", "completed"].includes(state.phase)
+		["active", "completed"].includes(state.phase) &&
+		(e.schemaVersion === 3 ||
+			(e.after.completed === state.progress.completed &&
+				e.after.total === state.progress.total &&
+				e.after.percent === state.progress.percent &&
+				object(state.lifecycle, ["id", "sequence", "startedAt", "completion"]) &&
+				str(state.lifecycle.id, 128) &&
+				Number.isInteger(state.lifecycle.sequence) &&
+				state.lifecycle.sequence > 0 &&
+				date(state.lifecycle.startedAt) &&
+				(state.lifecycle.completion === null ||
+					(object(state.lifecycle.completion, ["completedAt", "receipt"]) &&
+						date(state.lifecycle.completion.completedAt) &&
+						validReceipt(state.lifecycle.completion.receipt))) &&
+				(state.phase === "completed") === (state.lifecycle.completion !== null) &&
+				(e.kind === "task.completed") === (state.lifecycle.completion !== null) &&
+				JSON.stringify(state.progress) ===
+					JSON.stringify(
+						calculateTaskLifecycleProgress(state.objectives, state.lifecycle.completion !== null),
+					) &&
+				(state.lifecycle.completion === null || !hasOpenTaskWork(state.objectives))))
 	);
+}
+// Shared by every writer of the journal, including source association updates.
+export function isValidTaskLifecycleTransition(previous, event) {
+	if (event.schemaVersion !== 4) return previous?.schemaVersion !== 4;
+	const life = event.state.lifecycle;
+	const old = previous?.schemaVersion === 4 ? previous.lifecycle : null;
+	return old
+		? old.completion
+			? event.kind === "task.rescoped" &&
+				life.sequence === old.sequence + 1 &&
+				life.id !== old.id &&
+				life.completion === null
+			: life.sequence === old.sequence && life.id === old.id && life.startedAt === old.startedAt
+		: life.sequence === 1 && life.completion === null;
 }
 /** The Helper is the sole writer across processes. */
 export class TaskStore {
@@ -209,6 +293,7 @@ export class TaskStore {
 	}
 	validateEvents(threadId, events) {
 		let revision = 0;
+		let prior = null;
 		const ids = new Set();
 		const requests = new Set();
 		return events.map((raw) => {
@@ -233,6 +318,9 @@ export class TaskStore {
 					"TASK_HISTORY_CORRUPT",
 					"Task history identity, revision or IDs are inconsistent",
 				);
+			if (!isValidTaskLifecycleTransition(prior, event))
+				throw new TaskStoreError("TASK_HISTORY_CORRUPT", "Invalid task lifecycle transition");
+			prior = event.state;
 			ids.add(event.eventId);
 			requests.add(event.requestId);
 			// Parsing validates; the original event remains authoritative, including unknown fields.
@@ -507,10 +595,9 @@ export class TaskStore {
 		return this.serialize(threadId, async () => {
 			const loaded = await this.load(threadId);
 			const events = loaded.events;
-			const fingerprint = digest(canonical({ kind, input }));
-			const duplicate = events.find(
-				(event) => event.requestId === input.requestId,
-			);
+			const { lifecycle: _policy, ...businessInput } = input;
+			const fingerprint = digest(canonical({ kind, input: businessInput }));
+			const duplicate = events.find((event) => event.requestId === input.requestId);
 			if (duplicate) {
 				if (duplicate.fingerprint !== fingerprint)
 					throw new TaskStoreError(
@@ -525,25 +612,59 @@ export class TaskStore {
 					"TASK_REVISION_CONFLICT",
 					`Expected revision ${input.expectedRevision}; current revision is ${previous?.revision ?? 0}`,
 				);
-			const next = build(previous);
-			const progress = calculateTaskProgress(next.objectives);
 			const now = new Date().toISOString();
+			const next = build(previous);
+			const managed = previous?.schemaVersion === 4 || input.lifecycle === true;
+			let lifecycle;
+			if (managed) {
+				lifecycle =
+					previous?.schemaVersion === 4
+						? previous.lifecycle
+						: {
+								id: randomUUID(),
+								sequence: 1,
+								startedAt: now,
+								completion: null,
+							};
+				if (kind === "task.rescoped" && isTaskLifecycleComplete(previous))
+					lifecycle = {
+						id: randomUUID(),
+						sequence: previous.lifecycle.sequence + 1,
+						startedAt: now,
+						completion: null,
+					};
+				if (kind === "task.completed")
+					lifecycle = {
+						...lifecycle,
+						completion: {
+							completedAt: now,
+							receipt: input.closeout,
+						},
+					};
+			}
+			const progress = managed
+				? calculateTaskLifecycleProgress(next.objectives, !!lifecycle.completion)
+				: calculateTaskProgress(next.objectives);
 			const state = this.schemas.TaskStateSchema.parse({
-				schemaVersion: 3,
+				schemaVersion: managed ? 4 : 3,
 				kind: "task",
+				...(managed ? { lifecycle } : {}),
 				threadId,
 				...next,
 				revision: (previous?.revision ?? 0) + 1,
 				createdAt: previous?.createdAt ?? now,
 				updatedAt: now,
 				progress,
-				phase:
-					progress.total > 0 && progress.completed === progress.total
-						? "completed"
-						: "active",
+				phase: (
+					managed
+						? !!lifecycle.completion
+						: progress.total > 0 && progress.completed === progress.total
+				)
+					? "completed"
+					: "active",
 			});
 			const event = this.schemas.TaskEventSchema.parse({
-				schemaVersion: 3,
+				schemaVersion: managed ? 4 : 3,
 				kind,
 				eventId: randomUUID(),
 				threadId,
@@ -581,10 +702,11 @@ export class TaskStore {
 	async update(threadId, value) {
 		const input = this.schemas.TaskUpdateInputSchema.parse(value);
 		return this.mutate(threadId, "task.updated", input, (previous) => {
-			if (!previous)
+			if (!previous) throw new TaskStoreError("TASK_NOT_INITIALIZED", "Initialize the task first");
+			if (isTaskLifecycleComplete(previous))
 				throw new TaskStoreError(
-					"TASK_NOT_INITIALIZED",
-					"Initialize the task first",
+					"TASK_CLOSED",
+					"Closed tasks cannot be updated; rescope to start new work",
 				);
 			const objectives = structuredClone(previous.objectives);
 			const changedIds = new Set();
@@ -599,10 +721,7 @@ export class TaskStore {
 					.flatMap((objective) => [objective, ...objective.items])
 					.find((entry) => entry.id === change.targetId);
 				if (!target)
-					throw new TaskStoreError(
-						"TASK_TARGET_NOT_FOUND",
-						`Unknown task item ${change.targetId}`,
-					);
+					throw new TaskStoreError("TASK_TARGET_NOT_FOUND", `Unknown task item ${change.targetId}`);
 				target.status = change.status;
 				if (change.evidence) target.evidence = change.evidence;
 			}
@@ -615,17 +734,43 @@ export class TaskStore {
 	async rescope(threadId, value) {
 		const input = this.schemas.TaskRescopeInputSchema.parse(value);
 		return this.mutate(threadId, "task.rescoped", input, (previous) => {
-			if (!previous)
-				throw new TaskStoreError(
-					"TASK_NOT_INITIALIZED",
-					"Initialize the task first",
-				);
-			const objectives = structuredClone(input.objectives);
+			if (!previous) throw new TaskStoreError("TASK_NOT_INITIALIZED", "Initialize the task first");
+			let objectives = structuredClone(input.objectives);
+			if (isTaskLifecycleComplete(previous)) {
+				objectives = objectives.flatMap((objective) => {
+					const old = previous.objectives.find((entry) => entry.id === objective.id);
+					if (!old) return [objective];
+					const sameFields =
+						canonical({ ...objective, items: [] }) === canonical({ ...old, items: [] });
+					const items = objective.items.filter(
+						(item) =>
+							!old.items.some(
+								(prior) => prior.id === item.id && canonical(prior) === canonical(item),
+							),
+					);
+					if (sameFields && items.length === 0) return [];
+					return [
+						{
+							...objective,
+							...(items.length === 0 &&
+							objective.status === "completed" &&
+							objective.evidence.length === 0
+								? { status: "pending" }
+								: {}),
+							items,
+						},
+					];
+				});
+				if (!objectives.length)
+					throw new TaskStoreError("TASK_NO_NEW_WORK", "A new cycle requires new or changed work");
+				return {
+					title: input.title ?? objectives[0].title,
+					objectives: this.schemas.TaskObjectivesSchema.parse(objectives),
+				};
+			}
 			// Scope removal is represented by cancellation, never disappearance from the current registry.
 			for (const old of previous.objectives) {
-				const retained = objectives.find(
-					(objective) => objective.id === old.id,
-				);
+				const retained = objectives.find((objective) => objective.id === old.id);
 				if (!retained) objectives.push({ ...old, status: "cancelled" });
 				else
 					for (const item of old.items) {
@@ -637,6 +782,136 @@ export class TaskStore {
 				title: input.title ?? previous.title,
 				objectives: this.schemas.TaskObjectivesSchema.parse(objectives),
 			};
+		});
+	}
+
+	async complete(threadId, value) {
+		const input = this.schemas.TaskCompleteInputSchema.parse(value);
+		return this.mutate(threadId, "task.completed", input, (previous) => {
+			if (!previous) throw new TaskStoreError("TASK_NOT_INITIALIZED", "Initialize the task first");
+			if (previous.schemaVersion !== 4)
+				throw new TaskStoreError("TASK_NOT_MANAGED", "Opt in to lifecycle before completing");
+			if (isTaskLifecycleComplete(previous))
+				throw new TaskStoreError("TASK_CLOSED", "Task is already closed");
+			if (hasOpenTaskWork(previous.objectives))
+				throw new TaskStoreError(
+					"TASK_OPEN_WORK",
+					"All non-cancelled objectives and items must be completed",
+				);
+			return { title: previous.title, objectives: previous.objectives };
+		});
+	}
+
+	async archives(threadId, options = {}) {
+		return this.archivePage(threadId, null, options);
+	}
+	async archive(threadId, taskId, options = {}) {
+		if (typeof taskId !== "string" || !taskId.trim())
+			throw new TaskStoreError("TASK_ARCHIVE_INVALID", "Archive task ID is required");
+		return this.archivePage(threadId, taskId, options);
+	}
+	async archivePage(threadId, taskId, options) {
+		return this.serialize(threadId, async () => {
+			const { events } = await this.load(threadId, { persist: false });
+			const current = events.at(-1)?.state;
+			const currentTaskId = current?.schemaVersion === 4 ? current.lifecycle.id : null;
+			const closed = events
+				.filter(
+					(e) =>
+						e.schemaVersion === 4 &&
+						e.kind === "task.completed" &&
+						e.state.lifecycle.id !== currentTaskId,
+				)
+				.reverse();
+			const summary = (e) => ({
+				id: e.state.lifecycle.id,
+				title: e.state.title,
+				completedAt: e.state.lifecycle.completion.completedAt,
+				completionRevision: e.revision,
+				progress: e.state.progress,
+				objectiveCount: e.state.objectives.length,
+				itemCount: e.state.objectives.reduce((n, o) => n + o.items.length, 0),
+			});
+			const limit = options.limit ?? (taskId ? 50 : 10);
+			if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+				throw new TaskStoreError("TASK_ARCHIVE_PAGE_INVALID", "Archive limit must be 1–100");
+			const scope = digest(canonical({ threadId, taskId, currentTaskId }));
+			let offset = 0;
+			if (options.cursor !== undefined) {
+				try {
+					const parsed = JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8"));
+					if (parsed.scope !== scope || !Number.isSafeInteger(parsed.offset) || parsed.offset < 1)
+						throw new Error();
+					offset = parsed.offset;
+				} catch {
+					throw new TaskStoreError("TASK_ARCHIVE_CURSOR_INVALID", "Invalid archive cursor");
+				}
+			}
+			let entries, base;
+			if (taskId) {
+				const event = closed.find((e) => e.state.lifecycle.id === taskId);
+				if (!event) throw new TaskStoreError("TASK_ARCHIVE_NOT_FOUND", "Archived task not found");
+				entries = event.state.objectives.flatMap((o) => [
+					{
+						id: o.id,
+						title: o.title,
+						status: o.status,
+						kind: "objective",
+						required: o.required,
+					},
+					...o.items.map((i) => ({
+						id: i.id,
+						title: i.title,
+						status: i.status,
+						kind: "item",
+						parentId: o.id,
+					})),
+				]);
+				base = {
+					kind: "subtasks",
+					task: summary(event),
+					totalNodes: entries.length,
+					currentTaskId,
+				};
+			} else {
+				entries = closed.map(summary);
+				base = { kind: "tasks", total: entries.length, currentTaskId };
+			}
+			if (offset > entries.length)
+				throw new TaskStoreError("TASK_ARCHIVE_CURSOR_INVALID", "Archive cursor is out of range");
+			const key = taskId ? "nodes" : "tasks";
+			const page = [];
+			for (const entry of entries.slice(offset, offset + limit)) {
+				const candidate = [...page, entry];
+				if (
+					Buffer.byteLength(
+						JSON.stringify({
+							...base,
+							[key]: candidate,
+							nextCursor: "x".repeat(256),
+						}),
+					) > SUMMARY_PAGE_BYTES
+				) {
+					if (!page.length)
+						throw new TaskStoreError(
+							"TASK_ARCHIVE_PAGE_TOO_LARGE",
+							"Archive entry exceeds page budget",
+						);
+					break;
+				}
+				page.push(entry);
+			}
+			const nextOffset = offset + page.length;
+			const nextCursor =
+				nextOffset < entries.length
+					? Buffer.from(
+							JSON.stringify({
+								scope,
+								offset: nextOffset,
+							}),
+						).toString("base64url")
+					: null;
+			return { ...base, [key]: page, nextCursor };
 		});
 	}
 	async history(threadId, options = {}) {

@@ -28,6 +28,7 @@ type PanelElement = HTMLElement & {
 const READ_ONLY_TOOL_NAMES: Partial<Record<TaskPanelRequest["method"], string>> = {
   get: "task_progress_get",
   history: "task_progress_history",
+  archive: "task_progress_archive",
   "heartbeat-history": "task_progress_heartbeat_history",
 };
 
@@ -246,7 +247,11 @@ element.requester = async (request: TaskPanelRequest): Promise<TaskPanelResponse
   if (!toolName) throw new Error("This panel only supports read-only task requests.");
   const expectedThreadId = element.threadId;
   const expectedIdentityGeneration = identityGeneration;
-  const args = request.cursor ? { cursor: request.cursor } : {};
+  const args = {
+    ...(request.cursor ? { cursor: request.cursor } : {}),
+    ...(request.taskId ? { taskId: request.taskId } : {}),
+    ...(request.limit !== undefined ? { limit: request.limit } : {}),
+  };
   const raw = await callTool(toolName, args);
   const parsed = envelope(raw);
   if (!parsed) throw new Error("Task history returned an unreadable response.");

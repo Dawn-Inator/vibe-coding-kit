@@ -26,6 +26,8 @@ import {
 import { resolveGoalProgressPaths } from "../../store/src/index.js";
 import { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
+  type TaskCloseoutReceipt,
+  type TaskEvidence,
   type TaskHistoryPage,
   type TaskMutationResult,
   type TaskState,
@@ -55,7 +57,7 @@ test("disabled project task progress returns inert reads and rejects writes befo
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let callNumber = 0;
   const request = (
-    action: "get" | "initialize" | "update" | "history",
+    action: "get" | "initialize" | "update" | "history" | "archive" | "complete",
     threadId = "disabled-chat",
   ) =>
     client.request({
@@ -64,14 +66,7 @@ test("disabled project task progress returns inert reads and rejects writes befo
         action,
         auth: {
           kind: "codex-request",
-          toolName:
-            action === "get"
-              ? "task_progress_get"
-              : action === "initialize"
-                ? "task_progress_initialize"
-                : action === "update"
-                  ? "task_progress_update"
-                  : "task_progress_history",
+          toolName: `task_progress_${action}`,
           identity: {
             threadId,
             sessionId: threadId,
@@ -103,6 +98,12 @@ test("disabled project task progress returns inert reads and rejects writes befo
     };
     assert.deepEqual(disabled, { enabled: false, task: null, heartbeat: null });
     await assert.rejects(request("initialize"), hasCode("TASK_PROGRESS_DISABLED"));
+    assert.deepEqual((await request("archive")).result, {
+      enabled: false,
+      task: null,
+      heartbeat: null,
+    });
+    await assert.rejects(request("complete"), hasCode("TASK_PROGRESS_DISABLED"));
     await assert.rejects(access(join(root, ".workspace", "codex-task-progress")), {
       code: "ENOENT",
     });
@@ -499,6 +500,45 @@ async function taskEvents(root: string, threadId: string) {
   return (await store.history(threadId, { limit: 100 })).events;
 }
 
+async function seedDormantArchive(store: TaskStore, threadId: string) {
+  const proof: TaskEvidence[] = [
+    { summary: "Verified", verification: "verified", reference: "test:dormant" },
+  ];
+  const check: TaskCloseoutReceipt["branch"] = { status: "done", evidence: proof };
+  const closeout: TaskCloseoutReceipt = {
+    branch: check,
+    merge: check,
+    push: check,
+    remainingWork: 0,
+    ownerActions: 0,
+    auditEvidence: proof,
+  };
+  await store.initialize(threadId, {
+    requestId: "seed",
+    expectedRevision: 0,
+    lifecycle: true,
+    title: "Secret archived task",
+    reason: "Seed",
+    objectives: [
+      { id: "old", title: "Secret archived objective", status: "completed", evidence: proof },
+    ],
+  });
+  await store.complete(threadId, {
+    requestId: "seed-close",
+    expectedRevision: 1,
+    reason: "Delivered",
+    closeout,
+  });
+  await store.rescope(threadId, {
+    requestId: "seed-next",
+    expectedRevision: 2,
+    reason: "Next",
+    objectives: [{ id: "new", title: "Current" }],
+  });
+  assert.equal((await store.archives(threadId)).total, 1);
+  return closeout;
+}
+
 test("real Helper IPC supports ordinary task completion, regression, pagination, isolated chats and restart", async () => {
   const root = await mkdtemp("/tmp/ctph-");
   await mkdir(join(root, ".git"));
@@ -513,7 +553,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
   const projectReads = trackProjectViewReads();
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   async function request(
-    action: "get" | "initialize" | "update" | "rescope" | "history",
+    action: "get" | "initialize" | "update" | "rescope" | "history" | "complete" | "archive",
     input: unknown,
     threadId = "ordinary-chat",
   ) {
@@ -578,6 +618,7 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       expectedRevision: 1,
       reason: "Build verified",
       changes: [
+        { targetId: "C1", status: "completed" },
         {
           targetId: "C1.1",
           status: "completed",
@@ -586,31 +627,154 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
       ],
     });
     const done = (completed.result as TaskMutationResult).state;
-    assert.equal(done.progress.percent, 100);
-    assert.equal(done.phase, "completed");
+    assert.equal(done.progress.percent, 50);
+    const proof = [
+      { summary: "Verified delivery", verification: "verified", reference: "test:delivery" },
+    ];
+    const check = { status: "done", evidence: proof };
+    const closeout = {
+      branch: check,
+      merge: check,
+      push: check,
+      remainingWork: 0,
+      ownerActions: 0,
+      auditEvidence: proof,
+    };
+    for (const invalid of [
+      { ...closeout, remainingWork: 1 },
+      { ...closeout, ownerActions: 1 },
+      { ...closeout, auditEvidence: [{ ...proof[0], verification: "reported" }] },
+    ]) {
+      await assert.rejects(
+        request("complete", {
+          requestId: `invalid-${JSON.stringify(invalid)}`,
+          expectedRevision: 2,
+          reason: "Close",
+          closeout: invalid,
+        }),
+      );
+    }
+    await assert.rejects(
+      request("complete", {
+        requestId: "stale-close",
+        expectedRevision: 1,
+        reason: "Close",
+        closeout,
+      }),
+    );
+    const closeInput = { requestId: "close", expectedRevision: 2, reason: "Delivered", closeout };
+    const closed = (await request("complete", closeInput)).result as TaskMutationResult;
+    assert.equal(closed.state.progress.percent, 100);
+    assert.equal(
+      ((await request("complete", closeInput)).result as TaskMutationResult).duplicate,
+      true,
+    );
+    await assert.rejects(
+      request("update", {
+        requestId: "closed-update",
+        expectedRevision: 3,
+        reason: "Late change",
+        changes: [{ targetId: "C1.1", status: "pending" }],
+      }),
+    );
     const expanded = await request("rescope", {
       requestId: "expand",
-      expectedRevision: 2,
+      expectedRevision: 3,
       reason: "User added delivery verification",
       objectives: [...done.objectives, { id: "C2", title: "Verify delivery" }],
     });
-    assert.equal((expanded.result as TaskMutationResult).state.progress.percent, 50);
+    assert.equal((expanded.result as TaskMutationResult).state.progress.percent, 0);
+    assert.deepEqual(
+      (expanded.result as TaskMutationResult).state.objectives.map((objective) => objective.id),
+      ["C2"],
+    );
+    const archive = (await request("archive", { limit: 1 })).result as {
+      archive: { total: number; tasks: Array<{ id: string }>; currentTaskId: string };
+    };
+    assert.equal(archive.archive.total, 1);
+    const detail = (await request("archive", { taskId: archive.archive.tasks[0]?.id, limit: 1 }))
+      .result as { archive: { nodes: unknown[]; nextCursor: string | null; totalNodes: number } };
+    assert.equal(detail.archive.nodes.length, 1);
+    assert.ok(detail.archive.nextCursor);
+    assert.equal(detail.archive.totalNodes, 2);
+    const detailNext = (
+      await request("archive", {
+        taskId: archive.archive.tasks[0]?.id,
+        limit: 1,
+        cursor: detail.archive.nextCursor,
+      })
+    ).result as { archive: { nodes: unknown[] } };
+    assert.equal(detailNext.archive.nodes.length, 1);
+    await assert.rejects(
+      request(
+        "archive",
+        { taskId: archive.archive.tasks[0]?.id, cursor: detail.archive.nextCursor },
+        "another-chat",
+      ),
+    );
     assert.equal((expanded.result as TaskMutationResult).state.phase, "active");
     const history = await request("history", { limit: 1 });
     const page = (history.result as { history: TaskHistoryPage }).history;
     assert.equal(page.events[0]?.before?.percent, 100);
-    assert.equal(page.events[0]?.after.percent, 50);
+    assert.equal(page.events[0]?.after.percent, 0);
     assert.equal(page.events[0]?.reason, "User added delivery verification");
     assert.ok(page.nextCursor);
     const older = await request("history", { cursor: page.nextCursor, limit: 2 });
     assert.deepEqual(
       (older.result as { history: TaskHistoryPage }).history.events.map((event) => event.revision),
-      [2, 1],
+      [3, 2],
     );
     const otherChat = (await request("get", {}, "another-chat")).result as {
       task: TaskState | null;
     };
     assert.equal(otherChat.task, null);
+    await request(
+      "initialize",
+      {
+        requestId: "in-cycle-init",
+        expectedRevision: 0,
+        title: "In-cycle scope",
+        reason: "Start",
+        objectives: [{ id: "A", title: "First" }],
+      },
+      "scope-chat",
+    );
+    const scopeProof = [{ summary: "Verified", verification: "verified", reference: "test:scope" }];
+    const scopeDone = (
+      await request(
+        "update",
+        {
+          requestId: "in-cycle-done",
+          expectedRevision: 1,
+          reason: "Verified",
+          changes: [{ targetId: "A", status: "completed", evidence: scopeProof }],
+        },
+        "scope-chat",
+      )
+    ).result as TaskMutationResult;
+    assert.equal(scopeDone.state.progress.percent, 50);
+    const scopeExpanded = (
+      await request(
+        "rescope",
+        {
+          requestId: "in-cycle-add",
+          expectedRevision: 2,
+          reason: "More work",
+          objectives: [...scopeDone.state.objectives, { id: "B", title: "Second" }],
+        },
+        "scope-chat",
+      )
+    ).result as TaskMutationResult;
+    assert.equal(scopeExpanded.state.progress.total, 3);
+    assert.ok((scopeExpanded.state.progress.percent ?? 100) < 50);
+    await assert.rejects(
+      request(
+        "complete",
+        { requestId: "open-close", expectedRevision: 3, reason: "Premature", closeout },
+        "scope-chat",
+      ),
+      hasCode("TASK_OPEN_WORK"),
+    );
     const inventoryCount = 4_000;
     const inventoryLines = Array.from(
       { length: inventoryCount },
@@ -667,11 +831,15 @@ test("real Helper IPC supports ordinary task completion, regression, pagination,
     };
     assert.equal(restored.storage.mode, "workspace");
     assert.equal(restored.storage.root, workspaceRoot);
-    assert.equal(restored.task.revision, 3);
-    assert.equal(restored.task.progress.percent, 50);
+    assert.equal(restored.task.revision, 4);
+    assert.equal(restored.task.progress.percent, 0);
+    assert.equal(
+      ((await request("archive", {})).result as { archive: { total: number } }).archive.total,
+      1,
+    );
     const duplicate = await request("rescope", {
       requestId: "expand",
-      expectedRevision: 2,
+      expectedRevision: 3,
       reason: "User added delivery verification",
       objectives: [...done.objectives, { id: "C2", title: "Verify delivery" }],
     });
@@ -843,7 +1011,7 @@ test("native read IPC stays read-only and resolves each exact user chat independ
       "non-user-chat",
     ])
       await assert.rejects(nativeRead(threadId, "get"));
-    for (const action of ["initialize", "update", "rescope", "bind-heartbeat"])
+    for (const action of ["initialize", "update", "rescope", "complete", "bind-heartbeat"])
       assert.equal(
         GoalProgressIpcRequestSchema.safeParse({
           protocolVersion: 4,
@@ -922,7 +1090,7 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
   let call = 0;
   const projectReads = trackProjectViewReads();
   async function request(
-    action: "initialize" | "update" | "get" | "history" | "bind-heartbeat",
+    action: "initialize" | "update" | "get" | "history" | "bind-heartbeat" | "archive" | "complete",
     input: unknown,
     threadId = "source-chat",
   ) {
@@ -932,6 +1100,8 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
       get: "task_progress_get",
       history: "task_progress_history",
       "bind-heartbeat": "task_progress_bind_heartbeat",
+      archive: "task_progress_archive",
+      complete: "task_progress_complete",
     } as const;
     const auth: GoalProgressIpcAuthorization = {
       kind: "codex-request",
@@ -1023,6 +1193,29 @@ test("associated Kit heartbeat is authoritative, read-only and restores dormant 
         expectedRevision: 1,
         reason: "Attempt to duplicate source task",
         changes: [{ targetId: "H1", status: "completed" }],
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    const sourceArchive = (await request("archive", {})).result as {
+      archive: { available: boolean; tasks: unknown[] };
+    };
+    assert.equal(sourceArchive.archive.available, false);
+    assert.deepEqual(sourceArchive.archive.tasks, []);
+    const proof = [{ summary: "Verified", verification: "verified", reference: "test:delivery" }];
+    const check = { status: "done", evidence: proof };
+    await assert.rejects(
+      request("complete", {
+        requestId: "source-close",
+        expectedRevision: 1,
+        reason: "Close",
+        closeout: {
+          branch: check,
+          merge: check,
+          push: check,
+          remainingWork: 0,
+          ownerActions: 0,
+          auditEvidence: proof,
+        },
       }),
       hasCode("TASK_SOURCE_READ_ONLY"),
     );
@@ -1315,8 +1508,8 @@ test("incomplete discovery preserves known local history but still guards new an
       revision: 2,
       kind: "task.updated",
       reason: "Start the known task",
-      before: { completed: 0, total: 1, percent: 0 },
-      after: { completed: 0, total: 1, percent: 0 },
+      before: { completed: 0, total: 2, percent: 0 },
+      after: { completed: 0, total: 2, percent: 0 },
     });
     const knownOlder = (await request("history", { limit: 1, cursor: "2" })).result as {
       history: TaskHistorySummaryPage;
@@ -1328,7 +1521,7 @@ test("incomplete discovery preserves known local history but still guards new an
       kind: "task.initialized",
       reason: "Create durable local task history before bounded discovery",
       before: null,
-      after: { completed: 0, total: 1, percent: 0 },
+      after: { completed: 0, total: 2, percent: 0 },
     });
     assert.deepEqual(await taskEvents(root, "known-local-chat"), knownEventsBefore);
     assert.doesNotMatch(
@@ -1367,8 +1560,8 @@ test("incomplete discovery preserves known local history but still guards new an
       revision: 3,
       kind: "task.updated",
       reason: "Continue the known task despite incomplete discovery",
-      before: { completed: 0, total: 1, percent: 0 },
-      after: { completed: 0, total: 1, percent: 0 },
+      before: { completed: 0, total: 2, percent: 0 },
+      after: { completed: 0, total: 2, percent: 0 },
     });
 
     const freshChat = "new-incomplete-chat";
@@ -1448,7 +1641,15 @@ test("automatic heartbeat authority stays latched through association loss and r
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
   async function request(
-    action: "initialize" | "update" | "get" | "history" | "bind-heartbeat" | "heartbeat-history",
+    action:
+      | "initialize"
+      | "update"
+      | "get"
+      | "history"
+      | "bind-heartbeat"
+      | "heartbeat-history"
+      | "archive"
+      | "complete",
     input: unknown,
     threadId = "sticky-chat",
   ) {
@@ -1459,6 +1660,8 @@ test("automatic heartbeat authority stays latched through association loss and r
       history: "task_progress_history",
       "bind-heartbeat": "task_progress_bind_heartbeat",
       "heartbeat-history": "task_progress_heartbeat_history",
+      archive: "task_progress_archive",
+      complete: "task_progress_complete",
     } as const;
     const auth: GoalProgressIpcAuthorization = {
       kind: "codex-request",
@@ -1482,13 +1685,7 @@ test("automatic heartbeat authority stays latched through association loss and r
   const projectReads = trackProjectViewReads();
   try {
     const localStore = new TaskStore(join(root, ".workspace", "codex-task-progress"));
-    await localStore.initialize("sticky-chat", {
-      requestId: "dormant",
-      expectedRevision: 0,
-      title: "Dormant",
-      reason: "Keep prior local record",
-      objectives: [{ id: "L1", title: "Local" }],
-    });
+    const closeout = await seedDormantArchive(localStore, "sticky-chat");
     await mkdir(join(root, "kit"), { recursive: true });
     await writeFile(
       join(root, ".codex-task-progress.json"),
@@ -1584,6 +1781,21 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.deepEqual(staleHistory.history.wakes, []);
     assert.equal(staleHistory.history.source.path, canonicalSourcePath);
     assert.ok(staleHistory.history.source.error);
+    const staleArchive = (await request("archive", {})).result as {
+      archive: { available: boolean; tasks: unknown[] };
+    };
+    assert.equal(staleArchive.archive.available, false);
+    assert.deepEqual(staleArchive.archive.tasks, []);
+    await assert.rejects(
+      request("complete", {
+        requestId: "stale-close",
+        expectedRevision: 3,
+        reason: "Close",
+        closeout,
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
+    assert.deepEqual(await taskEvents(root, "sticky-chat"), before);
     await localStore.initialize("unresolved-chat", {
       requestId: "unresolved-local",
       expectedRevision: 0,
@@ -1603,13 +1815,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     };
     assert.equal(unrelatedHistory.history.events.length, 1);
     const pendingThreadId = "pending-history-chat";
-    await localStore.initialize(pendingThreadId, {
-      requestId: "pending-local",
-      expectedRevision: 0,
-      title: "Keep dormant history until source selection",
-      reason: "Preexisting local task history",
-      objectives: [{ id: "P1", title: "Local task" }],
-    });
+    await seedDormantArchive(localStore, pendingThreadId);
     const pendingEvents = await taskEvents(root, pendingThreadId);
     const ambiguousSource = original.replaceAll("sticky-chat", pendingThreadId);
     await writeFile(join(root, "heartbeat-pending-one.md"), ambiguousSource);
@@ -1629,6 +1835,19 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.deepEqual(pendingHistory.history.wakes, []);
     assert.equal(pendingHistory.history.source.path, null);
     assert.ok(pendingHistory.history.source.error);
+    const pendingArchive = (await request("archive", {}, pendingThreadId)).result as {
+      archive: { available: boolean; tasks: unknown[] };
+    };
+    assert.equal(pendingArchive.archive.available, false);
+    assert.deepEqual(pendingArchive.archive.tasks, []);
+    await assert.rejects(
+      request(
+        "complete",
+        { requestId: "pending-close", expectedRevision: 3, reason: "Close", closeout },
+        pendingThreadId,
+      ),
+      hasCode("TASK_SOURCE_SELECTION_REQUIRED"),
+    );
     assert.deepEqual(await taskEvents(root, "unresolved-chat"), unresolvedEvents);
     assert.deepEqual(await taskEvents(root, pendingThreadId), pendingEvents);
     await assert.rejects(
@@ -1675,6 +1894,20 @@ test("automatic heartbeat authority stays latched through association loss and r
     assert.equal(afterRestart.task, null);
     assert.equal(afterRestart.taskSource.status, "stale");
     assert.equal(afterRestart.taskSource.path, canonicalSourcePath);
+    const restartedArchive = (await request("archive", {})).result as {
+      archive: { available: boolean; tasks: unknown[] };
+    };
+    assert.equal(restartedArchive.archive.available, false);
+    assert.deepEqual(restartedArchive.archive.tasks, []);
+    await assert.rejects(
+      request("complete", {
+        requestId: "restart-close",
+        expectedRevision: 3,
+        reason: "Close",
+        closeout,
+      }),
+      hasCode("TASK_SOURCE_READ_ONLY"),
+    );
     assert.deepEqual(await taskEvents(root, "sticky-chat"), before);
     await rm(join(root, ".workspace", "codex-task-progress", ".gitignore"));
     await writeFile(
@@ -1727,7 +1960,7 @@ test("completed checklist does not imply runtime completion when a later turn is
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let callNumber = 0;
-  async function request(action: "get" | "initialize", input: unknown) {
+  async function request(action: "get" | "initialize" | "complete", input: unknown) {
     const auth: GoalProgressIpcAuthorization = {
       kind: "codex-request",
       toolName: `task_progress_${action}`,
@@ -1765,10 +1998,24 @@ test("completed checklist does not imply runtime completion when a later turn is
       ],
     });
     const initial = (await request("get", {})).result as ObservedTask;
-    assert.equal(initial.task.progress.percent, 100);
-    assert.equal(initial.task.phase, "completed");
+    assert.equal(initial.task.progress.percent, 50);
     assert.equal(initial.execution.state, "idle");
-    const originalRevision = initial.task.revision;
+    const proof = [{ summary: "Verified", verification: "verified", reference: "test:delivery" }];
+    const check = { status: "done", evidence: proof };
+    await request("complete", {
+      requestId: "close",
+      expectedRevision: initial.task.revision,
+      reason: "Delivered",
+      closeout: {
+        branch: check,
+        merge: check,
+        push: check,
+        remainingWork: 0,
+        ownerActions: 0,
+        auditEvidence: proof,
+      },
+    });
+    const originalRevision = initial.task.revision + 1;
 
     // A later turn is working, but has not written or rescoped the checklist yet.
     status = { type: "active", activeFlags: [] };
@@ -1777,7 +2024,7 @@ test("completed checklist does not imply runtime completion when a later turn is
     assert.equal(active.task.progress.percent, 100);
     assert.equal(active.execution.state, "working");
     assert.equal(active.execution.source, "codex-app-server");
-    assert.equal(active.completionBasis, "registered-checklist");
+    assert.equal(active.completionBasis, "task-lifecycle");
     const nativeActive = (
       await client.request({
         method: "task.native-read",
@@ -1793,7 +2040,7 @@ test("completed checklist does not imply runtime completion when a later turn is
     assert.equal(unavailable.task.revision, originalRevision);
     assert.equal(unavailable.task.progress.percent, 100);
     assert.equal(unavailable.execution.state, "unknown");
-    assert.equal(unavailable.completionBasis, "registered-checklist");
+    assert.equal(unavailable.completionBasis, "task-lifecycle");
     const nativeUnknown = (
       await client.request({
         method: "task.native-read",
@@ -2139,12 +2386,14 @@ test("retryable discovery blocks writes and exposes pending reads until recovery
   let call = 0;
   const toolNames = {
     get: "task_progress_get",
+    archive: "task_progress_archive",
+    complete: "task_progress_complete",
     initialize: "task_progress_initialize",
     history: "task_progress_history",
     "heartbeat-history": "task_progress_heartbeat_history",
   } as const;
   const request = (
-    action: "get" | "initialize" | "history" | "heartbeat-history",
+    action: "get" | "initialize" | "history" | "heartbeat-history" | "archive" | "complete",
     input: unknown = {},
   ) =>
     client.request({
@@ -2183,6 +2432,20 @@ test("retryable discovery blocks writes and exposes pending reads until recovery
       history: { source: { retryable?: boolean } };
     };
     assert.equal(history.history.source.retryable, true);
+    const archive = (await request("archive")).result as {
+      archive: { available: boolean; tasks: unknown[] };
+    };
+    assert.equal(archive.archive.available, false);
+    assert.deepEqual(archive.archive.tasks, []);
+    await assert.rejects(
+      request("complete", {
+        requestId: "pending-close",
+        expectedRevision: 1,
+        reason: "Close",
+        closeout: {},
+      }),
+      hasCode("TASK_SOURCE_UNAVAILABLE"),
+    );
     const projectHistory = (await request("heartbeat-history")).result as {
       heartbeatHistory: { retryable?: boolean; error?: string };
     };

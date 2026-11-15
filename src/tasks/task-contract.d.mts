@@ -1,10 +1,5 @@
 import type { z } from "zod";
-export type TaskStatus =
-	| "pending"
-	| "active"
-	| "completed"
-	| "blocked"
-	| "cancelled";
+export type TaskStatus = "pending" | "active" | "completed" | "blocked" | "cancelled";
 export interface TaskEvidence {
 	summary: string;
 	verification: "reported" | "verified";
@@ -33,8 +28,7 @@ export interface TaskSource {
 	contentHash: string;
 	itemStatuses: Record<string, string>;
 }
-export interface TaskState {
-	schemaVersion: 3;
+export interface TaskStateFields {
 	kind: "task";
 	threadId: string;
 	title: string;
@@ -45,6 +39,77 @@ export interface TaskState {
 	progress: TaskProgress;
 	phase: "active" | "completed";
 }
+export type TaskState =
+	| (TaskStateFields & { schemaVersion: 3 })
+	| (TaskStateFields & {
+			schemaVersion: 4;
+			lifecycle: TaskLifecycle;
+	  });
+export interface TaskDeliveryCheck {
+	status: "done" | "not-applicable";
+	evidence: TaskEvidence[];
+}
+export interface TaskCloseoutReceipt {
+	branch: TaskDeliveryCheck;
+	merge: TaskDeliveryCheck;
+	push: TaskDeliveryCheck;
+	remainingWork: 0;
+	ownerActions: 0;
+	auditEvidence: TaskEvidence[];
+}
+export interface TaskLifecycle {
+	id: string;
+	sequence: number;
+	startedAt: string;
+	completion: null | {
+		completedAt: string;
+		receipt: TaskCloseoutReceipt;
+	};
+}
+export interface TaskCompleteInput {
+	requestId: string;
+	expectedRevision: number;
+	reason: string;
+	closeout: TaskCloseoutReceipt;
+}
+export interface TaskArchiveInput {
+	taskId?: string;
+	cursor?: string;
+	limit?: number;
+}
+export interface TaskArchiveSummary {
+	id: string;
+	title: string;
+	completedAt: string;
+	completionRevision: number;
+	progress: TaskProgress;
+	objectiveCount: number;
+	itemCount: number;
+}
+export interface TaskArchiveNode {
+	id: string;
+	title: string;
+	status: TaskStatus;
+	kind: "objective" | "item";
+	parentId?: string;
+	required?: boolean;
+}
+export interface TaskArchiveTasksPage {
+	kind: "tasks";
+	tasks: TaskArchiveSummary[];
+	total: number;
+	nextCursor: string | null;
+	currentTaskId: string | null;
+}
+export interface TaskArchiveSubtasksPage {
+	kind: "subtasks";
+	task: TaskArchiveSummary;
+	nodes: TaskArchiveNode[];
+	totalNodes: number;
+	nextCursor: string | null;
+	currentTaskId: string | null;
+}
+export type TaskArchivePage = TaskArchiveTasksPage | TaskArchiveSubtasksPage;
 export type TaskItemInput = Omit<TaskItem, "status" | "evidence"> &
 	Partial<Pick<TaskItem, "status" | "evidence">>;
 export type TaskObjectiveInput = TaskItemInput & {
@@ -52,6 +117,7 @@ export type TaskObjectiveInput = TaskItemInput & {
 	items?: TaskItemInput[];
 };
 export interface TaskInitializeInput {
+	lifecycle?: true;
 	requestId: string;
 	expectedRevision: 0;
 	reason: string;
@@ -59,6 +125,7 @@ export interface TaskInitializeInput {
 	objectives: TaskObjectiveInput[];
 }
 export interface TaskUpdateInput {
+	lifecycle?: true;
 	requestId: string;
 	expectedRevision: number;
 	reason: string;
@@ -69,6 +136,7 @@ export interface TaskUpdateInput {
 	}[];
 }
 export interface TaskRescopeInput {
+	lifecycle?: true;
 	requestId: string;
 	expectedRevision: number;
 	reason: string;
@@ -76,8 +144,8 @@ export interface TaskRescopeInput {
 	objectives: TaskObjectiveInput[];
 }
 export interface TaskEvent {
-	schemaVersion: 3;
-	kind: "task.initialized" | "task.updated" | "task.rescoped";
+	schemaVersion: 3 | 4;
+	kind: "task.initialized" | "task.updated" | "task.rescoped" | "task.completed";
 	eventId: string;
 	threadId: string;
 	requestId: string;
@@ -118,7 +186,20 @@ export interface TaskProgressSchemas {
 	TaskItemSchema: z.ZodType<TaskItem>;
 	TaskObjectiveSchema: z.ZodType<TaskObjective>;
 	TaskObjectivesSchema: z.ZodType<TaskObjective[]>;
+	TaskCloseoutSchema: z.ZodType<TaskCloseoutReceipt>;
+	TaskCompleteInputSchema: z.ZodObject<{
+		requestId: z.ZodString;
+		expectedRevision: z.ZodNumber;
+		reason: z.ZodString;
+		closeout: z.ZodType<TaskCloseoutReceipt>;
+	}>;
+	TaskArchiveInputSchema: z.ZodObject<{
+		taskId: z.ZodOptional<z.ZodString>;
+		cursor: z.ZodOptional<z.ZodString>;
+		limit: z.ZodOptional<z.ZodNumber>;
+	}>;
 	TaskInitializeInputSchema: z.ZodObject<{
+		lifecycle: z.ZodOptional<z.ZodLiteral<true>>;
 		requestId: z.ZodString;
 		expectedRevision: z.ZodLiteral<0>;
 		reason: z.ZodString;
@@ -126,12 +207,14 @@ export interface TaskProgressSchemas {
 		objectives: z.ZodType<TaskObjective[]>;
 	}>;
 	TaskUpdateInputSchema: z.ZodObject<{
+		lifecycle: z.ZodOptional<z.ZodLiteral<true>>;
 		requestId: z.ZodString;
 		expectedRevision: z.ZodNumber;
 		reason: z.ZodString;
 		changes: z.ZodType<TaskUpdateInput["changes"]>;
 	}>;
 	TaskRescopeInputSchema: z.ZodObject<{
+		lifecycle: z.ZodOptional<z.ZodLiteral<true>>;
 		requestId: z.ZodString;
 		expectedRevision: z.ZodNumber;
 		reason: z.ZodString;
@@ -142,9 +225,13 @@ export interface TaskProgressSchemas {
 	TaskStateSchema: z.ZodType<TaskState>;
 	TaskEventSchema: z.ZodType<TaskEvent>;
 }
-export function createTaskProgressSchemas(
-	factory: typeof z,
-): TaskProgressSchemas;
-export function calculateTaskProgress(
+export function createTaskProgressSchemas(factory: typeof z): TaskProgressSchemas;
+export function calculateTaskProgress(objectives: readonly TaskObjective[]): TaskProgress;
+
+export function calculateTaskLifecycleProgress(
 	objectives: readonly TaskObjective[],
+	complete: boolean,
 ): TaskProgress;
+export function getTaskArchiveCount(task: TaskState | null): number;
+export function isTaskLifecycleComplete(task: TaskState | null): boolean;
+export function hasOpenTaskWork(objectives: readonly TaskObjective[]): boolean;

@@ -1,4 +1,7 @@
-# Task Progress 0.6.7
+# Task Progress 0.7.0
+
+- Add an opt-in, Helper-managed task lifecycle with an explicit verified closeout checkpoint. A task is complete only after branch, merge and push are verified done or not applicable, with no remaining work or Owner actions; checklist completion alone does not close it. New scope after completion starts a fresh cycle while prior cycles remain read-only, paged archive views derived from task history. Existing v3 task events remain readable and unchanged. Native Goals and Heartbeat storage are unaffected.
+- Preserve the 0.6.7 native panel URI compatibility: legacy `panel-v1` and 0.6.3 addresses resolve to the same current embedded HTML asset, while only the current release URI is advertised. Close and reopen or Retry the ordinary panel tab if needed; do not restart Codex.
 
 - Keep native panel requests working when a host retains a compatible older resource URI: the strict read-only resource template accepts Heartbeat panel addresses from releases 0.5.16 through the current release and resolves them to the current embedded panel HTML, while only the current release URI is advertised. After upgrading, close and reopen or Retry the ordinary panel tab if needed; do not restart Codex. Actual host acceptance remains to be verified.
 

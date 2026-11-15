@@ -1,8 +1,8 @@
 # Codex Task Progress
 
-这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.6.7。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
+这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.7.0。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
 
-0.6.2 引入不可变 MCP UI resource，并使用唯一发布版本常量生成版本化 URI。自 0.6.7 起，兼容的旧版 Heartbeat 面板地址也会返回当前内嵌 HTML。如果宿主仍显示旧注册面板，可关闭并重新打开 Task Progress 标签，或点击 Retry；不要重启 Codex。这些资源更新不改变认证、任务权限、规范数据格式或 Kit API。
+0.6.2 引入不可变 MCP UI resource，并使用唯一发布版本常量生成版本化 URI。自 0.6.7 起，兼容的旧版 Heartbeat 面板地址（包括旧版 `panel-v1` 和 0.6.3 地址）会返回同一份当前内嵌 HTML；对外只公布当前发布版本的 URI。如果宿主仍显示旧注册面板，可关闭并重新打开 Task Progress 标签，或点击 Retry；不要重启 Codex。这些资源更新不改变认证、任务权限、规范数据格式或 Kit API。
 
 ## 原生面板
 
@@ -26,10 +26,16 @@ Heartbeat 视图展示审计前和重新拆分／派发后记录的实际活跃�
 
 分别记录包/构建检查、Helper `doctor` 与 `verify`、插件注册，以及受支持宿主中的原生 UI 可见性和数据验证。宿主功能变更后可能需要新建或重新打开聊天。不能由命令成功推断 UI 已可见。
 
+## 任务生命周期
+
+插件 Helper 会在普通本地任务写入时启用 `lifecycle: true`；其他 Kit 客户端可关闭 API opt-in 以兼容 v3。已有 schema v3 历史仍可读取并原样保留；只读 `task_progress_get` 不会为旧任务伪造已关闭状态。受管理任务有一个显式收尾检查点：只有分支工作、合并和推送已实际完成或经核实不适用，且附有可验证引用、剩余工作为零、Owner 待办为零时才能完成。清单达到 100% 不等于任务关闭；没有供人工点击的 Finish 按钮。执行状态仍单独表示工作进行中或未知。
+
+已完成任务收到新范围后，使用当前 revision 调用 `task_progress_rescope` 开始新周期；不要将旧已完成节点带入新范围。若调用方重复提交旧范围，Kit 会移除完全未变的目标和条目，只保留实际新增或变更的工作；变更目标中不复制旧已完成子项。没有新增工作时拒绝新周期。周期中途调整范围时，输入包含所有保留目标；移除的节点保留为 cancelled，新增或取消都可能改变分母并使本周期进度回退。完成后开始的新周期按新范围重新计算分母，旧周期作为只读归档留在任务历史中。`task_progress_archive` 分页读取归档摘要和详情；归档周期默认按需加载，当前 subtasks 单独显示。不改写原始历史，也不创建独立归档存储。只读 Heartbeat 来源没有正式周期 API，因此其生命周期完成与归档不可用，不能推测，也不能回退到 dormant 的本地任务。Native Goals 保持不变。
+
 ## 数据与兼容性
 
 本机 Helper 由现有 launchd 服务管理。MCP 请求经 stdio 服务到 Helper，再按操作权限读取或写入 Kit 规范记录。Kit 的可选 `task-progress` 类别安装或复用原生插件；不再提供单独的启动器或 Dock 选择。
 
-现有任务和 Heartbeat 格式保持兼容。已有原生 Goal API 和 v1/v2 原始 Goal 记录仍可读取。历史源数据予以保留；简短摘要只是有界展示投影。再分发时请保留衍生版本的上游 Git 历史、许可证和署名。
+现有任务和 Heartbeat 格式保持兼容。已有 schema v3 任务事件仍可读取并保留；显式启用的生命周期事件使用现有任务日志中的 schema v4。归档摘要和详情是从历史派生的只读视图，不是新存储。已有原生 Goal API 和 v1/v2 原始 Goal 记录仍可读取。历史源数据予以保留；简短摘要只是有界展示投影。再分发时请保留衍生版本的上游 Git 历史、许可证和署名。
 
 参阅[架构](docs/ARCHITECTURE.md)、[权限](docs/PERMISSIONS.md)、[验证记录](docs/VALIDATION.md)和[变更日志](CHANGELOG.md)。

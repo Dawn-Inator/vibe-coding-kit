@@ -55,6 +55,31 @@ export function createTaskProgressSchemas(z) {
 				}
 			}
 		});
+	const verifiedEvidence = z
+		.array(TaskEvidenceSchema)
+		.min(1)
+		.max(20)
+		.refine(
+			(items) =>
+				items.every((item) => item.verification === "verified" && !!item.reference?.trim()),
+			"Verified evidence with a reference is required",
+		);
+	const deliveryCheck = z
+		.object({
+			status: z.enum(["done", "not-applicable"]),
+			evidence: verifiedEvidence,
+		})
+		.strict();
+	const TaskCloseoutSchema = z
+		.object({
+			branch: deliveryCheck,
+			merge: deliveryCheck,
+			push: deliveryCheck,
+			remainingWork: z.literal(0),
+			ownerActions: z.literal(0),
+			auditEvidence: verifiedEvidence,
+		})
+		.strict();
 	const WriteFields = {
 		requestId: z.string().trim().min(1).max(256),
 		expectedRevision: z.number().int().nonnegative(),
@@ -63,6 +88,7 @@ export function createTaskProgressSchemas(z) {
 	const TaskInitializeInputSchema = z
 		.object({
 			...WriteFields,
+			lifecycle: z.literal(true).optional(),
 			expectedRevision: z.literal(0),
 			title: z.string().trim().min(1).max(1_000),
 			objectives: TaskObjectivesSchema,
@@ -71,6 +97,7 @@ export function createTaskProgressSchemas(z) {
 	const TaskUpdateInputSchema = z
 		.object({
 			...WriteFields,
+			lifecycle: z.literal(true).optional(),
 			changes: z
 				.array(
 					z
@@ -88,6 +115,7 @@ export function createTaskProgressSchemas(z) {
 	const TaskRescopeInputSchema = z
 		.object({
 			...WriteFields,
+			lifecycle: z.literal(true).optional(),
 			title: z.string().trim().min(1).max(1_000).optional(),
 			objectives: TaskObjectivesSchema,
 		})
@@ -99,25 +127,67 @@ export function createTaskProgressSchemas(z) {
 			percent: z.number().min(0).max(100).nullable(),
 		})
 		.strict();
-	const TaskStateSchema = z
+	const TaskCompleteInputSchema = z
+		.object({ ...WriteFields, closeout: TaskCloseoutSchema })
+		.strict();
+	const TaskArchiveInputSchema = z
 		.object({
-			schemaVersion: z.literal(3),
-			kind: z.literal("task"),
-			threadId: z.string().trim().min(1).max(512),
-			title: z.string().trim().min(1).max(1_000),
-			revision: z.number().int().positive(),
-			createdAt: z.iso.datetime(),
-			updatedAt: z.iso.datetime(),
-			objectives: TaskObjectivesSchema,
-			progress: TaskProgressSchema,
-			phase: z.enum(["active", "completed"]),
+			taskId: z.string().trim().min(1).max(128).optional(),
+			cursor: z.string().min(1).max(2048).optional(),
+			limit: z.number().int().min(1).max(100).optional(),
 		})
 		.strict();
+	const StateFields = {
+		kind: z.literal("task"),
+		threadId: z.string().trim().min(1).max(512),
+		title: z.string().trim().min(1).max(1_000),
+		revision: z.number().int().positive(),
+		createdAt: z.iso.datetime(),
+		updatedAt: z.iso.datetime(),
+		objectives: TaskObjectivesSchema,
+		progress: TaskProgressSchema,
+		phase: z.enum(["active", "completed"]),
+	};
+	const legacyState = z.object({ schemaVersion: z.literal(3), ...StateFields }).strict();
+	const managedState = z
+		.object({
+			schemaVersion: z.literal(4),
+			...StateFields,
+			lifecycle: z
+				.object({
+					id: z.string().trim().min(1).max(128),
+					sequence: z.number().int().positive(),
+					startedAt: z.iso.datetime(),
+					completion: z
+						.object({
+							completedAt: z.iso.datetime(),
+							receipt: TaskCloseoutSchema,
+						})
+						.strict()
+						.nullable(),
+				})
+				.strict(),
+		})
+		.strict()
+		.superRefine((state, ctx) => {
+			const complete = state.lifecycle.completion !== null;
+			const expected = calculateTaskLifecycleProgress(state.objectives, complete);
+			if (
+				JSON.stringify(state.progress) !== JSON.stringify(expected) ||
+				(state.phase === "completed") !== complete ||
+				(complete && hasOpenTaskWork(state.objectives))
+			)
+				ctx.addIssue({
+					code: "custom",
+					message: "Inconsistent managed task state",
+				});
+		});
+	const TaskStateSchema = z.union([legacyState, managedState]);
 
 	const TaskEventSchema = z
 		.object({
-			schemaVersion: z.literal(3),
-			kind: z.enum(["task.initialized", "task.updated", "task.rescoped"]),
+			schemaVersion: z.union([z.literal(3), z.literal(4)]),
+			kind: z.enum(["task.initialized", "task.updated", "task.rescoped", "task.completed"]),
 			eventId: z.string(),
 			threadId: z.string(),
 			requestId: z.string(),
@@ -129,7 +199,21 @@ export function createTaskProgressSchemas(z) {
 			after: TaskProgressSchema,
 			state: TaskStateSchema,
 		})
-		.strict();
+		.strict()
+		.superRefine((event, ctx) => {
+			if (
+				event.schemaVersion !== event.state.schemaVersion ||
+				(event.schemaVersion === 3 && event.kind === "task.completed") ||
+				(event.schemaVersion === 4 &&
+					(event.kind === "task.completed") !== (event.state.lifecycle?.completion != null)) ||
+				(event.schemaVersion === 4 &&
+					JSON.stringify(event.after) !== JSON.stringify(event.state.progress))
+			)
+				ctx.addIssue({
+					code: "custom",
+					message: "Inconsistent task event",
+				});
+		});
 
 	return {
 		TaskStatusSchema,
@@ -140,6 +224,9 @@ export function createTaskProgressSchemas(z) {
 		TaskInitializeInputSchema,
 		TaskUpdateInputSchema,
 		TaskRescopeInputSchema,
+		TaskCloseoutSchema,
+		TaskCompleteInputSchema,
+		TaskArchiveInputSchema,
 		TaskProgressSchema,
 		TaskStateSchema,
 		TaskEventSchema,
@@ -164,4 +251,32 @@ export function calculateTaskProgress(objectives) {
 		percent:
 			total === 0 ? null : Math.round((completed / total) * 10_000) / 100,
 	};
+}
+
+export function hasOpenTaskWork(objectives) {
+	return objectives.some(
+		(objective) =>
+			objective.status !== "cancelled" &&
+			(objective.status !== "completed" ||
+				objective.items.some((item) => item.status !== "cancelled" && item.status !== "completed")),
+	);
+}
+export function calculateTaskLifecycleProgress(objectives, complete) {
+	const raw = calculateTaskProgress(objectives);
+	const completed = raw.completed + (complete ? 1 : 0);
+	const total = raw.total + 1;
+	return {
+		completed,
+		total,
+		percent:
+			(complete
+				? Math.round((completed / total) * 10000)
+				: Math.floor((completed / total) * 10000)) / 100,
+	};
+}
+export function isTaskLifecycleComplete(task) {
+	return task?.schemaVersion === 4 && task.lifecycle.completion !== null;
+}
+export function getTaskArchiveCount(task) {
+	return task?.schemaVersion === 4 ? task.lifecycle.sequence - 1 : 0;
 }

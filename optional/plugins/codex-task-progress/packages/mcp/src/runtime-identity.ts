@@ -87,7 +87,7 @@ export interface RuntimeIdentityResolverDependencies {
   readonly recordDiagnostic?: (diagnostic: RuntimeIdentityDiagnostic) => void;
 }
 
-export type NativeReadAction = "get" | "history" | "heartbeat-history";
+export type NativeReadAction = "get" | "history" | "heartbeat-history" | "archive";
 
 export type NativeReadIdentity =
   | { readonly ok: true; readonly threadId: string; readonly action: NativeReadAction }
@@ -113,7 +113,12 @@ export function resolveNativeReadIdentity(
   ) {
     return undefined;
   }
-  if (action !== "get" && action !== "history" && action !== "heartbeat-history") {
+  if (
+    action !== "get" &&
+    action !== "history" &&
+    action !== "heartbeat-history" &&
+    action !== "archive"
+  ) {
     return undefined;
   }
   if (!meta) return { ok: false, code: "CODEX_REQUEST_METADATA_REQUIRED" };

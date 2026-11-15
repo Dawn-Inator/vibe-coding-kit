@@ -13,6 +13,12 @@ import { html, LitElement, nothing, type PropertyValues, svg } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import type { HeartbeatOrchestrationProjection } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import type {
+  TaskArchivePage,
+  TaskArchiveSubtasksPage,
+  TaskArchiveTasksPage,
+  TaskLifecycle,
+} from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/release-version.js";
 import { taskPanelStyles } from "./styles/task-panel.js";
 
@@ -40,6 +46,7 @@ export interface TaskPanelState {
   objectives: readonly TaskPanelObjective[];
   progress: { completed: number; total: number; percent: number | null };
   phase: string;
+  lifecycle?: TaskLifecycle;
   source?: {
     kind: "kit-heartbeat";
     path: string;
@@ -145,12 +152,18 @@ export interface TaskPanelResponse {
   history?: TaskPanelHistory | TaskPanelSourceHistory;
   heartbeatHistory?: TaskPanelHeartbeatHistory;
   execution?: TaskPanelExecution;
-  completionBasis?: "registered-checklist";
+  completionBasis?: "registered-checklist" | "task-lifecycle";
+  archiveCount?: number | null;
+  archive?:
+    | (TaskArchivePage & { available?: true })
+    | { available: false; reason?: string; currentTaskId: string | null };
 }
 export interface TaskPanelRequest {
-  method: "get" | "history" | "bind-heartbeat" | "heartbeat-history";
+  method: "get" | "history" | "bind-heartbeat" | "heartbeat-history" | "archive";
   threadId: string;
   cursor?: string;
+  taskId?: string;
+  limit?: number;
   path?: string | null;
 }
 export type TaskPanelRequester = (input: TaskPanelRequest) => Promise<TaskPanelResponse>;
@@ -158,7 +171,7 @@ export type TaskPanelRequester = (input: TaskPanelRequest) => Promise<TaskPanelR
 export const TASK_PROGRESS_ELEMENT_NAME = "codex-task-panel";
 export class TaskProgressElement extends LitElement {
   static override properties = {
-    data: { attribute: false },
+    data: { attribute: false, noAccessor: true },
     observed: { attribute: false },
     threadId: { attribute: false },
     requester: { attribute: false },
@@ -171,11 +184,26 @@ export class TaskProgressElement extends LitElement {
     heartbeatBusy: { state: true },
     busy: { state: true },
     locale: { attribute: false },
+    archiveOpen: { state: true },
+    archiveBusy: { state: true },
   };
 
   static override styles = taskPanelStyles;
 
-  declare data: TaskPanelResponse;
+  private panelData: TaskPanelResponse = { task: null, heartbeat: null };
+  get data(): TaskPanelResponse {
+    return this.panelData;
+  }
+  set data(value: TaskPanelResponse) {
+    const old = this.panelData;
+    this.panelData = value;
+    const context = this.currentArchiveContext();
+    if (context !== this.archiveContext) {
+      this.clearArchive();
+      this.archiveContext = context;
+    }
+    this.requestUpdate("data", old);
+  }
   declare observed: boolean;
   declare threadId: string | null;
   declare requester: TaskPanelRequester | null;
@@ -204,6 +232,15 @@ export class TaskProgressElement extends LitElement {
   private historyThread: string | null = null;
   private historyContext: string | null = null;
   private historyRequest = 0;
+  private declare archiveOpen: boolean;
+  private declare archiveBusy: boolean;
+  private archiveGeneration = 0;
+  private archiveContext: string | null = null;
+  private archivePage: TaskArchiveTasksPage | null = null;
+  private archiveDetails = new Map<string, TaskArchiveSubtasksPage>();
+  private archiveExpanded = new Set<string>();
+  private archiveError: string | null = null;
+  private archiveRetry: { taskId?: string; cursor?: string } = {};
 
   constructor() {
     super();
@@ -231,6 +268,8 @@ export class TaskProgressElement extends LitElement {
     this.heartbeatAutoRetries = 0;
     this.heartbeatWakeExpansion.clear();
     this.busy = false;
+    this.archiveOpen = false;
+    this.archiveBusy = false;
   }
 
   private t(en: string, zh: string): string {
@@ -298,6 +337,8 @@ export class TaskProgressElement extends LitElement {
   }
 
   resetThread(threadId: string | null): void {
+    this.clearArchive();
+    this.archiveContext = null;
     this.threadId = threadId;
     this.data = { task: null, heartbeat: null };
     this.observed = false;
@@ -1121,7 +1162,7 @@ export class TaskProgressElement extends LitElement {
             : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
       return label;
     }
-    const counts = `${this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
+    const counts = `${this.data.completionBasis === "task-lifecycle" ? this.t("Task progress", "任务进度") : this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
     const source =
       this.data.task?.source?.kind === "kit-heartbeat"
         ? this.t("Read-only Kit heartbeat source", "只读 Kit 心跳来源")
@@ -1160,6 +1201,159 @@ export class TaskProgressElement extends LitElement {
       html`<pre class="diagnostic-text">${content}</pre>`,
       { tone: "error" },
     );
+  }
+
+  private currentArchiveContext(): string {
+    const source = this.data.taskSource;
+    return JSON.stringify([
+      this.threadId,
+      this.data.task?.lifecycle?.id ?? null,
+      this.data.task?.source?.path ?? null,
+      this.data.task?.source?.contentHash ?? null,
+      source?.status ?? null,
+      source?.path ?? null,
+      source?.contentHash ?? null,
+      this.data.taskSourcePending ?? false,
+    ]);
+  }
+
+  private clearArchive(): void {
+    this.archiveGeneration++;
+    this.archiveOpen = false;
+    this.archiveBusy = false;
+    this.archivePage = null;
+    this.archiveDetails.clear();
+    this.archiveExpanded.clear();
+    this.archiveError = null;
+    this.archiveRetry = {};
+  }
+
+  private async loadArchive(taskId?: string, cursor?: string): Promise<void> {
+    if (!this.threadId || !this.requester || this.archiveBusy) return;
+    const generation = this.archiveGeneration;
+    const context = this.currentArchiveContext();
+    this.archiveBusy = true;
+    this.archiveRetry = {
+      ...(taskId !== undefined ? { taskId } : {}),
+      ...(cursor !== undefined ? { cursor } : {}),
+    };
+    this.archiveError = null;
+    try {
+      const result = await this.requester({
+        method: "archive",
+        threadId: this.threadId,
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+        limit: 50,
+      });
+      if (generation !== this.archiveGeneration || context !== this.currentArchiveContext()) return;
+      const page = result.archive;
+      if (!page || page.available === false) {
+        this.archiveError = page?.reason ?? this.t("Archive unavailable.", "归档暂不可用。");
+      } else if (page.currentTaskId !== (this.data.task?.lifecycle?.id ?? null)) {
+        this.archiveError = this.t(
+          "Task changed. Reopen the archive.",
+          "任务已变更，请重新打开归档。",
+        );
+      } else if (page.kind === "tasks" && !taskId) {
+        this.archivePage =
+          cursor && this.archivePage
+            ? { ...page, tasks: [...this.archivePage.tasks, ...page.tasks] }
+            : page;
+      } else if (page.kind === "subtasks" && taskId === page.task.id) {
+        const previous = this.archiveDetails.get(taskId);
+        this.archiveDetails.set(
+          taskId,
+          cursor && previous ? { ...page, nodes: [...previous.nodes, ...page.nodes] } : page,
+        );
+      } else {
+        this.archiveError = this.t(
+          "Archive response did not match the request.",
+          "归档响应与请求不匹配。",
+        );
+      }
+    } catch (error) {
+      if (generation === this.archiveGeneration && context === this.currentArchiveContext())
+        this.archiveError =
+          error instanceof Error ? error.message : this.t("Archive unavailable.", "归档暂不可用。");
+    } finally {
+      if (generation === this.archiveGeneration) {
+        this.archiveBusy = false;
+        this.requestUpdate();
+      }
+    }
+  }
+
+  private toggleArchive(): void {
+    this.archiveOpen = !this.archiveOpen;
+    if (this.archiveOpen && !this.archivePage) void this.loadArchive();
+  }
+
+  private toggleArchiveTask(id: string): void {
+    if (this.archiveExpanded.has(id)) this.archiveExpanded.delete(id);
+    else {
+      this.archiveExpanded.add(id);
+      if (!this.archiveDetails.has(id)) void this.loadArchive(id);
+    }
+    this.requestUpdate();
+  }
+
+  private renderCloseout() {
+    const lifecycle = this.data.task?.lifecycle;
+    if (!lifecycle || this.data.completionBasis !== "task-lifecycle") return nothing;
+    const completion = lifecycle.completion;
+    const receipt = completion?.receipt;
+    return this.framedCard(
+      this.t("Task closeout", "任务收尾"),
+      FileText,
+      html`<p class="archive-note">${
+        completion ? this.t("Recorded", "已记录") : this.t("Closeout not recorded", "尚未记录收尾")
+      } · ${completion ? "1/1" : "0/1"}</p>
+        ${receipt ? html`<p class="archive-note">${this.t("Branch", "分支")}: ${receipt.branch.status} · ${this.t("Merge", "合并")}: ${receipt.merge.status} · ${this.t("Push", "推送")}: ${receipt.push.status}</p><p class="archive-note">${this.t("Remaining work", "剩余工作")}: ${receipt.remainingWork} · ${this.t("Owner actions", "Owner 待办")}: ${receipt.ownerActions} · ${this.date(completion?.completedAt)}</p>` : nothing}`,
+      { className: "task-closeout" },
+    );
+  }
+
+  private renderArchive() {
+    if (
+      !this.observed ||
+      !this.threadId ||
+      !this.data.task ||
+      !(this.data.archiveCount && this.data.archiveCount > 0)
+    )
+      return nothing;
+    const count =
+      this.taskSourceIsPending() || this.data.task?.source || this.data.taskSource
+        ? null
+        : this.data.archiveCount;
+    return html`<section class="info-card archive-card">
+      <button class="archive-toggle" aria-expanded=${this.archiveOpen} aria-controls="archive-list" @click=${this.toggleArchive}>
+        ${this.lucideIcon(ChevronRight, "archive-chevron")}<span>${this.t("Archive", "归档")}</span><span class="info-card-count">${typeof count === "number" ? count : "—"}</span>
+      </button>
+      ${
+        this.archiveOpen
+          ? html`<div class="info-card-body archive-list" id="archive-list">
+        ${this.archiveError ? html`<p class="info-card-error" role="status">${this.archiveError}</p>` : nothing}
+        ${this.archivePage?.tasks.map((task) => {
+          const open = this.archiveExpanded.has(task.id);
+          const detail = this.archiveDetails.get(task.id);
+          const detailId = `archive-detail-${encodeURIComponent(task.id)}`;
+          return html`<div class="archive-cycle"><button class="archive-cycle-toggle" ?disabled=${this.archiveBusy} aria-expanded=${open} aria-controls=${detailId} @click=${() => this.toggleArchiveTask(task.id)}>${this.lucideIcon(ChevronRight, "archive-chevron")}<span>${task.title}</span><span class="archive-date">${this.dateOnly(task.completedAt)}</span></button>
+            ${
+              open
+                ? html`<div class="archive-nodes" id=${detailId}>${detail?.nodes.map((node) => html`<div class="archive-node" data-kind=${node.kind}><span>${node.title}</span><span>${this.status(node.status)}</span></div>`)}
+              ${detail?.nextCursor ? html`<button class="info-card-action" ?disabled=${this.archiveBusy} @click=${() => void this.loadArchive(task.id, detail.nextCursor ?? undefined)}>${this.t("Load more", "加载更多")}</button>` : nothing}</div>`
+                : nothing
+            }</div>`;
+        })}
+        ${this.archivePage && !this.archivePage.tasks.length ? html`<p class="archive-note">${this.t("No archived tasks.", "暂无归档任务。")}</p>` : nothing}
+        ${this.archiveBusy ? html`<p class="archive-note" role="status">${this.t("Loading archive…", "正在加载归档…")}</p>` : nothing}
+        ${this.archivePage?.nextCursor ? html`<button class="info-card-action" ?disabled=${this.archiveBusy} @click=${() => void this.loadArchive(undefined, this.archivePage?.nextCursor ?? undefined)}>${this.t("Older tasks", "更早的任务")}</button>` : nothing}
+        ${this.archiveError && !this.archiveBusy ? html`<button class="info-card-action" @click=${() => void this.loadArchive(this.archiveRetry.taskId, this.archiveRetry.cursor)}>${this.t("Retry", "重试")}</button>` : nothing}
+      </div>`
+          : nothing
+      }
+    </section>`;
   }
 
   private renderTaskSource() {
@@ -1234,13 +1428,15 @@ export class TaskProgressElement extends LitElement {
     const sourceUnavailable =
       !this.taskSourceIsPending() &&
       ["stale", "error", "pending-selection"].includes(this.data.taskSource?.status ?? "");
+    const managedComplete =
+      this.data.completionBasis === "task-lifecycle" && !!task?.lifecycle?.completion;
     const showProgressBar =
       this.observed &&
       !this.connectionError &&
       !sourceUnavailable &&
       progress &&
       progress.percent !== null &&
-      (!checklistComplete || this.data.execution?.state === "idle");
+      (managedComplete || !checklistComplete || this.data.execution?.state === "idle");
     const countedPercent = Math.max(0, Math.min(100, progress?.percent ?? 0));
     const checklistTitle = `${this.t("Registered checklist", "已登记清单")}: ${title}`;
     const orderedObjectives = (task?.objectives ?? [])
@@ -1269,7 +1465,7 @@ export class TaskProgressElement extends LitElement {
       <div class="summary">
         <button class="main" title=${title} aria-label=${`${title} · ${this.checklistLabel()} · ${execution}`} aria-expanded=${this.expanded && this.tab === "tasks"} aria-controls="task-panel-content" @click=${this.toggleExpanded}>
           ${this.icon("layers", "capsule-icon")}<span class="capsule-copy"><span class="title">${title}</span><span class="summary-state"><span class="execution" data-execution-state=${this.data.execution?.state ?? "unknown"}>${execution}</span> · ${this.checklistLabel()}</span></span>
-          <span class="percent">${showProgressBar ? (checklistComplete ? this.icon("check") : html`${countedPercent}<small>%</small>`) : nothing}</span>${this.icon("down", "capsule-chevron")}
+          <span class="percent">${showProgressBar ? (checklistComplete && !managedComplete ? this.icon("check") : html`${countedPercent}<small>%</small>`) : nothing}</span>${this.icon("down", "capsule-chevron")}
           <svg class="edge-progress" viewBox="0 0 368 44" aria-hidden="true"><path class="edge-track" pathLength="100"></path>${showProgressBar ? svg`<path class="edge-fill" pathLength="100" stroke-dasharray=${`${countedPercent} 100`}></path>` : nothing}</svg>
           ${showProgressBar ? html`<span class="track sr-status" role="progressbar" aria-valuenow=${countedPercent} aria-valuemin="0" aria-valuemax="100" aria-label=${checklistTitle} aria-valuetext=${this.checklistLabel()}><span class="fill" style=${`width:${countedPercent}%`}></span></span>` : nothing}
         </button>
@@ -1279,8 +1475,8 @@ export class TaskProgressElement extends LitElement {
       <div class="sr-status" role="status" aria-live="polite" aria-atomic="true">${this.connectionError ? this.t("Checklist unavailable", "清单暂不可用") : ""}</div>
       <div class="body" id="task-panel-content" role="region" aria-labelledby="panel-title" data-state="open">
         <header class="panel-head" data-view=${this.tab}>
-          ${this.tab === "heartbeat" ? nothing : html`<div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.t("Recorded changes", "变更记录")}</div>`}
-          <div class="panel-heading">${this.tab === "heartbeat" ? html`<span class="heartbeat-heading-icon">${this.icon("heartbeat")}</span>` : nothing}<h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat && heartbeatCertification ? html`<span class="hb-status" data-status=${this.data.heartbeat.status} data-certification=${heartbeatCertification.state}>${this.data.heartbeat.status === "pending" ? this.t("Refreshing", "刷新中") : this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.t(heartbeatCertification.label, heartbeatCertification.labelZh)}</span>` : nothing}</div>
+          <div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.tab === "history" ? this.t("Recorded changes", "变更记录") : this.t("Project activity", "项目动态")}</div>
+          <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2>${this.tab === "heartbeat" && this.data.heartbeat && heartbeatCertification ? html`<span class="hb-status" data-status=${this.data.heartbeat.status} data-certification=${heartbeatCertification.state}>${this.data.heartbeat.status === "pending" ? this.t("Refreshing", "刷新中") : this.data.heartbeat.status === "stale" ? this.t("Stale", "已过期") : this.data.heartbeat.status === "error" ? this.t("Error", "错误") : this.data.heartbeat.status === "none" ? this.t("Not available", "不可用") : this.data.heartbeat.status === "candidates" ? this.t("Candidate source", "候选来源") : this.t(heartbeatCertification.label, heartbeatCertification.labelZh)}</span>` : nothing}</div>
           ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : this.tab === "history" ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>` : nothing}
         </header>
         <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>
@@ -1299,7 +1495,7 @@ export class TaskProgressElement extends LitElement {
                             this.objective(objective, index, display),
                         )
                       : html`<p class="empty">${sourceUnavailable || this.taskSourceIsPending() ? this.checklistLabel() : !this.observed || this.connectionError ? this.checklistLabel() : fresh ? this.t("Start a task in this chat to see its progress here.", "在此会话中开始任务后，即可在这里查看进度。") : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`
-                  }${this.renderTaskSource()}`
+                  }${this.renderCloseout()}${this.renderArchive()}${this.renderTaskSource()}`
           }
         </div>
         <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}` : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>

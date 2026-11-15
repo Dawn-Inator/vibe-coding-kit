@@ -12,6 +12,7 @@ import {
 	TaskStore,
 	taskMarkdownPaths,
 	validateTaskEventStructure,
+	isValidTaskLifecycleTransition,
 } from "./task-store.mjs";
 import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -56,6 +57,7 @@ export class TaskSourceRelations {
 			}
 		}
 		let revision = 0;
+		let previous = null;
 		const eventIds = new Set();
 		const requestIds = new Set();
 		for (const r of data.records) {
@@ -70,7 +72,6 @@ export class TaskSourceRelations {
 				if (
 					Object.keys(r).some((k) => !["type", "event"].includes(k)) ||
 					!validateTaskEventStructure(e) ||
-					e.schemaVersion !== 3 ||
 					e.threadId !== threadId ||
 					!e.state ||
 					e.state.threadId !== threadId ||
@@ -79,13 +80,12 @@ export class TaskSourceRelations {
 					typeof e.eventId !== "string" ||
 					typeof e.requestId !== "string" ||
 					typeof e.fingerprint !== "string" ||
-					!["task.initialized", "task.updated", "task.rescoped"].includes(
-						e.kind,
-					) ||
+					!isValidTaskLifecycleTransition(previous, e) ||
 					eventIds.has(e.eventId) ||
 					requestIds.has(e.requestId)
 				)
 					throw new Error("Invalid task event record");
+				previous = e.state;
 				eventIds.add(e.eventId);
 				requestIds.add(e.requestId);
 			}

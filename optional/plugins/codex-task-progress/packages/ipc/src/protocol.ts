@@ -35,6 +35,8 @@ export const GoalProgressMcpToolNameSchema = z.enum([
   "task_progress_update",
   "task_progress_rescope",
   "task_progress_history",
+  "task_progress_complete",
+  "task_progress_archive",
   "task_progress_heartbeat_history",
   "task_progress_bind_heartbeat",
 ]);
@@ -165,6 +167,8 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
             "initialize",
             "update",
             "rescope",
+            "complete",
+            "archive",
             "history",
             "heartbeat-history",
             "bind-heartbeat",
@@ -182,7 +186,7 @@ export const GoalProgressIpcRequestSchema = z.discriminatedUnion("method", [
       params: z
         .object({
           threadId: z.string().trim().min(1).max(512),
-          action: z.enum(["get", "history", "heartbeat-history"]),
+          action: z.enum(["get", "history", "heartbeat-history", "archive"]),
           input: z.unknown(),
         })
         .strict()

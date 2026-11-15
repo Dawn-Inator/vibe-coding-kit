@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
 	createTaskProgressSchemas,
 	calculateTaskProgress,
+	calculateTaskLifecycleProgress,
 } from "../../src/tasks/task-contract.mjs";
 const schemas = createTaskProgressSchemas(z);
 
@@ -92,4 +93,34 @@ test("persisted state schema rejects transient ledger metadata and unknown field
 		}).success,
 		false,
 	);
+});
+
+test("managed closeout requires verified referenced evidence for every check", () => {
+	const proof = [{ summary: "audited", verification: "verified", reference: "receipt:1" }];
+	const check = { status: "not-applicable", evidence: proof };
+	const receipt = { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof };
+	assert.equal(schemas.TaskCloseoutSchema.safeParse(receipt).success, true);
+	for (const bad of [{ ...receipt, ownerActions: 1 }, { ...receipt, auditEvidence: [{ ...proof[0], verification: "reported" }] }, { ...receipt, branch: { ...check, evidence: [] } }, { ...receipt, push: { ...check, evidence: [{ ...proof[0], reference: " " }] } }]) assert.equal(schemas.TaskCloseoutSchema.safeParse(bad).success, false);
+});
+
+
+test("large managed scopes never round pending closeout to 100 percent", () => {
+	const leaf = { id: "leaf", title: "Done", status: "completed", evidence: [] };
+	for (const count of [20_000, 50_000]) {
+		const objectives = [{ id: "wide", title: "Wide", status: "completed", required: true, evidence: [], items: Array(count).fill(leaf) }];
+		const pending = calculateTaskLifecycleProgress(objectives, false);
+		assert.equal(pending.completed, count);
+		assert.equal(pending.total, count + 1);
+		assert.ok(pending.percent < 100);
+		assert.equal(calculateTaskLifecycleProgress(objectives, true).percent, 100);
+	}
+});
+
+test("managed state cannot assert closure with open work even with a verified receipt", () => {
+	const proof = [{ summary: "Audited", verification: "verified", reference: "audit:1" }];
+	const check = { status: "done", evidence: proof };
+	const objectives = schemas.TaskObjectivesSchema.parse([{ id: "open", title: "Open" }]);
+	const now = "2026-11-15T00:00:00.000Z";
+	const state = { schemaVersion: 4, kind: "task", threadId: "thread", title: "Task", revision: 1, createdAt: now, updatedAt: now, objectives, progress: calculateTaskLifecycleProgress(objectives, true), phase: "completed", lifecycle: { id: "cycle", sequence: 1, startedAt: now, completion: { completedAt: now, receipt: { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof } } } };
+	assert.equal(schemas.TaskStateSchema.safeParse(state).success, false);
 });

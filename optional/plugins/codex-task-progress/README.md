@@ -1,8 +1,8 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.7. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.7.0. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
 
-Version 0.6.2 introduced immutable MCP UI resources with versioned URIs derived from the release version constant. Since 0.6.7, compatible older Heartbeat panel addresses also resolve to the current embedded HTML. If the host still shows the old registered panel, close and reopen or Retry the Task Progress tab; do not restart Codex. These resource changes do not alter authentication, task authority, canonical data formats or Kit APIs.
+Version 0.6.2 introduced immutable MCP UI resources with versioned URIs derived from the release version constant. Since 0.6.7, compatible older Heartbeat panel addresses, including the legacy `panel-v1` and 0.6.3 address, resolve to the same current embedded HTML asset; only the current release URI is advertised. If the host still shows the old registered panel, close and reopen or Retry the Task Progress tab; do not restart Codex. These resource changes do not alter authentication, task authority, canonical data formats or Kit APIs.
 
 ## Native panel
 
@@ -19,7 +19,7 @@ ledger for audit rather than the main view. A first session or older wake withou
 shows unknown; it cannot reconstruct past activity. The supervising producer records snapshots through the Kit
 heartbeat writer, and the plugin only reads them.
 
-In 0.6.7, a strict read-only resource template accepts compatible Heartbeat panel addresses from releases
+In 0.7.0, a strict read-only resource template accepts compatible Heartbeat panel addresses from releases
 0.5.16 through the current release and serves the current matching panel HTML, while advertising only the
 current release URI. If the host retains an older URI after upgrade, close and reopen or Retry the ordinary
 panel tab; do not restart Codex. Actual native host acceptance still needs verification.
@@ -40,10 +40,29 @@ Use the [AI installation guide](INSTALL-FOR-AI.md). The plugin requires Apple Si
 
 Keep these evidence separate: package/build checks, Helper `doctor` and `verify`, plugin registration, and actual native UI visibility/data in a supported host. A host feature change may require a new chat or reopening a chat. Do not infer UI visibility from command success.
 
+## Task lifecycle
+
+The plugin Helper opts ordinary local task writes into lifecycle semantics with `lifecycle: true`; other
+Kit clients can leave the API opt-in disabled for v3 compatibility. Existing schema v3 histories remain
+readable and are preserved; a read-only `task_progress_get` never invents a closed state for an older task.
+A managed task has one explicit closeout checkpoint: complete it only after required
+branch work, merge, and push are physically done or verified not applicable, with verified references,
+zero remaining work, and zero Owner actions. Checklist rows at 100% do not close the task, and there is no
+human Finish button. A separate execution status continues to describe whether work is active or unknown.
+
+After a completed task receives new scope, use `task_progress_rescope` with its current revision to begin a
+fresh cycle. Mid-cycle rescope includes all retained objectives and keeps removed rows as cancelled. A new
+cycle after completion starts with the newly scoped denominator; the earlier cycle is retained as a read-only
+archive derived from task history. `task_progress_archive` reads bounded pages of archive summaries and
+details; archive cycles load on demand, and current subtasks remain a separate view. No raw history is
+rewritten and no separate archive store is created. Bound read-only Heartbeat sources have no formal cycle
+API, so lifecycle completion and archives are unavailable for them rather than inferred or backed by a
+dormant local task. Native Goals remain unchanged.
+
 ## Data and compatibility
 
 The local Helper is supervised by the existing launchd service. MCP requests flow through the stdio server to Helper, which reads/writes canonical Kit records according to each operation's authority. Kit's optional `task-progress` category installs or reuses the native plugin; no separate launcher or Dock choice exists.
 
-Existing task and Heartbeat formats remain compatible. Existing native Goal APIs and original v1/v2 Goal records remain readable. Existing History source data is retained; the concise display summary is a bounded projection only. Preserve the derivative's upstream Git history, license, and attribution when redistributing it.
+Existing task and Heartbeat formats remain compatible. Existing schema v3 task events remain readable and are preserved; opt-in lifecycle events use schema v4 in the existing task journal. Archive summaries and details are read-only views derived from that history, not another store. Existing native Goal APIs and original v1/v2 Goal records remain readable. Existing History source data is retained; the concise display summary is a bounded projection only. Preserve the derivative's upstream Git history, license, and attribution when redistributing it.
 
 See [architecture](docs/ARCHITECTURE.md), [permissions](docs/PERMISSIONS.md), [validation evidence](docs/VALIDATION.md), and the [changelog](CHANGELOG.md).

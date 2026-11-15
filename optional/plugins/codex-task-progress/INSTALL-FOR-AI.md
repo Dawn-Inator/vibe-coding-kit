@@ -1,4 +1,4 @@
-# Install Task Progress 0.6.7
+# Install Task Progress 0.7.0
 
 This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 
@@ -39,7 +39,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.6.7`. The native UI resource URI is versioned from the release version constant. The signed production Helper retains its embedded matching panel asset, including when a chat uses an older launcher root; the source runtime continues to use its pinned runtime assets. The strict read-only resource template accepts compatible older Heartbeat panel addresses from 0.5.16 through the current release and resolves them to the current embedded HTML; only the current release URI is advertised. If the host still shows the old registered resource, close and reopen or Retry the ordinary Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Actual native host compatibility still needs verification. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.7.0`. The native UI resource URI is versioned from the release version constant. The signed production Helper retains its embedded matching panel asset, including when a chat uses an older launcher root; the source runtime continues to use its pinned runtime assets. The strict read-only resource template accepts compatible older Heartbeat panel addresses from 0.5.16 through the current release and resolves them to the current embedded HTML; only the current release URI is advertised. If the host still shows the old registered resource, close and reopen or Retry the ordinary Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Actual native host compatibility still needs verification. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
 
 ## Signing and protected folders
 
@@ -62,5 +62,7 @@ The Helper is installed at the stable real path `install/bin/goal-progress`; ver
 ## Storage compatibility
 
 Existing canonical task and Heartbeat formats remain in place. The History summary is bounded presentation data only: it keeps a 512 KiB input limit and 512 Unicode-character summaries with full Markdown paths, while Kit's complete records remain unchanged. Native Goal records remain readable under their original formats. Do not migrate, truncate or rewrite source records as part of UI summarization.
+
+The plugin Helper opts ordinary local task writes into lifecycle management with `lifecycle: true`; Kit clients that omit the flag retain v3 behavior. Existing schema v3 events remain readable and unchanged. The visible progress includes one closeout checkpoint, but completion requires explicit verified closeout evidence for branch, merge and push (or verified not-applicable outcomes), zero remaining work, and zero Owner actions. Checklist 100% alone never completes the task. Completed tasks that receive new scope start a fresh cycle via `task_progress_rescope` at the current revision; unchanged prior nodes are filtered from its denominator, and previous cycles appear through read-only paginated archive views derived from the existing history. Bound read-only Heartbeat sources have no formal cycle API, so completion/archive is unavailable for them. Native Goals are unaffected.
 
 When changing storage in future versions, test old-format fixtures, repeated access, workspace moves and divergent histories. Divergent old/new data must fail closed with both copies preserved.

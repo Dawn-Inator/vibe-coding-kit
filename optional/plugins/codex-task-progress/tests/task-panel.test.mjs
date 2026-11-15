@@ -12,7 +12,7 @@ body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box
 </style></head><body>
 <main id="native-panel-shell" aria-label="Task progress"><div id="messages">Native task progress panel</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,taskSourcePending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
+window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,taskSourcePending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, archiveCount:0, completionBasis:undefined, archiveResponses:{}, holdNextArchive:false, releaseHeldArchive:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
 window.fixture.threadId = "thread-a";
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
@@ -22,7 +22,8 @@ window.__codexTaskProgressRequest = async function(request) {
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,taskSourcePending:window.fixture.taskSourcePending,execution:window.fixture.execution,...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,taskSourcePending:window.fixture.taskSourcePending,execution:window.fixture.execution,archiveCount:window.fixture.archiveCount,completionBasis:window.fixture.completionBasis,...(request.method==='archive'?{archive:structuredClone(window.fixture.archiveResponses[(request.taskId || "tasks") + ":" + (request.cursor || "first")])}:{}),...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  if(request.method==='archive' && window.fixture.holdNextArchive) { window.fixture.holdNextArchive=false; await new Promise(resolve => { window.fixture.releaseHeldArchive=resolve; }); window.fixture.releaseHeldArchive=null; }
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
   if(request.method==='heartbeat-history' && window.fixture.holdNextHeartbeatHistory) { window.fixture.holdNextHeartbeatHistory=false; await new Promise(resolve => { window.fixture.releaseHeldHeartbeatHistory=resolve; }); window.fixture.releaseHeldHeartbeatHistory=null; }
   if(request.method==='heartbeat-history' && window.fixture.heartbeatHistoryFailureNext) { const message=window.fixture.heartbeatHistoryFailureNext; window.fixture.heartbeatHistoryFailureNext=null; throw new Error(message); }
@@ -187,6 +188,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     return { context, page, panel: page.locator("codex-task-panel") };
   };
   try {
+    await t.test("all views share the icon and label kicker", async () => {
+      const { context, panel } = await open();
+      for (const [view, label, path] of [
+        ["tasks", "当前任务", "m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"],
+        ["history", "变更记录", "M3.5 10a8.5 8.5 0 1 1 1.8 7.4M3 4v6h6M12 7v5l3 2"],
+        ["heartbeat", "项目动态", "M3 12h4l3-7 4 14 3-7h4"],
+      ]) {
+        await showView(panel, view);
+        const kicker = panel.locator(".panel-head .panel-kicker");
+        assert.equal(await kicker.count(), 1);
+        assert.equal(await kicker.innerText(), label);
+        assert.equal(await kicker.locator('svg[aria-hidden="true"] path').getAttribute("d"), path);
+        assert.equal(await panel.locator(".panel-heading svg").count(), 0);
+      }
+      await context.close();
+    });
     await t.test(
       "fresh onboarding excludes pending and errors; refresh controls and status labels",
       async () => {
@@ -2425,6 +2442,399 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.deepEqual(
           requests.map((request) => request.threadId),
           ["thread-a", "thread-b", "thread-a"],
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "managed cycles keep closeout, archive pages and current scope separate",
+      async () => {
+        const { context, page, panel } = await open("", { locale: "en-US" });
+        const summary = {
+          id: "old-1",
+          title: "First delivered task",
+          completedAt: "2026-11-12T12:00:00Z",
+          completionRevision: 5,
+          progress: { completed: 3, total: 3, percent: 100 },
+          objectiveCount: 1,
+          itemCount: 2,
+        };
+        const second = {
+          ...summary,
+          id: "old-2",
+          title: "Older delivered task",
+          completionRevision: 2,
+        };
+        const managed = {
+          ...task,
+          title: "Current task",
+          schemaVersion: 4,
+          lifecycle: {
+            id: "cycle-2",
+            sequence: 2,
+            startedAt: "2026-11-13T12:00:00Z",
+            completion: null,
+          },
+          progress: { completed: 2, total: 3, percent: 66.67 },
+          objectives: [
+            {
+              ...task.objectives[0],
+              title: "Current objective",
+              status: "completed",
+              items: task.objectives[0].items.map((item) => ({ ...item, status: "completed" })),
+            },
+          ],
+        };
+        await page.evaluate(
+          ({ managed, summary, second }) => {
+            Object.assign(window.fixture, {
+              task: managed,
+              archiveCount: 2,
+              completionBasis: "task-lifecycle",
+              archiveResponses: {
+                "tasks:first": {
+                  kind: "tasks",
+                  tasks: [summary],
+                  total: 2,
+                  nextCursor: "older",
+                  currentTaskId: "cycle-2",
+                  threadId: "thread-a",
+                },
+                "tasks:older": {
+                  kind: "tasks",
+                  tasks: [second],
+                  total: 2,
+                  nextCursor: null,
+                  currentTaskId: "cycle-2",
+                  threadId: "thread-a",
+                },
+                "old-1:first": {
+                  kind: "subtasks",
+                  task: summary,
+                  nodes: [
+                    {
+                      id: "o",
+                      title: "Archived objective",
+                      status: "completed",
+                      kind: "objective",
+                      required: true,
+                    },
+                  ],
+                  totalNodes: 2,
+                  nextCursor: "node-2",
+                  currentTaskId: "cycle-2",
+                  threadId: "thread-a",
+                },
+                "old-1:node-2": {
+                  kind: "subtasks",
+                  task: summary,
+                  nodes: [
+                    {
+                      id: "i",
+                      title: "Archived child",
+                      status: "completed",
+                      kind: "item",
+                      parentId: "o",
+                    },
+                  ],
+                  totalNodes: 2,
+                  nextCursor: null,
+                  currentTaskId: "cycle-2",
+                  threadId: "thread-a",
+                },
+              },
+            });
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { managed, summary, second },
+        );
+        assert.match(await panel.locator(".summary").innerText(), /Task progress 2\/3/);
+        await page.evaluate(() => {
+          window.fixture.task.objectives[0].items.push({
+            id: "added",
+            title: "Mid-cycle addition",
+            status: "pending",
+            evidence: [],
+          });
+          window.fixture.task.progress = { completed: 2, total: 4, percent: 50 };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await panel.locator(".summary").innerText(), /Task progress 2\/4/);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        await page.evaluate(() => {
+          window.fixture.task.objectives[0].items.pop();
+          window.fixture.task.progress = { completed: 2, total: 3, percent: 66.67 };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.locator(".summary .main").click();
+        assert.match(
+          await panel.locator('[aria-label="Task closeout"]').innerText(),
+          /Closeout not recorded.*0\/1/s,
+        );
+        const archive = panel.locator(".archive-toggle");
+        assert.equal(await archive.getAttribute("aria-expanded"), "false");
+        assert.match(await archive.innerText(), /Archive\s*2/);
+        assert.equal(
+          await page.evaluate(
+            () => window.fixture.calls.filter((call) => call.method === "archive").length,
+          ),
+          0,
+        );
+        assert.equal(await panel.locator(".archive-node").count(), 0);
+        await archive.click();
+        const first = panel
+          .locator(".archive-cycle-toggle")
+          .filter({ hasText: "First delivered task" });
+        await first.waitFor();
+        assert.equal(await first.getAttribute("aria-expanded"), "false");
+        assert.equal(await panel.locator(".archive-node").count(), 0);
+        await first.click();
+        await panel.locator(".archive-node").filter({ hasText: "Archived objective" }).waitFor();
+        await panel.getByRole("button", { name: "Load more", exact: true }).click();
+        await panel.locator(".archive-node").filter({ hasText: "Archived child" }).waitFor();
+        await panel.getByRole("button", { name: "Older tasks", exact: true }).click();
+        const older = panel
+          .locator(".archive-cycle-toggle")
+          .filter({ hasText: "Older delivered task" });
+        await older.waitFor();
+        assert.equal(await older.getAttribute("aria-expanded"), "false");
+        const calls = await page.evaluate(() =>
+          window.fixture.calls.filter((call) => call.method === "archive"),
+        );
+        assert.deepEqual(
+          calls.map(({ threadId, taskId, cursor, limit }) => ({ threadId, taskId, cursor, limit })),
+          [
+            { threadId: "thread-a", taskId: undefined, cursor: undefined, limit: 50 },
+            { threadId: "thread-a", taskId: "old-1", cursor: undefined, limit: 50 },
+            { threadId: "thread-a", taskId: "old-1", cursor: "node-2", limit: 50 },
+            { threadId: "thread-a", taskId: undefined, cursor: "older", limit: 50 },
+          ],
+        );
+        assert.equal(await panel.locator(".row[data-objective]").count(), 1);
+        assert.match(
+          await panel.locator(".row[data-objective]").first().innerText(),
+          /Current objective/,
+        );
+        await page.evaluate(() => {
+          window.fixture.task.lifecycle.completion = {
+            completedAt: "2026-11-14T12:00:00Z",
+            receipt: {
+              branch: { status: "done", evidence: [] },
+              merge: { status: "done", evidence: [] },
+              push: { status: "done", evidence: [] },
+              remainingWork: 0,
+              ownerActions: 0,
+              auditEvidence: [],
+            },
+          };
+          window.fixture.task.progress = { completed: 3, total: 3, percent: 100 };
+          window.fixture.execution.state = "working";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "100");
+        assert.match(await panel.locator(".summary").innerText(), /working|executing/i);
+        await page.evaluate(() => {
+          window.fixture.execution.state = "unknown";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "100");
+        assert.match(await panel.locator(".summary").innerText(), /unknown/i);
+        assert.match(
+          await panel.locator('[aria-label="Task closeout"]').innerText(),
+          /Recorded.*1\/1/s,
+        );
+        assert.equal(await panel.getByRole("button", { name: /complete task/i }).count(), 0);
+        await page.evaluate(() => {
+          window.fixture.task = {
+            ...window.fixture.task,
+            title: "New task",
+            lifecycle: {
+              id: "cycle-3",
+              sequence: 3,
+              startedAt: "2026-11-15T12:00:00Z",
+              completion: null,
+            },
+            progress: { completed: 0, total: 2, percent: 0 },
+            objectives: [
+              {
+                id: "new",
+                title: "New objective",
+                status: "pending",
+                required: true,
+                evidence: [],
+                items: [],
+              },
+            ],
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".archive-toggle").getAttribute("aria-expanded"), "false");
+        assert.equal(await panel.locator(".archive-node").count(), 0);
+        assert.match(
+          await panel.locator(".row[data-objective]").first().innerText(),
+          /New objective/,
+        );
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /Archived child|Current objective/,
+        );
+        await context.close();
+      },
+    );
+    await t.test(
+      "archive rejects delayed results across chat, cycle and source changes",
+      async () => {
+        const { context, page, panel } = await open("", { locale: "en-US" });
+        const managed = {
+          ...task,
+          title: "Current task",
+          schemaVersion: 4,
+          lifecycle: {
+            id: "cycle-a",
+            sequence: 1,
+            startedAt: "2026-11-13T12:00:00Z",
+            completion: null,
+          },
+        };
+        const old = {
+          id: "old",
+          title: "Stale archive must not appear",
+          completedAt: "2026-11-12T12:00:00Z",
+          completionRevision: 2,
+          progress: { completed: 1, total: 1, percent: 100 },
+          objectiveCount: 1,
+          itemCount: 0,
+        };
+        await page.evaluate(
+          ({ managed, old }) => {
+            Object.assign(window.fixture, {
+              task: managed,
+              archiveCount: 1,
+              completionBasis: "task-lifecycle",
+              holdNextArchive: true,
+              archiveResponses: {
+                "tasks:first": {
+                  kind: "tasks",
+                  tasks: [old],
+                  total: 1,
+                  nextCursor: null,
+                  currentTaskId: "cycle-a",
+                  threadId: "thread-a",
+                },
+              },
+            });
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { managed, old },
+        );
+        await panel.locator(".summary .main").click();
+        await panel.locator(".archive-toggle").click();
+        await page.waitForFunction(() => typeof window.fixture.releaseHeldArchive === "function");
+        await page.evaluate(async () => {
+          window.fixture.threadId = "thread-b";
+          window.fixture.task = {
+            ...window.fixture.task,
+            threadId: "thread-b",
+            lifecycle: { ...window.fixture.task.lifecycle, id: "cycle-b" },
+          };
+          await window.__CODEX_TASK_PROGRESS__.refresh();
+          window.fixture.threadId = "thread-a";
+          window.fixture.task = {
+            ...window.fixture.task,
+            threadId: "thread-a",
+            lifecycle: { ...window.fixture.task.lifecycle, id: "cycle-a" },
+          };
+          window.fixture.archiveResponses["tasks:first"] = {
+            kind: "tasks",
+            tasks: [],
+            total: 0,
+            nextCursor: null,
+            currentTaskId: "cycle-a",
+            threadId: "thread-a",
+          };
+          await window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        if ((await panel.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
+          await panel.locator(".summary .main").click();
+        assert.equal(await panel.locator(".archive-toggle").getAttribute("aria-expanded"), "false");
+        await panel.locator(".archive-toggle").click();
+        await panel.getByText("No archived tasks.").waitFor();
+        await page.evaluate(async () => {
+          window.fixture.releaseHeldArchive();
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          );
+        });
+        assert.equal(
+          await panel
+            .locator(".archive-cycle-toggle")
+            .filter({ hasText: "Stale archive must not appear" })
+            .count(),
+          0,
+        );
+        await panel.locator(".archive-toggle").click();
+        await page.evaluate(() => {
+          window.fixture.holdNextArchive = true;
+          window.fixture.task.lifecycle.id = "cycle-next";
+          window.fixture.archiveResponses["tasks:first"] = {
+            kind: "tasks",
+            tasks: [
+              {
+                id: "late",
+                title: "Late same chat cycle",
+                completedAt: "2026-11-12T12:00:00Z",
+                completionRevision: 2,
+                progress: { completed: 1, total: 1, percent: 100 },
+                objectiveCount: 1,
+                itemCount: 0,
+              },
+            ],
+            total: 1,
+            nextCursor: null,
+            currentTaskId: "cycle-next",
+            threadId: "thread-a",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.locator(".archive-toggle").click();
+        await page.waitForFunction(() => typeof window.fixture.releaseHeldArchive === "function");
+        await page.evaluate(() => {
+          window.fixture.task.lifecycle.id = "cycle-final";
+          window.fixture.task.source = {
+            kind: "kit-heartbeat",
+            path: "/workspace/bound.md",
+            readOnly: true,
+            contentHash: "bound",
+          };
+          window.fixture.archiveResponses["tasks:first"] = {
+            available: false,
+            reason: "Source archive unavailable",
+            currentTaskId: "cycle-final",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".archive-toggle").getAttribute("aria-expanded"), "false");
+        await panel.locator(".archive-toggle").click();
+        await panel.getByText("Source archive unavailable").waitFor();
+        await page.evaluate(async () => {
+          window.fixture.releaseHeldArchive();
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          );
+        });
+        assert.equal(
+          await panel
+            .locator(".archive-cycle-toggle")
+            .filter({ hasText: "Late same chat cycle" })
+            .count(),
+          0,
+        );
+        assert.equal(
+          await panel
+            .locator(".archive-cycle-toggle")
+            .filter({ hasText: "Stale archive must not appear" })
+            .count(),
+          0,
         );
         await context.close();
       },

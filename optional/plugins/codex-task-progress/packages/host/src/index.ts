@@ -63,6 +63,9 @@ import {
   writeGoalProgressTrackingOverlay,
 } from "../../store/src/index.js";
 import {
+  getTaskArchiveCount,
+  TaskArchiveInputSchema,
+  TaskCompleteInputSchema,
   TaskInitializeInputSchema,
   TaskRescopeInputSchema,
   TaskUpdateInputSchema,
@@ -1264,7 +1267,8 @@ export class GoalProgressHelper {
     const nativeRead = request.method === "task.native-read";
     if (
       nativeRead &&
-      (context.clientKind !== "mcp" || !["get", "history", "heartbeat-history"].includes(action))
+      (context.clientKind !== "mcp" ||
+        !["get", "history", "heartbeat-history", "archive"].includes(action))
     )
       throw new GoalProgressIpcHandlerError(
         "IPC_METHOD_FORBIDDEN",
@@ -1375,7 +1379,7 @@ export class GoalProgressHelper {
       return readOptionalGroupPreference(project, "task-progress") !== false;
     });
     if (!projectEnabled) {
-      if (!["get", "history", "heartbeat-history"].includes(action))
+      if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
           "Task progress is disabled for this project",
@@ -1400,7 +1404,13 @@ export class GoalProgressHelper {
       [sourceTask, heartbeat] = await Promise.all([
         measureStage("task-projection", () =>
           heartbeatService.taskProjection(threadId, cwd, {
-            forceDiscovery: ["initialize", "update", "rescope", "bind-heartbeat"].includes(action),
+            forceDiscovery: [
+              "initialize",
+              "update",
+              "rescope",
+              "complete",
+              "bind-heartbeat",
+            ].includes(action),
           }),
         ),
         measureStage("project-view", () => heartbeatService.projectView(cwd)),
@@ -1409,7 +1419,7 @@ export class GoalProgressHelper {
     let localTaskState: Awaited<ReturnType<typeof taskStore.get>> | undefined;
     let localTaskRead = false;
     if (
-      ["initialize", "update", "rescope", "bind-heartbeat"].includes(action) &&
+      ["initialize", "update", "rescope", "complete", "bind-heartbeat"].includes(action) &&
       sourceTask.status === "pending"
     )
       throw new GoalProgressIpcHandlerError(
@@ -1425,7 +1435,7 @@ export class GoalProgressHelper {
       );
     }
     if (
-      ["initialize", "update", "rescope"].includes(action) &&
+      ["initialize", "update", "rescope", "complete"].includes(action) &&
       sourceTask.status === "error" &&
       !sourceTask.sourcePath
     )
@@ -1434,30 +1444,48 @@ export class GoalProgressHelper {
         `The Kit heartbeat task source could not be checked${sourceTask.error ? `: ${sourceTask.error}` : ""}. Restore the Kit source helpers or resolve the heartbeat read error before writing a local checklist.`,
       );
     if (
-      ["initialize", "update", "rescope"].includes(action) &&
+      ["initialize", "update", "rescope", "complete"].includes(action) &&
       sourceTask.status === "pending-selection"
     )
       throw new GoalProgressIpcHandlerError(
         "TASK_SOURCE_SELECTION_REQUIRED",
         `${sourceTask.error ?? "The current-task Kit source relation is unresolved."} Do not create or change a parallel local checklist until the runtime resolves the task-source relation.`,
       );
-    if (["initialize", "update", "rescope"].includes(action) && sourceTask.sourcePath)
+    if (["initialize", "update", "rescope", "complete"].includes(action) && sourceTask.sourcePath)
       throw new GoalProgressIpcHandlerError(
         "TASK_SOURCE_READ_ONLY",
         `This task is projected from read-only current-task Kit source ${sourceTask.sourcePath}. Update that canonical source through the project workflow; do not create a parallel local checklist.`,
       );
-    if (["initialize", "update", "rescope"].includes(action)) await workspace.ensureWritable();
+    if (["initialize", "update", "rescope", "complete"].includes(action)) {
+      if (
+        typeof taskStore.complete !== "function" ||
+        typeof taskStore.archives !== "function" ||
+        typeof taskStore.archive !== "function"
+      )
+        throw new GoalProgressIpcHandlerError(
+          "TASK_LIFECYCLE_UNAVAILABLE",
+          "Task lifecycle support is unavailable",
+        );
+      await workspace.ensureWritable();
+    }
     if (action === "initialize")
       result = await measureStage("local-task-store", () =>
-        taskStore.initialize(threadId, TaskInitializeInputSchema.parse(input)),
+        taskStore.initialize(threadId, {
+          ...TaskInitializeInputSchema.parse({ ...(input as object), lifecycle: true }),
+          lifecycle: true as const,
+        }),
       );
     else if (action === "update")
       result = await measureStage("local-task-store", () =>
-        taskStore.update(threadId, TaskUpdateInputSchema.parse(input)),
+        taskStore.update(threadId, {
+          ...TaskUpdateInputSchema.parse({ ...(input as object), lifecycle: true }),
+          lifecycle: true as const,
+        }),
       );
     else if (action === "rescope") {
-      const parsed = TaskRescopeInputSchema.parse(input);
+      const parsed = TaskRescopeInputSchema.parse({ ...(input as object), lifecycle: true });
       const rescopeInput = {
+        lifecycle: true as const,
         requestId: parsed.requestId,
         expectedRevision: parsed.expectedRevision,
         reason: parsed.reason,
@@ -1466,6 +1494,15 @@ export class GoalProgressHelper {
       };
       result = await measureStage("local-task-store", () =>
         taskStore.rescope(threadId, rescopeInput),
+      );
+    } else if (action === "complete") {
+      if (typeof taskStore.complete !== "function")
+        throw new GoalProgressIpcHandlerError(
+          "TASK_LIFECYCLE_UNAVAILABLE",
+          "Task lifecycle support is unavailable",
+        );
+      result = await measureStage("local-task-store", () =>
+        taskStore.complete(threadId, TaskCompleteInputSchema.parse(input)),
       );
     } else {
       if (action === "get") {
@@ -1556,6 +1593,40 @@ export class GoalProgressHelper {
                   })(),
                 )
           : undefined;
+      const archive =
+        action === "archive"
+          ? await (async () => {
+              const options = TaskArchiveInputSchema.parse(input ?? {});
+              if (!localTaskRead)
+                return {
+                  available: false,
+                  kind: "tasks" as const,
+                  tasks: [],
+                  total: 0,
+                  nextCursor: null,
+                  threadId,
+                  currentTaskId: null,
+                  reason: "Formal task cycle archives are unavailable for this task source.",
+                };
+              if (
+                typeof taskStore.archives !== "function" ||
+                typeof taskStore.archive !== "function"
+              )
+                throw new GoalProgressIpcHandlerError(
+                  "TASK_LIFECYCLE_UNAVAILABLE",
+                  "Task archive support is unavailable",
+                );
+              const { taskId } = options;
+              const pageOptions = {
+                ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                ...(options.limit === undefined ? {} : { limit: options.limit }),
+              };
+              const page = taskId
+                ? await taskStore.archive(threadId, taskId, pageOptions)
+                : await taskStore.archives(threadId, pageOptions);
+              return { ...page, available: true, threadId };
+            })()
+          : undefined;
       const heartbeatHistory =
         action === "heartbeat-history"
           ? await heartbeatService.projectHistory(
@@ -1599,6 +1670,7 @@ export class GoalProgressHelper {
               : null,
         execution,
         ...(history ? { history } : {}),
+        ...(archive ? { archive } : {}),
         ...(heartbeatHistory ? { heartbeatHistory } : {}),
       };
     }
@@ -1623,7 +1695,14 @@ export class GoalProgressHelper {
       result: {
         ...(result as Record<string, unknown>),
         execution,
-        completionBasis: "registered-checklist",
+        completionBasis: state && "lifecycle" in state ? "task-lifecycle" : "registered-checklist",
+        archiveCount:
+          sourceTask.sourcePath ||
+          sourceTask.status === "error" ||
+          sourceTask.status === "pending" ||
+          sourceTask.status === "pending-selection"
+            ? null
+            : getTaskArchiveCount(state ?? null),
         storage: workspace.storage,
       },
     };

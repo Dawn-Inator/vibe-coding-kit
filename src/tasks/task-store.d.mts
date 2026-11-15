@@ -7,6 +7,9 @@ import type {
 	TaskMutationResult,
 	TaskHistoryPage,
 	TaskHistorySummaryPage,
+	TaskCompleteInput,
+	TaskArchiveTasksPage,
+	TaskArchiveSubtasksPage,
 } from "./task-contract.mjs";
 export class TaskStoreError extends Error {
 	readonly code: string;
@@ -27,15 +30,22 @@ export class TaskStore {
 		importedEvents: number;
 		partialTail: boolean;
 	}>;
-	initialize(
-		threadId: string,
-		value: TaskInitializeInput,
-	): Promise<TaskMutationResult>;
+	initialize(threadId: string, value: TaskInitializeInput): Promise<TaskMutationResult>;
 	update(threadId: string, value: TaskUpdateInput): Promise<TaskMutationResult>;
-	rescope(
+	rescope(threadId: string, value: TaskRescopeInput): Promise<TaskMutationResult>;
+	complete(threadId: string, value: TaskCompleteInput): Promise<TaskMutationResult>;
+	archives(
 		threadId: string,
-		value: TaskRescopeInput,
-	): Promise<TaskMutationResult>;
+		options?: { cursor?: string; limit?: number },
+	): Promise<TaskArchiveTasksPage>;
+	archive(
+		threadId: string,
+		taskId: string,
+		options?: {
+			cursor?: string;
+			limit?: number;
+		},
+	): Promise<TaskArchiveSubtasksPage>;
 	/** Summary pages contain no snapshots, cap reasons at 512 characters and fit within 512 KiB.
 	 * canonicalHistoryPath and revision identify the unchanged full records. */
 	history(
@@ -59,3 +69,9 @@ export function taskMarkdownPaths(
 };
 /** Internal dependency-free corruption guard shared by task history writers. */
 export function validateTaskEventStructure(event: unknown): boolean;
+
+/** Validates the lifecycle boundary between structurally validated records. */
+export function isValidTaskLifecycleTransition(
+	previous: TaskState | null,
+	event: import("./task-contract.mjs").TaskEvent,
+): boolean;
