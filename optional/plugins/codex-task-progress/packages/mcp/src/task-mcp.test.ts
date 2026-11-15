@@ -101,9 +101,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.equal(initializeMetadata?.["openai/widgetAccessible"], undefined);
     const resources = await client.listResources();
     assert.ok(
-      resources.resources.some(
-        (resource) => resource.uri === TASK_PROGRESS_PANEL_RESOURCE_URI,
-      ),
+      resources.resources.some((resource) => resource.uri === TASK_PROGRESS_PANEL_RESOURCE_URI),
     );
     const panelResource = await client.readResource({
       uri: TASK_PROGRESS_PANEL_RESOURCE_URI,
