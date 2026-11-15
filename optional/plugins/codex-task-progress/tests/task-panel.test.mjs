@@ -1281,10 +1281,20 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.locator(".edge-fill").evaluate((element) => element.namespaceURI),
         "http://www.w3.org/2000/svg",
       );
-      for (const name of ["历史", "心跳"]) {
-        const circle = await panel.getByRole("button", { name, exact: true }).boundingBox();
+      for (const [index, name] of ["历史", "心跳"].entries()) {
+        const trigger = panel.getByRole("button", { name, exact: true });
+        const circle = await trigger.boundingBox();
         assert.equal(circle.width, 40);
         assert.equal(circle.height, 40);
+        assert.equal(await trigger.getAttribute("title"), null);
+        await trigger.hover();
+        assert.equal(await panel.getByText(name, { exact: true }).count(), 0);
+        assert.equal(await panel.getByRole("tooltip").count(), 0);
+        await page.locator("[role=textbox]:visible").focus();
+        for (let tab = 0; tab < index + 2; tab += 1) await page.keyboard.press("Tab");
+        assert.equal(await trigger.evaluate((element) => element.matches(":focus-visible")), true);
+        assert.equal(await panel.getByText(name, { exact: true }).count(), 0);
+        assert.equal(await panel.getByRole("tooltip").count(), 0);
       }
       assert.equal(await panel.locator(".body").isVisible(), true);
       assert.equal(

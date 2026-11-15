@@ -1,4 +1,4 @@
-# Install Task Progress 0.6.1
+# Install Task Progress 0.6.2
 
 This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 
@@ -28,7 +28,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.6.1`. The native UI resource URI is versioned from the release version constant so a host cannot reuse stale panel HTML under the previous URI. If the host still shows the old registered resource, close and reopen the Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.6.2`. The native UI resource URI is versioned from the release version constant so a host cannot reuse stale panel HTML under the previous URI. If the host still shows the old registered resource, close and reopen the Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
 
 ## Signing and protected folders
 

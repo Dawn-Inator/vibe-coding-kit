@@ -85,35 +85,12 @@ export const taskPanelStyles = css`
   .edge-progress path { vector-effect: non-scaling-stroke; }
   .edge-track { stroke: var(--ctp-panel-track); }
   .edge-fill { stroke: var(--ctp-panel-fill); }
-  .orb-wrap { position: relative; flex: none; }
   .orb { display: grid; flex: none; place-items: center; width: 40px; height: 40px; border-radius: 50%; padding: 0; color: var(--ctp-muted, #697078); }
   .orb svg { width: 17px; height: 17px; }
   .orb[aria-expanded="true"] { color: var(--ctp-panel-ink); background: var(--ctp-panel-tint); }
   .heartbeat-mark { position: absolute; inset-block-start: 7px; inset-inline-end: 7px; width: 5px; height: 5px; border: 1px solid var(--ctp-surface, #fff); border-radius: 50%; background: var(--ctp-panel-ink); }
   .heartbeat-mark[data-status="none"], .heartbeat-mark[data-status="candidates"] { background: var(--ctp-muted, #697078); }
   .heartbeat-mark[data-status="stale"], .heartbeat-mark[data-status="error"] { background: var(--ctp-error, #b15838); }
-  .tooltip {
-    position: absolute;
-    z-index: 2;
-    inset-block-start: calc(100% + 8px);
-    inset-inline-start: 50%;
-    border: 1px solid var(--ctp-panel-line);
-    border-radius: 6px;
-    padding: 5px 8px;
-    background: var(--ctp-surface, #fff);
-    color: var(--ctp-text, #343a40);
-    font-size: 10px;
-    line-height: 1.4;
-    white-space: nowrap;
-    opacity: 0;
-    transform: translateX(-50%);
-    pointer-events: none;
-    max-width: min(240px, calc(100vw - 24px));
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-  :host(:dir(rtl)) .tooltip { inset-inline-start: auto; inset-inline-end: 0; transform: none; }
-  .orb-wrap:hover .orb[aria-expanded="false"] + .tooltip, .orb:focus-visible + .tooltip { opacity: 1; }
   .body {
     position: relative;
     width: 100%;

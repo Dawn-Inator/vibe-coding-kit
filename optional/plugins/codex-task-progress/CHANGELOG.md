@@ -1,3 +1,7 @@
+# Task Progress 0.6.2
+
+- Remove hover labels from the History and Heartbeat circle buttons.
+
 # Task Progress 0.6.1
 
 - Fix native UI resource cache reuse by versioning the UI resource URI from the single release version constant. Each release now publishes an immutable, versioned resource so a host cache cannot keep serving old panel HTML after an update.
