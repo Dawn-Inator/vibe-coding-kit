@@ -428,6 +428,112 @@ test("native Dock fixture preserves unknown preferences and removes bookmarks fo
       migratedReceipt,
       "--json",
     ];
+    const migrationCommand = (plist, inputReceipt, output, outputReceipt, extra = []) => [
+      "dock-fixture-migrate",
+      "--plist",
+      plist,
+      "--original-app",
+      managed,
+      "--managed-app",
+      renamed,
+      "--receipt",
+      inputReceipt,
+      "--output-plist",
+      output,
+      "--receipt-output",
+      outputReceipt,
+      ...extra,
+      "--json",
+    ];
+    const stagedDock = join(root, "Dock staged.plist");
+    const pendingReceipt = join(root, "Dock pending receipt.plist");
+    const dockWritten = join(root, "Dock written before receipt.plist");
+    const pendingAfterWrite = join(root, "Dock pending after write.plist");
+    const oldCacheRefresh = join(root, "Dock pending old cache refreshed.plist");
+    const newCacheRefresh = join(root, "Dock pending new cache refreshed.plist");
+    assertNativeSuccess(
+      spawnSync(
+        nativeBinary,
+        migrationCommand(transformed, receipt, stagedDock, pendingReceipt, ["--stage-only"]),
+        { encoding: "utf8" },
+      ),
+      "stage receipt before Dock write",
+    );
+    assertNativeSuccess(
+      spawnSync(
+        nativeBinary,
+        migrationCommand(stagedDock, pendingReceipt, dockWritten, pendingAfterWrite, [
+          "--dock-only",
+        ]),
+        { encoding: "utf8" },
+      ),
+      "simulate interruption after Dock write",
+    );
+    for (const [input, target, output] of [
+      [stagedDock, managed, oldCacheRefresh],
+      [dockWritten, renamed, newCacheRefresh],
+    ]) {
+      assertNativeSuccess(
+        spawnSync(
+          nativeBinary,
+          [
+            "dock-fixture",
+            "--plist",
+            input,
+            "--original-app",
+            original,
+            "--managed-app",
+            target,
+            "--output-plist",
+            output,
+            "--refresh-managed-caches",
+            "--json",
+          ],
+          { encoding: "utf8" },
+        ),
+        "refresh managed Dock caches",
+      );
+    }
+    for (const [label, input, journal] of [
+      ["before Dock write", stagedDock, pendingReceipt],
+      ["before Dock write with refreshed caches", oldCacheRefresh, pendingReceipt],
+      ["after Dock write", dockWritten, pendingAfterWrite],
+      ["after Dock write with refreshed caches", newCacheRefresh, pendingAfterWrite],
+    ]) {
+      const output = join(root, `Dock resumed ${label}.plist`);
+      const finalReceipt = join(root, `Dock resumed ${label} receipt.plist`);
+      const restoredAfterResume = join(root, `Dock resumed ${label} restored.plist`);
+      assertNativeSuccess(
+        spawnSync(nativeBinary, migrationCommand(input, journal, output, finalReceipt), {
+          encoding: "utf8",
+        }),
+        `resume ${label}`,
+      );
+      assertNativeSuccess(
+        spawnSync(
+          nativeBinary,
+          [
+            "dock-fixture-remove",
+            "--plist",
+            output,
+            "--managed-app",
+            renamed,
+            "--receipt",
+            finalReceipt,
+            "--output-plist",
+            restoredAfterResume,
+            "--json",
+          ],
+          { encoding: "utf8" },
+        ),
+        `restore after ${label}`,
+      );
+      assert.deepEqual(
+        inspectDockFixture(nativeBinary, restoredAfterResume, `inspect restore ${label}`)
+          .persistentApps,
+        restoredEntries,
+      );
+    }
     assertNativeSuccess(
       spawnSync(nativeBinary, migrateArgs, { encoding: "utf8" }),
       "migrate legacy Dock receipt",
@@ -648,6 +754,17 @@ test("native Dock fixture preserves unknown preferences and removes bookmarks fo
       { encoding: "utf8" },
     );
     assert.notEqual(editedMigration.status, 0, "customized legacy tile must remain untouched");
+    const editedResume = spawnSync(
+      nativeBinary,
+      migrationCommand(
+        customized,
+        pendingReceipt,
+        join(root, "rejected resumed.plist"),
+        join(root, "rejected resumed receipt.plist"),
+      ),
+      { encoding: "utf8" },
+    );
+    assert.notEqual(editedResume.status, 0, "pending migration must not overwrite user Dock edits");
     const preserve = spawnSync(
       nativeBinary,
       [

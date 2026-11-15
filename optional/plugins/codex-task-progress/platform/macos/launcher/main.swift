@@ -66,7 +66,7 @@ private func parseOptions(_ values: [String], command: String) -> [String: Strin
     "dock-fixture-seed": ["--without-canonical", "--include-remote-original", "--json"],
     "dock-fixture": ["--refresh-managed-caches", "--insert-unrelated-before-managed", "--append-original", "--json"],
     "dock-fixture-remove": ["--json"],
-    "dock-fixture-migrate": ["--json"],
+    "dock-fixture-migrate": ["--json", "--stage-only", "--dock-only"],
     "dock-fixture-inspect": ["--json"],
   ]
   guard let allowedValues = valueOptions[command], let allowedBooleans = booleanOptions[command] else {
@@ -467,6 +467,54 @@ private func migrateDockReceipt(before: [[String: Any]], legacyPath: String, man
   return (entries, updated)
 }
 
+// A single receipt records both snapshots until the Dock write and final receipt
+// are complete. Compare all entries while ignoring only managed Dock cache fields.
+private func prepareMigration(before: [[String: Any]], legacyPath: String, managedPath: String, receipt: [String: Any]) -> [String: Any]? {
+  guard receipt["pendingMigration"] == nil, receipt["managedAppPath"] as? String == legacyPath,
+        let plan = migrateDockReceipt(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt) else { return nil }
+  var pending = receipt
+  pending["pendingMigration"] = ["before": before, "after": plan.entries, "finalReceipt": plan.receipt]
+  return pending
+}
+
+private func migrationResume(before: [[String: Any]], legacyPath: String, managedPath: String, receipt: [String: Any]) -> (entries: [[String: Any]], finalReceipt: [String: Any], needsDockWrite: Bool)? {
+  guard receipt["managedAppPath"] as? String == legacyPath,
+        let pending = receipt["pendingMigration"] as? [String: Any],
+        let oldEntries = pending["before"] as? [[String: Any]],
+        let newEntries = pending["after"] as? [[String: Any]],
+        let finalReceipt = pending["finalReceipt"] as? [String: Any],
+        finalReceipt["managedAppPath"] as? String == managedPath,
+        finalReceipt["pendingMigration"] == nil,
+        let expected = migrateDockReceipt(before: oldEntries, legacyPath: legacyPath, managedPath: managedPath, receipt: receiptWithoutPending(receipt)),
+        migrationEntriesMatch(expected.entries, newEntries, managedPath: managedPath) else { return nil }
+  var expectedReceipt = expected.receipt
+  expectedReceipt["installedEntries"] = newEntries.filter { isTile($0, bundle: managedBundleID, path: managedPath) }
+  guard samePlist(expectedReceipt, finalReceipt) else { return nil }
+  if migrationEntriesMatch(oldEntries, before, managedPath: legacyPath) { return (newEntries, finalReceipt, true) }
+  if migrationEntriesMatch(newEntries, before, managedPath: managedPath) { return (newEntries, finalReceipt, false) }
+  return nil
+}
+
+private func migrationEntriesMatch(_ expected: [[String: Any]], _ actual: [[String: Any]], managedPath: String) -> Bool {
+  guard expected.count == actual.count else { return false }
+  return zip(expected, actual).allSatisfy { expectedEntry, actualEntry in
+    if isTile(expectedEntry, bundle: managedBundleID, path: managedPath) {
+      return sameManagedTile(expectedEntry, actualEntry, managedPath: managedPath)
+    }
+    return samePlist(expectedEntry, actualEntry)
+  }
+}
+
+private func receiptWithoutPending(_ receipt: [String: Any]) -> [String: Any] {
+  var result = receipt
+  result.removeValue(forKey: "pendingMigration")
+  return result
+}
+
+private func samePlist(_ lhs: Any, _ rhs: Any) -> Bool {
+  NSDictionary(dictionary: ["value": lhs]).isEqual(to: ["value": rhs])
+}
+
 private func plistData(_ value: Any) throws -> Data {
   try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
 }
@@ -520,15 +568,20 @@ private func installDock(originalPath: String, managedPath: String, receiptPath:
   let legacyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex Task Progress.app").standardizedFileURL.path
   if let receipt = existingReceipt, let receiptApp = receipt["managedAppPath"] as? String, receiptApp != managedPath {
     guard receiptApp == legacyPath, managedPath == FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Codex.app").standardizedFileURL.path else { error("DOCK_RECEIPT_INVALID") }
-    let migration = migrateDockReceipt(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt)
-    guard let migration else { error("DOCK_USER_EDIT_PRESERVED", "Legacy Dock tile or its position changed; migration was not applied.") }
-    let previousData = FileManager.default.contents(atPath: receiptPath)
-    do { try atomicWrite(try plistData(migration.receipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
-    guard writeDockItems(migration.entries, expected: before) else {
-      if let previousData { try? atomicWrite(previousData, path: receiptPath) }
-      error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; retry.")
+    let pending: [String: Any]
+    if receipt["pendingMigration"] != nil { pending = receipt }
+    else {
+      guard let prepared = prepareMigration(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: receipt) else { error("DOCK_USER_EDIT_PRESERVED", "Legacy Dock tile or its position changed; migration was not applied.") }
+      do { try atomicWrite(try plistData(prepared), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+      pending = prepared
     }
-    restartDock()
+    guard let resume = migrationResume(before: before, legacyPath: legacyPath, managedPath: managedPath, receipt: pending) else { error("DOCK_USER_EDIT_PRESERVED", "Dock changed during migration; the recovery record was preserved.") }
+    if resume.needsDockWrite {
+      guard writeDockItems(resume.entries, expected: before) else { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; retry.") }
+    }
+    guard migrationEntriesMatch(resume.entries, readDockItems(), managedPath: managedPath) else { error("DOCK_PREFERENCES_CHANGED", "Dock settings changed during migration; recovery record retained.") }
+    do { try atomicWrite(try plistData(resume.finalReceipt), path: receiptPath) } catch { selfError("DOCK_RECEIPT_WRITE_FAILED", error.localizedDescription) }
+    if resume.needsDockWrite { restartDock() }
     emit(["ok": true, "code": "DOCK_MIGRATED", "changed": true, "dockConfigured": true])
   }
   if before.contains(where: { isTile($0, bundle: managedBundleID, path: legacyPath) }) && legacyPath != managedPath {
@@ -642,15 +695,23 @@ private func migrateDockFixture(_ options: [String: String]) -> Never {
         let receiptPath = options["--receipt"], let output = options["--output-plist"], let receiptOutput = options["--receipt-output"],
         let data = FileManager.default.contents(atPath: input),
         var root = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
-        let entries = root["persistent-apps"] as? [[String: Any]], let receipt = readReceipt(receiptPath),
-        receipt["managedAppPath"] as? String == old,
-        let migration = migrateDockReceipt(before: entries, legacyPath: old, managedPath: target, receipt: receipt) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
-  root["persistent-apps"] = migration.entries
+        let entries = root["persistent-apps"] as? [[String: Any]], let receipt = readReceipt(receiptPath) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
+  let pending: [String: Any]
+  if receipt["pendingMigration"] != nil { pending = receipt }
+  else {
+    guard let prepared = prepareMigration(before: entries, legacyPath: old, managedPath: target, receipt: receipt) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
+    pending = prepared
+  }
+  guard let resume = migrationResume(before: entries, legacyPath: old, managedPath: target, receipt: pending) else { error("DOCK_FIXTURE_MIGRATION_REJECTED") }
+  let stageOnly = options["--stage-only"] != nil
+  let dockOnly = options["--dock-only"] != nil
+  root["persistent-apps"] = stageOnly || !resume.needsDockWrite ? entries : resume.entries
   do {
     try atomicWrite(try plistData(root), path: output)
-    try atomicWrite(try plistData(migration.receipt), path: receiptOutput)
+    try atomicWrite(try plistData(stageOnly || dockOnly ? pending : resume.finalReceipt), path: receiptOutput)
   } catch { selfError("DOCK_FIXTURE_WRITE_FAILED", error.localizedDescription) }
   emit(["ok": true, "code": "DOCK_FIXTURE_MIGRATED"])
+
 }
 
 private func inspectDockFixture(_ options: [String: String]) -> Never {
@@ -755,6 +816,7 @@ private func removeDock(managedPath: String, receiptPath: String) -> Never {
     if before.contains(where: { isTile($0, bundle: managedBundleID, path: managedPath) }) { error("DOCK_RECEIPT_MISSING", "The managed Dock tile is present but its restore record is unavailable.") }
     emit(["ok": true, "code": "DOCK_RECEIPT_MISSING", "changed": false, "dockConfigured": false, "keepManagedApp": false])
   }
+  guard receipt["pendingMigration"] == nil else { error("DOCK_MIGRATION_PENDING", "Complete launcher installation before restoring the Dock.") }
   guard receipt["managedAppPath"] as? String == managedPath else { error("DOCK_RECEIPT_INVALID") }
   let plan = DockRestorePlan(before: before, managedPath: managedPath, receipt: receipt)
   guard !plan.keepManagedApp else { emit(["ok": true, "code": "DOCK_USER_EDIT_PRESERVED", "changed": false, "dockConfigured": true, "keepManagedApp": true]) }
