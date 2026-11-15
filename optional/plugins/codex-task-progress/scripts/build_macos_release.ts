@@ -6,6 +6,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { writePluginTreeManifest } from "../platform/macos/src/plugin-integrity.js";
+import { TASK_PROGRESS_PANEL_SEA_ASSET_KEY } from "../packages/mcp/src/native-panel-resource.js";
 import {
   createReleaseMarketplaceManifest,
   createReleasePluginManifest,
@@ -249,7 +250,16 @@ async function main(): Promise<void> {
 
   const blobPath = resolve(workRoot, "sea.blob");
   const seaConfigPath = resolve(workRoot, "sea-config.json");
-  await writeFile(seaConfigPath, `${JSON.stringify(createNodeSeaConfig(), null, 2)}\n`);
+  const panelHtmlPath = resolve(releasePluginRoot, "assets/task-progress-panel.html");
+  const panelHtml = await readFile(panelHtmlPath);
+  if (panelHtml.byteLength === 0) {
+    throw new Error("GOAL_PROGRESS_RELEASE_PANEL_ASSET_EMPTY");
+  }
+  const seaConfig = createNodeSeaConfig(panelHtmlPath);
+  if (seaConfig.assets[TASK_PROGRESS_PANEL_SEA_ASSET_KEY] !== panelHtmlPath) {
+    throw new Error("GOAL_PROGRESS_RELEASE_PANEL_ASSET_CONFIG_INVALID");
+  }
+  await writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`);
   run(
     releaseNode,
     ["--experimental-sea-config", seaConfigPath],

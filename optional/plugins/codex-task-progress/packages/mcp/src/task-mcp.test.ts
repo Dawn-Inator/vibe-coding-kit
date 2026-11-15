@@ -467,3 +467,42 @@ test("native panel loader selects packaged and source-runtime assets", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("SEA native panel loader uses the embedded release asset and fails closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "panel-sea-resource-"));
+  const previous = process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+  try {
+    const stalePlugin = join(root, "0.6.3");
+    const source = join(root, "source");
+    await mkdir(join(stalePlugin, "assets"), { recursive: true });
+    await mkdir(join(source, "assets"), { recursive: true });
+    await writeFile(join(stalePlugin, "assets/task-progress-panel.html"), "stale-0.6.3");
+    await writeFile(join(source, "assets/task-progress-panel.html"), "source-runtime");
+    process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT = source;
+    const sea = {
+      isSea: () => true,
+      getAsset: (key: string) => {
+        assert.equal(key, "task-progress-panel.html");
+        return Buffer.from("embedded-0.6.5");
+      },
+    };
+    assert.equal(await loadNativePanelHtml(stalePlugin, sea), "embedded-0.6.5");
+    await assert.rejects(
+      loadNativePanelHtml(stalePlugin, {
+        isSea: () => true,
+        getAsset: () => {
+          throw new Error("asset missing");
+        },
+      }),
+      /asset missing/u,
+    );
+    assert.equal(
+      await loadNativePanelHtml(stalePlugin, { isSea: () => false, getAsset: () => "unused" }),
+      "source-runtime",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT;
+    else process.env.GOAL_PROGRESS_SOURCE_RUNTIME_ROOT = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

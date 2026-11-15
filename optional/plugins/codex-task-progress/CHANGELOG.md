@@ -1,3 +1,7 @@
+# Task Progress 0.6.5
+
+- Bundle the matching native panel asset in the signed production Helper so an older chat launcher root cannot serve old panel HTML. Source runtime continues to use its pinned runtime assets.
+
 # Task Progress 0.6.4
 
 - Present recorded active child agents before and after each orchestration audit, along with audited blocked tasks and whether Owner intervention is known to be needed. Keep missing historical snapshots unknown and retain raw audit records in Kit. Remove the Show more group and apply uniform row spacing.

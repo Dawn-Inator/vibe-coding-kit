@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
+import { TASK_PROGRESS_PANEL_SEA_ASSET_KEY } from "../../../packages/mcp/src/native-panel-resource.js";
 
 export const GOAL_PROGRESS_MACOS_RELEASE_NODE_VERSION = "v24.19.0" as const;
 export const GOAL_PROGRESS_INSTALL_COMMAND_PATH = "Install Goal Progress.command" as const;
@@ -12,7 +13,10 @@ export interface MacosReleaseFile {
   readonly sha256: string;
 }
 
-export function createNodeSeaConfig() {
+export function createNodeSeaConfig(panelHtmlPath: string) {
+  if (!isAbsolute(panelHtmlPath)) {
+    throw new Error("GOAL_PROGRESS_RELEASE_PANEL_ASSET_PATH_INVALID");
+  }
   return {
     main: "helper.cjs",
     output: "sea.blob",
@@ -20,6 +24,9 @@ export function createNodeSeaConfig() {
     useSnapshot: false,
     useCodeCache: false,
     execArgvExtension: "none" as const,
+    assets: {
+      [TASK_PROGRESS_PANEL_SEA_ASSET_KEY]: panelHtmlPath,
+    },
   };
 }
 

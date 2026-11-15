@@ -10,18 +10,27 @@ const loader = register({ namespace: "native-installer-contract" });
 after(async () => {
   await loader.unregister();
 });
-const [ipc, protocol, inspection, legacy, prerequisites] = await Promise.all([
+const [ipc, protocol, inspection, legacy, prerequisites, release] = await Promise.all([
   loader.import("../packages/ipc/src/index.ts", import.meta.url),
   loader.import("../platform/macos/src/command-protocol.ts", import.meta.url),
   loader.import("../platform/macos/src/installed-inspection.ts", import.meta.url),
   loader.import("../platform/macos/src/legacy-cleanup-preflight.ts", import.meta.url),
   loader.import("../platform/macos/src/native-install-prerequisites.ts", import.meta.url),
+  loader.import("../platform/macos/src/release.ts", import.meta.url),
 ]);
 const { GOAL_PROGRESS_IPC_PROTOCOL_VERSION } = ipc;
 const { parseMacosCommand } = protocol;
 const { evaluateHelperReadiness, nativeVerification } = inspection;
 const { assertLegacyLauncherRemoved } = legacy;
 const { parseNativeMcpFeatureStatus, retireLegacyControlFiles } = prerequisites;
+const { createNodeSeaConfig } = release;
+
+test("macOS release SEA embeds the packaged panel at the loader asset key", () => {
+  const panelPath = "/release/plugins/codex-task-progress/assets/task-progress-panel.html";
+  const config = createNodeSeaConfig(panelPath);
+  assert.deepEqual(config.assets, { "task-progress-panel.html": panelPath });
+  assert.throws(() => createNodeSeaConfig("relative/panel.html"), /PANEL_ASSET_PATH_INVALID/u);
+});
 
 test("native install accepts no legacy connection or Codex restart options", () => {
   const result = parseMacosCommand(["install", "--json"]);
