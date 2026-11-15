@@ -173,15 +173,17 @@ export const taskPanelStyles = css`
   .hb-status, .hb-count { display: inline-flex; flex: none; align-items: center; border-radius: 999px; padding: 3px 8px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.35; }
   .panel-heading > .hb-status { margin-inline-start: auto; }
   .hb-status[data-certification="certified"] { background: var(--ctp-panel-tint); color: var(--ctp-panel-ink); }
+  .hb-status[data-certification="record-validated"] { border: 1px solid var(--ctp-panel-line); background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); }
   .hb-status[data-status="stale"], .hb-status[data-status="error"] { background: color-mix(in srgb, var(--ctp-error, #b15838) 10%, var(--ctp-surface, #fff)); color: var(--ctp-error, #b15838); }
-  .hb-time-card { border-radius: 14px; padding: 14px 13px 10px; background: var(--ctp-hover, #343a400a); }
-  .hb-times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .hb-time { min-width: 0; }
-  .hb-time + .hb-time { border-inline-start: 1px solid var(--ctp-panel-line); padding-inline-start: 15px; }
-  .hb-time-label { display: flex; align-items: center; gap: 7px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.45; }
+  .hb-time-card { min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; }
+  .hb-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .hb-time { min-width: 0; min-height: 118px; border: 1px solid var(--ctp-panel-line); border-radius: 16px; padding: 14px; background: var(--ctp-surface, #fff); }
+  .hb-time-label { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--ctp-muted, #697078); font-size: 12px; line-height: 1.45; }
   .hb-time-label svg { width: 16px; height: 16px; }
-  .hb-time > strong { display: block; margin-top: 5px; font-size: 20px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: -.45px; }
-  .hb-time-date { margin-top: 11px; border-top: 1px solid var(--ctp-panel-line); padding-top: 7px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+  .hb-time > strong { display: block; min-width: 0; margin-top: 9px; font-size: 22px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: -.45px; overflow-wrap: anywhere; }
+  .hb-time-date { margin-top: 7px; color: var(--ctp-muted, #697078); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .hb-time-caption { margin-top: 4px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+  .hb-time-next[data-missing="true"] > strong { color: var(--ctp-muted, #697078); font-size: 17px; font-weight: 450; letter-spacing: 0; }
   .info-card { min-width: 0; overflow: hidden; border: 1px solid var(--ctp-panel-line); border-radius: 14px; background: var(--ctp-surface, #fff); }
   .info-card[data-tone="warning"] { border-color: color-mix(in srgb, #d98216 30%, var(--ctp-panel-line)); background: color-mix(in srgb, #f6a93a 7%, var(--ctp-surface, #fff)); }
   .info-card[data-tone="error"] { border-color: color-mix(in srgb, var(--ctp-error, #b15838) 28%, var(--ctp-panel-line)); }
@@ -267,14 +269,18 @@ export const taskPanelStyles = css`
     .panel-foot { padding-inline: 15px; }
     .detail { padding-inline-start: 17px; padding-inline-end: 8px; }
     .hb-panel { gap: 8px; }
-    .hb-time-card { padding-inline: 10px; }
-    .hb-time + .hb-time { padding-inline-start: 10px; }
-    .hb-time > strong { font-size: 18px; }
+    .hb-time { min-height: 118px; padding: 12px; }
+    .hb-time-label { gap: 5px; font-size: 11px; }
+    .hb-time-label svg { width: 15px; height: 15px; }
     .info-card-head { padding-inline: 8px; }
     .info-card-body { padding-inline: 8px; }
     .hb-refresh { gap: 3px; padding-inline: 4px; }
     .hb-wake-body { margin-inline-start: 8px; padding: 7px; }
     .hb-record { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 319px) {
+    .hb-times { grid-template-columns: minmax(0, 1fr); }
+    .hb-time { min-height: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }

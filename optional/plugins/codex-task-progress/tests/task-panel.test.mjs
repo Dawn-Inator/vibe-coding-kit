@@ -2724,6 +2724,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             ];
             window.fixture.heartbeat = {
               ...value,
+              basis: "latest-recorded-wake",
+              passed: true,
+              certifiesCurrent: false,
               sourcePath: "/workspace/project/heartbeat.md",
               historyPath: "/workspace/project/taskhistory.md",
               lastWakeAt: "2026-11-13T14:34:48Z",
@@ -2750,12 +2753,71 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await panel.locator(".hb-history").waitFor();
           await panel.locator(".hb-wake").first().waitFor();
 
-          assert.equal(await panel.locator(".hb-time-card .hb-time strong").count(), 2);
+          const timeSection = panel.locator(".hb-time-card");
+          const latestTime = panel.locator(".hb-time.hb-time-latest");
+          const nextTime = panel.locator(".hb-time.hb-time-next");
+          assert.equal(await panel.locator(".hb-time-latest strong").count(), 1);
           assert.equal(await panel.locator(".hb-wake").count(), 4);
-          assert.match(await panel.locator(".hb-time-card").innerText(), /09:34/);
-          assert.match(
-            await panel.locator(".hb-time-card .hb-time-label").nth(1).innerText(),
-            /下次巡检/,
+          assert.match(await latestTime.innerText(), /09:34/);
+          assert.equal(
+            await latestTime
+              .locator("strong")
+              .evaluate((element) => getComputedStyle(element).fontSize),
+            "22px",
+          );
+          assert.match(await latestTime.locator(".hb-time-date").innerText(), /13/);
+          assert.doesNotMatch(await timeSection.innerText(), /heartbeat\.md/);
+          assert.equal(
+            await panel.locator(".hb-status").getAttribute("data-certification"),
+            "record-validated",
+          );
+          assert.match(await panel.locator(".hb-status").innerText(), /记录已校验/);
+          assert.equal(await nextTime.getAttribute("data-missing"), "true");
+          assert.equal(await nextTime.locator("strong").count(), 1);
+          assert.match(await nextTime.innerText(), /未记录/);
+          assert.match(await nextTime.innerText(), /等待记录下次巡检时间/);
+          assert.equal(
+            await nextTime
+              .locator("strong")
+              .evaluate((element) => getComputedStyle(element).fontSize),
+            "17px",
+            "unknown next time uses secondary-size text",
+          );
+          await page.evaluate(() => {
+            window.fixture.heartbeat.nextWakeAt = "2026-11-13T16:02:00Z";
+            window.fixture.heartbeat.cadenceMinutes = 30;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          });
+          assert.equal(await nextTime.getAttribute("data-missing"), "false");
+          assert.match(await nextTime.innerText(), /11:02/);
+          assert.match(await nextTime.innerText(), /13/);
+          assert.equal(await nextTime.locator(".hb-time-date").count(), 1);
+          assert.equal(await latestTime.locator(".hb-time-date").count(), 1);
+          await page.evaluate((value) => {
+            window.fixture.heartbeat.nextWakeAt = value.nextWakeAt;
+            window.fixture.heartbeat.cadenceMinutes = value.cadenceMinutes;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, heartbeat);
+          assert.match(await nextTime.locator(".hb-time-label").innerText(), /下次巡检/);
+          assert.equal(await nextTime.getAttribute("data-missing"), "true");
+          assert.equal(await panel.locator(".hb-wake").count(), 4);
+          assert.deepEqual(
+            await page.evaluate(() => ({
+              source: window.fixture.heartbeat.sourcePath,
+              historySource: window.fixture.heartbeatHistory.sourcePath,
+              history: window.fixture.heartbeat.historyPath,
+              historyHistory: window.fixture.heartbeatHistory.historyPath,
+              wakes: window.fixture.heartbeat.wakes.length,
+              historyWakes: window.fixture.heartbeatHistory.wakes.length,
+            })),
+            {
+              source: "/workspace/project/heartbeat.md",
+              historySource: "/workspace/project/heartbeat.md",
+              history: "/workspace/project/taskhistory.md",
+              historyHistory: "/workspace/project/taskhistory.md",
+              wakes: 4,
+              historyWakes: 4,
+            },
           );
           assert.match(await panel.locator(".hb-history").innerText(), /巡检记录/);
           assert.equal(await panel.locator(".hb-history-head .hb-count").innerText(), "4");
@@ -2805,16 +2867,53 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             `expected a panel no taller than 640px, got ${bounds.height}`,
           );
           const light = await body.screenshot({
-            path: ".playwright-img/heartbeat-orchestration-light.png",
+            path: ".playwright-img/heartbeat-time-cards-light.png",
           });
-          assert.equal(light.readUInt32BE(16), Math.round(bounds.width * 2));
-          // Chromium rounds fractional clip edges independently at device scale 2.
-          assert.ok(Math.abs(light.readUInt32BE(20) - Math.round(bounds.height * 2)) <= 1);
+          const lightWidth = light.readUInt32BE(16);
+          const lightHeight = light.readUInt32BE(20);
+          assert.equal(lightWidth, Math.round(bounds.width * 2));
+          assert.ok(
+            lightHeight > 0 && lightHeight <= 640 * 2 + 1,
+            `expected a non-empty screenshot within the 640px panel limit; PNG=${lightWidth}x${lightHeight}, panel=${bounds.width}x${bounds.height}`,
+          );
 
           const lightBackground = await body.evaluate(
             (element) => getComputedStyle(element).backgroundColor,
           );
           const lightText = await body.evaluate((element) => getComputedStyle(element).color);
+          const lightCardSurfaces = await panel
+            .locator(".hb-time-latest, .hb-time-next")
+            .evaluateAll((cards) => cards.map((card) => getComputedStyle(card).backgroundColor));
+          assert.equal(lightCardSurfaces.length, 2);
+          assert.equal(lightCardSurfaces[0], lightCardSurfaces[1]);
+          const wrapperStyle = await timeSection.evaluate((element) => {
+            const style = getComputedStyle(element);
+            return {
+              background: style.backgroundColor,
+              padding: [
+                style.paddingTop,
+                style.paddingRight,
+                style.paddingBottom,
+                style.paddingLeft,
+              ],
+            };
+          });
+          assert.equal(wrapperStyle.background, "rgba(0, 0, 0, 0)");
+          assert.deepEqual(wrapperStyle.padding, ["0px", "0px", "0px", "0px"]);
+          const statusStyle = await panel.locator(".hb-status").evaluate((element) => {
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return {
+              borderWidth: Number.parseFloat(style.borderTopWidth),
+              radius: Number.parseFloat(style.borderTopLeftRadius),
+              height: rect.height,
+            };
+          });
+          assert.ok(statusStyle.borderWidth > 0, "heartbeat status remains outlined");
+          assert.ok(
+            statusStyle.radius >= statusStyle.height / 2,
+            "heartbeat status has a pill silhouette",
+          );
           await page.addStyleTag({
             content: `
             html.dark { color: #eee; color-scheme: dark; --ctp-surface: #252525; --ctp-text: #eee; }
@@ -2841,7 +2940,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .evaluate((element) => getComputedStyle(element).color);
           assert.equal(darkText, composerText, "panel text follows the host composer color");
           assert.notEqual(darkText, lightText, "panel text changes with the host theme");
-          await body.screenshot({ path: ".playwright-img/heartbeat-orchestration-dark.png" });
+          await body.screenshot({ path: ".playwright-img/heartbeat-time-cards-dark.png" });
+          const darkCardSurfaces = await panel
+            .locator(".hb-time-latest, .hb-time-next")
+            .evaluateAll((cards) => cards.map((card) => getComputedStyle(card).backgroundColor));
+          assert.equal(darkCardSurfaces.length, 2);
+          assert.equal(darkCardSurfaces[0], darkCardSurfaces[1]);
+          assert.notEqual(
+            darkCardSurfaces[0],
+            lightCardSurfaces[0],
+            "card surfaces follow the host dark theme",
+          );
+          await page.evaluate(() => document.documentElement.classList.remove("dark"));
+          await page.evaluate(
+            () =>
+              new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          );
 
           const historyRequestCount = () =>
             page.evaluate(
@@ -2860,7 +2974,99 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               2,
           );
 
+          for (const width of [438, 360]) {
+            await page.setViewportSize({ width, height: 420 });
+            await page.evaluate(
+              () =>
+                new Promise((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                ),
+            );
+            const viewport = await page.evaluate(() => ({
+              viewport: document.documentElement.clientWidth,
+              document: document.documentElement.scrollWidth,
+            }));
+            const layout = await panel
+              .locator(".hb-time-latest, .hb-time-next")
+              .evaluateAll((cards) => {
+                const rectangles = cards.map((card) => card.getBoundingClientRect());
+                return {
+                  count: cards.length,
+                  gap: rectangles.length === 2 ? rectangles[1].left - rectangles[0].right : null,
+                  widths: rectangles.map((rect) => rect.width),
+                  tops: rectangles.map((rect) => rect.top),
+                  borders: cards.map((card) => getComputedStyle(card).borderTopWidth),
+                  heights: rectangles.map((rect) => rect.height),
+                  radii: cards.map((card) => getComputedStyle(card).borderTopLeftRadius),
+                };
+              });
+            assert.equal(layout.count, 2, "both time cards are present");
+            assert.ok(
+              viewport.document <= viewport.viewport,
+              `no horizontal overflow at ${width}px`,
+            );
+            assert.equal(
+              await scroll.evaluate((element) => element.scrollWidth <= element.clientWidth),
+              true,
+            );
+            assert.equal(layout.tops[0], layout.tops[1], `cards stay side by side at ${width}px`);
+            assert.ok(
+              Math.abs(layout.gap - 12) <= 1,
+              `cards have a visible 12px gap at ${width}px`,
+            );
+            assert.ok(Math.abs(layout.widths[0] - layout.widths[1]) <= 1);
+            assert.deepEqual(layout.borders, ["1px", "1px"], "cards have separate outlines");
+            assert.deepEqual(layout.radii, ["16px", "16px"]);
+            assert.ok(layout.heights.every((height) => height >= 118));
+          }
+          await page.evaluate(() => {
+            document.documentElement.dir = "rtl";
+          });
+          await page.setViewportSize({ width: 360, height: 420 });
+          const rtlViewport = await page.evaluate(() => ({
+            viewport: document.documentElement.clientWidth,
+            document: document.documentElement.scrollWidth,
+          }));
+          const rtlCards = await panel
+            .locator(".hb-time-latest, .hb-time-next")
+            .evaluateAll((cards) =>
+              cards.map((card) => {
+                const rect = card.getBoundingClientRect();
+                return { left: rect.left, right: rect.right, top: rect.top };
+              }),
+            );
+          assert.equal(rtlCards.length, 2);
+          assert.ok(
+            rtlViewport.document <= rtlViewport.viewport,
+            "RTL layout has no horizontal overflow",
+          );
+          assert.equal(
+            await scroll.evaluate((element) => element.scrollWidth <= element.clientWidth),
+            true,
+          );
+          assert.equal(rtlCards[0].top, rtlCards[1].top);
+          assert.ok(rtlCards[0].left > rtlCards[1].left, "RTL follows reading order");
+          assert.ok(Math.abs(rtlCards[0].left - rtlCards[1].right - 12) <= 1);
+          await page.evaluate(() => {
+            document.documentElement.dir = "ltr";
+          });
+          await page.setViewportSize({ width: 360, height: 420 });
+          await panel.locator(".hb-time-latest").waitFor();
+          await timeSection.screenshot({
+            path: ".playwright-img/heartbeat-time-cards-narrow.png",
+          });
+          await page.setViewportSize({ width: 319, height: 420 });
+          const stacked = await panel
+            .locator(".hb-time-latest, .hb-time-next")
+            .evaluateAll((cards) => cards.map((card) => card.getBoundingClientRect().top));
+          assert.equal(stacked.length, 2);
+          assert.ok(stacked[1] > stacked[0], "cards stack only below 320px");
           await page.setViewportSize({ width: 320, height: 380 });
+          const threshold = await panel
+            .locator(".hb-time-latest, .hb-time-next")
+            .evaluateAll((cards) => cards.map((card) => card.getBoundingClientRect().top));
+          assert.equal(threshold.length, 2);
+          assert.equal(threshold[0], threshold[1], "cards stay side by side at 320px");
           await page.locator("#messages, #composer").evaluateAll((nodes) => {
             for (const node of nodes) node.remove();
           });
@@ -3088,7 +3294,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await panel.locator("section.panel").innerText(),
           /latest-recorded-wake|items-inventory/,
         );
-        assert.equal(await panel.locator(".hb-time-card .hb-time strong").count(), 2);
+        assert.equal(await panel.locator(".hb-time-latest strong").count(), 1);
         assert.equal(await panel.locator(".hb-items").count(), 0);
         await panel.locator(".hb-history").waitFor();
         await panel.locator(".hb-wake > summary").first().waitFor();

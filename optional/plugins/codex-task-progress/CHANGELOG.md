@@ -1,3 +1,7 @@
+# Task Progress 0.6.6
+
+- Present project Heartbeat summaries as two outlined white timecards: the latest recorded date appears inside the left card, and the next time shows its actual value or “Not recorded” when unknown. Remove the filename footer and shared gray background; retain theme adaptation, RTL layout, and narrow-panel compatibility.
+
 # Task Progress 0.6.5
 
 - Bundle the matching native panel asset in the signed production Helper so an older chat launcher root cannot serve old panel HTML. Source runtime continues to use its pinned runtime assets.

@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   CalendarDays,
   ChevronRight,
+  Clock,
   FileText,
   List,
   type LucideIconData,
@@ -466,12 +467,6 @@ export class TaskProgressElement extends LitElement {
     );
   }
 
-  private basename(path: string | null | undefined): string | null {
-    if (!path) return null;
-    const name = path.split(/[\\/]/).filter(Boolean).at(-1);
-    return name || null;
-  }
-
   private async loadHistory(more = false): Promise<void> {
     const threadId = this.threadId;
     if (!threadId || !this.requester || this.busy) return;
@@ -922,7 +917,6 @@ export class TaskProgressElement extends LitElement {
       return html`<div class="heartbeat hb-panel"><p class="empty" role="status" aria-live="polite">${statusText}</p>${this.framedCard(this.t("Heartbeat history", "巡检记录"), List, unavailableBody, { count: 0, action: historyAction, className: "hb-history" })}</div>`;
     }
     const sourcePath = heartbeat.sourcePath;
-    const sourceName = this.basename(sourcePath);
     const incompleteDiscoveryOnly = this.isIncompleteDiscoveryOnly(heartbeat);
     const hasAlert = Boolean(
       (heartbeat.warning && !incompleteDiscoveryOnly) || heartbeat.findings.length,
@@ -932,8 +926,22 @@ export class TaskProgressElement extends LitElement {
       ${
         sourcePath
           ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>
-        <div class="hb-times"><div class="hb-time"><div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Latest record", "最近记录")}</span></div><strong>${this.time(heartbeat.lastWakeAt)}</strong></div><div class="hb-time"><div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Next audit", "下次巡检")}</span></div><strong>${heartbeat.nextWakeAt ? this.time(heartbeat.nextWakeAt) : "—"}</strong></div></div>
-        <div class="hb-time-date">${heartbeat.lastWakeAt ? this.dateOnly(heartbeat.lastWakeAt) : this.t("No heartbeat time recorded", "尚无心跳时间记录")}${sourceName ? html`<span> · ${sourceName}</span>` : nothing}</div>
+        <div class="hb-times">
+          <div class="hb-time hb-time-latest">
+            <div class="hb-time-label">${this.lucideIcon(Clock)}<span>${this.t("Latest record", "最近记录")}</span></div>
+            <strong>${this.time(heartbeat.lastWakeAt)}</strong>
+            <div class="hb-time-date">${heartbeat.lastWakeAt ? this.dateOnly(heartbeat.lastWakeAt) : this.t("No heartbeat time recorded", "尚无心跳时间记录")}</div>
+          </div>
+          <div class="hb-time hb-time-next" data-missing=${String(!heartbeat.nextWakeAt)}>
+            <div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Next audit", "下次巡检")}</span></div>
+            <strong>${heartbeat.nextWakeAt ? this.time(heartbeat.nextWakeAt) : this.t("Not recorded", "未记录")}</strong>
+            ${
+              heartbeat.nextWakeAt
+                ? html`<div class="hb-time-date">${this.dateOnly(heartbeat.nextWakeAt)}</div>`
+                : html`<div class="hb-time-caption">${this.t("Awaiting next audit time", "等待记录下次巡检时间")}</div>`
+            }
+          </div>
+        </div>
       </section>`
           : html`<p class="empty" role="status">${heartbeat.status === "pending" || heartbeat.retryable || this.data.heartbeatPending ? this.t("Reading project heartbeat…", "正在读取项目心跳…") : this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`
       }

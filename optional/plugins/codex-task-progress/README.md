@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.5. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.6. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
 
 Version 0.6.2 fixes host reuse of stale native panel HTML by assigning each immutable MCP UI resource a versioned URI from the release version constant. If a host still has the old UI tab registered, close and reopen the Task Progress tab to load the new resource. Do not restart Codex. This cache fix changes no authentication, task authority, canonical data format or Kit API.
 
@@ -19,7 +19,12 @@ ledger for audit rather than the main view. A first session or older wake withou
 shows unknown; it cannot reconstruct past activity. The supervising producer records snapshots through the Kit
 heartbeat writer, and the plugin only reads them.
 
-In 0.6.5, the signed production Helper uses its embedded matching panel asset even when an older chat launcher
+In 0.6.6, the project Heartbeat summary uses two outlined white timecards. The left card contains the latest
+recorded date; the next-time card shows the actual time or “Not recorded” when the value is unknown. The
+cards have no filename footer or shared gray background and adapt to the host theme, RTL direction, and narrow
+panels.
+
+The 0.6.5 signed production Helper uses its embedded matching panel asset even when an older chat launcher
 root remains in use. The source runtime continues to use its pinned runtime assets; embedding applies to the
 production SEA. After upgrading, close and reopen the Task Progress tab to load the new panel; do not restart
 Codex. Verify actual panel visibility and data separately from Helper health.
