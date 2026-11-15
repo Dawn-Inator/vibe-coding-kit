@@ -1548,12 +1548,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
-        assert.equal(
-          await panel
-            .getByRole("heading", { name: /^(History|历史记录)$/, exact: true, level: 3 })
-            .count(),
-          1,
+        const historyCard = panel.locator(
+          '.info-card[aria-label="History"], .info-card[aria-label="历史记录"]',
         );
+        assert.equal(await historyCard.count(), 1);
+        assert.match(
+          await historyCard.locator(".info-card-title").innerText(),
+          /^(History|历史记录)$/,
+        );
+        assert.equal(await historyCard.locator(".info-card-count").count(), 0);
         const historyError = panel
           .locator(".scroll .info-card-error")
           .filter({ hasText: "历史记录不可用" });
@@ -1617,12 +1620,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("wake newest", { exact: true }).waitFor();
-        assert.equal(
-          await panel
-            .getByRole("heading", { name: /^(Ledger records|台账记录)$/, exact: true, level: 3 })
-            .count(),
-          1,
+        const ledgerCard = panel.locator(
+          '.info-card[aria-label="Ledger records"], .info-card[aria-label="台账记录"]',
         );
+        assert.equal(await ledgerCard.count(), 1);
+        assert.match(
+          await ledgerCard.locator(".info-card-title").innerText(),
+          /^(Ledger records|台账记录)\s*2$/,
+        );
+        assert.equal(await ledgerCard.locator(".info-card-count").innerText(), "2");
         assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
@@ -2951,7 +2957,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /latest-recorded-wake|items-inventory/,
         );
         assert.equal(await panel.locator(".hb-time-card .hb-time strong").count(), 2);
-        await panel.locator(".hb-items > summary").click();
+        const itemsDisclosure = panel.locator(".hb-items");
+        if ((await itemsDisclosure.getAttribute("open")) === null)
+          await itemsDisclosure.locator(":scope > summary").click();
+        assert.equal(await itemsDisclosure.getAttribute("open"), "");
         assert.match(await panel.locator("section.panel").innerText(), /处理阻塞/);
         await panel.locator(".hb-history").waitFor();
         const heartbeatWake = panel.locator(".hb-wake").first();

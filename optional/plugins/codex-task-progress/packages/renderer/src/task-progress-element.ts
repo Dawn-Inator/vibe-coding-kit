@@ -1043,7 +1043,7 @@ export class TaskProgressElement extends LitElement {
               : html`<p class="empty">${this.busy ? this.t("Loading ledger history…", "正在加载台账历史…") : this.t("Waiting for ledger history…", "等待台账历史…")}</p>`
       }${sourceHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}`;
       return this.framedCard(this.t("Ledger records", "台账记录"), List, body, {
-        ...(sourceHistory ? { count: sourceHistory.total } : {}),
+        ...(sourceHistory && !sourceError ? { count: sourceHistory.total } : {}),
         action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
       });
     }
@@ -1051,7 +1051,7 @@ export class TaskProgressElement extends LitElement {
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
     const localBody = html`${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
     return this.framedCard(this.t("History", "历史记录"), List, localBody, {
-      ...(localHistory ? { count: localHistory.events.length } : {}),
+      ...(localHistory && !localHistory.error ? { count: localHistory.events.length } : {}),
       action: html`<button class="info-card-action" ?disabled=${this.busy} @click=${() => void this.loadHistory()}>${this.busy ? this.t("Loading…", "加载中…") : this.t("Refresh", "刷新")}</button>`,
     });
   }
@@ -1185,7 +1185,7 @@ export class TaskProgressElement extends LitElement {
       FileText,
       body,
       {
-        ...(sourceCount !== undefined ? { count: sourceCount } : {}),
+        ...(sourceCount !== undefined && !sourceError ? { count: sourceCount } : {}),
         tone: sourceError ? "error" : "neutral",
       },
     );

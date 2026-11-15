@@ -25,13 +25,13 @@ import {
 import { requireSingleCodexMacosApp } from "./app-discovery.js";
 import type { MacosCommandName, MacosCommandResult } from "./command-protocol.js";
 import { GOAL_PROGRESS_LAUNCH_AGENT_LABEL } from "./install-layout.js";
-import { assertLegacyLauncherRemoved } from "./legacy-cleanup-preflight.js";
 import { inspectInstalledHelper, nativeVerification } from "./installed-inspection.js";
 import {
   createLaunchAgentController,
   launchdPlist,
   writeIfChanged,
 } from "./launch-agent-controller.js";
+import { assertLegacyLauncherRemoved } from "./legacy-cleanup-preflight.js";
 import { stableErrorCode } from "./macos-errors.js";
 import {
   inspectNativeMcpFeature,
