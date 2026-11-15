@@ -1,3 +1,4 @@
+export { projectHeartbeatOrchestration, validateHeartbeatOrchestration } from './heartbeat-orchestration.mjs';
 // Canonical synchronous API for Kit and consuming projects. Deprecated checker exports remain
 // low-level helpers; callers that need an audit report should use this normalized contract.
 import { checkItems, checkLedger, findStrayItemRows, ownerFindings, parseItemTables, parseItems, parseWakes, WAKE_HEADING_RE } from './check-heartbeat-ledger.mjs';

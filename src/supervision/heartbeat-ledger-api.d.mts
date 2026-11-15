@@ -1,3 +1,20 @@
+export interface HeartbeatAgentObservation { activeAgents: number; observedAt: string; evidence: string }
+export interface HeartbeatBlockedTask { id: string; title: string; reason: string; requiresOwner: boolean | null; evidence?: string }
+export interface HeartbeatOrchestration { scope: string; before: HeartbeatAgentObservation | null; after: HeartbeatAgentObservation | null; blockedTasks: HeartbeatBlockedTask[] | null; blockersEvidence: string | null }
+export interface HeartbeatOrchestrationProjection extends Omit<HeartbeatOrchestration, "blockedTasks"> {
+	/** Stable priority: confirmed Owner intervention, unknown, then no intervention. */
+	blockedTasks: HeartbeatBlockedTask[] | null;
+	blockedTaskCount: number | null;
+	/** Count of confirmed true values; unknown classifications are excluded. */
+	ownerInterventionCount: number | null;
+	/** True if any confirmed, null if none confirmed but at least one unknown, otherwise false. */
+	requiresOwner: boolean | null;
+	truncated: boolean;
+}
+export function validateHeartbeatOrchestration(snapshot: HeartbeatOrchestration): HeartbeatOrchestration;
+export function projectHeartbeatOrchestration(snapshot: HeartbeatOrchestration, options?: { maxBlockedPreview?: number }): HeartbeatOrchestrationProjection;
+export function projectHeartbeatOrchestration(snapshot: null | undefined, options?: { maxBlockedPreview?: number }): null;
+
 export type HeartbeatInspectionMode = "current" | "history" | "items";
 
 export interface HeartbeatLedgerRow {
@@ -10,6 +27,8 @@ export interface HeartbeatLedgerRow {
 
 export interface HeartbeatWake {
 	heading: string;
+	orchestration?: HeartbeatOrchestration | null;
+	orchestrationError?: string | null;
 	line: number;
 	lineNumber: number;
 	headingLine: number;

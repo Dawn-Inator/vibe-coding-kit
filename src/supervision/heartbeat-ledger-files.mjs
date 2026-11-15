@@ -1,3 +1,4 @@
+import { validateHeartbeatOrchestration } from './heartbeat-orchestration.mjs';
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -160,9 +161,9 @@ function latestHead(text) {
 		}
 		remove.add(start);
 		for (let i = start + 1; i < end; i++) {
-			// Wake table rows and their source line belong to the archived record. Preserve
+			// Wake table rows and metadata belong to the archived record. Preserve
 			// independent prose and comments even when they occur between headings.
-			if (/^\s*(?:\||sources\s*:|[-]{3,}\s*$)/i.test(lines[i])) remove.add(i);
+			if (/^\s*(?:\||sources\s*:|orchestration\s*:|[-]{3,}\s*$)/i.test(lines[i])) remove.add(i);
 		}
 	}
 	return lines.filter((_, i) => !remove.has(i)).join("");
@@ -634,10 +635,19 @@ function writeLocked(paths, options, kind) {
 		);
 	const marker = HISTORY.exec(prior.historyText),
 		body = prior.historyText.slice(marker[0].length);
-	const input = kind === "append" ? options.wakeText : options.text;
+	let input = kind === "append" ? options.wakeText : options.text;
 	if (typeof input !== "string")
 		throw new TypeError("Heartbeat writer requires text");
-	const wake = splitWakeSections(input).at(-1);
+	let wake = splitWakeSections(input).at(-1);
+	if (wake && options.orchestration !== undefined) {
+		if (wake.split("\n").some((line) => /^\s*orchestration\s*:/i.test(line))) throw new Error("Duplicate orchestration metadata");
+		const metadata = `orchestration: ${JSON.stringify(validateHeartbeatOrchestration(options.orchestration))}`;
+		const newline = wake.indexOf("\n");
+		const updated = newline < 0 ? `${wake}\n${metadata}\n` : `${wake.slice(0, newline + 1)}${metadata}\n${wake.slice(newline + 1)}`;
+		const index = input.lastIndexOf(wake);
+		input = input.slice(0, index) + updated + input.slice(index + wake.length);
+		wake = updated;
+	}
 	if (!wake)
 		throw new Error("Heartbeat writer requires at least one wake section");
 	// Incorporate any manual suffix by its validated byte boundary before writing the new wake.

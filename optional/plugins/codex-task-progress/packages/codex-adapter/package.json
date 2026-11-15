@@ -1,6 +1,6 @@
 {
   "name": "@codex-task-progress/codex-adapter",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "type": "module",
   "exports": "./src/index.ts"

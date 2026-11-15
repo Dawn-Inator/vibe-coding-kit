@@ -882,3 +882,44 @@ test("bounded reads reject FIFO companions without waiting for a writer", {
 		/not a file|regular file/i,
 	);
 });
+
+test('orchestration metadata survives append, restart and pair writes without rewriting history', () => {
+ const dir = root(), path = join(dir, 'heartbeat.md');
+ const old = wake('2026-01-01T10:00Z');
+ writeFileSync(path, old);
+ migrate({ root: dir, path });
+ const snapshot = { scope: 'run', before: { activeAgents: 0, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:1' }, after: null, blockedTasks: null, blockersEvidence: null };
+ let pair = append({ root: dir, path, wakeText: wake('2026-01-01T11:00Z'), orchestration: snapshot });
+ assert.ok(pair.historyText.includes(old));
+ assert.deepEqual(inspectHeartbeatLedgerPair(readHeartbeatLedgerPair({ root: dir, path }), { mode: 'history' }).wakes.at(-1).orchestration, snapshot);
+ assert.throws(() => append({ root: dir, path, wakeText: wake('2026-01-01T12:00Z', 'orchestration: {}\n'), orchestration: snapshot }), /Duplicate/);
+ const next = wake('2026-01-01T12:00Z');
+ pair = write({ root: dir, path, text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, '')}\n${next}`, orchestration: snapshot });
+ assert.ok(pair.historyText.includes(old));
+ assert.deepEqual(inspectHeartbeatLedgerPair(pair, { mode: 'history' }).wakes.at(-1).orchestration, snapshot);
+});
+
+
+test('successive wakes retain snapshot history without orphaning superseded metadata in head', () => {
+ const dir = root(), path = join(dir, 'heartbeat.md');
+ const legacy = `# legacy prose\n${wake('2026-01-01T10:00Z')}legacy note\n`;
+ writeFileSync(path, legacy);
+ migrate({ root: dir, path });
+ const snapshot = (n) => ({ scope: `wake-${n}`, before: { activeAgents: n, observedAt: `2026-01-01T1${n}:00:00Z`, evidence: `receipt:${n}` }, after: null, blockedTasks: [], blockersEvidence: `audit:${n}` });
+ let pair = append({ root: dir, path, wakeText: wake('2026-01-01T11:00Z'), orchestration: snapshot(1) });
+ pair = append({ root: dir, path, wakeText: wake('2026-01-01T12:00Z'), orchestration: snapshot(2) });
+ pair = readHeartbeatLedgerPair({ root: dir, path });
+ assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
+ assert.ok(pair.headText.includes('wake-2'));
+ assert.ok(!pair.headText.includes('wake-1'));
+ assert.ok(pair.historyText.includes(legacy));
+ const next = wake('2026-01-01T13:00Z');
+ pair = write({ root: dir, path, text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, '')}\n${next}`, orchestration: snapshot(3) });
+ pair = readHeartbeatLedgerPair({ root: dir, path });
+ assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
+ assert.ok(pair.headText.includes('wake-3'));
+ assert.ok(pair.historyText.includes(legacy));
+ assert.equal(readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, 'utf8'), legacy);
+ const wakes = inspectHeartbeatLedgerPair(pair, { mode: 'history' }).wakes;
+ assert.deepEqual(wakes.map((entry) => entry.orchestration?.scope ?? null), [null, 'wake-1', 'wake-2', 'wake-3']);
+});

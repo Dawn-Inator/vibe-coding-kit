@@ -1,3 +1,7 @@
+# Task Progress 0.6.4
+
+- Present recorded active child agents before and after each orchestration audit, along with audited blocked tasks and whether Owner intervention is known to be needed. Keep missing historical snapshots unknown and retain raw audit records in Kit. Remove the Show more group and apply uniform row spacing.
+
 # Task Progress 0.6.3
 
 - Present Heartbeat records in category cards and Task History as a timeline, with visible Refresh buttons.

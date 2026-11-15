@@ -3,7 +3,6 @@ import {
   CalendarDays,
   ChevronRight,
   FileText,
-  Layers3,
   List,
   type LucideIconData,
   type LucideIconNode,
@@ -12,6 +11,7 @@ import {
 import { html, LitElement, nothing, type PropertyValues, svg } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
+import type { HeartbeatOrchestrationProjection } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/release-version.js";
 import { taskPanelStyles } from "./styles/task-panel.js";
 
@@ -744,30 +744,35 @@ export class TaskProgressElement extends LitElement {
     }
   }
 
-  private auditCategory(category: string): string {
-    const labels: Record<string, [string, string]> = {
-      "goal-derived remaining work": ["Remaining work check", "剩余工作检查"],
-      "read-only review": ["Independent review", "独立审查"],
-      "temporary status updates": ["Temporary status updates", "临时状态更新"],
-      "long-lived knowledge artifacts": ["Knowledge artifacts", "长期知识资料"],
-      "tooling/test fixes": ["Tooling and test fixes", "工具与测试修复"],
-      "release/deploy prep": ["Release and deployment preparation", "发布与部署准备"],
-      "follow-ups from finished workers": ["Worker follow-ups", "已完成工作跟进"],
-      "centralized verification": ["Centralized verification", "集中验证"],
-      "session hygiene": ["Session hygiene", "会话清理"],
-      "deployable-unit drift": ["Deployable unit drift", "部署单元偏差"],
-    };
-    const aliases: Record<string, string> = {
-      "goal-derived remaining": "goal-derived remaining work",
-      "temporary status": "temporary status updates",
-      "knowledge artifacts": "long-lived knowledge artifacts",
-      "tooling fixes": "tooling/test fixes",
-      "release prep": "release/deploy prep",
-      "worker follow-ups": "follow-ups from finished workers",
-    };
-    const key = category.trim().toLowerCase();
-    const label = labels[aliases[key] ?? key];
-    return label ? this.t(label[0], label[1]) : category;
+  private renderOrchestration(value: unknown, error: unknown) {
+    if (typeof error === "string" && error.trim())
+      return html`<p class="muted" role="status">${this.t("Invalid orchestration snapshot; metrics not recorded", "编排快照无效，指标未记录")}</p>`;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return html`<p class="muted">${this.t("Legacy record: orchestration snapshot not recorded", "旧记录未记录编排快照")}</p>`;
+    const snapshot = value as HeartbeatOrchestrationProjection;
+    const unknown = this.t("Not recorded", "未记录");
+    const number = (v: unknown) =>
+      typeof v === "number" && Number.isFinite(v) ? String(v) : unknown;
+    const flag = (v: unknown) =>
+      v === true ? this.t("Yes", "是") : v === false ? this.t("No", "否") : unknown;
+    const agentCount = (v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v)
+        ? number((v as Record<string, unknown>).activeAgents)
+        : unknown;
+    const tasks = snapshot.blockedTasks ?? [];
+    return html`
+      <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Agent flow", "Agent 编排")}</h3></div><div class="info-card-body hb-snapshot">
+        <p class="muted">${this.t("Audit / task scope", "巡检 / 任务范围")}: ${typeof snapshot.scope === "string" && snapshot.scope ? snapshot.scope : unknown}</p>
+        <p>${this.t("Active child agents", "活跃子 Agent")} <strong>${agentCount(snapshot.before)} → ${agentCount(snapshot.after)}</strong></p>
+        <p class="muted">${this.t("Before audit / re-split → after dispatch", "巡检 / 重新拆分前 → 派发后")}</p>
+      </div></section>
+      <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Blocked tasks and Owner actions", "阻塞任务与 Owner 操作")}</h3></div><div class="info-card-body hb-snapshot">
+        <p>${this.t("Blocked tasks", "阻塞任务数")} <strong>${number(snapshot.blockedTaskCount)}</strong></p>
+        <p>${this.t("Confirmed Owner actions", "已确认需你处理")} <strong>${number(snapshot.ownerInterventionCount)}</strong></p>
+        <p>${this.t("Owner intervention required", "是否需要 Owner 介入")} <strong>${flag(snapshot.requiresOwner)}</strong></p>
+        ${tasks.map((task) => html`<article class="hb-blocked-task"><strong>${String(task.title ?? task.id ?? unknown)}</strong><p>${this.t("Reason", "原因")}: ${typeof task.reason === "string" && task.reason ? task.reason : unknown}</p><p>${this.t("Requires Owner", "需要 Owner")}: ${flag(task.requiresOwner)}</p></article>`)}
+        ${snapshot.truncated === true ? html`<p class="muted">${this.t("Showing", "当前显示")} ${tasks.length} / ${number(snapshot.blockedTaskCount)} ${this.t("blocked tasks", "项阻塞任务")}</p>` : nothing}
+      </div></section>`;
   }
 
   private taskSourceIsPending(): boolean {
@@ -804,73 +809,15 @@ export class TaskProgressElement extends LitElement {
           wake.timeMs !== null && wake.timeMs !== undefined
             ? this.wakeHeading(wake.timeMs)
             : String(wake.heading ?? this.t("Untimed record", "时间未知的记录"));
-        const rowCount =
-          typeof wake.rowCount === "number"
-            ? wake.rowCount
-            : Array.isArray(wake.rows)
-              ? wake.rows.length
-              : 0;
-        const rows = Array.isArray(wake.rows)
-          ? wake.rows.filter(
-              (row): row is Record<string, unknown> =>
-                typeof row === "object" && row !== null && !Array.isArray(row),
-            )
-          : [];
-        const renderRow = (row: Record<string, unknown>) => {
-          const label = String(row.category ?? row.item ?? row.id ?? "");
-          const state = String(row.state ?? row.status ?? "");
-          const wakeSourcePath = wake.sourcePath ?? heartbeat.sourcePath;
-          const wakeLocation =
-            typeof wake.line === "number"
-              ? wakeSourcePath
-                ? `${String(wakeSourcePath)}:${wake.line}`
-                : `#${wake.line}`
-              : "";
-          const rowSourcePath = row.sourcePath ?? wake.sourcePath ?? heartbeat.sourcePath;
-          const rowLocation =
-            typeof row.line === "number"
-              ? rowSourcePath
-                ? `${String(rowSourcePath)}:${row.line}`
-                : `#${row.line}`
-              : "";
-          const provenance =
-            wakeLocation && rowLocation && wakeLocation !== rowLocation
-              ? html`<p><strong>${this.t("Record source", "记录来源")}</strong><code>${wakeLocation}</code></p><p><strong>${this.t("Row source", "行来源")}</strong><code>${rowLocation}</code></p>`
-              : wakeLocation || rowLocation
-                ? html`<p><strong>${this.t("Source", "来源")}</strong><code>${rowLocation || wakeLocation}</code></p>`
-                : nothing;
-          return html`<section class="info-card hb-record" aria-label=${label}>
-            <div class="info-card-head"><h3 class="info-card-title">${this.auditCategory(label) || this.t("Audit record", "巡检记录")}</h3></div><div class="info-card-body"><div class="hb-record-preview"><span>${state}</span></div>
-            <details class="hb-record-raw hb-wake-raw"><summary>${this.t("View original", "查看原文")}</summary><div class="hb-row-original">
-              ${wake.timeMs !== null && wake.timeMs !== undefined ? html`<p><strong>${this.t("Recorded time", "记录时间")}</strong><code>${this.date(wake.timeMs)}</code></p>` : nothing}
-              ${typeof wake.heading === "string" ? html`<p><strong>${this.t("Heading", "标题")}</strong><code>${wake.heading}</code></p>` : nothing}
-              ${row.category !== undefined ? html`<p><strong>${this.t("Category", "分类")}</strong><span>${String(row.category)}</span></p>` : nothing}
-              ${row.state !== undefined ? html`<p><strong>${this.t("State", "状态")}</strong><span>${String(row.state)}</span></p>` : nothing}
-              ${row.heading !== undefined ? html`<p><strong>${this.t("Heading", "标题")}</strong><span>${String(row.heading)}</span></p>` : nothing}
-              ${provenance}
-            </div></details></div>
-          </section>`;
-        };
         return html`<details class="event hb-wake" ?open=${this.heartbeatWakeExpansion.get(key) ?? index === 0} @toggle=${(
           event: Event,
         ) => {
           if (event.target === event.currentTarget)
             this.heartbeatWakeExpansion.set(key, (event.currentTarget as HTMLDetailsElement).open);
         }}>
-          <summary><span class="hb-wake-time">${heading}</span><span class="hb-wake-count">${this.t(`${rowCount} records`, `${rowCount}项记录`)}</span>${this.lucideIcon(ChevronRight, "hb-wake-chevron")}</summary>
+          <summary><span class="hb-wake-time">${heading}</span>${this.lucideIcon(ChevronRight, "hb-wake-chevron")}</summary>
           <div class="hb-wake-body">
-            ${
-              !rows.length
-                ? html`<details class="hb-wake-raw"><summary>${this.t("View original", "查看原文")}</summary><div class="hb-wake-original">
-              ${wake.timeMs !== null && wake.timeMs !== undefined ? html`<p><strong>${this.t("Recorded time", "记录时间")}</strong><code>${this.date(wake.timeMs)}</code></p>` : nothing}
-              ${typeof wake.heading === "string" ? html`<p><strong>${this.t("Heading", "标题")}</strong><code>${wake.heading}</code></p>` : nothing}
-              ${typeof wake.line === "number" ? html`<p><strong>${this.t("Source", "来源")}</strong><code>${(wake.sourcePath ?? heartbeat.sourcePath) ? `${String(wake.sourcePath ?? heartbeat.sourcePath)}:${wake.line}` : `#${wake.line}`}</code></p>` : nothing}
-            </div></details>`
-                : nothing
-            }
-            ${rows.slice(0, 2).map(renderRow)}
-            ${rows.length > 2 ? html`<details class="hb-more-records"><summary>${this.t(`Show ${rows.length - 2} more records`, `查看其余 ${rows.length - 2} 项记录`)}</summary>${rows.slice(2).map(renderRow)}</details>` : nothing}
-            ${wake.truncated === true ? html`<p class="hb-truncated">${this.t("This is a record preview. See the source file for full content.", "当前为记录预览，完整内容见来源文件。")}</p>` : nothing}
+            ${this.renderOrchestration(wake.orchestration, wake.orchestrationError)}
           </div>
         </details>`;
       })}
@@ -1001,7 +948,7 @@ export class TaskProgressElement extends LitElement {
           : nothing
       }
       ${heartbeat.error && !heartbeat.retryable && heartbeat.status !== "pending" ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
-      <details class="hb-items"><summary>${this.lucideIcon(Layers3)}<span>${this.t("Items and blockers", "登记项与阻塞")}</span><span class="hb-count">${heartbeat.itemCount ?? heartbeat.items.length}</span>${this.lucideIcon(ChevronRight, "hb-disclosure-chevron")}</summary><div class="hb-items-body">${heartbeat.items.map((item) => html`<article class="hb-item"><div><span class="status">${String(item.status ?? "")}</span> <strong>${String(item.item ?? item.id ?? "")}</strong></div>${item.evidence !== undefined ? html`<p>${String(item.evidence)}</p>` : nothing}</article>`)}</div></details>
+
       ${this.renderHeartbeatHistory(heartbeat)}
 
     </div>`;
@@ -1091,20 +1038,7 @@ export class TaskProgressElement extends LitElement {
           : wakes.length
             ? wakes.map(
                 (wake) =>
-                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.sourcePath ? `${String(wake.sourcePath)}:${wake.line}` : wake.line}</div>` : nothing}${
-                    Array.isArray(wake.rows)
-                      ? wake.rows.map((raw) => {
-                          const row = raw as Record<string, unknown>;
-                          const sourcePath =
-                            typeof row.sourcePath === "string" ? row.sourcePath : wake.sourcePath;
-                          const location =
-                            typeof row.line === "number" && sourcePath
-                              ? html`<span> · ${this.t("Source", "来源位置")} ${String(sourcePath)}:${row.line}</span>`
-                              : nothing;
-                          return html`<p class="muted">${String(row.category ?? "")} · ${String(row.state ?? "")}${location}</p>`;
-                        })
-                      : nothing
-                  }</div>`,
+                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.sourcePath ? `${String(wake.sourcePath)}:${wake.line}` : wake.line}</div>` : nothing}${this.renderOrchestration(wake.orchestration, wake.orchestrationError)}</div>`,
               )
             : retrying
               ? nothing

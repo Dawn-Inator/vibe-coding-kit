@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseHeartbeatOrchestrationLines } from './heartbeat-orchestration.mjs';
 // Mechanical checker for the heartbeat ledger written by the `agent-task-supervision` skill.
 // A self-graded ledger is not evidence; this script is the second pair of eyes.
 //
@@ -175,6 +176,7 @@ export function parseWakes(text) {
         }
       }
     }
+    Object.assign(wake, parseHeartbeatOrchestrationLines(wake.sectionLines));
     wake.timeMs = parseIsoMs(lines[i].match(HEADING_ISO_RE)?.[0]);
     wakes.push(wake);
   }
@@ -227,6 +229,7 @@ export function checkLedger(text, { latest = false, now = new Date(), requireAud
     const red = (rule, line, message) => {
       if (graded) findings.push({ rule, message: `${wake.heading} (line ${line}): ${message}` });
     };
+    if (wake.orchestrationError) red('orchestration-metadata', wake.line, wake.orchestrationError);
     if (!wake.headingOk) red('heading-time', wake.line, 'heading must be "## <ISO time> wake (10-row ledger)", e.g. 2026-01-01T12:00Z');
     if (wake.layout.count === 10 && !wake.sources) red('sources-missing', wake.line, 'missing a "sources:" line naming the discovery channels this wake consulted');
     if (latest && graded && wake.layout.count === 8 && !wake.sourcesLine) red('sources-missing', wake.line, 'newest wake has no "sources:" line naming the discovery channels this wake consulted');

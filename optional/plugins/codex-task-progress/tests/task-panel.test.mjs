@@ -320,7 +320,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const sourcePath = "/workspace/project/heartbeat.md";
         const wake = (text, minute) => ({
           timeMs: Date.parse(`2026-11-13T14:${minute}:00Z`),
-          rows: [{ category: "status", state: text }],
+          orchestration: {
+            blockedTasks: [{ title: text, reason: "reason", requiresOwner: false }],
+          },
         });
         const historyA = {
           sourcePath,
@@ -347,7 +349,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:33:00Z"),
-                    rows: [{ category: "status", state: "current hash A snapshot" }],
+                    orchestration: {
+                      blockedTasks: [
+                        {
+                          title: "current hash A snapshot",
+                          reason: "reason",
+                          requiresOwner: false,
+                        },
+                      ],
+                    },
                   },
                 ],
               };
@@ -357,10 +367,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { task, heartbeat, sourcePath, historyA },
           );
           await showView(panel, "heartbeat");
-          await panel
-            .locator(".hb-record-preview")
-            .getByText("history hash A", { exact: true })
-            .waitFor();
+          await panel.locator(".hb-wake").getByText("history hash A", { exact: true }).waitFor();
           await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 1);
           await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
           assert.equal(
@@ -380,7 +387,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:36:00Z"),
-                    rows: [{ category: "status", state: "current hash B snapshot" }],
+                    orchestration: {
+                      blockedTasks: [
+                        {
+                          title: "current hash B snapshot",
+                          reason: "reason",
+                          requiresOwner: false,
+                        },
+                      ],
+                    },
                   },
                 ],
               };
@@ -390,10 +405,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { heartbeat, sourcePath, historyB },
           );
           await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 2);
-          await panel
-            .locator(".hb-record-preview")
-            .getByText("history hash B", { exact: true })
-            .waitFor();
+          await panel.locator(".hb-wake").getByText("history hash B", { exact: true }).waitFor();
           assert.doesNotMatch(await panel.locator(".hb-history").innerText(), /history hash A/);
           await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
           assert.equal(
@@ -412,7 +424,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:30:00Z"),
-                    rows: [{ category: "status", state: "wrong hash cursor page" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "wrong hash cursor page", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 nextCursor: null,
@@ -448,7 +464,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:31:00Z"),
-                    rows: [{ category: "status", state: "error page bad row" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "error page bad row", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 nextCursor: "bad-cursor-c",
@@ -514,7 +534,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           wakes: [
             {
               timeMs: Date.parse("2026-11-13T14:34:00Z"),
-              rows: [{ category: "status", state: "held history hash A" }],
+              orchestration: {
+                blockedTasks: [
+                  { title: "held history hash A", reason: "reason", requiresOwner: false },
+                ],
+              },
             },
           ],
           nextCursor: null,
@@ -526,7 +550,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           wakes: [
             {
               timeMs: Date.parse("2026-11-13T14:35:00Z"),
-              rows: [{ category: "status", state: "new history hash B" }],
+              orchestration: {
+                blockedTasks: [
+                  { title: "new history hash B", reason: "reason", requiresOwner: false },
+                ],
+              },
             },
           ],
           nextCursor: null,
@@ -543,7 +571,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:33:00Z"),
-                    rows: [{ category: "status", state: "current hash A snapshot" }],
+                    orchestration: {
+                      blockedTasks: [
+                        {
+                          title: "current hash A snapshot",
+                          reason: "reason",
+                          requiresOwner: false,
+                        },
+                      ],
+                    },
                   },
                 ],
               };
@@ -566,7 +602,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T14:36:00Z"),
-                    rows: [{ category: "status", state: "current hash B snapshot" }],
+                    orchestration: {
+                      blockedTasks: [
+                        {
+                          title: "current hash B snapshot",
+                          reason: "reason",
+                          requiresOwner: false,
+                        },
+                      ],
+                    },
                   },
                 ],
               };
@@ -582,7 +626,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
           await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 1);
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("new history hash B", { exact: true })
             .waitFor();
           assert.equal(
@@ -622,7 +666,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           wakes: [
             {
               timeMs: Date.parse("2026-11-13T14:34:48Z"),
-              rows: [{ category: "status", state: "verified cached record" }],
+              orchestration: {
+                blockedTasks: [
+                  { title: "verified cached record", reason: "reason", requiresOwner: false },
+                ],
+              },
             },
           ],
           nextCursor: null,
@@ -651,7 +699,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await panel.getByRole("button", { name: /实现普通任务面板/ }).waitFor();
           await panel.locator(".heartbeat-trigger").click();
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("verified cached record", { exact: true })
             .waitFor();
           assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
@@ -671,7 +719,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           await panel.getByText(/正在刷新项目心跳；当前显示最近一次已验证的快照/).waitFor();
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("verified cached record", { exact: true })
             .waitFor();
           assert.equal(await panel.locator(".hb-history .hb-count").innerText(), "1");
@@ -697,7 +745,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:00:00Z"),
-                    rows: [{ category: "status", state: "new verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "new verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 wakeCount: 1,
@@ -706,7 +758,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:00:00Z"),
-                    rows: [{ category: "status", state: "new verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "new verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 nextCursor: null,
@@ -719,7 +775,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { value: heartbeat, sourcePath },
           );
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("new verified record", { exact: true })
             .waitFor();
           assert.equal(await panel.getByText("verified cached record", { exact: true }).count(), 0);
@@ -734,7 +790,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             return window.__CODEX_TASK_PROGRESS__.refresh();
           });
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("new verified record", { exact: true })
             .waitFor();
           await page.evaluate(() => {
@@ -762,7 +818,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:10:00Z"),
-                    rows: [{ category: "status", state: "third verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "third verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 wakeCount: 1,
@@ -771,7 +831,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:10:00Z"),
-                    rows: [{ category: "status", state: "third verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "third verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 nextCursor: null,
@@ -784,7 +848,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { value: heartbeat, sourcePath },
           );
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("third verified record", { exact: true })
             .waitFor();
           await page.evaluate(() => {
@@ -797,7 +861,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             return window.__CODEX_TASK_PROGRESS__.refresh();
           });
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("third verified record", { exact: true })
             .waitFor();
           await page.evaluate(() => {
@@ -819,7 +883,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:20:00Z"),
-                    rows: [{ category: "status", state: "fourth verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "fourth verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 wakeCount: 1,
@@ -828,7 +896,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 wakes: [
                   {
                     timeMs: Date.parse("2026-11-13T15:20:00Z"),
-                    rows: [{ category: "status", state: "fourth verified record" }],
+                    orchestration: {
+                      blockedTasks: [
+                        { title: "fourth verified record", reason: "reason", requiresOwner: false },
+                      ],
+                    },
                   },
                 ],
                 nextCursor: null,
@@ -841,7 +913,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { value: heartbeat, sourcePath },
           );
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("fourth verified record", { exact: true })
             .waitFor();
           await page.evaluate(() => {
@@ -865,7 +937,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const sourcePath = "/workspace/shared-project/heartbeat.md";
         const baselineWake = {
           timeMs: Date.parse("2026-11-13T14:34:48Z"),
-          rows: [{ category: "status", state: "A baseline content" }],
+          orchestration: {
+            blockedTasks: [{ title: "A baseline content", reason: "reason", requiresOwner: false }],
+          },
         };
         const aHistory = {
           wakes: [baselineWake],
@@ -919,7 +993,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { timeout: 6000 },
           );
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("A baseline content", { exact: true })
             .waitFor({ timeout: 6000 });
           assert.equal(
@@ -941,20 +1015,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             "a normal get poll for the same source must not refetch its history",
           );
 
-          const rawSummary = panel
-            .locator(".hb-wake")
-            .first()
-            .locator(".hb-wake-raw")
-            .first()
-            .locator(":scope > summary");
-          await rawSummary.click();
-          const rawDetails = panel.locator(".hb-wake").first().locator(".hb-wake-raw").first();
-          assert.equal(await rawDetails.getAttribute("open"), "");
+          const firstSummary = panel.locator(".hb-wake").first().locator(":scope > summary");
+          await firstSummary.click();
+          assert.equal(await panel.locator(".hb-wake").first().getAttribute("open"), null);
           const lateA = {
             wakes: [
               {
                 timeMs: Date.parse("2026-11-13T14:18:22Z"),
-                rows: [{ category: "status", state: "A late history must not win" }],
+                orchestration: {
+                  blockedTasks: [
+                    {
+                      title: "A late history must not win",
+                      reason: "reason",
+                      requiresOwner: false,
+                    },
+                  ],
+                },
               },
             ],
             nextCursor: null,
@@ -976,7 +1052,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             wakes: [
               {
                 timeMs: Date.parse("2026-11-13T14:05:11Z"),
-                rows: [{ category: "status", state: "B thread history" }],
+                orchestration: {
+                  blockedTasks: [
+                    { title: "B thread history", reason: "reason", requiresOwner: false },
+                  ],
+                },
               },
             ],
             nextCursor: null,
@@ -1009,18 +1089,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             { timeout: 6000 },
           );
           await panel
-            .locator(".hb-record-preview")
+            .locator(".hb-wake")
             .getByText("B thread history", { exact: true })
             .waitFor({ timeout: 6000 });
           assert.equal(
-            await panel
-              .locator(".hb-wake")
-              .first()
-              .locator(".hb-wake-raw")
-              .first()
-              .getAttribute("open"),
-            null,
-            "switching chats clears the previous wake disclosure state",
+            await panel.locator(".hb-wake").first().getAttribute("open"),
+            "",
+            "switching chats resets wake disclosure state",
           );
           assert.equal(
             await page.evaluate(() => typeof window.fixture.releaseHeldHeartbeatHistory),
@@ -1658,10 +1733,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         assert.equal(await historyCard.count(), 1);
         assert.match(
-          await historyCard.locator(".info-card-title").innerText(),
+          await historyCard.locator(":scope > .info-card-head > .info-card-title").innerText(),
           /^(History|历史记录)$/,
         );
-        assert.equal(await historyCard.locator(".info-card-count").count(), 0);
+        assert.equal(
+          await historyCard
+            .locator(":scope > .info-card-head > .info-card-title > .info-card-count")
+            .count(),
+          0,
+        );
         const historyError = panel
           .locator(".scroll .info-card-error")
           .filter({ hasText: "历史记录不可用" });
@@ -1712,6 +1792,23 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                   heading: "wake newest",
                   line: 12,
                   rows: [{ category: "Feature", state: "active" }],
+                  orchestration: {
+                    scope: "bound task",
+                    before: { activeAgents: 2 },
+                    after: { activeAgents: 4 },
+                    blockedTaskCount: 1,
+                    ownerInterventionCount: 1,
+                    requiresOwner: true,
+                    blockedTasks: [
+                      {
+                        id: "review",
+                        title: "Owner decision",
+                        reason: "Needs approval",
+                        requiresOwner: true,
+                      },
+                    ],
+                    truncated: false,
+                  },
                 },
               ],
               nextCursor: "older",
@@ -1730,14 +1827,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         assert.equal(await ledgerCard.count(), 1);
         assert.match(
-          await ledgerCard.locator(".info-card-title").innerText(),
+          await ledgerCard.locator(":scope > .info-card-head > .info-card-title").innerText(),
           /^(Ledger records|台账记录)\s*2$/,
         );
-        assert.equal(await ledgerCard.locator(".info-card-count").innerText(), "2");
+        assert.equal(
+          await ledgerCard
+            .locator(":scope > .info-card-head > .info-card-title > .info-card-count")
+            .innerText(),
+          "2",
+        );
         assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
-        assert.match(await panel.locator("section.panel").innerText(), /Feature · active/);
+        assert.match(await panel.locator("section.panel").innerText(), /bound task/);
+        assert.match(await panel.locator("section.panel").innerText(), /2 → 4/);
+        assert.match(await panel.locator("section.panel").innerText(), /Owner decision/);
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /Feature · active/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
         await mkdir(".playwright-img", { recursive: true });
         await page.screenshot({ path: ".playwright-img/task-history-source-preview.png" });
@@ -1772,7 +1877,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
-      "paired Kit history displays its physical ledger and row locations while retaining HEAD identity",
+      "paired Kit history displays its ledger location while retaining HEAD identity",
       async () => {
         const { context, page, panel } = await open();
         const headPath = "/repo/.workspace/task/session/heartbeat.md";
@@ -1832,7 +1937,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await scroll.innerText(), /只读心跳来源.*heartbeat\.md/s);
         assert.match(await scroll.innerText(), /历史台账.*taskhistory\.md/s);
         assert.match(await scroll.innerText(), /taskhistory\.md:24/);
-        assert.match(await scroll.innerText(), /taskhistory\.md:25/);
+        assert.doesNotMatch(await scroll.innerText(), /taskhistory\.md:25/);
         await panel.getByRole("button", { name: "心跳", exact: true }).click();
         assert.equal(await panel.locator(".hb-source").count(), 0);
         await panel.getByRole("button", { name: "历史", exact: true }).click();
@@ -2056,7 +2161,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("historical wake remains valid", { exact: true }).waitFor();
         const historyText = await panel.locator(".scroll").innerText();
-        assert.match(historyText, /Audit · verified/);
+        assert.match(historyText, /旧记录未记录编排快照/);
+        assert.doesNotMatch(historyText, /Audit · verified/);
         assert.doesNotMatch(historyText, /current Items projection invalid|台账历史不可用/);
         assert.doesNotMatch(
           await panel.locator(".summary").innerText(),
@@ -2568,12 +2674,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
-      "grouped heartbeat layout keeps summaries compact, history visible and source text accessible",
+      "heartbeat orchestration layout keeps history visible and fits the panel",
       async () => {
         const { context, page, panel } = await open("", {
           viewport: { width: 1100, height: 850 },
           deviceScaleFactor: 2,
           timezoneId: "America/New_York",
+          // Measure the settled layout; motion behavior has its own test.
+          reducedMotion: "reduce",
         });
         const pageErrors = [];
         const consoleErrors = [];
@@ -2664,66 +2772,17 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await panel.getByRole("button", { name: "刷新心跳历史", exact: true }).count(),
             1,
           );
-          assert.equal(await panel.locator(".hb-items").locator("summary").count(), 1);
-          assert.match(await panel.locator(".hb-items").innerText(), /10/);
-          assert.equal(await panel.locator(".hb-items").getAttribute("open"), null);
+          assert.equal(await panel.locator(".hb-items").count(), 0);
           assert.equal(await panel.locator(".hb-source").count(), 0);
           assert.equal(await panel.locator(".hb-wake").first().getAttribute("open"), "");
-          assert.equal(await panel.locator(".hb-wake").first().locator("details[open]").count(), 0);
           assert.equal(await panel.locator(".hb-wake").nth(1).getAttribute("open"), null);
-          assert.equal(await panel.locator(".hb-wake").nth(1).locator("details[open]").count(), 0);
-          assert.equal(
-            await panel
-              .locator(".hb-wake")
-              .first()
-              .locator(".hb-wake-raw")
-              .first()
-              .getAttribute("open"),
-            null,
-          );
-          assert.match(
-            await panel.locator(".hb-wake").first().locator(".hb-wake-count").innerText(),
-            /10/,
-          );
-          assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
-          assert.equal(await panel.locator(".hb-alert .info-card-title").isVisible(), true);
-          assert.match(await panel.locator(".hb-alert").innerText(), /旧记录存在校验提示/);
-          assert.deepEqual(
-            await panel
-              .locator(".hb-wake")
-              .first()
-              .locator(".hb-record .info-card-title")
-              .allTextContents(),
-            ["剩余工作检查", "独立审查"],
-          );
           assert.equal(await panel.locator(".hb-wake.event").count(), 4);
-          assert.equal(
-            await panel.locator(".hb-wake").first().locator(".hb-record-preview").count(),
-            2,
-          );
-          assert.equal(
-            await panel
-              .locator(".hb-wake")
-              .first()
-              .locator(".hb-record-preview > span")
-              .first()
-              .evaluate((element) => getComputedStyle(element).webkitLineClamp),
-            "2",
+          assert.match(await panel.locator(".hb-wake").first().innerText(), /旧记录未记录编排快照/);
+          assert.doesNotMatch(
+            await panel.locator(".hb-history").innerText(),
+            /剩余工作检查|独立审查|goal-derived remaining work/,
           );
           const firstWake = panel.locator(".hb-wake").first();
-          const wakeRaw = firstWake.locator(".hb-wake-raw").first();
-          await wakeRaw.locator(":scope > summary").click();
-          assert.match(await wakeRaw.innerText(), /巡检原始标题 09:34:48/);
-          assert.match(await wakeRaw.innerText(), /heartbeat\.md:812/);
-          assert.match(await wakeRaw.innerText(), /heartbeat\.md:813/);
-          await wakeRaw.locator(":scope > summary").click();
-          const rowRaw = firstWake.locator(".hb-record-raw").first();
-          await rowRaw.locator(":scope > summary").click();
-          assert.match(await rowRaw.innerText(), /goal-derived remaining work/);
-          assert.match(await rowRaw.innerText(), /\/tmp\/hotupdate-verification-audit\/result\.md/);
-          await rowRaw.locator(":scope > summary").click();
-          assert.match(await panel.locator(".hb-wake").first().innerText(), /剩余工作/);
-          assert.match(await panel.locator(".hb-wake").first().innerText(), /独立审查/);
 
           await mkdir(".playwright-img", { recursive: true });
           const body = panel.locator(".body");
@@ -2746,12 +2805,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             `expected a panel no taller than 640px, got ${bounds.height}`,
           );
           const light = await body.screenshot({
-            path: ".playwright-img/heartbeat-grouped-light.png",
+            path: ".playwright-img/heartbeat-orchestration-light.png",
           });
-          assert.deepEqual(
-            [light.readUInt32BE(16), light.readUInt32BE(20)],
-            [Math.round(bounds.width * 2), Math.round(bounds.height * 2)],
-          );
+          assert.equal(light.readUInt32BE(16), Math.round(bounds.width * 2));
+          // Chromium rounds fractional clip edges independently at device scale 2.
+          assert.ok(Math.abs(light.readUInt32BE(20) - Math.round(bounds.height * 2)) <= 1);
 
           const lightBackground = await body.evaluate(
             (element) => getComputedStyle(element).backgroundColor,
@@ -2783,7 +2841,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .evaluate((element) => getComputedStyle(element).color);
           assert.equal(darkText, composerText, "panel text follows the host composer color");
           assert.notEqual(darkText, lightText, "panel text changes with the host theme");
-          await body.screenshot({ path: ".playwright-img/heartbeat-grouped-dark.png" });
+          await body.screenshot({ path: ".playwright-img/heartbeat-orchestration-dark.png" });
 
           const historyRequestCount = () =>
             page.evaluate(
@@ -2816,36 +2874,24 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
           await panel
             .locator(".body")
-            .screenshot({ path: ".playwright-img/heartbeat-grouped-narrow.png" });
+            .screenshot({ path: ".playwright-img/heartbeat-orchestration-narrow.png" });
 
-          await page.evaluate(() => {
-            window.fixture.heartbeatHistory.wakes[0].rows.push({
-              category: "额外记录",
-              state: "第三条原文内容",
-            });
+          for (const direction of ["ltr", "rtl"]) {
+            await panel.evaluate((element, dir) => {
+              element.dir = dir;
+            }, direction);
+            assert.equal(
+              await firstWake.evaluate((wake) => wake.scrollWidth <= wake.clientWidth),
+              true,
+            );
+            assert.equal(
+              await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              true,
+            );
+          }
+          await panel.evaluate((element) => {
+            element.dir = "";
           });
-          await panel.getByRole("button", { name: "刷新心跳历史", exact: true }).click();
-          const moreRecords = firstWake.locator(".hb-more-records");
-          await moreRecords.waitFor();
-          assert.equal(await moreRecords.getAttribute("open"), null);
-          assert.equal(await firstWake.locator(".hb-record-preview:visible").count(), 2);
-          const thirdPreview = moreRecords.locator(".hb-record-preview");
-          assert.equal(await thirdPreview.isVisible(), false);
-          await moreRecords.locator(":scope > summary").click();
-          assert.equal(await thirdPreview.isVisible(), true);
-          assert.match(await thirdPreview.innerText(), /第三条原文内容/);
-          const thirdRaw = moreRecords.locator(".hb-record-raw");
-          await thirdRaw.locator(":scope > summary").click();
-          assert.match(await thirdRaw.innerText(), /第三条原文内容/);
-          await thirdRaw.locator(":scope > summary").click();
-          await moreRecords.locator(":scope > summary").click();
-          assert.equal(await moreRecords.getAttribute("open"), null);
-          assert.equal(await thirdPreview.isVisible(), false);
-          assert.match(await thirdPreview.textContent(), /第三条原文内容/);
-          assert.equal(
-            await page.evaluate(() => window.fixture.heartbeatHistory.wakes[0].rows.length),
-            3,
-          );
 
           assert.equal(await panel.locator(".hb-source").count(), 0);
           const heartbeatTab = panel.getByRole("button", { name: "心跳", exact: true });
@@ -2928,8 +2974,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "certified",
         );
         assert.equal(await panel.locator(".hb-alert").count(), 0);
-        await panel.locator(".hb-items > summary").click();
-        assert.match(await panel.locator(".hb-items").innerText(), /处理阻塞/);
+        assert.equal(await panel.locator(".hb-items").count(), 0);
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
         assert.equal(await panel.locator(".hb-source").count(), 0);
         await page.evaluate((value) => {
@@ -3044,17 +3089,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /latest-recorded-wake|items-inventory/,
         );
         assert.equal(await panel.locator(".hb-time-card .hb-time strong").count(), 2);
-        const itemsDisclosure = panel.locator(".hb-items");
-        if ((await itemsDisclosure.getAttribute("open")) === null)
-          await itemsDisclosure.locator(":scope > summary").click();
-        assert.equal(await itemsDisclosure.getAttribute("open"), "");
-        assert.match(await panel.locator("section.panel").innerText(), /处理阻塞/);
+        assert.equal(await panel.locator(".hb-items").count(), 0);
         await panel.locator(".hb-history").waitFor();
-        const heartbeatWake = panel.locator(".hb-wake").first();
-        await heartbeatWake.locator("> summary").waitFor();
-        const heartbeatRaw = heartbeatWake.locator(".hb-wake-raw").first();
-        await heartbeatRaw.locator(":scope > summary").click();
-        assert.match(await heartbeatRaw.innerText(), /2026-11-11 wake/);
+        await panel.locator(".hb-wake > summary").first().waitFor();
         await page.evaluate(() => {
           window.fixture.heartbeat.status = "stale";
           window.fixture.heartbeat.error = "台账文件已删除";
@@ -3079,7 +3116,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
-      "audit categories use translated titles and preserve unknown and raw values",
+      "orchestration snapshots show scoped agent flow and Owner actions without audit categories",
       async () => {
         const { context, page, panel } = await open("", { locale: "en-US" });
         const categories = [
@@ -3093,19 +3130,78 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "centralized verification",
           "session hygiene",
           "deployable-unit drift",
-          "custom category",
         ];
         await page.evaluate(
           ({ value, categories }) => {
-            window.fixture.heartbeat = value;
+            window.fixture.heartbeat = { ...value, items: [{ item: "hidden registry entry" }] };
             window.fixture.heartbeatHistory = {
               sourcePath: value.sourcePath,
-              total: 1,
+              total: 5,
               nextCursor: null,
               wakes: [
                 {
-                  heading: "audit categories",
-                  rows: categories.map((category) => ({ category, state: "record" })),
+                  heading: "current snapshot",
+                  rows: categories.map((category) => ({ category, state: "hidden row" })),
+                  orchestration: {
+                    scope: "Import task only",
+                    before: { activeAgents: 2 },
+                    after: { activeAgents: 4 },
+                    blockedTaskCount: 25,
+                    ownerInterventionCount: 1,
+                    requiresOwner: true,
+                    blockedTasks: [
+                      {
+                        id: "a",
+                        title: "Needs decision",
+                        reason: "Choose a policy",
+                        requiresOwner: true,
+                      },
+                      {
+                        id: "b",
+                        title: "Waiting for fix",
+                        reason: "Dependency failed",
+                        requiresOwner: false,
+                      },
+                    ],
+                    truncated: true,
+                  },
+                },
+                {
+                  heading: "zero snapshot",
+                  orchestration: {
+                    before: { activeAgents: 0 },
+                    after: { activeAgents: 0 },
+                    blockedTaskCount: 0,
+                    ownerInterventionCount: 0,
+                    requiresOwner: false,
+                    blockedTasks: [],
+                    truncated: false,
+                  },
+                },
+                { heading: "legacy snapshot", rows: [] },
+                {
+                  heading: "invalid snapshot",
+                  orchestration: null,
+                  orchestrationError: "invalid or duplicate metadata",
+                },
+                {
+                  heading: "unknown snapshot",
+                  orchestration: {
+                    before: null,
+                    after: null,
+                    blockedTaskCount: 1,
+                    ownerInterventionCount: 0,
+                    requiresOwner: null,
+                    blockedTasks: [
+                      {
+                        id: "unknown",
+                        title: "Needs classification",
+                        reason: "Unclear",
+                        requiresOwner: null,
+                      },
+                    ],
+                    truncated: false,
+                  },
                 },
               ],
             };
@@ -3114,24 +3210,69 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { value: heartbeat, categories },
         );
         await panel.getByRole("button", { name: "Heartbeat", exact: true }).click();
-        await panel.getByText("Remaining work check", { exact: true }).waitFor();
-        const titles = await panel.locator(".hb-record .info-card-title").allTextContents();
-        assert.deepEqual(titles, [
-          "Remaining work check",
-          "Independent review",
-          "Temporary status updates",
-          "Knowledge artifacts",
-          "Tooling and test fixes",
-          "Release and deployment preparation",
-          "Worker follow-ups",
-          "Centralized verification",
-          "Session hygiene",
-          "Deployable unit drift",
-          "custom category",
-        ]);
-        const raw = panel.locator(".hb-record-raw").first();
-        await raw.locator(":scope > summary").click();
-        assert.match(await raw.innerText(), /goal-derived remaining/);
+        const wakes = panel.locator(".hb-wake");
+        await wakes.first().getByText("Needs decision").waitFor();
+        const text = await wakes.first().innerText();
+        assert.match(text, /Active child agents\s*2 → 4/i);
+        assert.match(text, /Import task only/);
+        assert.match(text, /Choose a policy/);
+        assert.match(text, /Waiting for fix[\s\S]*Requires Owner: No/);
+        assert.match(text, /Owner intervention required\s*Yes/);
+        assert.match(text, /Confirmed Owner actions\s*1/);
+        assert.match(text, /Showing 2 \/ 25 blocked tasks/);
+        assert.doesNotMatch(
+          await panel.locator(".heartbeat").innerText(),
+          /hidden registry entry|hidden row|Items and blockers|Show \d+ more/,
+        );
+        for (const category of categories) assert.equal(text.includes(category), false);
+        await mkdir(".playwright-img", { recursive: true });
+        await wakes.first().scrollIntoViewIfNeeded();
+        await panel.locator(".body").screenshot({
+          path: ".playwright-img/heartbeat-orchestration-metrics.png",
+        });
+        await wakes.nth(1).locator(":scope > summary").click();
+        assert.match(await wakes.nth(1).innerText(), /Blocked tasks\s*0/);
+        assert.match(await wakes.nth(1).innerText(), /Owner intervention required\s*No/);
+        await wakes.nth(2).locator(":scope > summary").click();
+        assert.match(await wakes.nth(2).innerText(), /orchestration snapshot not recorded/i);
+        await wakes.nth(3).locator(":scope > summary").click();
+        assert.match(
+          await wakes.nth(3).innerText(),
+          /Invalid orchestration snapshot; metrics not recorded/,
+        );
+        assert.doesNotMatch(
+          await wakes.nth(3).innerText(),
+          /Legacy record|invalid or duplicate metadata|Owner intervention required|\b0\b/,
+        );
+        await wakes.nth(4).locator(":scope > summary").click();
+        assert.match(await wakes.nth(4).innerText(), /Owner intervention required\s*Not recorded/);
+        assert.match(await wakes.nth(4).innerText(), /Confirmed Owner actions\s*0/);
+        assert.match(await wakes.nth(4).innerText(), /Requires Owner: Not recorded/);
+        assert.match(
+          await wakes.nth(4).innerText(),
+          /Active child agents\s*Not recorded → Not recorded/,
+        );
+        for (const direction of ["ltr", "rtl"]) {
+          await page.setViewportSize({ width: 320, height: 380 });
+          await panel.evaluate((element, dir) => {
+            element.dir = dir;
+          }, direction);
+          const geometry = await wakes.first().evaluate((wake) => {
+            const body = wake.querySelector(".hb-wake-body");
+            const cards = [...body.querySelectorAll(":scope > .hb-record")];
+            return {
+              gaps: cards
+                .slice(1)
+                .map(
+                  (card, i) =>
+                    card.getBoundingClientRect().top - cards[i].getBoundingClientRect().bottom,
+                ),
+              overflow: body.scrollWidth > body.clientWidth,
+            };
+          });
+          assert.deepEqual(geometry.gaps, [10]);
+          assert.equal(geometry.overflow, false);
+        }
         await context.close();
       },
     );
@@ -3364,7 +3505,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await showView(panel, "heartbeat");
-        assert.equal(await panel.locator(".hb-items > summary .hb-count").innerText(), "200");
+        assert.equal(await panel.locator(".hb-items").count(), 0);
         await panel.locator(".hb-history").getByText("50000", { exact: false }).waitFor();
         await panel.locator(".hb-wake > summary").filter({ hasText: "巡检第5000轮" }).waitFor();
         await page.evaluate(() => {

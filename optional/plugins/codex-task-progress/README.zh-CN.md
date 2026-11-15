@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.6.3。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
+这是 [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress) 的私有衍生版本，保留原 Git 历史、MIT 许可证和上游署名。当前版本为 0.6.4。0.6.0 引入了不兼容的原生专用界面：受支持 UI 为只读 MCP App；CDP 注入面板、自定义 Dock 启动器及其管理命令均已退役。旧版安装必须先用旧安装器安全卸载，再安装此版本。新版安装器发现旧版标记时会停止，不覆盖旧安装。
 
 0.6.2 修复宿主复用旧原生面板 HTML 的缓存问题：每个不可变 MCP UI resource 都使用由唯一发布版本常量生成的版本化 URI。如果宿主仍注册旧 UI 标签，请关闭并重新打开 Task Progress 标签以加载新 resource；不要重启 Codex。此缓存修复不改变认证、任务权限、规范数据格式或 Kit API。
 
@@ -11,6 +11,8 @@
 每次请求时，原生 App 解析受支持宿主的当前线程身份，再通过本机 Helper 和 Kit 规范 API 读取对应用户的任务、历史记录和项目 Heartbeat，并排除 subagent 与 ephemeral 线程。任务写入仍受 Hook 与 turn 证明保护。已有的 Codex 原生 Goal 模型 API、记录格式和兼容性继续保留；插件不创建 Goal，也不提供自定义 Goal 界面。
 
 任务数据遵循 Kit 规范记录。原生面板展示已登记清单、记录状态与证据、分页历史，以及只读项目 Heartbeat。Heartbeat 仅用于观察，不会创建调度或写入账本。历史面板使用有界摘要投影（单次源输入最多 512 KiB，每条摘要最多 512 个 Unicode 字符），并保留完整规范 Markdown 路径；底层 Kit 记录不会被截断或改写。
+
+Heartbeat 视图展示审计前和重新拆分／派发后记录的实际活跃子 agent 数、观察时间和证据，以及已审计的阻塞任务和是否需要 Owner 介入；未知时显示未知。这些是快照，不是实时计数。十类审计行和完整 Items 登记表仍保留在规范账本中供审计，不作为主视图。首次使用或旧记录没有生产者提供的快照时显示未知，不能推测过去的活动。监督方通过 Kit 心跳写入器记录快照，插件只读取。
 
 ## 安装与验证
 

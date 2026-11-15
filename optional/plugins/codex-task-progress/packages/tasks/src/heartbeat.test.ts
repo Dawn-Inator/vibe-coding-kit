@@ -36,6 +36,136 @@ const PINNED_KIT_HEARTBEAT_API = fileURLToPath(
 const ledger = (thread = "", legacy = false) =>
   `# Supervision\nthread: ${thread}\n## 2026-11-11T10:00:00Z wake (${legacy ? 8 : 10}-row ledger)\n${legacy ? "" : "contract: heartbeat/v2"}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | test | blocked | waiting |\n`;
 const threadKey = (thread: string) => createHash("sha256").update(thread).digest("hex");
+
+test("project heartbeat carries Kit orchestration projections without changing ledger bytes", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "orchestration-data"), {
+    kitPath: PINNED_KIT_HEARTBEAT_API,
+    fallbackKitPath: null,
+    refreshMs: 0,
+  });
+  try {
+    const wake = (hour: string) =>
+      [
+        `## 2026-11-11T${hour}:00:00Z wake (10-row ledger)`,
+        "contract: heartbeat/v2",
+        "| # | category | state |",
+        "| --- | --- | --- |",
+        ...Array.from({ length: 10 }, (_, i) => `| ${i + 1} | audit | done |`),
+        "",
+      ].join("\n");
+    const invalidWake = wake("08").replace("\n", "\norchestration: {invalid}\n");
+    const legacy = `# Supervision\n\n${invalidWake}\n${wake("09")}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | example | blocked | waiting |\n`;
+    await writeFile(f.source, legacy);
+    const root = await realpath(f.project);
+    const path = await realpath(f.source);
+    let pair = migrateHeartbeatLedgerPair({
+      root,
+      path,
+      legacyWritersQuiescent: true,
+      expectedContentHash: readHeartbeatLedgerPair({ root, path }).contentHash,
+    });
+    const observation = (activeAgents: number) => ({
+      activeAgents,
+      observedAt: "2026-11-11T10:00:00Z",
+      evidence: "agent snapshot",
+    });
+    const snapshots = [
+      {
+        scope: "session",
+        before: observation(2),
+        after: observation(4),
+        blockedTasks: [],
+        blockersEvidence: "checked",
+      },
+      {
+        scope: "session",
+        before: observation(0),
+        after: null,
+        blockedTasks: null,
+        blockersEvidence: null,
+      },
+      ...[false, null].map((requiresOwner) => ({
+        scope: "session",
+        before: null,
+        after: null,
+        blockedTasks: [{ id: "B", title: "Task", reason: "waiting", requiresOwner }],
+        blockersEvidence: "reviewed",
+      })),
+      {
+        scope: "session",
+        before: null,
+        after: observation(0),
+        blockedTasks: Array.from({ length: 30 }, (_, i) => ({
+          id: `B${i}`,
+          title: `Task ${i} ${"项".repeat(500)}`,
+          reason: "等".repeat(2000),
+          requiresOwner: i === 29 ? true : i === 28 ? null : false,
+        })),
+        blockersEvidence: "reviewed",
+      },
+    ];
+    for (const [index, orchestration] of snapshots.entries()) {
+      pair = appendHeartbeatWake({
+        root,
+        path,
+        legacyWritersQuiescent: true,
+        expectedContentHash: pair.contentHash,
+        wakeText: wake(String(10 + index)),
+        orchestration,
+      });
+    }
+    const headBefore = await readFile(path);
+    const historyBefore = await readFile(pair.historyPath);
+    assert.ok(historyBefore.includes(Buffer.from(wake("09").trim())));
+    const view = await service.projectView(f.project);
+    const page = await service.projectHistory(f.project, { limit: 10 });
+    assert.equal(view.status, "ready");
+    assert.equal(page.wakes.length, 7);
+    assert.deepEqual(view.wakes.at(-1)?.orchestration, page.wakes[0]?.orchestration);
+    const latest = page.wakes[0]?.orchestration as Record<string, unknown>;
+    assert.equal(latest.scope, "session");
+    assert.equal((latest.after as { activeAgents: number }).activeAgents, 0);
+    assert.equal(latest.before, null);
+    assert.equal(latest.blockedTaskCount, 30);
+    assert.equal(latest.ownerInterventionCount, 1);
+    assert.equal(latest.requiresOwner, true);
+    const preview = latest.blockedTasks as { id: string; requiresOwner: boolean | null }[];
+    assert.ok(preview.length >= 3 && preview.length < 20);
+    assert.equal(preview[0]?.id, "B29");
+    assert.equal(preview[0]?.requiresOwner, true);
+    assert.equal(latest.truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 192 * 1024);
+    assert.equal(
+      (page.wakes[1]?.orchestration as Record<string, unknown> | undefined)?.requiresOwner,
+      null,
+    );
+    assert.equal(
+      (page.wakes[2]?.orchestration as Record<string, unknown> | undefined)?.requiresOwner,
+      false,
+    );
+    const unknown = page.wakes[3]?.orchestration as Record<string, unknown>;
+    assert.equal((unknown.before as { activeAgents: number }).activeAgents, 0);
+    assert.equal(unknown.after, null);
+    assert.equal(unknown.blockedTaskCount, null);
+    assert.equal(unknown.requiresOwner, null);
+    const first = page.wakes[4]?.orchestration as Record<string, unknown>;
+    assert.equal((first.before as { activeAgents: number }).activeAgents, 2);
+    assert.equal((first.after as { activeAgents: number }).activeAgents, 4);
+    assert.equal(first.blockedTaskCount, 0);
+    assert.equal(first.requiresOwner, false);
+    assert.equal(page.wakes[5]?.orchestration, undefined);
+    assert.equal(page.wakes[5]?.orchestrationError, undefined);
+    assert.equal(page.wakes[6]?.orchestration, undefined);
+    assert.match(String(page.wakes[6]?.orchestrationError), /invalid/i);
+    assert.ok(!JSON.stringify(page.wakes[6]).includes("{invalid}"));
+    assert.deepEqual(await readFile(path), headBefore);
+    assert.deepEqual(await readFile(pair.historyPath), historyBefore);
+  } finally {
+    service.close();
+    await f.close();
+  }
+});
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "task-heartbeat-test-"));
   const project = resolve(root, "project");

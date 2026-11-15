@@ -1,4 +1,4 @@
-# Install Task Progress 0.6.3
+# Install Task Progress 0.6.4
 
 This is a breaking native-only release. Install from the trusted Kit checkout; do not download an upstream Goal Progress release. Preserve upstream Git history, the MIT license and attribution. The CDP panel and custom Dock launcher have been retired. If an older installation is present, remove it safely using that installed version's own uninstall procedure first. The 0.6.0 installer detects legacy markers and stops before replacing files; do not force an overwrite or rebuild the retired launcher.
 
@@ -16,6 +16,12 @@ The installer does not toggle this host feature. If it is disabled or the CLI ca
 
 The supported request flow is MCP Apps resource → MCP stdio server → local Helper via the existing launchd service → canonical Kit task/Heartbeat/history records. The Helper applies the existing trusted thread identity and write-authority checks. It does not create or change a custom Goal UI. Existing native Goal model APIs, v1/v2 record formats, task formats, and Heartbeat formats remain compatible.
 
+The Heartbeat panel reads producer-recorded orchestration snapshots: active child agents before audit and after
+re-splitting/dispatch, and blocked tasks with known or unknown Owner intervention needs. A first session or
+older wake without a snapshot shows unknown; the panel does not reconstruct historical activity. The ten audit
+rows and full Items registry stay in the canonical ledger for audit. The supervising producer uses Kit's
+heartbeat writer; installation and the read-only panel create no parallel records.
+
 ## Build and checks
 
 For release development on Apple Silicon macOS, use Node >=22.12 and pnpm 11 from the component directory:
@@ -28,7 +34,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.6.3`. The native UI resource URI is versioned from the release version constant so a host cannot reuse stale panel HTML under the previous URI. If the host still shows the old registered resource, close and reopen the Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.6.4`. The native UI resource URI is versioned from the release version constant so a host cannot reuse stale panel HTML under the previous URI. If the host still shows the old registered resource, close and reopen the Task Progress tab; never restart Codex to refresh it. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence. Reopen an affected chat if it needs to load changed MCP catalog or Hook context.
 
 ## Signing and protected folders
 

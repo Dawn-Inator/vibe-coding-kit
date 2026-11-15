@@ -1,6 +1,6 @@
 # Codex Task Progress
 
-Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.3. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
+Private derivative of [Ezra-Y/codex-goal-progress](https://github.com/ezra-y/codex-goal-progress), retaining its Git history, MIT license and upstream attribution. Current release: 0.6.4. Version 0.6.0 introduced the breaking native-only interface: the supported UI is the read-only MCP App; the CDP injected panel, custom Dock launcher and commands for managing them are retired. A legacy installation must be removed safely with its old installer before installing this version. The installer detects legacy markers and stops instead of overwriting the old installation.
 
 Version 0.6.2 fixes host reuse of stale native panel HTML by assigning each immutable MCP UI resource a versioned URI from the release version constant. If a host still has the old UI tab registered, close and reopen the Task Progress tab to load the new resource. Do not restart Codex. This cache fix changes no authentication, task authority, canonical data format or Kit API.
 
@@ -11,6 +11,13 @@ The native MCP App uses the Codex Desktop MCP Apps entrypoint and the optional `
 The native App resolves the supported host's current thread identity on each request, then reads only that user's matching, non-subagent, non-ephemeral task, History and project Heartbeat records through the local Helper and canonical Kit APIs. Task writes remain protected by Hook and turn proof. Existing native Codex Goal model APIs, record formats and compatibility are retained; the plugin does not create Goals or provide a custom Goal UI.
 
 Task data follows the Kit canonical records. The native panel shows the registered checklist, recorded status and evidence, paginated History, and a read-only project Heartbeat view. Heartbeat remains observational and does not schedule or write to a ledger. The History panel uses a bounded summary projection (at most 512 KiB source input and 512 Unicode characters per summary) and keeps the full canonical Markdown path available; the underlying Kit records are not truncated or rewritten.
+
+The Heartbeat view shows recorded active child-agent counts before the audit and after re-splitting/dispatch,
+with observation times and evidence, and audited blocked tasks with known or unknown Owner intervention needs.
+These are snapshots, not live counts. The ten audit categories and full Items registry remain in the canonical
+ledger for audit rather than the main view. A first session or older wake without producer-supplied snapshots
+shows unknown; it cannot reconstruct past activity. The supervising producer records snapshots through the Kit
+heartbeat writer, and the plugin only reads them.
 
 ## Installation and validation
 

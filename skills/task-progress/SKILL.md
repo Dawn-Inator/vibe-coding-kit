@@ -13,6 +13,13 @@ Keep row IDs, titles, raw statuses, and reported evidence tied to the source. Un
 
 Report completion from recorded task state and evidence. Use the applicable project planning guidance when a plan is needed; this skill does not add a separate planning or heartbeat policy.
 
+The Heartbeat view presents the recorded orchestration snapshot: actual active child agents before the audit
+and after re-splitting/dispatch, plus audited blocked tasks and whether Owner intervention is known to be
+needed. It is a timestamped observation, not a live count. The full ten audit rows and Items registry remain
+in the canonical ledger for audit; they are not the main view or a source for inferred snapshot values. Older
+wakes without snapshots display unknown. Producers capture the snapshot under `agent-task-supervision` and
+write it through the Kit heartbeat writer; the plugin keeps no parallel record.
+
 ## Persistent Markdown storage
 
 The Kit owns durable task state and source associations. Ordinary task events, explicit or automatic heartbeat

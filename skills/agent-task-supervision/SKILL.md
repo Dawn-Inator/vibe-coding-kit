@@ -85,6 +85,25 @@ At every timer wake, the orchestrator itself must:
 6. Record actual countable progress and blockers. Do not use subjective percentages. A ratio is acceptable
    only when both counts and the counted scope are stated.
 
+## Orchestration snapshot
+
+For each new v2 wake, capture an evidence-backed orchestration snapshot for the read-only Heartbeat view.
+Probe actual running child agents before the audit and again after re-splitting and dispatching; record each
+observation's count, ISO time and evidence reference. Exclude the orchestrator, available-agent catalogs,
+completed children and accepted-only dispatches. Audit the actual blocked tasks and record whether each
+requires Owner intervention only when known; use `null` when unknown. An empty blocked task array means the
+complete blocked-task audit found none; use `null` if it was not established. Never infer counts, blockers or
+Owner intervention from the ten audit rows, the Items registry, or a status alone.
+
+Pass the optional `orchestration` object to Kit's `appendHeartbeatWake` or `writeHeartbeatLedgerPair` when
+writing the completed wake: `{scope, before, after, blockedTasks, blockersEvidence}`. `scope` describes the
+observed work; `before` and `after` are either `null` or `{activeAgents, observedAt, evidence}`; `blockedTasks`
+is `null` or an array of `{id, title, reason, requiresOwner, evidence?}`; `blockersEvidence` is a nonblank
+audit reference or `null`. Use nonblank references for observed counts, nonnegative integer counts, ISO times,
+and `true`, `false`, or `null` for `requiresOwner`. The Kit writer records the optional v2 metadata in the
+same wake; do not create a parallel plugin record. Retain the ten raw audit rows for compatibility and audit,
+not as the main UI. Missing historical snapshots remain unknown: do not guess or rewrite old wakes.
+
 ## Ledger contract
 
 Keep the ten existing category rows and their `sources:` evidence line. Each new wake section must use the

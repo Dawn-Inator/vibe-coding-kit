@@ -9,7 +9,10 @@ import type {
   HeartbeatWake,
   InspectHeartbeatLedgerOptions,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
-import { inspectHeartbeatLedger as bundledHeartbeatInspector } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import {
+  inspectHeartbeatLedger as bundledHeartbeatInspector,
+  projectHeartbeatOrchestration,
+} from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type {
   HeartbeatLedgerDiscoveryReport,
   HeartbeatTaskState,
@@ -409,7 +412,7 @@ function transportWake(wake: TransportWake): TransportWake {
 }
 function compactWake(wake: TransportWake): Record<string, unknown> {
   const rows = wake.rows;
-  return {
+  const compact: Record<string, unknown> = {
     heading: shortened(wake.heading, 240),
     timeMs: typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs) ? wake.timeMs : null,
     line: wake.sourceLine ?? wake.line,
@@ -423,7 +426,23 @@ function compactWake(wake: TransportWake): Record<string, unknown> {
     })),
     rowCount: rows.length,
     truncated: true,
+    ...(wake.orchestrationError
+      ? { orchestrationError: shortened(wake.orchestrationError, 499) }
+      : {}),
   };
+  if (wake.orchestration != null) {
+    // Keep the full Kit preview when possible. Reduce only its preview, through Kit,
+    // if unusually long task fields would make a single wake exceed the IPC budget.
+    let preview = 20;
+    compact.orchestration = projectHeartbeatOrchestration(wake.orchestration);
+    while (preview > 0 && Buffer.byteLength(JSON.stringify(compact)) > 128 * 1024) {
+      preview -= 1;
+      compact.orchestration = projectHeartbeatOrchestration(wake.orchestration, {
+        maxBlockedPreview: preview,
+      });
+    }
+  }
+  return compact;
 }
 function compactView(view: HeartbeatView): HeartbeatView {
   const value: HeartbeatView = {

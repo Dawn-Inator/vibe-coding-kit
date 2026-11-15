@@ -6,6 +6,7 @@ import type {
 	HeartbeatItemTable,
 	HeartbeatLedgerRow,
 	HeartbeatWake,
+	HeartbeatOrchestration,
 	InspectHeartbeatLedgerOptions,
 } from "./heartbeat-ledger-api.mjs";
 
@@ -100,10 +101,10 @@ export function migrateHeartbeatLedgerPair(
 	options: HeartbeatWriteOptions,
 ): HeartbeatLedgerPair;
 export function writeHeartbeatLedgerPair(
-	options: HeartbeatWriteOptions & { text: string },
+	options: HeartbeatWriteOptions & { text: string; orchestration?: HeartbeatOrchestration },
 ): HeartbeatLedgerPair;
 export function appendHeartbeatWake(
-	options: HeartbeatWriteOptions & { wakeText: string },
+	options: HeartbeatWriteOptions & { wakeText: string; orchestration?: HeartbeatOrchestration },
 ): HeartbeatLedgerPair;
 
 /** Read a raw version even when a pair is incomplete; never mutates the files. */

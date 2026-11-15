@@ -193,3 +193,37 @@ test('CLI history modes stay non-certifying and default current mode rejects OLD
   assert.notEqual(ambiguous.status, 0, 'history and item inventory flags are ambiguous together');
   assert.match(ambiguous.stderr, /usage|mode|cannot|incompatible/i);
 });
+
+test('orchestration metadata keeps observed zero distinct from unknown and rejects invalid and duplicate lines', async () => {
+  const { parseWakes, checkLedger } = await import('../../src/supervision/check-heartbeat-ledger.mjs');
+  const { projectHeartbeatOrchestration } = await import('../../src/supervision/heartbeat-ledger-api.mjs');
+  const heading = '## 2026-01-01T10:00Z wake (10-row ledger)\n';
+  const snapshot = { scope: 'task', before: { activeAgents: 0, observedAt: '2026-01-01T10:00:00Z', evidence: 'agents:receipt' }, after: null, blockedTasks: [], blockersEvidence: 'audit:receipt' };
+  const line = `orchestration: ${JSON.stringify(snapshot)}\n`;
+  assert.deepEqual(parseWakes(heading + line)[0].orchestration, snapshot);
+  assert.equal(projectHeartbeatOrchestration(snapshot).requiresOwner, false);
+  assert.equal(parseWakes(heading)[0].orchestration, null);
+  assert.equal(projectHeartbeatOrchestration(null), null);
+  for (const bad of [heading + line + line, heading + 'orchestration: {bad}\n', heading + `orchestration: ${JSON.stringify({ ...snapshot, before: { ...snapshot.before, evidence: '' } })}\n`]) {
+    assert.equal(parseWakes(bad)[0].orchestration, null);
+    assert.ok(checkLedger(bad).some((finding) => finding.rule === 'orchestration-metadata'));
+  }
+  const tasks = Array.from({ length: 25 }, (_, i) => ({ id: String(i), title: 'task', reason: 'waiting', requiresOwner: i === 24 ? true : false }));
+  const projection = projectHeartbeatOrchestration({ ...snapshot, blockedTasks: tasks });
+  assert.equal(projection.blockedTasks.length, 20);
+  assert.equal(projection.blockedTasks[0].id, '24');
+  assert.equal(tasks[0].id, '0');
+  assert.equal(projection.blockedTaskCount, 25);
+  assert.equal(projection.ownerInterventionCount, 1);
+  assert.equal(projection.requiresOwner, true);
+  assert.equal(projection.truncated, true);
+  assert.equal(projectHeartbeatOrchestration({ ...snapshot, blockedTasks: [{ ...tasks[0], requiresOwner: null }] }).requiresOwner, null);
+  assert.equal(projectHeartbeatOrchestration({ ...snapshot, blockedTasks: null }).blockedTaskCount, null);
+  assert.throws(() => projectHeartbeatOrchestration({ ...snapshot, blockedTasks: [tasks[0], tasks[0]] }));
+  assert.throws(() => projectHeartbeatOrchestration({ ...snapshot, blockedTasks: [], blockersEvidence: null }));
+  assert.throws(() => projectHeartbeatOrchestration({ ...snapshot, after: { ...snapshot.before, observedAt: '2025-12-31T23:59:59Z' } }));
+  assert.equal(projectHeartbeatOrchestration({ ...snapshot, after: { ...snapshot.before, observedAt: '2026-01-01T10:00:00Z' } }).after.activeAgents, 0);
+  const ordered = projectHeartbeatOrchestration({ ...snapshot, blockedTasks: [tasks[0], { ...tasks[1], requiresOwner: null }, tasks[24], { ...tasks[2], requiresOwner: null }] });
+  assert.deepEqual(ordered.blockedTasks.map((task) => task.id), ['24', '1', '2', '0']);
+  assert.throws(() => projectHeartbeatOrchestration({ ...snapshot, blockedTasks: Array.from({ length: 130 }, (_, i) => ({ id: String(i), title: '字'.repeat(500), reason: '字'.repeat(500), requiresOwner: false })) }));
+});
