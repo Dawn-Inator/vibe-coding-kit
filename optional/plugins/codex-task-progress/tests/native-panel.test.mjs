@@ -187,6 +187,21 @@ test("native panel MCP Apps integration", async (t) => {
       if ((await main.getAttribute("aria-expanded")) !== "true") await main.click();
       await frame.getByText("Reuse current task data", { exact: true }).waitFor();
     }
+    async function normalizeColors(frame, colors) {
+      return frame.locator("html").evaluate((_element, values) => {
+        const context = document.createElement("canvas").getContext("2d");
+        return values.map((value) => {
+          if (!value || !CSS.supports("color", value)) throw new Error(`Invalid color: ${value}`);
+          context.clearRect(0, 0, 1, 1);
+          context.fillStyle = value;
+          context.fillRect(0, 0, 1, 1);
+          return Array.from(context.getImageData(0, 0, 1, 1).data);
+        });
+      }, colors);
+    }
+    function sameColor(a, b) {
+      return a.every((channel, index) => Math.abs(channel - b[index]) <= 1);
+    }
     async function refresh(page) {
       await page.locator("#app").evaluate((iframe) => {
         iframe.contentDocument.dispatchEvent(new Event("visibilitychange"));
@@ -231,12 +246,25 @@ test("native panel MCP Apps integration", async (t) => {
             };
           });
           assert.equal(taskColors.documentTheme, theme);
-          assert.equal(taskColors.accent, taskColors.hostForeground);
-          assert.equal(taskColors.percent, taskColors.main);
-          assert.equal(taskColors.percent, taskColors.hostForeground);
-          assert.notEqual(taskColors.fill, "rgb(0, 128, 0)");
-          assert.notEqual(taskColors.fill, taskColors.track);
-          assert.ok(taskColors.states.every((color) => color && color !== "rgb(0, 128, 0)"));
+          const [accent, host, percent, main, fill, track, ...states] = await normalizeColors(
+            frame,
+            [
+              taskColors.accent,
+              taskColors.hostForeground,
+              taskColors.percent,
+              taskColors.main,
+              taskColors.fill,
+              taskColors.track,
+              ...taskColors.states,
+            ],
+          );
+          const green = [0, 128, 0, 255];
+          assert.ok(sameColor(accent, host));
+          assert.ok(sameColor(percent, main));
+          assert.ok(sameColor(percent, host));
+          assert.ok(!sameColor(fill, green));
+          assert.ok(!sameColor(fill, track));
+          assert.ok(states.every((color) => !sameColor(color, green)));
 
           await frame.getByRole("button", { name: "History" }).click();
           await frame.getByText("OLD HISTORY", { exact: false }).waitFor();
@@ -254,10 +282,15 @@ test("native panel MCP Apps integration", async (t) => {
               certification: status.getAttribute("data-certification"),
             };
           });
-          assert.equal(historyColor, taskColors.percent);
+          const [history, status, muted] = await normalizeColors(frame, [
+            historyColor,
+            heartbeatColor.status,
+            heartbeatColor.muted,
+          ]);
+          assert.ok(sameColor(history, percent));
           assert.equal(heartbeatColor.certification, "current-unknown");
-          assert.equal(heartbeatColor.status, heartbeatColor.muted);
-          assert.notEqual(heartbeatColor.status, "rgb(0, 128, 0)");
+          assert.ok(sameColor(status, muted));
+          assert.ok(!sameColor(status, green));
         }, `?theme=${theme}`);
       }
     });
@@ -305,15 +338,26 @@ test("native panel MCP Apps integration", async (t) => {
                   completed: style(".node-symbol[data-status='completed']").color,
                 };
               });
-              assert.equal(colors.accent, colors.foreground);
+              const [accent, foreground, percent, fill, track, active, completed] =
+                await normalizeColors(frame, [
+                  colors.accent,
+                  colors.foreground,
+                  colors.percent,
+                  colors.fill,
+                  colors.track,
+                  colors.active,
+                  colors.completed,
+                ]);
+              const green = [0, 128, 0, 255];
+              assert.ok(sameColor(accent, foreground));
               assert.equal(colors.prefersDark, theme === "dark");
               assert.equal(colors.documentTheme, suffix.includes("nohost") ? null : theme);
               assert.equal(colors.colorScheme, suffix.includes("nohost") ? "light dark" : theme);
-              assert.equal(colors.percent, colors.foreground);
-              assert.notEqual(colors.fill, "rgb(0, 128, 0)");
-              assert.notEqual(colors.fill, colors.track);
-              assert.notEqual(colors.active, "rgb(0, 128, 0)");
-              assert.notEqual(colors.completed, "rgb(0, 128, 0)");
+              assert.ok(sameColor(percent, foreground));
+              assert.ok(!sameColor(fill, green));
+              assert.ok(!sameColor(fill, track));
+              assert.ok(!sameColor(active, green));
+              assert.ok(!sameColor(completed, green));
             }, suffix);
           }
         }

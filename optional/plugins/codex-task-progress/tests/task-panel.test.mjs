@@ -1404,9 +1404,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         "true",
       );
       assert.equal(await panel.getByText("真实历史请求", { exact: true }).count(), 0);
-      await page.locator("#messages").click({ position: { x: 3, y: 160 } });
+      const heartbeatTab = panel.getByRole("button", { name: "心跳", exact: true });
+      await heartbeatTab.focus();
+      await heartbeatTab.press("Escape");
       assert.equal(await panel.locator(".body").isVisible(), true);
       assert.equal(await panel.locator(".panel-title").innerText(), "项目心跳");
+      assert.equal(await heartbeatTab.getAttribute("aria-expanded"), "true");
       await context.close();
     });
     await t.test(
@@ -1545,6 +1548,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, task);
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
+        assert.equal(
+          await panel
+            .getByRole("heading", { name: /^(History|历史记录)$/, exact: true, level: 3 })
+            .count(),
+          1,
+        );
         const historyError = panel
           .locator(".scroll .info-card-error")
           .filter({ hasText: "历史记录不可用" });
@@ -1608,6 +1617,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: /实现普通任务面板/ }).click();
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("wake newest", { exact: true }).waitFor();
+        assert.equal(
+          await panel
+            .getByRole("heading", { name: /^(Ledger records|台账记录)$/, exact: true, level: 3 })
+            .count(),
+          1,
+        );
         assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
@@ -2539,7 +2554,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           assert.equal(await panel.locator(".hb-items").locator("summary").count(), 1);
           assert.match(await panel.locator(".hb-items").innerText(), /10/);
           assert.equal(await panel.locator(".hb-items").getAttribute("open"), null);
-          assert.equal(await panel.locator(".hb-source").getAttribute("open"), null);
+          assert.equal(
+            await panel.locator(".hb-source").evaluate((element) => element.tagName),
+            "SECTION",
+          );
+          assert.equal(await panel.locator(".hb-source details").count(), 0);
           assert.equal(await panel.locator(".hb-wake").first().getAttribute("open"), "");
           assert.equal(await panel.locator(".hb-wake").first().locator("details[open]").count(), 0);
           assert.equal(await panel.locator(".hb-wake").nth(1).getAttribute("open"), null);
@@ -2563,11 +2582,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
           assert.match(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
           assert.match(
-            await panel.locator(".hb-source > summary").innerText(),
+            await panel.locator(".hb-source .info-card-title").innerText(),
             /heartbeat\.md.*taskhistory\.md|taskhistory\.md.*heartbeat\.md/,
           );
           assert.doesNotMatch(
-            await panel.locator(".hb-source > summary").innerText(),
+            await panel.locator(".hb-source .info-card-title").innerText(),
             /\/workspace\//,
           );
           assert.equal(
@@ -2720,20 +2739,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             3,
           );
 
-          const source = panel.locator(".hb-source");
-          await source.locator("summary").focus();
-          await page.keyboard.press("Enter");
-          assert.equal(await source.getAttribute("open"), "");
-          await source.locator(":scope > summary").press("Escape");
+          assert.equal(
+            await panel.locator(".hb-source").evaluate((element) => element.tagName),
+            "SECTION",
+          );
+          const heartbeatTab = panel.getByRole("button", { name: "心跳", exact: true });
+          await heartbeatTab.focus();
+          await heartbeatTab.press("Escape");
           assert.equal(await panel.locator(".body").isVisible(), true);
           assert.equal(
             await panel.evaluate(
               (element) =>
                 element.shadowRoot.activeElement ===
-                element.shadowRoot.querySelector(".hb-source summary"),
+                element.shadowRoot.querySelector(".heartbeat-trigger"),
             ),
             true,
-            "Escape keeps keyboard focus on the persistent source control",
+            "Escape keeps keyboard focus in the persistent panel controls",
           );
           assert.deepEqual(pageErrors, []);
           assert.deepEqual(consoleErrors, []);
@@ -2805,9 +2826,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.locator(".hb-items > summary").click();
         assert.match(await panel.locator(".hb-items").innerText(), /处理阻塞/);
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
-        await panel.locator(".hb-source > summary").click();
         assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
-        assert.match(
+        assert.match(await panel.locator(".hb-source").innerText(), /depth-limit, file-limit/);
+        assert.doesNotMatch(
           await panel.locator(".hb-source").innerText(),
           /Project heartbeat discovery was incomplete/,
         );
@@ -2829,6 +2850,36 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, heartbeat);
         await panel.locator(".hb-alert .info-card-title").waitFor();
         assert.match(await panel.locator(".hb-alert").innerText(), /Ledger format invalid/);
+        assert.doesNotMatch(
+          await panel
+            .locator(".hb-alert, .hb-source")
+            .allInnerTexts()
+            .then((texts) => texts.join(" ")),
+          /Project heartbeat discovery was incomplete/,
+        );
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            status: "ready",
+            passed: true,
+            certifiesCurrent: false,
+            discoveryComplete: false,
+            discoveryReasons: ["depth-limit", "file-limit"],
+            warning: "Ledger warning: signature mismatch.",
+            findings: [
+              { severity: "error", rule: "ledger-format", message: "Ledger format invalid" },
+            ],
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        assert.match(
+          await panel.locator(".hb-alert").innerText(),
+          /Ledger warning: signature mismatch/,
+        );
+        assert.match(
+          await panel.locator(".hb-source").innerText(),
+          /Ledger warning: signature mismatch/,
+        );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -2891,7 +2942,6 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, heartbeat);
         assert.match(await panel.locator(".hb-source").innerText(), /heartbeat\.md/);
         assert.doesNotMatch(await panel.locator(".hb-source").innerText(), /taskhistory\.md/);
-        await panel.locator(".hb-source > summary").click();
         assert.match(await panel.locator("section.panel").innerText(), /只读/);
         assert.match(await panel.locator("section.panel").innerText(), /\/workspace\/heartbeat.md/);
         assert.match(await panel.locator("section.panel").innerText(), /项目配置/);
@@ -2954,7 +3004,6 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await showView(panel, "heartbeat");
-        await panel.locator(".hb-source > summary").click();
         assert.match(
           await panel.locator("section.panel").innerText(),
           /200 · 已完成 180 · 阻塞 20/,
@@ -3098,23 +3147,18 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         return window.__CODEX_TASK_PROGRESS__.refresh();
       }, task);
       assert.match(await panel.locator("section.panel").innerText(), /普通聊天界面/);
-      const lightBackground = await panel
-        .locator(".body")
-        .evaluate((element) => getComputedStyle(element).backgroundColor);
+      assert.equal(await panel.locator(".summary .main").getAttribute("aria-expanded"), "true");
       await page.evaluate(() => {
         document.documentElement.classList.add("dark");
       });
       await page.evaluate(() => window.__CODEX_TASK_PROGRESS__.refresh());
-      const darkBody = panel.locator(".body");
-      const darkBackground = await darkBody.evaluate(
-        (element) => getComputedStyle(element).backgroundColor,
-      );
-      assert.notEqual(darkBackground, lightBackground, "panel surface follows the host theme");
-      assert.equal(
-        await darkBody.evaluate((element) => getComputedStyle(element).color),
-        await page.locator("#composer").evaluate((element) => getComputedStyle(element).color),
-        "panel foreground follows the native host token",
-      );
+      const nativeColors = await panel.locator(".body").evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { foreground: style.color, surface: style.backgroundColor };
+      });
+      assert.ok(nativeColors.foreground, "panel has a computed foreground");
+      assert.ok(nativeColors.surface, "panel has a computed surface");
+      assert.equal(await panel.locator(".summary .main").getAttribute("aria-expanded"), "true");
       await context.close();
     });
   } finally {

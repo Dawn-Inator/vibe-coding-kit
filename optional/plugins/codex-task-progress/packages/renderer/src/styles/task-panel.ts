@@ -112,7 +112,7 @@ export const taskPanelStyles = css`
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  :host([dir="rtl"]) .tooltip { inset-inline-start: auto; inset-inline-end: 0; transform: none; }
+  :host(:dir(rtl)) .tooltip { inset-inline-start: auto; inset-inline-end: 0; transform: none; }
   .orb-wrap:hover .orb[aria-expanded="false"] + .tooltip, .orb:focus-visible + .tooltip { opacity: 1; }
   .body {
     position: relative;
@@ -228,7 +228,7 @@ export const taskPanelStyles = css`
   .hb-items > summary > svg:first-child { width: 18px; height: 18px; color: var(--ctp-muted, #697078); }
   .hb-items .hb-count { margin-inline-start: 1px; }
   .hb-disclosure-chevron { width: 14px; height: 14px; margin-inline-start: auto; color: var(--ctp-muted, #697078); transition: transform 160ms var(--ctp-panel-ease); }
-  .hb-items[open] > summary .hb-disclosure-chevron, .hb-source[open] > summary .hb-disclosure-chevron { transform: rotate(90deg); }
+  .hb-items[open] > summary .hb-disclosure-chevron { transform: rotate(90deg); }
   .hb-items-body { padding: 0 12px 7px; }
   .hb-item { padding: 8px 0; border-top: 1px solid var(--ctp-panel-line); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
   .hb-item strong { font-weight: 550; }
@@ -264,10 +264,7 @@ export const taskPanelStyles = css`
   .hb-more-records { border-top: 1px solid var(--ctp-panel-line); padding-top: 5px; }
   .hb-more-records > summary { color: var(--ctp-muted, #697078); font-size: 10px; }
   .hb-older { display: block; width: 100%; margin: 3px 0 0; border-top: 1px solid var(--ctp-panel-line); border-radius: 0; padding: 9px 5px 2px; color: var(--ctp-muted, #697078); text-align: start; font-size: 11px; }
-  .hb-source { border-radius: 11px; background: var(--ctp-hover, #343a400a); }
-  .hb-source > summary { display: flex; align-items: center; gap: 8px; min-height: 41px; padding: 0 11px; font-size: 11px; list-style: none; }
-  .hb-source > summary > svg:first-child { width: 17px; height: 17px; color: var(--ctp-muted, #697078); }
-  .hb-source-list { display: grid; gap: 5px; padding: 0 11px 10px; }
+  .hb-source-list { display: grid; gap: 5px; }
   .hb-source-list > div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 7px; font-size: 10px; line-height: 1.5; }
   .hb-source-list > div > span { color: var(--ctp-muted, #697078); }
   .hb-source-list code { overflow-wrap: anywhere; }
@@ -301,8 +298,8 @@ export const taskPanelStyles = css`
   .sr-status { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
   details { margin-top: 7px; }
   summary { border-radius: 5px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-  :host([dir="rtl"]) .edge-progress { transform: scaleX(-1); }
-  :host([dir="rtl"]) .fill, :host([dir="rtl"]) .module-fill { transform-origin: right center; }
+  :host(:dir(rtl)) .edge-progress { transform: scaleX(-1); }
+  :host(:dir(rtl)) .fill, :host(:dir(rtl)) .module-fill { transform-origin: right center; }
   @media (max-width: 450px) {
     .summary { gap: 6px; }
     .main { grid-template-columns: 15px minmax(0, 1fr) auto; gap: 8px; padding-inline: 11px; }
