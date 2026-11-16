@@ -12,7 +12,7 @@ Version 0.7.9 streamlines routine source details beneath task modules and presen
 
 An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.
 
-Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. Unknown values use a gray ring; an arc is drawn only for a reliable same-scope ratio. Heartbeat time metrics have no fabricated percentage. The new appearance awaits native host verification.
+Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. The rings mark counts and do not represent task completion percentages. Unknown values show a gray ring and —. Heartbeat time metrics have no percentage. The new appearance awaits native host verification.
 
 ## Version 0.8.0
 

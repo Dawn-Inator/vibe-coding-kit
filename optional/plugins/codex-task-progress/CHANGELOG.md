@@ -1,6 +1,6 @@
 # Task Progress 0.8.2
 
-- Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. Unknown values use a gray ring; an arc is drawn only for a reliable same-scope ratio. Heartbeat time metrics have no fabricated percentage. The new appearance awaits native host verification.
+- Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. The rings mark counts and do not represent task completion percentages. Unknown values show a gray ring and —. Heartbeat time metrics have no percentage. The new appearance awaits native host verification.
 
 # Task Progress 0.8.1
 
