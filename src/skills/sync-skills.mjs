@@ -17,9 +17,8 @@
 // `check` also validates source skill structure: each skills/<dir>/ must be lowercase kebab-case,
 // contain SKILL.md, and its frontmatter `name` must equal <dir>; offenders are named and exit is non-zero.
 
-import { readFileSync, readdirSync, statSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname, basename, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { writeTextAtomically } from '../lib/atomic-write.mjs';
 import {
   injectPackBlocks,
@@ -37,12 +36,7 @@ import {
   PACK_MIRROR_DIRNAME,
   validateSkillPacks,
 } from './skill-packs.mjs';
-
-// Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
-// other repos, so this is an inline copy of the shared helper rather than an import).
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers

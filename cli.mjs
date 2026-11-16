@@ -333,13 +333,19 @@ function projectConfig(root) {
   }
 }
 
-async function inspectPluginComponents(kitRoot, env) {
+// Host capabilities the optional pipeline depends on. Injectable so every platform branch (darwin-arm64 plugin reuse,
+// missing tools, ...) is exercised on any machine; production always uses the real operating system.
+export function systemHost() {
+  return { platform: platform(), arch: arch(), env: process.env, runner: undefined };
+}
+
+async function inspectPluginComponents(kitRoot, env, host = systemHost()) {
   const catalog = loadOptionalCatalog(kitRoot);
   const detected = new Map();
   if (!catalog) return detected;
   for (const [id, component] of Object.entries(catalog.components)) {
     if (component.type !== 'plugin') continue;
-    detected.set(id, await inspectOptionalComponent({ kitRoot, component: { id, ...component }, platform: platform(), arch: arch(), env }));
+    detected.set(id, await inspectOptionalComponent({ kitRoot, component: { id, ...component }, platform: host.platform, arch: host.arch, runner: host.runner, env }));
     if (!['installed', 'missing', 'unsupported', 'error'].includes(detected.get(id)?.status)) {
       detected.set(id, { status: 'error', message: `invalid inspection result for ${id}` });
     }
@@ -411,11 +417,11 @@ function optionalWizardGroups(catalog, detected) {
   return OPTIONAL_GROUPS.filter((group) => !hidden.has(group));
 }
 
-async function preflightOptionalComponents(kitRoot, components, env, knownStatuses = new Map()) {
+async function preflightOptionalComponents(kitRoot, components, env, knownStatuses = new Map(), host = systemHost()) {
   const statuses = new Map(knownStatuses);
   for (const component of components) {
     if (statuses.has(component.id)) continue;
-    statuses.set(component.id, await inspectOptionalComponent({ kitRoot, component, platform: platform(), arch: arch(), env }));
+    statuses.set(component.id, await inspectOptionalComponent({ kitRoot, component, platform: host.platform, arch: host.arch, runner: host.runner, env }));
     if (!['installed', 'missing', 'unsupported', 'error'].includes(statuses.get(component.id)?.status)) {
       statuses.set(component.id, { status: 'error', message: `invalid inspection result for ${component.id}` });
     }
@@ -431,7 +437,7 @@ function assertOptionalPreflight(components, statuses) {
   }
 }
 
-async function installOptionalComponents(kitRoot, components, env, statuses) {
+async function installOptionalComponents(kitRoot, components, env, statuses, host = systemHost()) {
   for (const component of components) {
     const inspected = statuses?.get(component.id);
     if (inspected?.status === 'installed') {
@@ -445,7 +451,7 @@ async function installOptionalComponents(kitRoot, components, env, statuses) {
     const confirmSigning = component.id === 'codex-task-progress' && process.stdin.isTTY && process.stdout.isTTY
       ? askTaskProgressSigningIdentity
       : undefined;
-    const result = await installOptionalComponent({ kitRoot, component, env, confirmSigning });
+    const result = await installOptionalComponent({ kitRoot, component, env, confirmSigning, platform: host.platform, arch: host.arch, runner: host.runner });
     if (!result || result.status !== 'installed') {
       const status = result?.status || 'invalid-result';
       throw new Error(`Optional ${component.id} setup is incomplete (${status}): ${result?.message || 'no successful installation was confirmed'}. Core setup is preserved; optional setup may need repair.`);
@@ -477,12 +483,12 @@ function printOptionalSummary(preferences, selection) {
   if (selection.components.length) console.log(`Selected components: ${selection.components.map(({ id }) => id).join(', ')}`);
 }
 
-async function configureOptional(root, kitRoot, overrides, { interactive = false, checkOnly = false } = {}) {
+export async function configureOptional(root, kitRoot, overrides, { interactive = false, checkOnly = false } = {}, host = systemHost()) {
   const config = projectConfig(root);
   const currentSelection = resolveOptionalSelection({ kitRoot, projectRoot: root, projectConfig: config });
   let next = { ...currentSelection.selection, ...overrides };
   const explicitGroups = new Set(Object.keys(overrides));
-  const detected = checkOnly ? new Map() : await inspectPluginComponents(kitRoot, process.env);
+  const detected = checkOnly ? new Map() : await inspectPluginComponents(kitRoot, host.env, host);
   if (!checkOnly) applyInstalledPluginDefaults(kitRoot, next, detected, config.optional, overrides);
   if (!checkOnly) {
     const catalog = loadOptionalCatalog(kitRoot);
@@ -509,7 +515,7 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
     console.log('Optional configuration check is read-only; no setup was started.');
     return;
   }
-  const statuses = await preflightOptionalComponents(kitRoot, selection.components, process.env, detected);
+  const statuses = await preflightOptionalComponents(kitRoot, selection.components, host.env, detected, host);
   assertOptionalPreflight(selection.components, statuses);
   validateSkillPlan(root, nextProjectConfig, [], kitRoot);
   const configPath = resolve(root, '.vibe-coding/project.config.json');
@@ -526,7 +532,7 @@ async function configureOptional(root, kitRoot, overrides, { interactive = false
     throw new Error('Optional preferences were saved, but the skill synchronization result was invalid. Generated mirrors may be partial; verify them with the project skills:check command.');
   }
   console.log(`Synchronized ${synced.written} generated skill projection file(s).`);
-  await installOptionalComponents(kitRoot, selection.components, process.env, statuses);
+  await installOptionalComponents(kitRoot, selection.components, host.env, statuses, host);
   printOptionalSummary(nextProjectConfig.optional, selection);
 }
 

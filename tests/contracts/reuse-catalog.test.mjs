@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { runReuseCatalog, validateReuseCatalog } from '../../src/contracts/reuse-catalog.mjs';
+
+// Simulated symlinks: the listed project-relative paths report isSymbolicLink() without touching the filesystem,
+// so the fail-closed branch runs identically on hosts where creating a symlink needs privileges.
+function lstatWithLinks(root, links) {
+  const linked = new Set(links.map((link) => join(root, link)));
+  return async (path) => linked.has(path) ? { isSymbolicLink: () => true } : lstat(path);
+}
 
 async function setup(t, selection = { frontend: {} }) {
   const root = await mkdtemp(join(tmpdir(), 'reuse-catalog-'));
@@ -87,14 +94,12 @@ test('regen protects unrelated existing files, adapter, config and catalog input
 });
 
 test('output symlinks and symlinked parent aliases fail closed', async (t) => {
-  if (process.platform === 'win32') { t.skip('symlink creation may require Windows privileges'); return; }
-  const { symlink } = await import('node:fs/promises');
   const { root, put } = await setup(t);
-  await put('doc/real.md', 'handwritten'); await symlink('real.md', join(root,'doc/link.md'));
-  await symlink('doc', join(root,'alias'));
+  await put('doc/real.md', 'handwritten');
+  const probe = lstatWithLinks(root, ['doc/link.md', 'alias']);
   for (const document of ['doc/link.md','alias/real.md']) {
     await put('.vibe-coding/project.config.json', {schemaVersion:1,contracts:{reuseCatalogs:{frontend:{document}}}});
-    const result = await runReuseCatalog({projectRoot:root, action:'regen'});
+    const result = await runReuseCatalog({projectRoot:root, action:'regen', lstat: probe});
     assert.equal(result.ok, false); assert.match(result.findings[0].message, /symlink/);
   }
   assert.equal(await readFile(join(root,'doc/real.md'),'utf8'),'handwritten');
@@ -135,13 +140,11 @@ test('check is read-only and supplies a read-only contract to trusted adapter', 
 });
 
 test('different configured output paths cannot alias through a symlink', async (t) => {
-  if (process.platform === 'win32') { t.skip('symlink creation may require Windows privileges'); return; }
-  const { symlink } = await import('node:fs/promises');
   const { root, put, catalog } = await setup(t);
-  await mkdir(join(root,'doc'), {recursive:true}); await symlink('doc', join(root,'alias'));
+  await mkdir(join(root,'doc'), {recursive:true});
   await put('registries/architecture/backend-capabilities.json', {...catalog,kind:'backend'});
   await put('.vibe-coding/project.config.json', {schemaVersion:1,contracts:{reuseCatalogs:{frontend:{document:'doc/shared.md'},backend:{document:'alias/shared.md'}}}});
-  const result = await runReuseCatalog({projectRoot:root,action:'regen'});
+  const result = await runReuseCatalog({projectRoot:root,action:'regen', lstat: lstatWithLinks(root, ['alias'])});
   assert.equal(result.ok,false); assert.ok(result.findings.some((item) => /symlink|unique/.test(item.message)));
   await assert.rejects(readFile(join(root,'doc/shared.md')));
 });

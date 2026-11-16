@@ -28,9 +28,9 @@
 // ES module (.mjs/.js): default export `(ctx) => candidates | Promise<candidates>` with
 // ctx = { ledgerPath, repoDir, rows, bases }. A probe that throws becomes a candidate itself: a broken probe must be loud.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 import { findDuplicateItemIds, findStrayItemRows, parseItems } from './check-heartbeat-ledger.mjs';
 import { defaultBase, discoverLandings } from './heartbeat-sweep-landings.mjs';
@@ -38,12 +38,7 @@ import { discoverWorktrees } from './heartbeat-sweep-worktrees.mjs';
 import { discoverBranchRegistry } from './heartbeat-branches.mjs';
 import { computeFree, formatFree } from './heartbeat-sweep-free.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
-
-// Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
-// other repos, so this is an inline copy of the shared helper rather than an import).
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 const PROBE_TIMEOUT_MS = 20_000;
 const SOURCE_OK = /^(memory|handoff|report|landing|owner|sweep|audit):\S/i;

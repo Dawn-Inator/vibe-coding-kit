@@ -36,19 +36,13 @@
 // regular-expression source string) if your project keeps session scratch elsewhere.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { CATEGORIES, countWakeSections } from './check-heartbeat-ledger.mjs';
 import { readHeartbeatLedgerPair } from './heartbeat-ledger-files.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
-
-// Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
-// other repos, so this is an inline copy of the shared helper rather than an import).
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 export const DEFAULT_INTERVAL_MINUTES = 20;
 export const PROBE_SECONDS = 75;

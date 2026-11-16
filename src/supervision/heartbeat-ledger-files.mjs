@@ -199,7 +199,9 @@ function historyText(body, head, backup, paths, previousHead) {
 }
 // Open both files before reading so a combined limit is enforced without
 // materializing either oversized file. The read loop also catches growth after fstat.
-function boundedPairInputs(paths, maxBytes) {
+// File primitives for bounded reads; injectable so non-regular-file handling is testable on any host.
+const FILE_IO = Object.freeze({ openSync, fstatSync, readSync, closeSync });
+function boundedPairInputs(paths, maxBytes, io = FILE_IO) {
 	const flags =
 		constants.O_RDONLY |
 		(constants.O_NOFOLLOW ?? 0) |
@@ -208,13 +210,13 @@ function boundedPairInputs(paths, maxBytes) {
 	const openRegular = (path, optional = false) => {
 		let fd;
 		try {
-			fd = openSync(path, flags);
+			fd = io.openSync(path, flags);
 		} catch (error) {
 			if (optional && error?.code === "ENOENT") return null;
 			throw error;
 		}
 		descriptors.push(fd);
-		const info = fstatSync(fd);
+		const info = io.fstatSync(fd);
 		if (!info.isFile())
 			throw new Error("Heartbeat source must be a regular file");
 		return { fd, info };
@@ -227,7 +229,7 @@ function boundedPairInputs(paths, maxBytes) {
 		for (;;) {
 			const size = Math.min(65536, limit - total + 1);
 			const chunk = Buffer.allocUnsafe(size);
-			const count = readSync(file.fd, chunk, 0, size, null);
+			const count = io.readSync(file.fd, chunk, 0, size, null);
 			if (!count) break;
 			total += count;
 			if (total > limit)
@@ -268,7 +270,7 @@ function boundedPairInputs(paths, maxBytes) {
 			).toISOString(),
 		};
 	} finally {
-		for (const fd of descriptors) closeSync(fd);
+		for (const fd of descriptors) io.closeSync(fd);
 	}
 }
 function verifiedHistory(paths, bounded) {
@@ -306,9 +308,9 @@ function verifiedHistory(paths, bounded) {
 	return { history, match, body, planned };
 }
 
-function readPair(paths, maxBytes) {
+function readPair(paths, maxBytes, io) {
 	const bounded =
-		maxBytes === undefined ? undefined : boundedPairInputs(paths, maxBytes);
+		maxBytes === undefined ? undefined : boundedPairInputs(paths, maxBytes, io);
 	const headText = bounded?.headText ?? readFileSync(paths.headPath, "utf8");
 	const headMatch = HEAD.exec(headText);
 	if (
@@ -388,13 +390,13 @@ function readPair(paths, maxBytes) {
 		wakes: [...archive, ...appended],
 	};
 }
-export function readHeartbeatLedgerPair({ root, path, maxBytes }) {
+export function readHeartbeatLedgerPair({ root, path, maxBytes, io }) {
 	if (
 		maxBytes !== undefined &&
 		(!Number.isSafeInteger(maxBytes) || maxBytes < 1)
 	)
 		throw new TypeError("maxBytes must be a positive safe integer");
-	return readPair(safePaths(root, path), maxBytes);
+	return readPair(safePaths(root, path), maxBytes, io);
 }
 
 // Audit one coherent view: the live head supplies the inventory and all non-wake

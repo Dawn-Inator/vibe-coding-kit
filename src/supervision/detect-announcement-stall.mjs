@@ -2,10 +2,10 @@
 // without evidence that it started. Consumers may add domain-specific background-wait
 // markers while keeping the detection algorithm in one place.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { readStdin } from '../lib/sync-stdin.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 
 const BACKGROUND_WAIT_PATTERNS = [
   /\b(background|backgrounded|nohup|disowned|run_in_background|monitor tool|polling|waiting for (its|the|a) notification|detached)\b/i,
@@ -47,14 +47,6 @@ export function detectAnnouncementStall(text, {
     return { stall: true, reason: `last line reads as an announcement with no evidence behind it: "${last}"` };
   }
   return { stall: false, reason: 'no announcement pattern matched on the final line' };
-}
-
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try {
-    return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl));
-  } catch {
-    return false;
-  }
 }
 
 async function readInput(argv) {

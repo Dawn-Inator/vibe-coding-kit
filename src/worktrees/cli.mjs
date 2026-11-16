@@ -8,10 +8,10 @@
 //
 // Node built-ins only, zero third-party dependencies, ESM.
 
-import { mkdirSync, existsSync, readFileSync, appendFileSync, statSync, realpathSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, appendFileSync, statSync } from 'node:fs';
+import { isMainModule } from '../lib/main-module.mjs';
 import { basename, dirname, join, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { samePathIdentity } from '../lib/path-identity.mjs';
 
@@ -1488,21 +1488,7 @@ export async function main(argv, deps = {}) {
   }
 }
 
-// Robust "am I the entry script" check: a plain `import.meta.url ===
-// 'file://' + process.argv[1]` string-concat can mismatch across symlinks or
-// relative/absolute path differences, so both sides are resolved to real
-// filesystem paths and compared instead.
-const isMainModule = (() => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  try {
-    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-})();
-
-if (isMainModule) {
+if (isMainModule(import.meta.url)) {
   const code = await main(process.argv.slice(2));
   process.exitCode = code;
 }

@@ -14,8 +14,6 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { realpathSync } from 'node:fs';
 
 import {
   RAW_SECRET_PATTERNS,
@@ -25,6 +23,7 @@ import {
   parseFrontmatter,
   writeTextAtomically,
 } from '../history/history-index.mjs';
+import { isMainModule } from '../../lib/main-module.mjs';
 
 // Consumers pass roots and classifications explicitly. The standalone CLI
 // defaults to CWD; the kit's own path is never treated as a consumer root.
@@ -818,10 +817,6 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'check') return runCheck().exitCode;
   console.error(`unknown command: ${command}\n\n${usage()}`);
   return 1;
-}
-
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
 }
 
 const invokedDirectly = isMainModule(import.meta.url);
