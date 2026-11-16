@@ -91,6 +91,7 @@ export interface TaskPanelHeartbeat {
   wakesTruncated?: boolean;
   itemStatusCounts?: Readonly<Record<string, number>>;
   findings: readonly { severity: string; message: string; rule?: string }[];
+  findingsTruncated?: boolean;
   error?: string;
   warning?: string;
   basis?: "configured" | "latest-recorded-wake" | "items-inventory" | "none";
@@ -1192,7 +1193,7 @@ export class TaskProgressElement extends LitElement {
           ? this.framedCard(
               this.t("Validation notice", "校验提示"),
               AlertTriangle,
-              html`<p>${heartbeat.findings.length ? this.t(`${heartbeat.findings.length} validation issues need attention.`, `发现 ${heartbeat.findings.length} 项校验问题，需要关注。`) : this.t("The heartbeat record has a validation notice that needs attention.", "心跳记录存在校验提示，需要关注。")}</p>`,
+              html`<p>${heartbeat.findings.length ? (heartbeat.findingsTruncated ? this.t(`At least ${heartbeat.findings.length} validation issues need attention.`, `发现至少 ${heartbeat.findings.length} 项校验问题，需要关注。`) : this.t(`${heartbeat.findings.length} validation issues need attention.`, `发现 ${heartbeat.findings.length} 项校验问题，需要关注。`)) : this.t("The heartbeat record has a validation notice that needs attention.", "心跳记录存在校验提示，需要关注。")}</p>`,
               { tone: "warning", className: "hb-alert" },
             )
           : nothing

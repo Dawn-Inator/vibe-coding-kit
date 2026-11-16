@@ -4305,6 +4305,17 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.doesNotMatch(alertText, /v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/);
         assert.ok(alertText.length < 100);
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
+        await page.evaluate(() => {
+          window.fixture.heartbeat.findings = window.fixture.heartbeat.findings.slice(0, 30);
+          window.fixture.heartbeat.findingsTruncated = true;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const truncatedAlert = await panel.locator(".hb-alert").innerText();
+        assert.match(truncatedAlert, /发现至少 30 项校验问题，需要关注/);
+        assert.doesNotMatch(
+          truncatedAlert,
+          /v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/,
+        );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
