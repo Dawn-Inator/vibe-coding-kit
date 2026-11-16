@@ -3580,3 +3580,59 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("agent allocation uses matching project wake and does not retain an old cycle across a late child list", async () => {
+  const root = await mkdtemp("/tmp/ctph-agent-allocation-");
+  await mkdir(join(root, ".git"));
+  const testRuntime = runtime(root);
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  testRuntime.listDirectSubagents = async () => { await gate; return { data: [], nextCursor: null }; };
+  const helper = new GoalProgressHelper({ paths: resolveGoalProgressPaths({ root: join(root, "data") }), runtime: testRuntime, resolveNativeGoal: async () => null });
+  const client = new GoalProgressIpcClient(helper.paths.helperSocketPath, { clientKind: "mcp" });
+  const originalProjection = HeartbeatService.prototype.taskProjection;
+  const originalSnapshot = HeartbeatService.prototype.projectViewSnapshot;
+  const originalGet = KitTaskStore.prototype.get;
+  const originalNow = Date.now;
+  let now = originalNow();
+  let cycle = "cycle-1";
+  Date.now = () => now;
+  HeartbeatService.prototype.taskProjection = async () => ({ status: "none", sourcePath: null, task: null });
+  HeartbeatService.prototype.projectViewSnapshot = async () => ({ view: {
+    status: "ready", wakes: [{ orchestration: {
+      after: { activeAgents: 3, observedAt: "2026-11-16T12:00:00Z", evidence: "recorded" },
+      agentPlan: { parentThreadId: "chat-A", planId: "plan", revision: 1, plannedAgents: 6, taskCycleId: "cycle-1" },
+    } }],
+  } as never, pending: false });
+  KitTaskStore.prototype.get = async () => ({
+    schemaVersion: 4, kind: "task", threadId: "chat-A", title: "Test", revision: 1,
+    createdAt: "2026-11-16T12:00:00Z", updatedAt: "2026-11-16T12:00:00Z", objectives: [],
+    progress: { completed: 0, total: 0, percent: null }, phase: "active",
+    lifecycle: { id: cycle, sequence: cycle === "cycle-1" ? 1 : 2, startedAt: "2026-11-16T12:00:00Z", completion: null },
+  });
+  const native = async (threadId: string) => (await client.request({ method: "task.native-read", params: { action: "get", threadId, input: {} } })).result as {
+    task: { lifecycle: { id: string } } | null;
+    subagents: { status: string; allocation: { status: string; ratio: number | null } };
+  };
+  try {
+    await helper.start();
+    let a = await native("chat-A");
+    for (let i = 0; i < 100 && a.subagents.allocation.ratio !== .5; i++) { await new Promise((r) => setTimeout(r, 10)); a = await native("chat-A"); }
+    assert.equal(a.subagents.status, "pending");
+    assert.equal(a.subagents.allocation.ratio, .5);
+    let b = await native("chat-B");
+    for (let i = 0; i < 100 && !b.task; i++) { await new Promise((r) => setTimeout(r, 10)); b = await native("chat-B"); }
+    assert.equal(b.subagents.allocation.ratio, null);
+    cycle = "cycle-2"; now += 5_001;
+    for (let i = 0; i < 100 && a.task?.lifecycle.id !== cycle; i++) { await new Promise((r) => setTimeout(r, 10)); a = await native("chat-A"); }
+    assert.equal(a.task?.lifecycle.id, "cycle-2");
+    assert.equal(a.subagents.allocation.ratio, null);
+    release();
+    for (let i = 0; i < 100 && a.subagents.status !== "ready"; i++) { await new Promise((r) => setTimeout(r, 10)); a = await native("chat-A"); }
+    assert.equal(a.subagents.allocation.ratio, null);
+  } finally {
+    release(); Date.now = originalNow; HeartbeatService.prototype.taskProjection = originalProjection;
+    HeartbeatService.prototype.projectViewSnapshot = originalSnapshot; KitTaskStore.prototype.get = originalGet;
+    await helper.stop(); await rm(root, { recursive: true, force: true });
+  }
+});

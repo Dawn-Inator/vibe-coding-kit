@@ -96,10 +96,10 @@ test("source launcher builds and refreshes the native MCP resource without prebu
         });
         const tools = await client.listTools();
         assert.ok(
-          tools.tools.some((tool) => tool.name === "task_progress_panel"),
+          tools.tools.some((tool) => tool.name === "task_progress_dashboard"),
           "native panel tool missing",
         );
-        const panelTool = tools.tools.find((tool) => tool.name === "task_progress_panel");
+        const panelTool = tools.tools.find((tool) => tool.name === "task_progress_dashboard");
         const resourceUri = panelTool?._meta?.ui?.resourceUri;
         assert.equal(typeof resourceUri, "string", "native panel resource URI missing");
         const result = await client.readResource({ uri: resourceUri });

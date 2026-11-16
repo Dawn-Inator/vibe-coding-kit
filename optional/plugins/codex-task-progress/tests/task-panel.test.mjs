@@ -10,7 +10,7 @@ const controlsEvidenceDir = fileURLToPath(
   new URL("../.playwright-img/panel-controls-080/", import.meta.url),
 );
 const metricsEvidenceDir = fileURLToPath(
-  new URL("../.playwright-img/panel-metrics-082/", import.meta.url),
+  new URL("../.playwright-img/panel-allocation-090/", import.meta.url),
 );
 
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
@@ -210,7 +210,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
   };
   try {
     await t.test(
-      "subagent default shows honest recorded counts and preserves the parent goal",
+      "subagent allocation uses canonical plan ratio and preserves the parent goal",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
         await page.evaluate((value) => {
@@ -220,10 +220,20 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             parentThreadId: "thread-a",
             observedAt: "2026-11-15T12:00:00Z",
             status: "ready",
-            runningCount: 30,
+            runningCount: 99,
             runningBasis: "heartbeat",
-            complete: true,
-            truncated: false,
+            complete: false,
+            truncated: true,
+            allocation: {
+              status: "ready",
+              planId: "plan-1",
+              planRevision: 1,
+              plannedCount: 20,
+              runningCount: 10,
+              ratio: 0.5,
+              observedAt: "2026-11-15T12:00:00Z",
+              basis: "heartbeat",
+            },
             agents: [
               {
                 id: "done",
@@ -254,75 +264,45 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, task);
         await panel.getByText("Working agent", { exact: true }).waitFor();
+        const ring = panel.locator(".agent-counts .allocation-ring");
+        assert.equal(await ring.getAttribute("role"), "meter");
+        assert.equal(await ring.getAttribute("aria-valuenow"), "50");
+        assert.equal(await ring.getAttribute("aria-valuetext"), "10/20");
         assert.equal(
-          await panel
-            .getByRole("button", { name: "子 Agent", exact: true })
-            .getAttribute("aria-pressed"),
-          "true",
+          await ring.locator(".allocation-fill").getAttribute("stroke-dashoffset"),
+          "50",
         );
-        const cards = panel.locator(".agent-counts .agent-stat");
-        assert.match(await cards.nth(0).innerText(), /30/);
-        assert.match(await cards.nth(0).innerText(), /心跳记录.*更新于/s);
-        assert.doesNotMatch(await cards.nth(0).innerText(), /实时/);
-        assert.match(await cards.nth(1).innerText(), /3/);
-        assert.equal(await cards.locator(".metric-ring svg circle").count(), 2);
-        assert.equal(
-          await panel
-            .locator(
-              ".agent-counts [role=meter], .agent-counts [role=progressbar], .agent-counts [aria-valuenow]",
-            )
-            .count(),
-          0,
-        );
-        const metricsLayout = await panel.locator(".agent-counts").evaluate((element) => ({
-          height: element.getBoundingClientRect().height,
-          overflow: element.scrollWidth > element.clientWidth,
-          borders: [...element.querySelectorAll(".agent-stat")].map(
-            (item) => getComputedStyle(item).borderTopWidth,
-          ),
-          backgrounds: [...element.querySelectorAll(".agent-stat")].map(
-            (item) => getComputedStyle(item).backgroundColor,
-          ),
-        }));
-        assert.ok(metricsLayout.height < 118);
-        assert.equal(metricsLayout.overflow, false);
-        assert.deepEqual(metricsLayout.borders, ["0px", "0px"]);
-        assert.deepEqual(metricsLayout.backgrounds, ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"]);
-        await mkdir(metricsEvidenceDir, { recursive: true });
-        await panel
-          .locator(".body")
-          .screenshot({ path: `${metricsEvidenceDir}/subagents-wide.png` });
-        const oldViewport = page.viewportSize();
-        await page.setViewportSize({ width: 360, height: 740 });
+        assert.match(await panel.locator(".agent-counts").innerText(), /已列出 Agent 3/);
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /99|实时/);
+        assert.equal(await panel.locator(".agent-counts .allocation-ring").count(), 1);
         assert.equal(
           await panel
             .locator(".agent-counts")
+            .evaluate((element) => getComputedStyle(element).borderTopWidth),
+          "0px",
+        );
+        assert.ok((await panel.locator(".agent-counts").boundingBox()).height < 118);
+        await mkdir(metricsEvidenceDir, { recursive: true });
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${metricsEvidenceDir}/allocation-wide.png` });
+        const viewport = page.viewportSize();
+        await page.setViewportSize({ width: 360, height: 740 });
+        assert.equal(
+          await panel
+            .locator(".scroll")
             .evaluate((element) => element.scrollWidth <= element.clientWidth),
           true,
         );
         await panel
           .locator(".body")
-          .screenshot({ path: `${metricsEvidenceDir}/subagents-narrow.png` });
-        await page.setViewportSize(oldViewport);
-        await page.evaluate(() => {
-          window.fixture.subagents.truncated = true;
-          window.fixture.subagents.observedAt = new Date().toISOString();
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await panel.getByText("Agent 列表未完整显示。", { exact: true }).waitFor();
-        assert.equal(await panel.locator(".agent-counts [aria-valuenow]").count(), 0);
-        const todayMeta = await cards.nth(0).locator(".metric-meta").innerText();
-        assert.match(todayMeta, /更新于\s*\d{1,2}:\d{2}/);
-        assert.doesNotMatch(todayMeta, /\d{1,2}:\d{2}:\d{2}/);
-        assert.match(await cards.nth(0).getAttribute("aria-label"), /\d{1,2}:\d{2}:\d{2}/);
-        await page.evaluate(() => {
-          window.fixture.subagents.truncated = false;
-          window.fixture.subagents.observedAt = "2020-01-02T12:34:56Z";
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        const earlierMeta = await cards.nth(0).locator(".metric-meta").innerText();
-        assert.match(earlierMeta, /1月[23]日/);
-        assert.doesNotMatch(earlierMeta, /\d{1,2}:\d{2}:\d{2}/);
+          .screenshot({ path: `${metricsEvidenceDir}/allocation-narrow.png` });
+        await page.emulateMedia({ colorScheme: "dark" });
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${metricsEvidenceDir}/allocation-dark.png` });
+        await page.emulateMedia({ colorScheme: "light" });
+        await page.setViewportSize(viewport);
         const rows = panel.locator(".agent-row");
         assert.deepEqual(await rows.locator(".name").allInnerTexts(), [
           "Working agent",
@@ -334,68 +314,94 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "0",
         );
         assert.equal(await rows.nth(1).locator('[role="meter"]').count(), 0);
-        assert.match(await rows.nth(1).innerText(), /—/);
+        for (const sample of [
+          { runningCount: 0, ratio: 0, offset: "100" },
+          { runningCount: 10, ratio: 0.5, offset: "50" },
+          { runningCount: 20, ratio: 1, offset: "0" },
+        ]) {
+          await page.evaluate((sample) => {
+            Object.assign(window.fixture.subagents.allocation, {
+              runningCount: sample.runningCount,
+              ratio: sample.ratio,
+            });
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, sample);
+          assert.equal(
+            await ring.locator(".allocation-fill").getAttribute("stroke-dashoffset"),
+            sample.offset,
+          );
+          assert.equal(await ring.getAttribute("aria-valuenow"), String(sample.ratio * 100));
+        }
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
-        assert.match(await panel.locator(".total-line").innerText(), /1\/2/);
         await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
         await panel.getByRole("button", { name: /普通聊天界面/ }).waitFor();
-        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
         assert.match(await panel.locator(".total-line").innerText(), /1\/2/);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
         await panel.getByRole("button", { name: "子 Agent", exact: true }).click();
         await page.evaluate(() => {
-          window.fixture.subagents = {
-            ...window.fixture.subagents,
-            status: "partial",
-            runningCount: 0,
-            runningBasis: "unknown",
+          window.fixture.subagents.agents = Array.from({ length: 100 }, (_, i) => ({
+            id: `listed-${i}`,
+            name: `Agent ${i}`,
+            state: "working",
+            progress: null,
+            progressBasis: null,
             observedAt: null,
-            agents: [],
-            complete: false,
+          }));
+          window.fixture.subagents.allocation = null;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await ring.getAttribute("role"), "img");
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
+        assert.match(await panel.locator(".agent-counts").innerText(), /已列出 Agent 100/);
+        assert.equal(await ring.locator("strong").innerText(), "—");
+        await page.evaluate(() => {
+          window.fixture.subagents.allocation = {
+            status: "ready",
+            planId: "p",
+            planRevision: 1,
+            plannedCount: 0,
+            runningCount: 0,
+            ratio: 0,
+            observedAt: "2026-11-15T12:00:00Z",
+            basis: "heartbeat",
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        await panel.getByText("当前没有可显示的子 Agent。", { exact: true }).waitFor();
-        assert.match(await cards.nth(0).innerText(), /—/);
-        assert.match(await cards.nth(0).innerText(), /状态未记录/);
-        assert.equal(
-          await cards.nth(0).locator(".metric-ring").getAttribute("data-unknown"),
-          "true",
-        );
-        assert.equal(await panel.locator(".agent-counts [aria-valuenow]").count(), 0);
-        assert.match(await cards.nth(1).innerText(), /0/);
-        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await page.evaluate(() => {
-          window.fixture.subagents.runningCount = 30;
-          window.fixture.subagents.runningBasis = "heartbeat";
-          window.fixture.subagents.observedAt = "invalid timestamp";
+          window.fixture.subagents.allocation = {
+            status: "ready",
+            planId: "p",
+            planRevision: 1,
+            plannedCount: 20,
+            runningCount: 10,
+            ratio: 0.5,
+            observedAt: "invalid",
+            basis: "heartbeat",
+          };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await page.evaluate(() => {
-          window.fixture.subagents.runningCount = -1;
-          window.fixture.subagents.runningBasis = "runtime";
+          window.fixture.subagents.allocation = {
+            status: "over-plan",
+            planId: "p",
+            planRevision: 1,
+            plannedCount: 30,
+            runningCount: 40,
+            ratio: null,
+            observedAt: "2026-11-15T12:00:00Z",
+            basis: "heartbeat",
+          };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
-        for (const invalidCount of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
-          await page.evaluate((count) => {
-            window.fixture.subagents.runningCount = count;
-            return window.__CODEX_TASK_PROGRESS__.refresh();
-          }, invalidCount);
-          assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
-        }
-        await page.evaluate(() => {
-          window.fixture.subagents.runningCount = 0;
-          window.fixture.subagents.runningBasis = "runtime";
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        assert.equal(await cards.nth(0).locator("strong").innerText(), "0");
-        await page.evaluate(() => {
-          window.fixture.subagents = null;
-          return window.__CODEX_TASK_PROGRESS__.refresh();
-        });
-        await panel.getByText("尚未获取 Agent 活动。", { exact: true }).waitFor();
-        assert.match(await cards.nth(1).innerText(), /—/);
+        assert.equal(await ring.locator("strong").innerText(), "40/30");
+        assert.match(await panel.locator(".agent-counts").innerText(), /超出计划/);
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await context.close();
       },
     );
@@ -2909,10 +2915,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
         assert.match(await panel.locator("section.panel").innerText(), /bound task/);
-        assert.deepEqual(await panel.locator(".hb-flow .metric-ring strong").allInnerTexts(), [
-          "2",
-          "4",
-        ]);
+        assert.equal(await panel.locator(".hb-flow .allocation-ring strong").innerText(), "—");
+        assert.match(await panel.locator(".hb-flow").innerText(), /2.*4/s);
         assert.match(await panel.locator("section.panel").innerText(), /Owner decision/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /Feature · active/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
@@ -4927,6 +4931,16 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                   rows: categories.map((category) => ({ category, state: "hidden row" })),
                   orchestration: {
                     scope: "Import task only",
+                    allocation: {
+                      status: "ready",
+                      planId: "p",
+                      planRevision: 1,
+                      plannedCount: 8,
+                      runningCount: 4,
+                      ratio: 0.5,
+                      observedAt: "2026-11-15T12:00:00Z",
+                      basis: "heartbeat",
+                    },
                     before: { activeAgents: 2 },
                     after: { activeAgents: 4 },
                     blockedTaskCount: 25,
@@ -4996,13 +5010,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const wakes = panel.locator(".hb-wake");
         await wakes.first().getByText("Needs decision").waitFor();
         const text = await wakes.first().innerText();
-        assert.match(text, /Active child agents/i);
-        assert.deepEqual(
-          await wakes.first().locator(".hb-flow .metric-ring strong").allInnerTexts(),
-          ["2", "4"],
+        assert.match(text, /After dispatch \/ planned/i);
+        assert.equal(
+          await wakes.first().locator(".hb-flow .allocation-ring strong").innerText(),
+          "4/8",
         );
-        assert.equal(await wakes.first().locator(".hb-flow .metric-ring svg circle").count(), 2);
-        assert.equal(await wakes.first().locator(".hb-flow [aria-valuenow]").count(), 0);
+        assert.equal(
+          await wakes
+            .first()
+            .locator(".hb-flow .allocation-fill")
+            .getAttribute("stroke-dashoffset"),
+          "50",
+        );
+        assert.equal(
+          await wakes.first().locator(".hb-flow [aria-valuenow]").getAttribute("aria-valuenow"),
+          "50",
+        );
         assert.match(text, /Import task only/);
         assert.match(text, /Choose a policy/);
         assert.match(text, /Waiting for fix[\s\S]*Requires Owner: No/);
@@ -5038,14 +5061,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await wakes.nth(4).innerText(), /Owner intervention required\s*Not recorded/);
         assert.match(await wakes.nth(4).innerText(), /Confirmed Owner actions\s*0/);
         assert.match(await wakes.nth(4).innerText(), /Requires Owner: Not recorded/);
-        assert.deepEqual(
-          await wakes.nth(4).locator(".hb-flow .metric-ring strong").allInnerTexts(),
-          ["—", "—"],
-        );
         assert.equal(
-          await wakes.nth(4).locator('.hb-flow .metric-ring[data-unknown="true"]').count(),
-          2,
+          await wakes.nth(4).locator(".hb-flow .allocation-ring strong").innerText(),
+          "—",
         );
+        assert.equal(await wakes.nth(4).locator(".hb-flow .allocation-fill").count(), 0);
         assert.equal(await wakes.nth(4).locator(".hb-flow [aria-valuenow]").count(), 0);
         for (const direction of ["ltr", "rtl"]) {
           await page.setViewportSize({ width: 320, height: 380 });

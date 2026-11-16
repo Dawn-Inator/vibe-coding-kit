@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
+import { projectAgentAllocation } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import {
   ReadOnlySnapshotCache,
   taskPresentationScope,
@@ -1942,6 +1943,16 @@ export class GoalProgressHelper {
         if (children.value) subagents = children.value;
         else if (children.error) subagents = { ...subagents, status: "unavailable" };
       }
+      // Allocation is projected from the current presentation each time, never retained in the
+      // child-list cache. A changed source, cycle, or plan therefore cannot reuse an old ratio.
+      const task = snapshot.value?.result.task as { lifecycle?: { id?: unknown } } | null | undefined;
+      const cycleId = typeof task?.lifecycle?.id === "string" ? task.lifecycle.id : undefined;
+      const projectHeartbeat = snapshot.value?.result.heartbeat as { status?: unknown; wakes?: unknown[] } | null | undefined;
+      const latestWake = projectHeartbeat?.wakes?.at(-1) as { orchestration?: unknown } | undefined;
+      const allocation = sourceReady && snapshot.value?.result.heartbeatPending !== true && projectHeartbeat?.status === "ready"
+        ? projectAgentAllocation(latestWake?.orchestration, { parentThreadId: threadId, ...(cycleId === undefined ? {} : { taskCycleId: cycleId }) })
+        : projectAgentAllocation(null);
+      subagents = { ...subagents, allocation };
       return {
         revision: snapshot.value?.revision ?? null,
         result: {

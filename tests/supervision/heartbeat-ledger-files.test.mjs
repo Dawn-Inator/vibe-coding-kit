@@ -888,7 +888,7 @@ test('orchestration metadata survives append, restart and pair writes without re
  const old = wake('2026-01-01T10:00Z');
  writeFileSync(path, old);
  migrate({ root: dir, path });
- const snapshot = { scope: 'run', before: { activeAgents: 0, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:1' }, after: null, blockedTasks: null, blockersEvidence: null };
+ const snapshot = { scope: 'run', before: { activeAgents: 0, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:1' }, after: { activeAgents: 3, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:2' }, blockedTasks: null, blockersEvidence: null, agentPlan: { parentThreadId: 'parent', planId: 'plan', revision: 1, plannedAgents: 6, taskCycleId: 'cycle' } };
  let pair = append({ root: dir, path, wakeText: wake('2026-01-01T11:00Z'), orchestration: snapshot });
  assert.ok(pair.historyText.includes(old));
  assert.deepEqual(inspectHeartbeatLedgerPair(readHeartbeatLedgerPair({ root: dir, path }), { mode: 'history' }).wakes.at(-1).orchestration, snapshot);

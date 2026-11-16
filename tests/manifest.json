@@ -68,6 +68,7 @@
   "worktrees/writable-tree.test.mjs",
   "supervision/heartbeat-history.test.mjs",
   "supervision/heartbeat-ledger-api.test.mjs",
+  "supervision/agent-allocation.test.mjs",
   "supervision/heartbeat-audit-due.test.mjs",
   "supervision/heartbeat-ledger-types.test.mjs",
   "supervision/heartbeat-ledger-files.test.mjs",

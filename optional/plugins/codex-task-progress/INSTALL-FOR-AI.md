@@ -1,4 +1,4 @@
-# Install Task Progress 0.8.2
+# Install Task Progress 0.9.0
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
@@ -42,7 +42,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.8.2`. Beginning with 0.8.1, metadata and the resource list advertise a release-versioned URI; 0.8.2 advertises `ui://codex-task-progress/panel-0.8.2.html`. The old `panel-v1.html` and compatible published semver aliases remain read-compatible and return the serving server’s current panel HTML. An older server rejects an unknown future-version URI explicitly rather than silently serving its older page. Version 0.7.7 previously advertised the stable `panel-v1.html` URI. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. If necessary, reenter the chat or switch away and back to refresh the host catalog; do not restart Codex. The user confirmed that the 0.8.1 native UI loaded; the 0.8.2 appearance still requires native host verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.9.0`. Beginning with 0.8.1, metadata and the resource list advertise a release-versioned URI; 0.9.0 advertises `ui://codex-task-progress/panel-0.9.0.html`. The old `panel-v1.html` and compatible published semver aliases remain read-compatible and return the serving server’s current panel HTML. An older server rejects an unknown future-version URI explicitly rather than silently serving its older page. Version 0.7.7 previously advertised the stable `panel-v1.html` URI. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. If necessary, reenter the chat or switch away and back to refresh the host catalog; do not restart Codex. The user confirmed 0.8.1 loaded, but a later view showed older UI; 0.9.0 host behavior still requires verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
 
 ## Signing and protected folders
 
@@ -65,6 +65,8 @@ The Helper is installed at the stable real path `install/bin/goal-progress`; ver
 Version 0.7.9 streamlines routine source details beneath task modules and presents Project Heartbeat validation as a compact audit summary that surfaces real risks. Verify actual native panel behavior separately.
 
 An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.
+
+Version 0.9.0 shows a frameless allocation ring for the recorded running-agent count against an explicit agent plan. The after-audit Heartbeat observation supplies the numerator and the before-to-after observation is supporting context; listed agents are not the denominator. A missing or unmatched plan or observation, zero denominator, or an over-plan count does not produce a misleading progress arc. Unknown values use a gray ring. This is a timestamped observation, not a live Desktop count. The native entry moves to `task_progress_dashboard`; `task_progress_panel` remains model-only and read-only for compatibility. Native rendering and migration must be verified in the host.
 
 ## Storage compatibility
 

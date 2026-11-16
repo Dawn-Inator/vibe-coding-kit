@@ -27,6 +27,8 @@ After true completion, new work starts a fresh lifecycle using `task_progress_re
 
 Lifecycle semantics apply to schema v4 managed task records opted in with `lifecycle: true`. Bound read-only Heartbeat sources have no formal cycle API; report lifecycle completion and archive as unavailable rather than infer a cycle or fall back to a dormant local task. Native Goals are separate and unchanged.
 
+For an agent allocation view, producers may register an explicit agent plan in the same Kit Heartbeat orchestration wake as the actual observed counts. Match the plan to the trusted parent thread and any managed task cycle, and use the recorded after-audit count against that plan; missing or mismatched evidence, a zero denominator, or an over-plan count must not become a fabricated ratio. This adds no parallel store or timer.
+
 The Heartbeat view presents the recorded orchestration snapshot: actual active child agents before the audit
 and after re-splitting/dispatch, plus audited blocked tasks and whether Owner intervention is known to be
 needed. It is a timestamped observation, not a live count. The full ten audit rows and Items registry remain

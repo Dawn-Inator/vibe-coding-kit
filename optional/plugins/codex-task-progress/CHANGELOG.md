@@ -1,3 +1,7 @@
+# Task Progress 0.9.0
+
+- Version 0.9.0 shows a frameless allocation ring for the recorded running-agent count against an explicit agent plan. The after-audit Heartbeat observation supplies the numerator and the before-to-after observation is supporting context; listed agents are not the denominator. A missing or unmatched plan or observation, zero denominator, or an over-plan count does not produce a misleading progress arc. Unknown values use a gray ring. This is a timestamped observation, not a live Desktop count. The native entry moves to `task_progress_dashboard`; `task_progress_panel` remains model-only and read-only for compatibility. Native rendering and migration must be verified in the host.
+
 # Task Progress 0.8.2
 
 - Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. The rings mark counts and do not represent task completion percentages. Unknown values show a gray ring and —. Heartbeat time metrics have no percentage. The new appearance awaits native host verification.

@@ -1,4 +1,5 @@
+import type { AgentAllocation } from "../supervision/heartbeat-ledger-api.mjs";
 import type { TaskProgressSchemas, TaskProgress } from './task-contract.mjs';
 export interface SubagentProgressEntry { id: string; name: string; state: 'working'|'waiting'|'idle'|'completed'|'failed'|'unknown'; observedAt: string|null; progress: TaskProgress|null; progressBasis: 'registered-checklist'|'task-lifecycle'|'module-delivery'|null }
-export interface SubagentProgressSnapshot { schemaVersion: 1; parentThreadId: string; observedAt: string|null; status: 'ready'|'partial'|'unavailable'|'pending'; runningCount: number|null; runningBasis: 'runtime'|'heartbeat'|'unknown'; agents: SubagentProgressEntry[]; complete: boolean; truncated: boolean }
+export interface SubagentProgressSnapshot { allocation?: AgentAllocation; schemaVersion: 1; parentThreadId: string; observedAt: string|null; status: 'ready'|'partial'|'unavailable'|'pending'; runningCount: number|null; runningBasis: 'runtime'|'heartbeat'|'unknown'; agents: SubagentProgressEntry[]; complete: boolean; truncated: boolean }
 export function collectSubagentProgress(options: { parentThreadId: string; cwd: string; storageRoot: string; schemas: TaskProgressSchemas; listPage(cursor?: string): Promise<{data: unknown[]; nextCursor: string|null}>; now?: () => Date }): Promise<SubagentProgressSnapshot>;

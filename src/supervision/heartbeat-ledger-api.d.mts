@@ -1,7 +1,11 @@
 export interface HeartbeatAgentObservation { activeAgents: number; observedAt: string; evidence: string }
 export interface HeartbeatBlockedTask { id: string; title: string; reason: string; requiresOwner: boolean | null; evidence?: string }
-export interface HeartbeatOrchestration { scope: string; before: HeartbeatAgentObservation | null; after: HeartbeatAgentObservation | null; blockedTasks: HeartbeatBlockedTask[] | null; blockersEvidence: string | null }
+export interface HeartbeatAgentPlan { parentThreadId: string; planId: string; revision: number; plannedAgents: number; taskCycleId?: string }
+export interface AgentAllocation { status: "ready" | "unknown" | "over-plan"; planId: string | null; planRevision: number | null; plannedCount: number | null; runningCount: number | null; ratio: number | null; observedAt: string | null; basis: "heartbeat" | "unknown" }
+export function projectAgentAllocation(snapshot: unknown, options?: { parentThreadId?: string; taskCycleId?: string }): AgentAllocation;
+export interface HeartbeatOrchestration { agentPlan?: HeartbeatAgentPlan; scope: string; before: HeartbeatAgentObservation | null; after: HeartbeatAgentObservation | null; blockedTasks: HeartbeatBlockedTask[] | null; blockersEvidence: string | null }
 export interface HeartbeatOrchestrationProjection extends Omit<HeartbeatOrchestration, "blockedTasks"> {
+	allocation?: AgentAllocation;
 	/** Stable priority: confirmed Owner intervention, unknown, then no intervention. */
 	blockedTasks: HeartbeatBlockedTask[] | null;
 	blockedTaskCount: number | null;

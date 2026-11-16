@@ -4,7 +4,8 @@ import { getAsset, isSea } from "node:sea";
 import { fileURLToPath } from "node:url";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 
-export const TASK_PROGRESS_PANEL_TOOL_NAME = "task_progress_panel";
+export const TASK_PROGRESS_PANEL_TOOL_NAME = "task_progress_dashboard";
+export const LEGACY_TASK_PROGRESS_PANEL_TOOL_NAME = "task_progress_panel";
 export const TASK_PROGRESS_PANEL_SEA_ASSET_KEY = "task-progress-panel.html";
 
 export function createTaskProgressPanelResourceUri(releaseVersion: string): string {

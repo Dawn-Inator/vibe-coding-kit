@@ -98,7 +98,7 @@ time and evidence. Exclude the orchestrator, catalogs, completed children and ac
 Audit blocked tasks and Owner intervention from evidence, using unknown when not established. Use the
 optional Kit `orchestration` metadata in the same wake, never a parallel plugin record. Read the exact
 [snapshot fields and writer contract](references/ledger-api.md#orchestration-snapshot) before writing one.
-Keep ten raw rows; do not infer snapshots from them or rewrite historical wakes.
+When there is an explicit agent plan, record `agentPlan: { parentThreadId, planId, revision, plannedAgents, taskCycleId? }` with actual observations in that same wake. Use the trusted parent thread and, for a managed task cycle, its matching lifecycle ID; advance the plan revision when the plan changes. Do not infer a plan from the number listed or create another ledger or timer. Keep ten raw rows; do not infer snapshots from them or rewrite historical wakes.
 
 ## Ledger contract
 

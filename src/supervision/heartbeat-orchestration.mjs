@@ -5,10 +5,12 @@ const MAX_COUNT = 1000000;
 const text = (v, max) => typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/[\r\n]/.test(v);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (v, required, optional = []) => object(v) && required.every((k) => Object.hasOwn(v, k)) && Object.keys(v).every((k) => [...required, ...optional].includes(k));
+const validPlan = (v) => keys(v, ['parentThreadId', 'planId', 'revision', 'plannedAgents'], ['taskCycleId']) && text(v.parentThreadId, 512) && text(v.planId, 512) && Number.isSafeInteger(v.revision) && v.revision >= 1 && Number.isSafeInteger(v.plannedAgents) && v.plannedAgents >= 0 && (!Object.hasOwn(v, 'taskCycleId') || text(v.taskCycleId, 512));
 const observation = (v) => v === null || (keys(v, ['activeAgents', 'observedAt', 'evidence']) && Number.isSafeInteger(v.activeAgents) && v.activeAgents >= 0 && v.activeAgents <= MAX_COUNT && text(v.evidence, 1024) && typeof v.observedAt === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(v.observedAt) && Number.isFinite(Date.parse(v.observedAt)));
 
 export function validateHeartbeatOrchestration(value) {
-  if (!keys(value, ['scope', 'before', 'after', 'blockedTasks', 'blockersEvidence']) || !text(value.scope, 512) || !observation(value.before) || !observation(value.after) || !(value.blockersEvidence === null || text(value.blockersEvidence, 1024)) || !(value.blockedTasks === null || (Array.isArray(value.blockedTasks) && value.blockedTasks.length <= MAX_TASKS))) throw new TypeError('Invalid heartbeat orchestration snapshot');
+  if (!keys(value, ['scope', 'before', 'after', 'blockedTasks', 'blockersEvidence'], ['agentPlan']) || !text(value.scope, 512) || !observation(value.before) || !observation(value.after) || !(value.blockersEvidence === null || text(value.blockersEvidence, 1024)) || !(value.blockedTasks === null || (Array.isArray(value.blockedTasks) && value.blockedTasks.length <= MAX_TASKS))) throw new TypeError('Invalid heartbeat orchestration snapshot');
+  if (Object.hasOwn(value, 'agentPlan') && !validPlan(value.agentPlan)) throw new TypeError('Invalid agent plan');
   if (value.before !== null && value.after !== null && Date.parse(value.after.observedAt) < Date.parse(value.before.observedAt)) throw new TypeError('After observation precedes before observation');
   if (value.blockedTasks !== null) {
     if (!value.blockersEvidence) throw new TypeError('Known blocked tasks require blockersEvidence');
@@ -80,6 +82,24 @@ export function parseHeartbeatOrchestrationLines(lines) {
   } catch { return { orchestration: null, orchestrationError: 'invalid orchestration metadata' }; }
 }
 
+/** Allocation derives only from the same wake's explicit plan and after observation. */
+export function projectAgentAllocation(snapshot, { parentThreadId, taskCycleId } = {}) {
+  const unknown = { status: 'unknown', planId: null, planRevision: null, plannedCount: null, runningCount: null, ratio: null, observedAt: null, basis: 'unknown' };
+  if (!object(snapshot) || !validPlan(snapshot.agentPlan)) return unknown;
+  const plan = snapshot.agentPlan;
+  if ((parentThreadId !== undefined && (plan.parentThreadId !== parentThreadId || (plan.taskCycleId !== undefined && taskCycleId === undefined))) || (taskCycleId !== undefined && plan.taskCycleId !== taskCycleId)) return unknown;
+  const after = snapshot.after;
+  const validAfter = after !== null && observation(after);
+  const value = { ...unknown, planId: plan.planId, planRevision: plan.revision, plannedCount: plan.plannedAgents };
+  if (!validAfter) return value;
+  value.runningCount = after.activeAgents;
+  value.observedAt = after.observedAt;
+  value.basis = 'heartbeat';
+  if (plan.plannedAgents === 0) return value;
+  if (after.activeAgents > plan.plannedAgents) return { ...value, status: 'over-plan' };
+  return { ...value, status: 'ready', ratio: after.activeAgents / plan.plannedAgents };
+}
+
 export function projectHeartbeatOrchestration(snapshot, { maxBlockedPreview = 20 } = {}) {
   if (!Number.isSafeInteger(maxBlockedPreview) || maxBlockedPreview < 0 || maxBlockedPreview > 1000) throw new TypeError('Invalid maxBlockedPreview');
   if (snapshot === null || snapshot === undefined) return null;
@@ -88,5 +108,5 @@ export function projectHeartbeatOrchestration(snapshot, { maxBlockedPreview = 20
   const ownerCount = tasks === null ? null : tasks.filter((task) => task.requiresOwner === true).length;
   const unknownCount = tasks === null ? null : tasks.filter((task) => task.requiresOwner === null).length;
   const preview = tasks === null ? null : [true, null, false].flatMap((state) => tasks.filter((task) => task.requiresOwner === state)).slice(0, maxBlockedPreview);
-  return { scope: value.scope, before: value.before, after: value.after, blockedTasks: preview, blockedTaskCount: tasks?.length ?? null, ownerInterventionCount: ownerCount, requiresOwner: tasks === null ? null : ownerCount > 0 ? true : unknownCount > 0 ? null : false, blockersEvidence: value.blockersEvidence, truncated: tasks !== null && tasks.length > maxBlockedPreview };
+  return { scope: value.scope, before: value.before, after: value.after, ...(value.agentPlan ? { agentPlan: value.agentPlan, allocation: projectAgentAllocation(value) } : {}), blockedTasks: preview, blockedTaskCount: tasks?.length ?? null, ownerInterventionCount: ownerCount, requiresOwner: tasks === null ? null : ownerCount > 0 ? true : unknownCount > 0 ? null : false, blockersEvidence: value.blockersEvidence, truncated: tasks !== null && tasks.length > maxBlockedPreview };
 }

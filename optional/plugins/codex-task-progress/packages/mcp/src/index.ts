@@ -38,6 +38,7 @@ import {
 import { completeInitialization, GoalProgressInitializeBusinessSchema } from "./initialization.js";
 import {
   isCompatibleTaskProgressPanelResourceUri,
+  LEGACY_TASK_PROGRESS_PANEL_TOOL_NAME,
   loadNativePanelHtml,
   type NativePanelHtmlLoader,
   TASK_PROGRESS_PANEL_RESOURCE_URI,
@@ -737,9 +738,16 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     {
       name: TASK_PROGRESS_PANEL_TOOL_NAME,
       action: "get",
-      title: "Open Task Progress Panel",
+      title: "Task Progress",
       schema: EmptyBusinessSchema,
       description: "Read this chat's task progress for its native panel.",
+    },
+    {
+      name: LEGACY_TASK_PROGRESS_PANEL_TOOL_NAME,
+      action: "get",
+      title: "Read Task Progress (legacy)",
+      schema: EmptyBusinessSchema,
+      description: "Read this chat's task progress using the legacy panel tool name.",
     },
     {
       name: "task_progress_initialize",
@@ -823,6 +831,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
       tool.action === "heartbeat-history" ||
       tool.action === "archive";
     const isPanel = tool.name === TASK_PROGRESS_PANEL_TOOL_NAME;
+    const isLegacyPanel = tool.name === LEGACY_TASK_PROGRESS_PANEL_TOOL_NAME;
     const jsonSchema = z.toJSONSchema(tool.schema, { target: "draft-07", io: "input" });
     const transportSchema = z
       .object(
@@ -849,10 +858,10 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         },
         _meta: {
           ui: {
-            visibility: readOnly ? ["model", "app"] : ["model"],
+            visibility: readOnly && !isLegacyPanel ? ["model", "app"] : ["model"],
             ...(isPanel ? { resourceUri: TASK_PROGRESS_PANEL_RESOURCE_URI } : {}),
           },
-          ...(readOnly ? { "openai/widgetAccessible": true } : {}),
+          ...(readOnly && !isLegacyPanel ? { "openai/widgetAccessible": true } : {}),
           ...(isPanel
             ? {
                 "ui/resourceUri": TASK_PROGRESS_PANEL_RESOURCE_URI,
@@ -900,7 +909,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         // The panel is a presentation entrypoint for the existing read-only get operation.
         // Reuse its allow-listed identity tool name rather than widening the auth contract.
         const identity = resolveToolIdentity(
-          tool.name === TASK_PROGRESS_PANEL_TOOL_NAME ? "task_progress_get" : tool.name,
+          isPanel || isLegacyPanel ? "task_progress_get" : tool.name,
           input,
           extra,
         );

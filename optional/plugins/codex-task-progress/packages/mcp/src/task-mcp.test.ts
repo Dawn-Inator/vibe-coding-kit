@@ -53,8 +53,8 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = await client.listTools();
-    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 10);
-    const panel = tools.tools.find((tool) => tool.name === "task_progress_panel");
+    assert.equal(tools.tools.filter((tool) => tool.name.startsWith("task_progress_")).length, 11);
+    const panel = tools.tools.find((tool) => tool.name === "task_progress_dashboard");
     assert.ok(panel);
     assert.deepEqual(panel.inputSchema.properties, {});
     const panelMetadata = panel._meta as
@@ -73,6 +73,18 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.equal(panelMetadata?.["openai/widgetAccessible"], true);
     assert.deepEqual(panelMetadata?.["openai/ui"]?.entrypoints, [{ type: "thread" }]);
     assert.equal(panelMetadata?.["openai/ui"]?.displayModes, undefined);
+    assert.equal(panel.title, "Task Progress");
+    assert.equal(
+      tools.tools.filter((tool) => {
+        const meta = tool._meta as { "openai/ui"?: { entrypoints?: unknown[] } } | undefined;
+        return meta?.["openai/ui"]?.entrypoints?.length;
+      }).length,
+      1,
+    );
+    const legacyPanel = tools.tools.find((tool) => tool.name === "task_progress_panel");
+    assert.ok(legacyPanel);
+    assert.equal(legacyPanel.annotations?.readOnlyHint, true);
+    assert.deepEqual(legacyPanel._meta, { ui: { visibility: ["model"] } });
     const getTool = tools.tools.find((tool) => tool.name === "task_progress_get");
     const historyTool = tools.tools.find((tool) => tool.name === "task_progress_history");
     const getMetadata = getTool?._meta as
@@ -232,6 +244,13 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     });
     assert.notEqual(panelResult.isError, true);
     assert.equal(panelResult._meta?.["codex-task-progress/threadId"], "chat-1");
+    const dashboardResult = await client.callTool({
+      name: "task_progress_dashboard",
+      arguments: {},
+      _meta: { ...metadata, callId: "call-dashboard" },
+    });
+    assert.notEqual(dashboardResult.isError, true);
+    assert.equal(dashboardResult._meta?.["codex-task-progress/threadId"], "chat-1");
     const panelRequest = received.at(-1);
     assert.equal(panelRequest?.method, "task.request");
     if (panelRequest?.method === "task.request") {
@@ -249,7 +268,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.equal(historyResult._meta?.["codex-task-progress/threadId"], "chat-1");
     const nativeMeta = { threadId: "native-chat", thread_id: "native-chat" };
     const nativePanel = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: {},
       _meta: nativeMeta,
     });
@@ -393,7 +412,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       { threadId: "native-chat", thread_id: "native-chat", plugin_id: "other-plugin" },
     ]) {
       const rejected = await client.callTool({
-        name: "task_progress_panel",
+        name: "task_progress_dashboard",
         arguments: {},
         _meta: malformed,
       });
@@ -407,7 +426,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       ["windowId", "model-window"],
     ] as const) {
       const rejected = await client.callTool({
-        name: "task_progress_panel",
+        name: "task_progress_dashboard",
         arguments: {},
         _meta: { threadId: "native-chat", thread_id: "native-chat", [field]: value },
       });
@@ -420,19 +439,19 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       assert.equal(rejected._meta?.["codex-task-progress/threadId"], undefined);
     }
     const businessId = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: { threadId: "business-chat" },
       _meta: { threadId: "native-chat", thread_id: "native-chat" },
     });
     assert.equal(businessId.isError, true);
     const partialHook = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: { _runtimeContext: {} },
       _meta: { threadId: "native-chat", thread_id: "native-chat" },
     });
     assert.equal(partialHook.isError, true);
     const invalidTurnMetadata = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: {},
       _meta: {
         threadId: "native-chat",
@@ -471,12 +490,15 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.equal(bindWithoutProof.isError, true);
     assert.equal(received.length, afterValidReads);
     const callsAfterPanel = received.length;
-    const missingIdentity = await client.callTool({ name: "task_progress_panel", arguments: {} });
+    const missingIdentity = await client.callTool({
+      name: "task_progress_dashboard",
+      arguments: {},
+    });
     assert.equal(missingIdentity.isError, true);
     assert.equal(missingIdentity._meta?.["codex-task-progress/threadId"], undefined);
     assert.equal(received.length, callsAfterPanel);
     const mismatchedIdentity = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: {},
       _meta: {
         ...metadata,
@@ -488,7 +510,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     assert.equal(mismatchedIdentity._meta?.["codex-task-progress/threadId"], undefined);
     assert.equal(received.length, callsAfterPanel);
     const spoofedIdentity = await client.callTool({
-      name: "task_progress_panel",
+      name: "task_progress_dashboard",
       arguments: { threadId: "injected-thread" },
       _meta: { ...metadata, callId: "call-spoof" },
     });

@@ -14,7 +14,10 @@ import {
 import { html, LitElement, nothing, type PropertyValues, svg } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
-import type { HeartbeatOrchestrationProjection } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import type {
+  AgentAllocation,
+  HeartbeatOrchestrationProjection,
+} from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type {
   SubagentProgressEntry,
   SubagentProgressSnapshot,
@@ -1013,16 +1016,60 @@ export class TaskProgressElement extends LitElement {
     }
   }
 
-  private statRing(
-    value: string,
+  private allocationMeter(
+    allocation: AgentAllocation | null | undefined,
     label: string,
-    meta?: string,
-    className = "",
-    accessibleLabel?: string,
+    detail?: string,
   ) {
-    return html`<div class=${`metric ${className}`} role="group" aria-label=${accessibleLabel ?? nothing}>
-      <span class="metric-ring" data-unknown=${String(value === "—")}><svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="25"></circle></svg><strong>${value}</strong></span>
-      <span class="metric-copy"><span class="metric-label">${label}</span>${meta ? html`<span class="metric-meta">${meta}</span>` : nothing}</span>
+    const running = allocation?.runningCount;
+    const planned = allocation?.plannedCount;
+    const countsValid =
+      typeof running === "number" &&
+      Number.isSafeInteger(running) &&
+      running >= 0 &&
+      typeof planned === "number" &&
+      Number.isSafeInteger(planned) &&
+      planned > 0;
+    const date = allocation?.observedAt ? new Date(allocation.observedAt) : null;
+    const observed = date && Number.isFinite(date.getTime()) ? date : null;
+    const trusted = allocation?.basis === "heartbeat" && !!observed && countsValid;
+    const ratio = allocation?.ratio;
+    const known =
+      trusted &&
+      allocation?.status === "ready" &&
+      Number(running) <= Number(planned) &&
+      typeof ratio === "number" &&
+      Number.isFinite(ratio) &&
+      ratio >= 0 &&
+      ratio <= 1;
+    const overPlan =
+      trusted && allocation?.status === "over-plan" && Number(running) > Number(planned);
+    const value = known || overPlan ? `${running}/${planned}` : "—";
+    const percent = known ? Math.round((ratio as number) * 1000) / 10 : null;
+    const now = new Date();
+    const sameDay =
+      observed &&
+      observed.getFullYear() === now.getFullYear() &&
+      observed.getMonth() === now.getMonth() &&
+      observed.getDate() === now.getDate();
+    const updated = observed
+      ? `${sameDay ? "" : `${this.dateOnly(observed.getTime())} `}${this.time(observed.getTime())}`
+      : "—";
+    const status = overPlan
+      ? this.t("Over plan", "超出计划")
+      : known
+        ? `${percent}%`
+        : this.t("Status not recorded", "状态未记录");
+    const meta = trusted
+      ? `${this.t("Heartbeat record", "心跳记录")} · ${this.t("Updated", "更新于")} ${updated}`
+      : undefined;
+    const accessible = `${label}: ${value} · ${status}${trusted ? ` · ${this.t("Updated", "更新于")} ${this.date(observed?.getTime() ?? 0)}` : ""}`;
+    return html`<div class="allocation-metric">
+      <div class="allocation-ring" role=${known ? "meter" : "img"} aria-label=${accessible} aria-valuemin=${known ? "0" : nothing} aria-valuemax=${known ? "100" : nothing} aria-valuenow=${known ? percent : nothing} aria-valuetext=${known ? value : nothing}>
+        <svg viewBox="0 0 72 72" aria-hidden="true"><circle class="allocation-track" cx="36" cy="36" r="32" pathLength="100"></circle>${known ? svg`<circle class="allocation-fill" cx="36" cy="36" r="32" pathLength="100" stroke-dasharray="100" stroke-dashoffset=${100 - (ratio as number) * 100}></circle>` : nothing}</svg>
+        <strong>${value}</strong>
+      </div>
+      <div class="allocation-copy"><span class="allocation-label">${label}</span><span class="allocation-status">${status}</span>${meta ? html`<span class="allocation-meta">${meta}</span>` : nothing}${detail ? html`<span class="allocation-meta">${detail}</span>` : nothing}</div>
     </div>`;
   }
 
@@ -1044,10 +1091,9 @@ export class TaskProgressElement extends LitElement {
     };
     const tasks = snapshot.blockedTasks ?? [];
     return html`
-      <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Agent flow", "Agent 编排")}</h3></div><div class="info-card-body hb-snapshot">
+      <section class="hb-record hb-flow-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Agent flow", "Agent 编排")}</h3></div><div class="info-card-body hb-snapshot">
         <p class="muted">${this.t("Audit / task scope", "巡检 / 任务范围")}: ${typeof snapshot.scope === "string" && snapshot.scope ? snapshot.scope : unknown}</p>
-        <p>${this.t("Active child agents", "活跃子 Agent")}</p>
-        <div class="hb-flow">${this.statRing(agentCount(snapshot.before), this.t("Before audit / re-split", "巡检 / 重新拆分前"))}<span class="hb-flow-arrow" aria-hidden="true">→</span>${this.statRing(agentCount(snapshot.after), this.t("After dispatch", "派发后"))}</div>
+        <div class="hb-flow">${this.allocationMeter(snapshot.allocation, this.t("After dispatch / planned", "派发后 / 计划"), `${this.t("Before audit / re-split", "巡检 / 重新拆分前")} ${agentCount(snapshot.before)} → ${this.t("After dispatch", "派发后")} ${agentCount(snapshot.after)}`)}</div>
       </div></section>
       <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Blocked tasks and Owner actions", "阻塞任务与 Owner 操作")}</h3></div><div class="info-card-body hb-snapshot">
         <p>${this.t("Blocked tasks", "阻塞任务数")} <strong>${number(snapshot.blockedTaskCount)}</strong></p>
@@ -1583,46 +1629,10 @@ export class TaskProgressElement extends LitElement {
         state === "working" ? 0 : state === "completed" ? 2 : 1;
       return rank(a.state) - rank(b.state);
     });
-    const count = snapshot?.runningCount;
-    const basisValid =
-      snapshot?.runningBasis === "runtime" ||
-      (snapshot?.runningBasis === "heartbeat" &&
-        !!snapshot.observedAt &&
-        Number.isFinite(Date.parse(snapshot.observedAt)));
-    const running =
-      basisValid && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
-        ? String(count)
-        : "—";
     const listed =
       snapshot && (snapshot.status === "ready" || snapshot.status === "partial")
         ? String(agents.length)
         : "—";
-    const observed = snapshot?.observedAt ? new Date(snapshot.observedAt) : null;
-    const validObserved = observed && Number.isFinite(observed.getTime()) ? observed : null;
-    const today = new Date();
-    const sameDay =
-      validObserved &&
-      validObserved.getFullYear() === today.getFullYear() &&
-      validObserved.getMonth() === today.getMonth() &&
-      validObserved.getDate() === today.getDate();
-    const updated = validObserved
-      ? `${sameDay ? "" : `${this.dateOnly(validObserved.getTime())} `}${this.time(validObserved.getTime())}`
-      : "—";
-    const basis =
-      snapshot?.runningBasis === "heartbeat"
-        ? this.t("Heartbeat record", "心跳记录")
-        : snapshot?.runningBasis === "runtime"
-          ? this.t("Runtime", "运行状态")
-          : this.t("Unknown", "未知");
-    const runningLabel = this.t("Running", "正在执行");
-    const runningMeta =
-      running === "—"
-        ? this.t("Status not recorded", "状态未记录")
-        : `${basis} · ${this.t("Updated", "更新于")} ${updated}`;
-    const runningAccessibleLabel =
-      validObserved && running !== "—"
-        ? `${runningLabel}: ${running} · ${basis} · ${this.t("Updated", "更新于")} ${this.date(validObserved.getTime())}`
-        : undefined;
     const labels: Record<SubagentProgressEntry["state"], string> = {
       working: this.t("Working", "正在执行"),
       waiting: this.t("Waiting", "等待中"),
@@ -1632,10 +1642,7 @@ export class TaskProgressElement extends LitElement {
       unknown: this.t("Unknown", "未知"),
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
-      <div class="hb-times agent-counts">
-        ${this.statRing(running, runningLabel, runningMeta, "agent-stat", runningAccessibleLabel)}
-        ${this.statRing(listed, this.t("Listed agents", "已列出 Agent"), undefined, "agent-stat")}
-      </div>
+      <div class="agent-counts">${this.allocationMeter(snapshot?.allocation, this.t("Working agents / planned", "工作中 Agent / 计划派发"), `${this.t("Listed agents", "已列出 Agent")} ${listed}`)}</div>
       ${
         ranked.length
           ? ranked.map((agent) => {
