@@ -1075,7 +1075,7 @@ export class TaskProgressElement extends LitElement {
   private evidence(items: readonly TaskPanelEvidence[]) {
     return items.map(
       (item) =>
-        html`<div class="evidence"><strong>${item.verification === "verified" ? this.t("Verified", "实际验证") : this.t("Reported", "模型报告")}</strong> · ${item.summary}${item.reference ? html`<div>${item.reference}</div>` : nothing}</div>`,
+        html`<div class="evidence"><strong>${item.verification === "verified" ? this.t("Verified", "实际验证") : this.t("Reported", "模型报告")}</strong> · ${item.summary}</div>`,
     );
   }
 
@@ -1192,7 +1192,7 @@ export class TaskProgressElement extends LitElement {
           ? this.framedCard(
               this.t("Validation notice", "校验提示"),
               AlertTriangle,
-              html`${heartbeat.warning && !incompleteDiscoveryOnly ? html`<p>${heartbeat.warning}</p>` : nothing}${heartbeat.findings.map((finding) => html`<p><strong>${finding.severity}</strong>${finding.rule ? ` · ${finding.rule}` : ""} · ${finding.message}</p>`)}`,
+              html`<p>${heartbeat.findings.length ? this.t(`${heartbeat.findings.length} validation issues need attention.`, `发现 ${heartbeat.findings.length} 项校验问题，需要关注。`) : this.t("The heartbeat record has a validation notice that needs attention.", "心跳记录存在校验提示，需要关注。")}</p>`,
               { tone: "warning", className: "hb-alert" },
             )
           : nothing
@@ -1249,21 +1249,13 @@ export class TaskProgressElement extends LitElement {
               this.data.taskSource?.status === "pending-selection")
               ? (this.data.taskSource.error ?? "The bound ledger is unavailable or stale.")
               : null));
-      const historyPath = sourceHistory?.source.historyPath ?? source.historyPath;
-      const pairedHistoryPath = historyPath ?? null;
       const body = html`${retrying ? html`<p class="muted" role="status">${this.t("Ledger history is refreshing. Refresh to try again.", "台账历史正在刷新，可再次点击刷新重试。")}</p>` : nothing}${
-        source?.path
-          ? pairedHistoryPath
-            ? html`<p class="muted">${this.t("Read-only heartbeat source", "只读心跳来源")}: ${source.path}</p><p class="muted">${this.t("History ledger", "历史台账")}: ${pairedHistoryPath}</p>`
-            : html`<p class="muted">${this.t("Read-only ledger", "只读台账")}: ${source.path}</p>`
-          : nothing
-      }${
         sourceError
           ? html`<div class="info-card-error"><strong>${this.t("Ledger history unavailable", "台账历史不可用")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>`
           : wakes.length
             ? wakes.map(
                 (wake) =>
-                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${typeof wake.line === "number" ? html`<div class="muted">${this.t("Source line", "来源行号")} ${wake.sourcePath ? `${String(wake.sourcePath)}:${wake.line}` : wake.line}</div>` : nothing}${this.renderOrchestration(wake.orchestration, wake.orchestrationError)}</div>`,
+                  html`<div class="event"><strong>${String(wake.heading ?? this.date(wake.timeMs))}</strong>${this.renderOrchestration(wake.orchestration, wake.orchestrationError)}</div>`,
               )
             : retrying
               ? nothing
@@ -1277,18 +1269,14 @@ export class TaskProgressElement extends LitElement {
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    const localBody = html`${this.historyRetryContext === context && !(this.data.presentation?.cached && localHistory) ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event, localHistory?.canonicalHistoryPath))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
+    const localBody = html`${this.historyRetryContext === context && !(this.data.presentation?.cached && localHistory) ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
     return this.framedCard(this.t("History", "历史记录"), List, localBody, {
       ...(localHistory && !localHistory.error ? { count: localHistory.events.length } : {}),
     });
   }
 
-  private historyEvent(event: Record<string, unknown>, canonicalHistoryPath?: string) {
-    const eventPath =
-      typeof event.canonicalHistoryPath === "string"
-        ? event.canonicalHistoryPath
-        : canonicalHistoryPath;
-    return html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.reasonTruncated === true && eventPath ? html`<p class="muted history-source-note">${this.t("Full record in source", "完整记录见来源文件")} · <code>${eventPath}</code></p>` : nothing}${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`;
+  private historyEvent(event: Record<string, unknown>) {
+    return html`<div class="event"><span class="muted">${this.date(event.occurredAt ?? event.at)}</span><p>${String(event.reason ?? event.type ?? "")}</p>${event.reasonTruncated === true ? html`<p class="muted history-source-note">${this.t("Summary shortened", "记录摘要已缩略")}</p>` : nothing}${event.before && event.after ? html`<span class="muted">${this.progressText(event.before)} → ${this.progressText(event.after)}</span>` : nothing}</div>`;
   }
 
   private progressText(value: unknown): string {
@@ -1535,8 +1523,6 @@ export class TaskProgressElement extends LitElement {
     const source = this.data.task?.source;
     const sourceInfo = this.data.taskSource;
     if (!source && !sourceInfo) return nothing;
-    const path = source?.path ?? sourceInfo?.path;
-    const statuses = source?.itemStatuses ?? sourceInfo?.itemStatuses;
     const risks = source?.linkRisks ?? [];
     const presentation = source?.presentation;
     const sourceError = this.taskSourceIsPending()
@@ -1546,32 +1532,18 @@ export class TaskProgressElement extends LitElement {
           sourceInfo?.status === "pending-selection"
         ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
         : source?.error;
-    const sourceCount =
-      presentation?.sourceItemCount ?? source?.itemStatusCount ?? sourceInfo?.itemStatusCount;
-    const body = html`${this.taskSourceIsPending() ? html`<p class="muted" role="status">${this.t("Refreshing task source…", "正在刷新任务来源…")}</p>` : nothing}${path ? html`<p class="muted path-value"><strong>${this.t("Source", "来源")}</strong> · <code>${path}</code></p>` : nothing}
-      ${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
-      ${presentation?.truncated ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("source items. Progress counts the full source.", "个来源项；进度按全部来源项计算。")}</p>` : nothing}
-      ${
-        statuses
-          ? html`<dl><dt>${this.t("Source item statuses", "来源项状态")}</dt><dd>${Object.entries(
-              statuses,
-            )
-              .map(([id, status]) => `${id}: ${status}`)
-              .join(
-                " · ",
-              )}${presentation?.itemStatusesTruncated ? ` · ${this.t("status list truncated", "状态列表已截断")}` : nothing}</dd></dl>`
-          : nothing
-      }
-      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}: ${risks.join(" · ")}${presentation?.linkRisksTruncated ? ` · ${this.t("more link risks omitted", "其余关联风险已省略")}` : nothing}</div>` : nothing}`;
-    return this.framedCard(
-      this.t("Read-only Kit task source", "只读 Kit 任务来源"),
+    const notice = presentation?.truncated
+      ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("items. Progress counts all items.", "项；进度按全部项目计算。")}</p>`
+      : nothing;
+    if (!sourceError && !risks.length) return notice;
+    const body = html`${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
+      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}</div>` : nothing}`;
+    return html`${notice}${this.framedCard(
+      this.t("Task needs attention", "任务需要关注"),
       FileText,
       body,
-      {
-        ...(sourceCount !== undefined && !sourceError ? { count: sourceCount } : {}),
-        tone: sourceError ? "error" : "neutral",
-      },
-    );
+      { tone: sourceError ? "error" : "neutral" },
+    )}`;
   }
 
   protected override render() {

@@ -1352,10 +1352,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .getByText("verified cached record", { exact: true })
             .waitFor();
           assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
-          assert.match(
-            await panel.locator(".hb-alert").innerText(),
-            /Project heartbeat refresh notice/,
-          );
+          assert.match(await panel.locator(".hb-alert").innerText(), /校验问题，需要关注/);
           const cardRects = async () =>
             panel.evaluate((element) =>
               [".hb-time-card", ".hb-history"].map((selector) => {
@@ -1825,10 +1822,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.doesNotMatch(await panel.locator(".summary").innerText(), /台账文件已删除/);
         assert.equal(await panel.getByRole("progressbar").count(), 0);
         await panel.locator(".summary .main").click();
-        await panel
-          .locator(".scroll .info-card")
-          .filter({ hasText: "只读 Kit 任务来源" })
-          .waitFor();
+        await panel.locator(".scroll .info-card").filter({ hasText: "任务需要关注" }).waitFor();
         await panel.getByText("台账文件已删除", { exact: true }).waitFor();
 
         await page.evaluate(() => {
@@ -1889,7 +1883,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               path: "/workspace/heartbeat.md",
               readOnly: true,
               itemStatuses: { P1: "done", C1: "blocked" },
-              linkRisks: ["P1: missing child C1"],
+              linkRisks: Array.from(
+                { length: 34 },
+                (_, index) => `P1: missing child C${index + 1}`,
+              ),
             },
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
@@ -1901,9 +1898,31 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
-        await panel.locator(".info-card").filter({ hasText: "只读 Kit 任务来源" }).waitFor();
-        await panel.getByText(/P1: missing child C1/).waitFor();
-        await panel.getByText(/P1: done · C1: blocked/).waitFor();
+        await panel.getByText("不安全的父子关联项将分别显示", { exact: true }).waitFor();
+        await panel.getByText("任务需要关注", { exact: true }).waitFor();
+        let taskText = await panel.locator(".scroll").innerText();
+        assert.doesNotMatch(taskText, /P1: missing child C1|P1: done · C1: blocked|heartbeat\.md/);
+        await page.evaluate(() => {
+          window.fixture.task.source.linkRisks = [];
+          window.fixture.task.source.presentation = {
+            truncated: true,
+            displayedItemCount: 200,
+            sourceItemCount: 1453,
+            itemStatusesTruncated: true,
+            linkRisksTruncated: false,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText(/200\/1453/).waitFor();
+        taskText = await panel.locator(".scroll").innerText();
+        assert.match(taskText, /进度按全部项目计算/);
+        assert.doesNotMatch(taskText, /P1: done|状态列表已截断|heartbeat\.md/);
+        await page.evaluate(() => {
+          window.fixture.task.source.presentation.truncated = false;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText(/200\/1453/).waitFor({ state: "detached" });
+        assert.equal(await panel.getByText("任务需要关注", { exact: true }).count(), 0);
         await context.close();
       },
     );
@@ -1971,14 +1990,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
         }
         const scroll = panel.locator(".scroll");
-        const sourceDiagnostic = scroll
-          .locator(".info-card")
-          .filter({ hasText: "只读 Kit 任务来源" });
+        const sourceDiagnostic = scroll.locator(".info-card").filter({ hasText: "任务需要关注" });
         assert.equal(await sourceDiagnostic.evaluate((element) => element.tagName), "SECTION");
         assert.equal(await sourceDiagnostic.locator("details").count(), 0);
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").isVisible(), true);
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await scroll.locator(".path-value").textContent()).includes(longPath));
+        assert.doesNotMatch(await scroll.innerText(), /very-long-unbroken-path-segment/);
         assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
         assert.ok(
           (await scroll.boundingBox()).height < (await panel.locator(".body").boundingBox()).height,
@@ -2281,7 +2298,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                   items: [
                     {
                       ...task.objectives[0].items[0],
-                      evidence: [{ summary: "长证据", verification: "verified", reference }],
+                      evidence: [
+                        { summary: "长证据", verification: "verified", reference },
+                        {
+                          summary: "代码验证",
+                          verification: "reported",
+                          reference: "/repo/src/task.ts",
+                        },
+                      ],
                     },
                     task.objectives[0].items[1],
                   ],
@@ -2316,6 +2340,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         await panel.getByRole("button", { name: /普通聊天界面/ }).click();
         const evidence = panel.locator(".evidence").filter({ hasText: "长证据" });
+        assert.doesNotMatch(await evidence.innerText(), /acceptance\.md/);
+        assert.match(await panel.locator(".detail").innerText(), /代码验证/);
+        assert.doesNotMatch(await panel.locator(".detail").innerText(), /task\.ts/);
         assert.ok(
           await evidence.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
         );
@@ -2362,8 +2389,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       await panel.getByText("新增验证任务", { exact: true }).waitFor();
       const sourceNote = panel.locator(".history-source-note");
       await sourceNote.waitFor();
-      assert.match(await sourceNote.innerText(), /完整记录见来源文件/);
-      assert.match(await sourceNote.locator("code").innerText(), /original-history\.md$/);
+      assert.match(await sourceNote.innerText(), /记录摘要已缩略/);
+      assert.doesNotMatch(await sourceNote.innerText(), /original-history\.md/);
       assert.doesNotMatch(
         await panel.locator(".scroll").innerText(),
         /reasonTruncated|canonicalHistoryPath/,
@@ -2503,7 +2530,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .innerText(),
           "2",
         );
-        assert.match(await panel.locator("section.panel").innerText(), /只读台账.*heartbeat\.md/s);
+        assert.doesNotMatch(await panel.locator("section.panel").innerText(), /heartbeat\.md/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
         assert.match(await panel.locator("section.panel").innerText(), /bound task/);
@@ -2601,9 +2628,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         await panel.getByText("paired task-history wake", { exact: true }).waitFor();
         const scroll = panel.locator(".scroll");
-        assert.match(await scroll.innerText(), /只读心跳来源.*heartbeat\.md/s);
-        assert.match(await scroll.innerText(), /历史台账.*taskhistory\.md/s);
-        assert.match(await scroll.innerText(), /taskhistory\.md:24/);
+        assert.doesNotMatch(await scroll.innerText(), /heartbeat\.md|taskhistory\.md/);
         assert.doesNotMatch(await scroll.innerText(), /taskhistory\.md:25/);
         await panel.getByRole("button", { name: "心跳", exact: true }).click();
         assert.equal(await panel.locator(".hb-source").count(), 0);
@@ -2836,10 +2861,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /current Items projection invalid/,
         );
         await panel.locator(".summary .main").click();
-        await panel
-          .locator(".scroll .info-card")
-          .filter({ hasText: "只读 Kit 任务来源" })
-          .waitFor();
+        await panel.locator(".scroll .info-card").filter({ hasText: "任务需要关注" }).waitFor();
         const sourceError = panel
           .locator(".scroll .info-card-error")
           .filter({ hasText: "来源错误" });
@@ -4241,7 +4263,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }, heartbeat);
         await panel.locator(".hb-alert .info-card-title").waitFor();
         await assertNoHeaderStatus();
-        assert.match(await panel.locator(".hb-alert").innerText(), /Ledger format invalid/);
+        assert.match(await panel.locator(".hb-alert").innerText(), /发现 1 项校验问题，需要关注/);
         assert.doesNotMatch(
           await panel
             .locator(".hb-alert, .hb-source")
@@ -4265,10 +4287,37 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await assertNoHeaderStatus();
+        assert.match(await panel.locator(".hb-alert").innerText(), /发现 1 项校验问题，需要关注/);
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            warning: "signature mismatch in /repo/heartbeat.md",
+            findings: Array.from({ length: 80 }, (_, i) => ({
+              severity: "error",
+              rule: "v2-write-conflict",
+              message: `resplit-row-unverdicted /repo/heartbeat.md:${i}`,
+            })),
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
+        const alertText = await panel.locator(".hb-alert").innerText();
+        assert.match(alertText, /发现 80 项校验问题，需要关注/);
+        assert.doesNotMatch(alertText, /v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/);
+        assert.ok(alertText.length < 100);
+        assert.ok((await panel.locator(".hb-wake").count()) > 0);
+        await page.evaluate((value) => {
+          window.fixture.heartbeat = {
+            ...value,
+            findings: [],
+            warning: "signature mismatch in /repo/heartbeat.md",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, heartbeat);
         assert.match(
           await panel.locator(".hb-alert").innerText(),
-          /Ledger warning: signature mismatch/,
+          /心跳记录存在校验提示，需要关注/,
         );
+        assert.doesNotMatch(await panel.locator(".hb-alert").innerText(), /heartbeat\.md/);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,

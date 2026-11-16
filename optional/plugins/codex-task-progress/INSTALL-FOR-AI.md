@@ -1,4 +1,4 @@
-# Install Task Progress 0.7.8
+# Install Task Progress 0.7.9
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
@@ -42,7 +42,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.7.8`. Version 0.7.7 advertises the stable `ui://codex-task-progress/panel-v1.html` resource URI across patch releases. A strict read-only template also accepts compatible previously shipped semver panel aliases from 0.5.16 through the server release, serving that server’s matching panel HTML. This stable address lets a new catalog reach a compatible older live MCP server, but that server can still serve its own older embedded asset; it does not guarantee a hot reload. Check the rendered element’s `data-task-progress-version` to identify the actual frontend. If necessary, reenter the chat or switch away and back to refresh the host catalog; closing the panel tab alone may not suffice. Do not restart Codex. Actual native host visibility and data require separate verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.7.9`. Version 0.7.7 advertises the stable `ui://codex-task-progress/panel-v1.html` resource URI across patch releases. A strict read-only template also accepts compatible previously shipped semver panel aliases from 0.5.16 through the server release, serving that server’s matching panel HTML. This stable address lets a new catalog reach a compatible older live MCP server, but that server can still serve its own older embedded asset; it does not guarantee a hot reload. Check the rendered element’s `data-task-progress-version` to identify the actual frontend. If necessary, reenter the chat or switch away and back to refresh the host catalog; closing the panel tab alone may not suffice. Do not restart Codex. Actual native host visibility and data require separate verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
 
 ## Signing and protected folders
 
@@ -61,6 +61,8 @@ node .vibe-coding/kit/optional/plugins/codex-task-progress/scripts/install-from-
 The release builder also accepts `GOAL_PROGRESS_CODESIGN_IDENTITY` or a private `release-signing.json` under application support (`{ "schemaVersion": 1, "identity": "..." }`). `GOAL_PROGRESS_CODESIGN_CONFIG` selects an explicit absolute config path; invalid explicit config fails closed. Keep identity values out of source and shared docs. Without a configured identity, ad-hoc signing may cause macOS to ask for protected-folder permission again. Apple Development signing is not Developer ID or public notarization. Never automate TCC grants, edit/reset the TCC database, or default to Full Disk Access.
 
 The Helper is installed at the stable real path `install/bin/goal-progress`; versioned release assets are retained in `install/releases/<version>/`. Existing grants are not copied to a new executable path. A macOS permission prompt remains a user decision.
+
+Version 0.7.9 streamlines routine source details beneath task modules and presents Project Heartbeat validation as a compact audit summary that surfaces real risks. Verify actual native panel behavior separately.
 
 ## Storage compatibility
 

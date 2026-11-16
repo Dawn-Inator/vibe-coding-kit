@@ -1,3 +1,8 @@
+# Task Progress 0.7.9
+
+- Streamline routine source details beneath the task modules and present the Project Heartbeat validation notice as a compact audit summary. Surface real risks in that summary; verify the actual native panel separately.
+- Retain 0.7.8's bounded explicit-ledger reads and the stable panel URI and scoped snapshot behavior.
+
 # Task Progress 0.7.8
 
 - Support explicitly selected Heartbeat ledgers and head/history pairs up to a combined 32 MiB through the shared Kit reader, while retaining bounded general discovery. Explicit recovery validates the requested project ledger without depending on a broad scan.
