@@ -48,3 +48,15 @@ export interface ReadProjectHeartbeatOptions {
 export function readProjectHeartbeat(
 	options: ReadProjectHeartbeatOptions,
 ): Promise<ProjectHeartbeatReadResult>;
+
+export type ProjectHeartbeatDisplaySource = import("../supervision/heartbeat-ledger-files.mjs").HeartbeatDisplayResult & {
+ path: string;
+ itemCount: number;
+};
+export type ProjectHeartbeatDisplayReadResult = Omit<ProjectHeartbeatReadResult, "source"> & {
+ source: ProjectHeartbeatDisplaySource | null;
+};
+/** Integrity-verified display data; no current business audit is performed. */
+export function readProjectHeartbeatDisplay(
+ options: ReadProjectHeartbeatOptions,
+): Promise<ProjectHeartbeatDisplayReadResult>;

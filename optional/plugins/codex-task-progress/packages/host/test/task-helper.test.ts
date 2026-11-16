@@ -330,14 +330,24 @@ test("ordinary get returns local task while a deduplicated project heartbeat ref
     assert.ok(releaseRefresh);
     releaseRefresh();
     await refreshDone;
-    const visibleError = (await request("get", {})).result as {
-      heartbeat: { status: string; error?: string } | null;
-      taskSource: unknown;
-      heartbeatPending?: boolean;
-    };
-    assert.equal(visibleError.heartbeat?.status, "error");
-    assert.match(visibleError.heartbeat?.error ?? "", /heartbeat-unrelated/i);
-    assert.deepEqual(visibleError.taskSource, { status: "candidates", readOnly: true });
+    let visibleError:
+      | {
+          heartbeat: { status: string; error?: string } | null;
+          taskSource: unknown;
+          heartbeatPending?: boolean;
+          task: TaskState | null;
+        }
+      | undefined;
+    const errorDeadline = Date.now() + 2_000;
+    for (let attempt = 0; attempt < 50 && Date.now() < errorDeadline; attempt += 1) {
+      await refreshDone;
+      visibleError = (await request("get", {})).result as typeof visibleError;
+      assert.equal(visibleError?.task?.title, "Local checklist");
+      if (visibleError?.heartbeat?.status === "error") break;
+    }
+    assert.equal(visibleError?.heartbeat?.status, "error");
+    assert.match(visibleError?.heartbeat?.error ?? "", /heartbeat-unrelated/i);
+    assert.deepEqual(visibleError?.taskSource, { status: "candidates", readOnly: true });
     await rm(join(root, "heartbeat-unrelated.md"));
     await rm(join(root, "heartbeat-unrelated.taskhistory.md"));
 
@@ -1832,7 +1842,7 @@ test("automatic heartbeat authority stays latched through association loss and r
     return client.request({ method: "task.request", params: { action, auth, input } });
   }
   const original =
-    "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n## 2026-11-11T11:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n";
+    "# Supervision\nthread: sticky-chat\n## 2026-11-11T10:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| H1 | request | Source task | blocked | Waiting |\n## 2026-11-11T11:00:00Z wake (10-row ledger)\ncontract: heartbeat/v2\n| # | category | state |\n| --- | --- | --- |\n| 1 | task | done |\n";
   let reopened: GoalProgressHelper | undefined;
   let canonicalSourcePath: string | undefined;
   const projectReads = trackProjectViewReads();
@@ -1895,7 +1905,7 @@ test("automatic heartbeat authority stays latched through association loss and r
       num: 1,
       category: "task",
       state: "done",
-      line: firstAuditPage.history.wakes[0]?.line + 1,
+      line: original.split("\n").findIndex((line) => line === "| 1 | task | done |") + 1,
       sourcePath: canonicalSourcePath,
     });
     assert.equal(firstAuditPage.history.source.path, canonicalSourcePath);

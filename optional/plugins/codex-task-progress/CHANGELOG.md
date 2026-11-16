@@ -1,6 +1,10 @@
+# Task Progress 0.9.6
+
+- Version 0.9.6 uses the Kit’s read-only bounded display reader for current Items, the latest wake and paginated history. For paired ledgers it verifies history and backup integrity in chunks without imposing the full-audit reader’s combined 32 MiB limit on the whole history. The head, individual records and pages remain bounded, as does a legacy single-file head. Integrity verification is not a current business audit; display reads report audit as not performed. Any display index is reconstructible in-memory state, and canonical records remain unchanged.
+
 # Task Progress 0.9.5
 
-- Version 0.9.5 removes the visible Validation notice card and its count from the Heartbeat view. Records and validation remain intact. The 0.9.5 appearance still requires release and native host acceptance.
+- Version 0.9.5 removes the visible Validation notice card and its count from the Heartbeat view. Records and validation remain intact. The user confirmed the native 0.9.5 view removed the card while Heartbeat time and history remained visible.
 
 # Task Progress 0.9.4
 

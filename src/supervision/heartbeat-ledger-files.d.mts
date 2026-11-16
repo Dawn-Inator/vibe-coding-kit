@@ -76,7 +76,10 @@ export function readHeartbeatLedgerPair(options: {
 	maxBytes?: number;
 }): HeartbeatLedgerPair;
 /** Parse ranking metadata without certifying or auditing the pair. */
-export function summarizeHeartbeatLedgerPair(pair: HeartbeatLedgerPair): { wakes: HeartbeatWake[]; itemCount: number };
+export function summarizeHeartbeatLedgerPair(pair: HeartbeatLedgerPair): {
+	wakes: HeartbeatWake[];
+	itemCount: number;
+};
 export function inspectHeartbeatLedgerPair(
 	pair: HeartbeatLedgerPair,
 	options?: InspectHeartbeatLedgerOptions & {
@@ -101,10 +104,16 @@ export function migrateHeartbeatLedgerPair(
 	options: HeartbeatWriteOptions,
 ): HeartbeatLedgerPair;
 export function writeHeartbeatLedgerPair(
-	options: HeartbeatWriteOptions & { text: string; orchestration?: HeartbeatOrchestration },
+	options: HeartbeatWriteOptions & {
+		text: string;
+		orchestration?: HeartbeatOrchestration;
+	},
 ): HeartbeatLedgerPair;
 export function appendHeartbeatWake(
-	options: HeartbeatWriteOptions & { wakeText: string; orchestration?: HeartbeatOrchestration },
+	options: HeartbeatWriteOptions & {
+		wakeText: string;
+		orchestration?: HeartbeatOrchestration;
+	},
 ): HeartbeatLedgerPair;
 
 /** Read a raw version even when a pair is incomplete; never mutates the files. */
@@ -116,3 +125,43 @@ export function readHeartbeatLedgerPairVersion(options: {
 export function recoverHeartbeatLedgerPair(
 	options: HeartbeatWriteOptions,
 ): HeartbeatLedgerPair;
+
+/** Discard reconstructible indexes. The authenticated source remains authoritative. */
+export function clearHeartbeatDisplayCache(): void;
+export interface HeartbeatDisplayResult {
+	headText: string;
+	headDigest: string;
+	contentHash: string;
+	integrity: "verified";
+	audit: "not-performed";
+	inventory: HeartbeatPairInspectionReport;
+	latestWake: HeartbeatPairInspectionReport["wakes"][number] | null;
+	historyPage: {
+		wakes: HeartbeatPairInspectionReport["wakes"];
+		nextCursor: string | null;
+		total: number;
+	};
+	headPath: string;
+	historyPath: string;
+	isLegacy: boolean;
+	modifiedAt: string;
+	lastRecordedAt: string | null;
+}
+/** Read-only bounded display. Does not perform or certify a full business audit.
+ * Cursors are valid only for the exact source content and file identity.
+ * Changed sources and stale cursors use HEARTBEAT_DISPLAY_CHANGED and
+ * HEARTBEAT_DISPLAY_CURSOR_STALE error codes respectively. */
+export function readHeartbeatDisplay(options: {
+	root: string;
+	path: string;
+	cursor?: string;
+	pageSize?: number;
+	now?: Date;
+	/** Custom items inspector; integrity validation remains in the core reader. */
+	inspect?: (
+		text: string,
+		options: InspectHeartbeatLedgerOptions,
+	) => HeartbeatInspectionReport;
+	/** Optional read-observation hook, for diagnostics and deterministic tests. */
+	onRead?: (read: { path: string; bytes: number; position: number }) => void;
+}): Promise<HeartbeatDisplayResult>;

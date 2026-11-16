@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -867,7 +868,7 @@ test("first unique association latches; an initially ambiguous set requires sele
     await writeFile(f.source, ledger("chat-A"));
     const view = await f.service.view("chat-A", f.project);
     assert.equal(view?.status, "ready");
-    assert.equal(view?.certifiesCurrent, true);
+    assert.equal(view?.certifiesCurrent, false);
     await writeFile(resolve(f.project, "second.md"), ledger("chat-A"));
     const latched = await f.service.view("chat-A", f.project);
     assert.equal(latched?.status, "ready");
@@ -1378,9 +1379,11 @@ test("source changes during a bound audit cannot publish an old cached hash", as
         fs.writeFileSync(f.source, `${ledger("chat-A")}\nchanged during audit\n`);
       }
     };
-    const result = await service.taskProjection("chat-A", f.project);
+    const during = await service.taskProjection("chat-A", f.project);
     assert.equal(changed, true);
-    assert.equal(result.status, "ready");
+    assert.notEqual(during.contentHash, old, "a changed snapshot must not be projected as current");
+    const result = await service.taskProjection("chat-A", f.project);
+    assert.equal(result.status, "ready", result.error);
     assert.notEqual(result.contentHash, old);
     assert.equal(
       result.contentHash,
@@ -1574,7 +1577,7 @@ test("project kitPath accepts either the Kit root directory or exact API module"
       services.push(service);
       const view = await service.view("chat-A", f.project);
       assert.equal(view?.status, "ready");
-      assert.equal(view.certifiesCurrent, true);
+      assert.equal(view.certifiesCurrent, false);
     }
   } finally {
     for (const service of services) service.close();
@@ -1663,7 +1666,16 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
         findings:Array.from({length:500},()=>({severity:'error',message:repeated,rule:repeated}))};
     }`,
     );
-    await writeFile(f.source, ledger("chat-A"));
+    const firstWakeTime = Date.parse("2026-11-11T10:00:00Z");
+    const wakeText = Array.from(
+      { length: 80 },
+      (_, i) =>
+        `## ${new Date(firstWakeTime + i * 60_000).toISOString()} wake (10-row ledger)\n| # | category | state |\n| --- | --- | --- |\n| 1 | audit | done |\n`,
+    ).join("");
+    await writeFile(
+      f.source,
+      `# Supervision\nthread: chat-A\n${wakeText}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | task | done | receipt |\n`,
+    );
     service = new HeartbeatService(resolve(f.root, "large-data"), {
       kitPath: hugeKit,
       refreshMs: 0,
@@ -1690,16 +1702,8 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
     const first = await service.history("chat-A", f.project, { limit: 5 });
     assert.equal(first.error, undefined);
     assert.equal(first.total, 80);
-    assert.equal(first.wakes[0]?.heading, "wake-79");
+    assert.equal(first.wakes[0]?.timeMs, firstWakeTime + 79 * 60_000);
     assert.ok(first.nextCursor);
-    await writeFile(f.source, `${ledger("chat-A")}\nnew wake appended`);
-    const second = await service.history("chat-A", f.project, {
-      cursor: first.nextCursor,
-      limit: 5,
-    });
-    assert.equal(second.wakes[0]?.heading, "wake-74");
-    assert.equal(second.total, 81);
-    assert.ok(Buffer.byteLength(JSON.stringify(second)) < 256 * 1024);
     const seen = new Set(first.wakes.map((wake) => wake.heading));
     let cursor: string | null = first.nextCursor;
     while (cursor !== null) {
@@ -1712,6 +1716,13 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
       cursor = page.nextCursor;
     }
     assert.equal(seen.size, 80);
+    await appendFile(f.source, "\nchanged\n");
+    const stale = await service.history("chat-A", f.project, {
+      cursor: first.nextCursor!,
+      limit: 5,
+    });
+    assert.equal(stale.retryable, true);
+    assert.equal(stale.wakes.length, 0);
     await assert.rejects(service.history("chat-A", f.project, { cursor: "wrong" }), /cursor/);
     await assert.rejects(service.history("chat-A", f.project, { limit: 100 }), /limit/);
   } finally {
@@ -1905,8 +1916,8 @@ test("explicit binding reads a large legacy ledger and its migrated pair without
       "| id | source | item | status | evidence | children | owner | repository | worktree | mode | write_set | dispatch_ref |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       "| A | owner:request | test | done | verified | [] | - | - | - | - | - | - |",
+      ...Array.from({ length: 9 * 1024 }, () => "x".repeat(1023)),
       "## 2026-11-11T09:00:00Z wake (10-row ledger)",
-      `| ${"x".repeat(9 * 1024 * 1024)} |`,
       "## 2026-11-11T10:00:00Z wake (10-row ledger)",
       "contract: heartbeat/v2",
       "| # | category | state |",
@@ -1943,15 +1954,24 @@ test("explicit binding reads a large legacy ledger and its migrated pair without
     assert.equal(after.total, before.total);
     assert.equal(after.error, undefined);
     assert.equal(after.wakes[0]?.heading, before.wakes[0]?.heading);
+    const migratedHistoryBytes = await readFile(migrated.historyPath);
+    await writeFile(
+      resolve(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { ledgerPath: path } }),
+    );
     const projectView = await service.projectView(f.project);
-    assert.equal(projectView.status, "ready", projectView.error);
+    assert.equal(projectView.status, "ready", projectView.error ?? `status: ${projectView.status}`);
     assert.equal(projectView.sourcePath, path);
     const projectHistory = await service.projectHistory(f.project);
     assert.equal(projectHistory.error, undefined);
     assert.equal(projectHistory.total, before.total);
     assert.equal(projectHistory.historyPath, migrated.historyPath);
+    assert.deepEqual(await readFile(migrated.historyPath), migratedHistoryBytes);
     await truncate(migrated.historyPath, HEARTBEAT_BOUND_MAX_BYTES + 1);
-    await assert.rejects(service.bind("oversized-chat", path, f.project), /limit|exceed|bytes/i);
+    await assert.rejects(
+      service.bind("oversized-chat", path, f.project),
+      /limit|exceed|bytes|integrity|format/i,
+    );
     assert.equal((await service.view("oversized-chat", f.project))?.sourcePath, null);
   } finally {
     service.close();
@@ -1970,20 +1990,22 @@ test("task root metadata selects a bounded business subtree without changing sou
         wakes:[{heading:'wake',timeMs:1794391200000,rows:[]}],
         items:[{id:'R1-BUSINESS',item:'Business features',status:'tracking',children:JSON.stringify(ids)},
           ...ids.map((id,i)=>({id,item:id,status:i<50?'done':'blocked',children:'[]'})),
-          {id:'OPS',item:'Operations',status:'done',children:'[]'}],findings:[]};
+          ...Array.from({length:100},(_,i)=>({id:'OPS'+i,item:'Operations',status:'done',children:'[]'}))],findings:[]};
     }`,
     );
     const source = `task_root: R1-BUSINESS\n${ledger("chat-A")}`;
     await writeFile(f.source, source);
     const before = await readFile(f.source, "utf8");
-    assert.equal((await f.service.bind("chat-A", f.source, f.project))?.status, "ready");
+    const fullView = await f.service.bind("chat-A", f.source, f.project);
+    assert.equal(fullView?.status, "ready");
+    assert.equal(fullView?.itemCount, 267);
     const projection = await f.service.taskProjection("chat-A", f.project);
     assert.equal(projection.status, "ready", projection.error);
     assert.deepEqual(projection.task?.progress, { completed: 50, total: 166, percent: 30.12 });
     assert.equal(projection.task?.title, "Business features");
     assert.equal(projection.task?.source.itemStatusCount, 167);
     assert.equal(projection.task?.source.presentation.itemStatusesTruncated, true);
-    assert.equal(projection.task?.source.itemStatuses.OPS, undefined);
+    assert.equal(projection.task?.source.itemStatuses.OPS0, undefined);
     const history = await f.service.history("chat-A", f.project);
     assert.equal(history.sourcePath, await realpath(f.source));
     assert.equal(history.historyPath, await realpath(f.source));
@@ -2012,6 +2034,104 @@ test("task root metadata selects a bounded business subtree without changing sou
     assert.equal(invalid.status, "error");
     assert.match(invalid.error ?? "", /task_root/);
   } finally {
+    await f.close();
+  }
+});
+
+test("large verified pair supports project and bound displays, projection, binding and pagination", async () => {
+  const f = await fixture();
+  const service = new HeartbeatService(resolve(f.root, "large-display-data"), { refreshMs: 0 });
+  try {
+    const root = await realpath(f.project);
+    const path = resolve(root, "heartbeat-big.md");
+    const historyPath = resolve(root, "heartbeat-big.taskhistory.md");
+    const backupPath = `${path}.legacy`;
+    const marker = `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(historyPath)} -->\n`;
+    const head = `${marker}# Supervision\nthread: large-chat\ntask_root: ROOT\n## Items\n| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| ROOT | report:tracker | root | tracking | tracking plan | agent:tracker | repo-a | worktrees/tracker | read-only | [] | - | ["A"] |\n| A | report:leaf | task | done | verified | agent:leaf | repo-a | worktrees/leaf | read-only | [] | - | [] |\n`;
+    const body = `${("x".repeat(4095) + "\n").repeat(8193)}${Array.from({ length: 7 }, (_, i) => `## 2026-11-11T0${i}:00:00Z wake (10-row ledger)\nrow: ${i}\n`).join("")}`;
+    const backup = "immutable legacy\n";
+    const digest = (v: string) => createHash("sha256").update(v).digest("hex");
+    const header = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${digest(body)} base=${digest(head)} bytes=${Buffer.byteLength(head)} backup=${digest(backup)} previous=${digest(backup)} planned=${Buffer.from(head).toString("base64")} -->\n`;
+    await writeFile(path, head);
+    await writeFile(historyPath, header + body);
+    await writeFile(backupPath, backup);
+    await writeFile(
+      resolve(root, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { ledgerPath: path } }),
+    );
+    const project = await service.projectView(root);
+    assert.equal(project.status, "ready", project.error);
+    assert.equal(project.certifiesCurrent, false);
+    assert.equal(project.passed, false);
+    assert.equal(project.wakeCount, 7);
+    const bound = await service.bind("large-chat", path, root);
+    assert.equal(bound?.status, "ready", bound?.error);
+    const projection = await service.taskProjection("large-chat", root);
+    assert.equal(projection.status, "ready", projection.error);
+    assert.equal(projection.task?.source.itemStatusCount, 2);
+    const first = await service.history("large-chat", root, { limit: 1 });
+    assert.equal(first.total, 7);
+    assert.ok(first.nextCursor);
+    const second = await service.history("large-chat", root, {
+      limit: 1,
+      cursor: first.nextCursor!,
+    });
+    assert.notEqual(first.wakes[0]?.heading, second.wakes[0]?.heading);
+    const projectPage = await service.projectHistory(root, { limit: 1 });
+    assert.equal(projectPage.historyPath, historyPath);
+    assert.equal(projectPage.total, 7);
+    await appendFile(path, "\nchanged\n");
+    const stalePage = await service.history("large-chat", root, {
+      limit: 1,
+      cursor: first.nextCursor!,
+    });
+    assert.equal(stalePage.retryable, true);
+  } finally {
+    service.close();
+    await f.close();
+  }
+});
+
+test("a custom inspector returning a non-Items report cannot authorize task projection", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      f.kitPath,
+      `export function inspectHeartbeatLedger() { return { mode: "current", wakes: [], items: [{id:"A", item:"test", status:"done"}], findings: [] }; }`,
+    );
+    await writeFile(f.source, ledger("chat-A"));
+    const result = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(result.status, "error");
+    assert.match(result.error ?? "", /did not return an Items report/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("stable incomplete companion surfaces a terminal error after a verified project snapshot", async () => {
+  const f = await fixture();
+  let clock = 1_000;
+  const service = new HeartbeatService(resolve(f.root, "broken-snapshot"), {
+    refreshMs: 10,
+    now: () => new Date(clock),
+  });
+  try {
+    await writeFile(f.source, ledger("chat-A"));
+    const verified = await service.projectView(f.project);
+    assert.equal(verified.status, "ready");
+    await writeFile(resolve(f.project, "taskhistory.md"), "corrupt companion");
+    clock += 11;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const broken = await service.projectView(f.project);
+      assert.equal(broken.status, "error");
+      assert.equal(broken.retryable, undefined);
+      assert.match(broken.error ?? "", /incomplete|missing/i);
+    }
+    const snapshot = await service.projectViewSnapshot(f.project);
+    assert.equal(snapshot.view?.status, "error");
+    assert.equal(snapshot.view?.retryable, undefined);
+  } finally {
+    service.close();
     await f.close();
   }
 });

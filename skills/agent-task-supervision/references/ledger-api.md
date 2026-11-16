@@ -107,6 +107,8 @@ current head suffix points to the head. Call `inspectHeartbeatLedgerPair(pair, o
 point to real file locations. `mode: 'items'` inspects the current head's Items table; history/current modes
 inspect the complete logical text.
 
+For read-only display use `await readHeartbeatDisplay({root, path, cursor, pageSize})` from the Kit pair API. It returns current Items inventory, latest wake and a bounded history page; cursors are tied to the exact source version. For a paired ledger it validates the complete history and backup integrity in chunks, without applying the earlier bounded full-ledger path’s combined 32 MiB limit to the entire history. The head (including a legacy single-file head), individual wake records, pages and index remain bounded. Integrity verification does not certify a current business audit: the result reports `audit: 'not-performed'`. The optional index cache is reconstructible memory only; source records remain authoritative. Use the full pair reader and strict current inspection for audit or writer operations.
+
 Migration and source writes are explicit writer-owned cutovers, never part of project display or a read API.
 Before each operation, obtain a fresh `contentHash` from `readHeartbeatLedgerPair({root, path})` and call the
 write API with that value:

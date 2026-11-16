@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	realpathSync,
@@ -9,7 +10,7 @@ import {
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { readProjectHeartbeat } from "../../src/tasks/project-heartbeat.mjs";
+import { readProjectHeartbeat, readProjectHeartbeatDisplay } from "../../src/tasks/project-heartbeat.mjs";
 import { HEARTBEAT_BOUND_MAX_BYTES } from "../../src/tasks/heartbeat-task-source.mjs";
 import { readHeartbeatLedgerPair, inspectHeartbeatLedgerPair, summarizeHeartbeatLedgerPair, migrateHeartbeatLedgerPair } from "../../src/supervision/heartbeat-ledger-files.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
@@ -314,4 +315,46 @@ test("project selection reads a configured large legacy source and its automatic
 	assert.equal(rejected.status, "error");
 	assert.equal(rejected.source, null);
 	assert.match(rejected.error, /exceeds.*byte read limit/i);
+});
+
+
+test("display selects an integrity-verified pair beyond the full audit byte limit", async () => {
+ const root = projectRoot();
+ const path = join(root, "heartbeat.md");
+ const historyPath = join(root, "taskhistory.md");
+ const backupPath = `${path}.legacy`;
+ const marker = `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(historyPath)} -->\n`;
+ const head = `${marker}## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | owner:request | task | done | verified |\n`;
+ const body = `${("x".repeat(4095) + "\n").repeat(8193)}${Array.from({ length: 7 }, (_, i) => `## 2026-01-01T0${i}:00:00Z wake (10-row ledger)\nrow: ${i}\n`).join("")}`;
+ const backup = "immutable legacy\n";
+ const hash = (v) => createHash("sha256").update(v).digest("hex");
+ const header = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${hash(body)} base=${hash(head)} bytes=${Buffer.byteLength(head)} backup=${hash(backup)} previous=${hash(backup)} planned=${Buffer.from(head).toString("base64")} -->\n`;
+ writeFileSync(path, head); writeFileSync(historyPath, header + body); writeFileSync(backupPath, backup);
+ const display = await readProjectHeartbeatDisplay({ root, ledgerPath: path, now: NOW });
+ assert.equal(display.status, "ready", display.error);
+ assert.equal(display.source.integrity, "verified");
+ assert.equal(display.source.audit, "not-performed");
+ assert.equal(display.source.historyPage.total, 7);
+ assert.equal(display.source.inventory.items.length, 1);
+ assert.equal(display.source.historyPath, historyPath);
+ const full = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
+ assert.equal(full.status, "error");
+ assert.match(full.error, /limit|exceed/i);
+});
+
+
+test("stable incomplete or malformed display sources are errors, not transient pending", async () => {
+ const root = projectRoot();
+ const path = writeLedger(root, "heartbeat.md", { wake: "2026-01-01T10:00Z" });
+ const history = join(root, "taskhistory.md");
+ writeFileSync(history, "corrupt companion");
+ for (let attempt = 0; attempt < 2; attempt++) {
+  const report = await readProjectHeartbeatDisplay({ root, ledgerPath: path, now: NOW });
+  assert.equal(report.status, "error");
+  assert.match(report.error, /incomplete|missing/i);
+ }
+ writeFileSync(`${path}.legacy`, "backup");
+ const bad = await readProjectHeartbeatDisplay({ root, ledgerPath: path, now: NOW });
+ assert.equal(bad.status, "error");
+ assert.match(bad.error, /invalid|format|incomplete/i);
 });

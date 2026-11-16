@@ -7,6 +7,9 @@ import {
 	readFileSync,
 	realpathSync,
 	statSync,
+	symlinkSync,
+	appendFileSync,
+	truncateSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -21,11 +24,14 @@ import {
 	inspectHeartbeatLedgerPair,
 	migrateHeartbeatLedgerPair,
 	readHeartbeatLedgerPair,
+	readHeartbeatDisplay,
+	clearHeartbeatDisplayCache,
 	readHeartbeatLedgerPairVersion,
 	recoverHeartbeatLedgerPair,
 	writeHeartbeatLedgerPair,
 } from "../../src/supervision/heartbeat-ledger-files.mjs";
 import { discoverHeartbeatLedgers } from "../../src/tasks/heartbeat-task-source.mjs";
+import { inspectHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
 import { readProjectHeartbeat } from "../../src/tasks/project-heartbeat.mjs";
 import { atomicWriteFileSync } from "../../src/tasks/task-io.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
@@ -883,43 +889,472 @@ test("bounded reads reject FIFO companions without waiting for a writer", {
 	);
 });
 
-test('orchestration metadata survives append, restart and pair writes without rewriting history', () => {
- const dir = root(), path = join(dir, 'heartbeat.md');
- const old = wake('2026-01-01T10:00Z');
- writeFileSync(path, old);
- migrate({ root: dir, path });
- const snapshot = { scope: 'run', before: { activeAgents: 0, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:1' }, after: { activeAgents: 3, observedAt: '2026-01-01T11:00:00Z', evidence: 'receipt:2' }, blockedTasks: null, blockersEvidence: null, agentPlan: { parentThreadId: 'parent', planId: 'plan', revision: 1, plannedAgents: 6, taskCycleId: 'cycle' } };
- let pair = append({ root: dir, path, wakeText: wake('2026-01-01T11:00Z'), orchestration: snapshot });
- assert.ok(pair.historyText.includes(old));
- assert.deepEqual(inspectHeartbeatLedgerPair(readHeartbeatLedgerPair({ root: dir, path }), { mode: 'history' }).wakes.at(-1).orchestration, snapshot);
- assert.throws(() => append({ root: dir, path, wakeText: wake('2026-01-01T12:00Z', 'orchestration: {}\n'), orchestration: snapshot }), /Duplicate/);
- const next = wake('2026-01-01T12:00Z');
- pair = write({ root: dir, path, text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, '')}\n${next}`, orchestration: snapshot });
- assert.ok(pair.historyText.includes(old));
- assert.deepEqual(inspectHeartbeatLedgerPair(pair, { mode: 'history' }).wakes.at(-1).orchestration, snapshot);
+test("orchestration metadata survives append, restart and pair writes without rewriting history", () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md");
+	const old = wake("2026-01-01T10:00Z");
+	writeFileSync(path, old);
+	migrate({ root: dir, path });
+	const snapshot = {
+		scope: "run",
+		before: {
+			activeAgents: 0,
+			observedAt: "2026-01-01T11:00:00Z",
+			evidence: "receipt:1",
+		},
+		after: {
+			activeAgents: 3,
+			observedAt: "2026-01-01T11:00:00Z",
+			evidence: "receipt:2",
+		},
+		blockedTasks: null,
+		blockersEvidence: null,
+		agentPlan: {
+			parentThreadId: "parent",
+			planId: "plan",
+			revision: 1,
+			plannedAgents: 6,
+			taskCycleId: "cycle",
+		},
+	};
+	let pair = append({
+		root: dir,
+		path,
+		wakeText: wake("2026-01-01T11:00Z"),
+		orchestration: snapshot,
+	});
+	assert.ok(pair.historyText.includes(old));
+	assert.deepEqual(
+		inspectHeartbeatLedgerPair(readHeartbeatLedgerPair({ root: dir, path }), {
+			mode: "history",
+		}).wakes.at(-1).orchestration,
+		snapshot,
+	);
+	assert.throws(
+		() =>
+			append({
+				root: dir,
+				path,
+				wakeText: wake("2026-01-01T12:00Z", "orchestration: {}\n"),
+				orchestration: snapshot,
+			}),
+		/Duplicate/,
+	);
+	const next = wake("2026-01-01T12:00Z");
+	pair = write({
+		root: dir,
+		path,
+		text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, "")}\n${next}`,
+		orchestration: snapshot,
+	});
+	assert.ok(pair.historyText.includes(old));
+	assert.deepEqual(
+		inspectHeartbeatLedgerPair(pair, { mode: "history" }).wakes.at(-1)
+			.orchestration,
+		snapshot,
+	);
 });
 
+test("successive wakes retain snapshot history without orphaning superseded metadata in head", () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md");
+	const legacy = `# legacy prose\n${wake("2026-01-01T10:00Z")}legacy note\n`;
+	writeFileSync(path, legacy);
+	migrate({ root: dir, path });
+	const snapshot = (n) => ({
+		scope: `wake-${n}`,
+		before: {
+			activeAgents: n,
+			observedAt: `2026-01-01T1${n}:00:00Z`,
+			evidence: `receipt:${n}`,
+		},
+		after: null,
+		blockedTasks: [],
+		blockersEvidence: `audit:${n}`,
+	});
+	let pair = append({
+		root: dir,
+		path,
+		wakeText: wake("2026-01-01T11:00Z"),
+		orchestration: snapshot(1),
+	});
+	pair = append({
+		root: dir,
+		path,
+		wakeText: wake("2026-01-01T12:00Z"),
+		orchestration: snapshot(2),
+	});
+	pair = readHeartbeatLedgerPair({ root: dir, path });
+	assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
+	assert.ok(pair.headText.includes("wake-2"));
+	assert.ok(!pair.headText.includes("wake-1"));
+	assert.ok(pair.historyText.includes(legacy));
+	const next = wake("2026-01-01T13:00Z");
+	pair = write({
+		root: dir,
+		path,
+		text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, "")}\n${next}`,
+		orchestration: snapshot(3),
+	});
+	pair = readHeartbeatLedgerPair({ root: dir, path });
+	assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
+	assert.ok(pair.headText.includes("wake-3"));
+	assert.ok(pair.historyText.includes(legacy));
+	assert.equal(
+		readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, "utf8"),
+		legacy,
+	);
+	const wakes = inspectHeartbeatLedgerPair(pair, { mode: "history" }).wakes;
+	assert.deepEqual(
+		wakes.map((entry) => entry.orchestration?.scope ?? null),
+		[null, "wake-1", "wake-2", "wake-3"],
+	);
+});
 
-test('successive wakes retain snapshot history without orphaning superseded metadata in head', () => {
- const dir = root(), path = join(dir, 'heartbeat.md');
- const legacy = `# legacy prose\n${wake('2026-01-01T10:00Z')}legacy note\n`;
- writeFileSync(path, legacy);
- migrate({ root: dir, path });
- const snapshot = (n) => ({ scope: `wake-${n}`, before: { activeAgents: n, observedAt: `2026-01-01T1${n}:00:00Z`, evidence: `receipt:${n}` }, after: null, blockedTasks: [], blockersEvidence: `audit:${n}` });
- let pair = append({ root: dir, path, wakeText: wake('2026-01-01T11:00Z'), orchestration: snapshot(1) });
- pair = append({ root: dir, path, wakeText: wake('2026-01-01T12:00Z'), orchestration: snapshot(2) });
- pair = readHeartbeatLedgerPair({ root: dir, path });
- assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
- assert.ok(pair.headText.includes('wake-2'));
- assert.ok(!pair.headText.includes('wake-1'));
- assert.ok(pair.historyText.includes(legacy));
- const next = wake('2026-01-01T13:00Z');
- pair = write({ root: dir, path, text: `${pair.headText.replace(/^<!-- heartbeat-head:[^\n]*\n/, '')}\n${next}`, orchestration: snapshot(3) });
- pair = readHeartbeatLedgerPair({ root: dir, path });
- assert.equal((pair.headText.match(/^orchestration:/gm) ?? []).length, 1);
- assert.ok(pair.headText.includes('wake-3'));
- assert.ok(pair.historyText.includes(legacy));
- assert.equal(readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, 'utf8'), legacy);
- const wakes = inspectHeartbeatLedgerPair(pair, { mode: 'history' }).wakes;
- assert.deepEqual(wakes.map((entry) => entry.orchestration?.scope ?? null), [null, 'wake-1', 'wake-2', 'wake-3']);
+// Generate a genuine v3 pair rather than padding the bounded head. The archival
+// filler is independent prose so the wake records themselves remain small.
+function largeDisplayFixture(dir) {
+	const path = join(realpathSync(dir), "heartbeat.md"),
+		paths = heartbeatLedgerPairPaths(path);
+	const marker = `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(paths.historyPath)} -->\n`;
+	const head = `${marker}# Current\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | report:r1 | 中文 | done | receipt |\n`;
+	const old = `${wake("2026-01-01T10:00Z")}## Notes\n${"x".repeat(4095)}\n`;
+	const newer = `${wake("2026-01-01T11:00Z")}## Notes\n中文\n`;
+	const body = `${old}${"x".repeat(4095).concat("\n").repeat(8193)}${newer}`;
+	const backup = "immutable legacy 中文\n";
+	const hash = (value) => createHash("sha256").update(value).digest("hex");
+	const header = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${hash(body)} base=${hash(head)} bytes=${Buffer.byteLength(head)} backup=${hash(backup)} previous=${hash(backup)} planned=${Buffer.from(head).toString("base64")} -->\n`;
+	writeFileSync(path, head);
+	writeFileSync(paths.historyPath, header + body);
+	writeFileSync(paths.legacyBackupPath, backup);
+	return { path, paths, head, body, header, backup };
+}
+
+test("display reads and pages an authenticated pair exceeding the old combined limit", async () => {
+	const dir = root(),
+		fixture = largeDisplayFixture(dir),
+		now = new Date("2026-01-01T12:00:00Z");
+	assert.ok(
+		statSync(fixture.path).size + statSync(fixture.paths.historyPath).size >
+			32 * 1024 * 1024,
+	);
+	assert.throws(
+		() =>
+			readHeartbeatLedgerPair({
+				root: dir,
+				path: fixture.path,
+				maxBytes: 32 * 1024 * 1024,
+			}),
+		/exceeds/,
+	);
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		now,
+	});
+	assert.equal(first.integrity, "verified");
+	assert.equal(first.audit, "not-performed");
+	assert.equal(first.headText, fixture.head);
+	assert.equal(first.inventory.items[0].item, "中文");
+	assert.equal(first.historyPage.total, 2);
+	assert.match(first.latestWake.heading, /11:00/);
+	assert.equal(
+		first.historyPage.wakes[0].sourcePath,
+		fixture.paths.historyPath,
+	);
+	assert.ok(first.historyPage.wakes[0].sourceLine > 8000);
+	assert.equal(first.contentHash, version(fixture.path));
+	assert.equal(
+		first.headDigest,
+		createHash("sha256").update(fixture.head).digest("hex"),
+	);
+	const cursor = first.historyPage.nextCursor;
+	const next = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		cursor,
+		now,
+	});
+	assert.match(next.historyPage.wakes[0].heading, /10:00/);
+	assert.equal(next.historyPage.nextCursor, null);
+	assert.deepEqual(
+		await readHeartbeatDisplay({
+			root: dir,
+			path: fixture.path,
+			pageSize: 1,
+			cursor,
+			now,
+		}),
+		next,
+	);
+	clearHeartbeatDisplayCache();
+	assert.deepEqual(
+		await readHeartbeatDisplay({
+			root: dir,
+			path: fixture.path,
+			pageSize: 1,
+			cursor,
+			now,
+		}),
+		next,
+	);
+});
+
+test("display fails closed for stale cursors, corruption, missing backup and symlinks", async () => {
+	const dir = root(),
+		fixture = largeDisplayFixture(dir);
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+	});
+	appendFileSync(fixture.path, "\n");
+	await assert.rejects(
+		readHeartbeatDisplay({
+			root: dir,
+			path: fixture.path,
+			cursor: first.historyPage.nextCursor,
+		}),
+		{ code: "HEARTBEAT_DISPLAY_CURSOR_STALE" },
+	);
+	appendFileSync(fixture.paths.historyPath, "corruption");
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path: fixture.path }),
+		/integrity/,
+	);
+	writeFileSync(fixture.paths.historyPath, fixture.header + fixture.body);
+	unlinkSync(fixture.paths.legacyBackupPath);
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path: fixture.path }),
+		/backup missing/,
+	);
+	symlinkSync(fixture.path, fixture.paths.legacyBackupPath);
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path: fixture.path }),
+		/symlink|loop/i,
+	);
+});
+
+test("display preserves legacy inventory validation and rejects oversized wake records", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(
+		path,
+		`# Legacy\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | r | bad | done | |\n\n${wake("2026-01-01T10:00Z")}`,
+	);
+	const result = await readHeartbeatDisplay({ root: dir, path });
+	assert.equal(result.isLegacy, true);
+	assert.equal(result.historyPath, path);
+	assert.ok(
+		result.inventory.findings.some((f) => f.rule === "item-done-evidence"),
+	);
+	assert.equal(result.latestWake.sourcePath, path);
+	writeFileSync(
+		path,
+		`${wake("2026-01-01T10:00Z")}${"x".repeat(4095).concat("\n").repeat(1025)}`,
+	);
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path }),
+		/wake exceeds record limit/,
+	);
+});
+
+test("display detects concurrent pair mutation and interrupted publication", async () => {
+	const dir = root(),
+		fixture = largeDisplayFixture(dir);
+	clearHeartbeatDisplayCache();
+	let mutated = false;
+	const pending = readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		onRead(read) {
+			if (!mutated && read.path === fixture.paths.historyPath) {
+				mutated = true;
+				appendFileSync(fixture.paths.historyPath, "concurrent");
+			}
+		},
+	});
+	await assert.rejects(pending, { code: "HEARTBEAT_DISPLAY_CHANGED" });
+	assert.equal(mutated, true);
+	writeFileSync(fixture.paths.historyPath, fixture.header + fixture.body);
+	writeFileSync(fixture.path, fixture.head.replace("Current", "Changed"));
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path: fixture.path }),
+		/incomplete|modified/,
+	);
+});
+
+test("display cache avoids rescanning history and rejects overlong cursors", async () => {
+	const dir = root(),
+		fixture = largeDisplayFixture(dir);
+	clearHeartbeatDisplayCache();
+	let historyBytes = 0;
+	const onRead = ({ path, bytes }) => {
+		if (path === fixture.paths.historyPath) historyBytes += bytes;
+	};
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		onRead,
+	});
+	assert.ok(historyBytes >= statSync(fixture.paths.historyPath).size);
+	assert.ok(first.historyPage.nextCursor.length <= 512);
+	historyBytes = 0;
+	await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		cursor: first.historyPage.nextCursor,
+		onRead,
+	});
+	assert.ok(
+		historyBytes < 8192,
+		`cached page read ${historyBytes} history bytes`,
+	);
+	await assert.rejects(
+		readHeartbeatDisplay({
+			root: dir,
+			path: fixture.path,
+			cursor: "x".repeat(513),
+		}),
+		{ code: "HEARTBEAT_DISPLAY_CURSOR_STALE" },
+	);
+});
+
+test("display enforces head, header, line and page budgets before large reads or record allocations", async () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md"),
+		paths = heartbeatLedgerPairPaths(path);
+	writeFileSync(path, "x");
+	truncateSync(path, 32 * 1024 * 1024 + 1);
+	let total = 0;
+	const onRead = ({ bytes }) => {
+		total += bytes;
+	};
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path, onRead }),
+		/head exceeds/,
+	);
+	assert.equal(total, 0);
+	writeFileSync(path, "legacy");
+	writeFileSync(paths.historyPath, "x");
+	truncateSync(paths.historyPath, 48 * 1024 * 1024 + 1);
+	writeFileSync(paths.legacyBackupPath, "backup");
+	total = 0;
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path, onRead }),
+		/header exceeds/,
+	);
+	assert.ok(total <= 48 * 1024 * 1024 + 65536 + 6);
+	unlinkSync(paths.historyPath);
+	unlinkSync(paths.legacyBackupPath);
+	writeFileSync(path, `# legacy\n${"x".repeat(1024 * 1024 + 1)}\n`);
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path }),
+		/line exceeds/,
+	);
+	const line = "x".repeat(4095) + "\n";
+	const block = (time) => `${wake(time)}${line.repeat(768)}## End\n`;
+	writeFileSync(
+		path,
+		block("2026-01-01T10:00Z") +
+			block("2026-01-01T11:00Z") +
+			block("2026-01-01T12:00Z"),
+	);
+	total = 0;
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		pageSize: 5,
+		onRead,
+	});
+	const scanBytes = statSync(path).size;
+	assert.ok(total - scanBytes <= 8 * 1024 * 1024);
+	assert.equal(first.historyPage.total, 3);
+	assert.equal(first.historyPage.wakes.length, 2);
+	assert.ok(first.historyPage.nextCursor);
+	const cursor = first.historyPage.nextCursor;
+	total = 0;
+	const next = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		pageSize: 5,
+		cursor,
+		onRead,
+	});
+	assert.ok(total <= 8 * 1024 * 1024);
+	assert.equal(next.historyPage.total, 3);
+	assert.equal(next.historyPage.nextCursor, null);
+	assert.deepEqual(
+		[...first.historyPage.wakes, ...next.historyPage.wakes].map(
+			(w) => w.heading,
+		),
+		[
+			"## 2026-01-01T12:00Z wake (10-row ledger)",
+			"## 2026-01-01T11:00Z wake (10-row ledger)",
+			"## 2026-01-01T10:00Z wake (10-row ledger)",
+		],
+	);
+	total = 0;
+	assert.deepEqual(
+		await readHeartbeatDisplay({
+			root: dir,
+			path,
+			pageSize: 5,
+			cursor,
+			onRead,
+		}),
+		next,
+	);
+	assert.ok(total <= 8 * 1024 * 1024);
+});
+
+test("display leaves unchanged malformed headers as permanent format failures", async () => {
+	const dir = root(),
+		path = join(dir, "heartbeat.md"),
+		paths = heartbeatLedgerPairPaths(path);
+	writeFileSync(path, "# legacy\n");
+	writeFileSync(paths.historyPath, "invalid header\nbody\n");
+	writeFileSync(paths.legacyBackupPath, "backup");
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path }),
+		(error) => !error.code && /invalid.*format/.test(error.message),
+	);
+});
+
+test("display runs the selected items inspector for each cached read", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(
+		path,
+		`# Legacy\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | r | task | done | receipt |\n${wake("2026-01-01T10:00Z")}`,
+	);
+	const seen = [];
+	const custom = (tag) => (text, options) => {
+		seen.push([tag, options.mode]);
+		const report = inspectHeartbeatLedger(text, options);
+		report.findings.push({ rule: tag, message: tag, severity: "error" });
+		report.passed = false;
+		return report;
+	};
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		inspect: custom("custom-one"),
+	});
+	const second = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		inspect: custom("custom-two"),
+	});
+	assert.deepEqual(seen, [
+		["custom-one", "items"],
+		["custom-two", "items"],
+	]);
+	assert.ok(first.inventory.findings.some((f) => f.rule === "custom-one"));
+	assert.ok(second.inventory.findings.some((f) => f.rule === "custom-two"));
+	assert.ok(!second.inventory.findings.some((f) => f.rule === "custom-one"));
 });

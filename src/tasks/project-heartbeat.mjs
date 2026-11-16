@@ -5,6 +5,7 @@ import { heartbeatAuditDue } from "../supervision/heartbeat-ledger-api.mjs";
 import { parseStrictIsoTimestamp } from "../supervision/heartbeat-audit-due.mjs";
 import {
 	inspectHeartbeatLedgerPair,
+	readHeartbeatDisplay,
 	readHeartbeatLedgerPair,
 	summarizeHeartbeatLedgerPair,
 } from "../supervision/heartbeat-ledger-files.mjs";
@@ -71,7 +72,7 @@ async function readCanonicalSource(projectRoot, path, now, intervalMinutes) {
 }
 
 /** Read and display the latest recorded heartbeat source in one trusted project root. */
-export async function readProjectHeartbeat({
+async function readProjectHeartbeatMode(display, {
 	root,
 	ledgerPath,
 	now = new Date(),
@@ -109,13 +110,11 @@ export async function readProjectHeartbeat({
 		const requestedPath = resolve(projectRoot, ledgerPath);
 		let source;
 		try {
-			source = await readCanonicalSource(
-				projectRoot,
-				requestedPath,
-				now,
-				intervalMinutes,
-			);
+			source = display
+				? await readDisplaySource(projectRoot, requestedPath, now)
+				: await readCanonicalSource(projectRoot, requestedPath, now, intervalMinutes);
 		} catch (error) {
+			if (display && isDisplayTransient(error)) throw error;
 			return resultWithoutSource(
 				discovery,
 				"error",
@@ -140,7 +139,7 @@ export async function readProjectHeartbeat({
 	const comparePath = (a, b) => a.path.localeCompare(b.path);
 	for (const candidate of discovery.candidates) {
 		try {
-			const entry = await readCanonicalPair(projectRoot, candidate.path, now);
+			const entry = display ? await readDisplaySource(projectRoot, candidate.path, now) : await readCanonicalPair(projectRoot, candidate.path, now);
 			// Keep at most two complete pair snapshots, regardless of project size.
 			const isRecorded = entry.lastRecordedAt !== null && (!bestRecorded ||
 				entry.lastRecordedAt > bestRecorded.lastRecordedAt ||
@@ -150,6 +149,7 @@ export async function readProjectHeartbeat({
 			if (isRecorded) bestRecorded = entry;
 			if (isInventory) bestInventory = entry;
 		} catch (error) {
+			if (display && isDisplayTransient(error)) throw error;
 			readErrors.push(`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
@@ -169,13 +169,14 @@ export async function readProjectHeartbeat({
 		try {
 			const snapshot = entry.path === bestRecorded?.path ? bestRecorded :
 				entry.path === bestInventory?.path ? bestInventory :
-				await readCanonicalPair(projectRoot, entry.path, now);
+				display ? await readDisplaySource(projectRoot, entry.path, now) : await readCanonicalPair(projectRoot, entry.path, now);
 			if (snapshot.lastRecordedAt !== entry.lastRecordedAt || snapshot.itemCount !== entry.itemCount)
 				throw new Error("Heartbeat source changed while selecting a candidate");
-			source = inspectCanonicalSource(snapshot, now, intervalMinutes);
+			source = display ? snapshot : inspectCanonicalSource(snapshot, now, intervalMinutes);
 			basis = entry.lastRecordedAt !== null ? "latest-recorded-wake" : "items-inventory";
 			break;
 		} catch (error) {
+			if (display && isDisplayTransient(error)) throw error;
 			auditFailures += 1;
 			readErrors.push(`${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -198,4 +199,25 @@ export async function readProjectHeartbeat({
 		discovery,
 		basis,
 	};
+}
+
+
+function isDisplayTransient(error) {
+ return error?.code === "HEARTBEAT_DISPLAY_CHANGED";
+}
+
+async function readDisplaySource(root, path, now) {
+	const { path: canonicalPath } = await resolveProjectLedgerPath(root, path);
+	const display = await readHeartbeatDisplay({ root, path: canonicalPath, now, pageSize: 5 });
+	return { ...display, path: canonicalPath, itemCount: display.inventory.items.length };
+}
+
+/** Full audited read; preserves the original combined-size limit. */
+export function readProjectHeartbeat(options) {
+	return readProjectHeartbeatMode(false, options);
+}
+
+/** Integrity-verified display read; does not certify the current business audit. */
+export function readProjectHeartbeatDisplay(options) {
+	return readProjectHeartbeatMode(true, options);
 }
