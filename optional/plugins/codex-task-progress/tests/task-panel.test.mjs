@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild";
 
-const controlsEvidenceDir =
-  "/Users/dawn/.codex/visualizations/2026/11/12/01a1cd6b-8e27-7681-8085-cf895135605b/panel-controls-080/.playwright-img";
+const controlsEvidenceDir = fileURLToPath(
+  new URL("../.playwright-img/panel-controls-080/", import.meta.url),
+);
 
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
 :root{color-scheme:light dark;--ctp-surface:Canvas;--ctp-text:CanvasText;--ctp-accent:var(--ctp-text);--ctp-muted:GrayText;--ctp-border:color-mix(in srgb,currentColor 18%,transparent)}
