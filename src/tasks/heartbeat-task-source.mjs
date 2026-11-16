@@ -621,7 +621,7 @@ export async function discoverHeartbeatLedgers(options = {}) {
 
 function parsedChildren(value) {
 	if (Array.isArray(value)) return value;
-	if (typeof value !== "string" || !value.trim()) return [];
+	if (typeof value !== "string" || !value.trim() || value.trim() === "-") return [];
 	try {
 		const parsed = JSON.parse(value);
 		return Array.isArray(parsed) ? parsed : null;
@@ -763,6 +763,10 @@ export function projectHeartbeatTask({
 	const linkRisks = [];
 	for (const [id, row] of byId) {
 		if (row.children === undefined || row.children === "") continue;
+		if (typeof row.children === "string" && row.children.trim() === "-" && /^tracking\b/i.test(String(row.status ?? "").trim())) {
+			linkRisks.push(`${id}: tracking parent requires nonempty child links`);
+			continue;
+		}
 		const children = parsedChildren(row.children);
 		if (!children) {
 			linkRisks.push(`${id}: children is not a JSON array`);
@@ -830,7 +834,6 @@ export function projectHeartbeatTask({
 		.filter((id) => !representedAsChild.has(id))
 		.sort();
 	const assignedLeaves = new Set();
-	const leafOwner = new Map();
 	const groupedLeaves = new Map();
 	for (const rootId of roots) {
 		const leaves = [];
@@ -840,7 +843,6 @@ export function projectHeartbeatTask({
 			if (!children?.length) {
 				if (!assignedLeaves.has(id)) {
 					assignedLeaves.add(id);
-					leafOwner.set(id, rootId);
 					leaves.push(id);
 				}
 				return;
@@ -851,12 +853,6 @@ export function projectHeartbeatTask({
 		walk(rootId);
 		groupedLeaves.set(rootId, leaves);
 	}
-	for (const [child, parents] of incoming)
-		if (parents.length > 1)
-			linkRisks.push(
-				`${child}: shared child link; counted once under ${leafOwner.get(child) ?? parents.sort()[0]}`,
-			);
-
 	const objectives = [];
 	const buildEntry = (row) => ({
 		id: row.id.trim(),

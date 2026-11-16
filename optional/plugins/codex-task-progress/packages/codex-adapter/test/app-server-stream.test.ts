@@ -280,28 +280,104 @@ test("direct subagent listing requests only spawn children with parent and bound
   }
 });
 
-test("parent turns request full bounded pages and discard message and prompt content", async () => {
+test("parent turn summaries hydrate bounded deferred item pages in chronological order", async () => {
   const script = responderScript(`
     input.on("line", (line) => {
-      const request = JSON.parse(line);
+      const request = JSON.parse(line); const p = request.params;
       if (request.method === "thread/turns/list") {
-        if (request.params.itemsView !== "full" || request.params.limit !== 2 || request.params.cursor !== "cursor") process.exit(2);
-        process.stdout.write(JSON.stringify({ id: request.id, result: { data: [{ id: "t", rootTurnId: "t", startedAt: 123, itemsView: "full", items: [
-          { type: "userMessage", text: "private" },
-          { type: "collabAgentToolCall", senderThreadId: "p", receiverThreadIds: ["c"], tool: "spawnAgent", status: "completed", prompt: "private" },
-          { type: "subAgentActivity", agentThreadId: "c", kind: "started", agentPath: "private" }
-        ] }], nextCursor: null } }) + "\\n");
+        if (p.itemsView !== "summary" || p.limit !== 2 || p.cursor !== "outer") process.exit(2);
+        process.stdout.write(JSON.stringify({ id: request.id, result: { data: [
+          { id: "continuation", rootTurnId: "root", startedAt: 124, itemsView: "summary", items: [] },
+          { id: "older-root", rootTurnId: "older-root", startedAt: 120, itemsView: "summary", items: [] }
+        ], nextCursor: "next-turns" } }) + "\\n");
+      } else if (request.method === "thread/items/list") {
+        if (p.threadId !== "p" || p.turnId !== "continuation" || p.limit !== 30 || p.sortDirection !== "desc" || !p.deferOutput.commandExecution || !p.deferOutput.mcpToolCall) process.exit(3);
+        const newer = [
+          {turnId:"continuation", startedAtMs:3000, item:{id:"b",type:"subAgentActivity",agentThreadId:"c",kind:"completed",agentPath:"private"}},
+          {turnId:"continuation", startedAtMs:2500, item:{id:"huge",type:"commandExecution",aggregatedOutput:"private".repeat(500000)}}
+        ];
+        const older = [{turnId:"continuation",startedAtMs:2000,item:{id:"a",type:"collabAgentToolCall",senderThreadId:"p",receiverThreadIds:["c"],tool:"spawnAgent",status:"completed",prompt:"private"}}];
+        // The server honors deferred output instead of returning the huge text.
+        if (!p.cursor) newer[1].item.aggregatedOutput = null;
+        process.stdout.write(JSON.stringify({id:request.id,result:{data:p.cursor ? older : newer,nextCursor:p.cursor ? null : "older",backwardsCursor:null}})+"\\n");
       }
     });
   `);
   const client = await clientFor(script, { outputMode: "stream" });
   try {
-    const result = await client.listSubagentTurns("p", "cursor");
-    assert.equal(result.data.length, 1);
+    const result = await client.listSubagentTurns("p", "outer");
+    assert.equal(result.nextCursor, "next-turns");
+    assert.equal(result.data.length, 2);
+    const [current, differentRoot] = result.data as Array<{
+      itemsView: string;
+      items: Array<Record<string, unknown>>;
+    }>;
+    assert.ok(current);
+    assert.ok(differentRoot);
+    assert.equal(current.itemsView, "full");
+    assert.deepEqual(
+      current.items.map((item) => [item.type, item.startedAtMs]),
+      [
+        ["collabAgentToolCall", 2000],
+        ["subAgentActivity", 3000],
+      ],
+    );
+    const firstItem = current.items[0];
+    assert.ok(firstItem);
+    assert.deepEqual(firstItem.receiverThreadIds, ["c"]);
+    assert.equal(differentRoot.itemsView, "partial");
+    assert.deepEqual(differentRoot.items, []);
     assert.equal(JSON.stringify(result).includes("private"), false);
-    assert.match(JSON.stringify(result), /collabAgentToolCall/);
-    assert.match(JSON.stringify(result), /subAgentActivity/);
   } finally {
     await client.close();
+  }
+});
+
+test("item page budget returns a partial view without pretending older items were read", async () => {
+  const script = responderScript(`
+    input.on("line", line => {
+      const q=JSON.parse(line);
+      if(q.method === "thread/turns/list") process.stdout.write(JSON.stringify({id:q.id,result:{data:[{id:"t",rootTurnId:"t",startedAt:1}],nextCursor:null}})+"\\n");
+      if(q.method === "thread/items/list") {
+        const n=q.params.cursor ? Number(q.params.cursor) : 0;
+        if(n>=4) process.exit(2);
+        process.stdout.write(JSON.stringify({id:q.id,result:{data:[{turnId:"t",startedAtMs:100-n,item:{id:"i"+n,type:"subAgentActivity",agentThreadId:"c",kind:"interacted"}}],nextCursor:String(n+1)}})+"\\n");
+      }
+    });
+  `);
+  const client = await clientFor(script, { outputMode: "stream" });
+  try {
+    const result = await client.listSubagentTurns("p");
+    const turn = result.data[0] as { itemsView: string; items: Array<{ startedAtMs: number }> };
+    assert.equal(turn.itemsView, "partial");
+    assert.deepEqual(
+      turn.items.map((item) => item.startedAtMs),
+      [97, 98, 99, 100],
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("item identity, cursor loops and unsupported methods fail closed", async () => {
+  for (const mode of ["wrong-turn", "duplicate-id", "repeated-cursor", "unsupported"]) {
+    const script = responderScript(`
+      const mode=${JSON.stringify(mode)};
+      input.on("line", line => {
+        const q=JSON.parse(line);
+        if(q.method === "thread/turns/list") process.stdout.write(JSON.stringify({id:q.id,result:{data:[{id:"t",rootTurnId:"t",startedAt:1}],nextCursor:null}})+"\\n");
+        if(q.method === "thread/items/list") {
+          if(mode === "unsupported") return void process.stdout.write(JSON.stringify({id:q.id,error:{code:-32601,message:"method not found"}})+"\\n");
+          const item={id:mode === "duplicate-id" ? "same" : (q.params.cursor ? "second" : "first"),type:"subAgentActivity",agentThreadId:"c",kind:"started"};
+          process.stdout.write(JSON.stringify({id:q.id,result:{data:[{turnId:mode === "wrong-turn" ? "foreign" : "t",item}],nextCursor:mode === "wrong-turn" ? null : "again"}})+"\\n");
+        }
+      });
+    `);
+    const client = await clientFor(script, { outputMode: "stream" });
+    try {
+      await assert.rejects(client.listSubagentTurns("p"));
+    } finally {
+      await client.close();
+    }
   }
 });

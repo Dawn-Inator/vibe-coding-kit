@@ -229,6 +229,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           window.fixture.subagents = {
             taskCycleId: "cycle-1",
             rootTurnId: "turn-1",
+            rootTurnStartedAt: "2026-11-15T11:30:00Z",
             scopeBasis: "parent-root-turn",
             schemaVersion: 1,
             parentThreadId: "thread-a",
@@ -442,9 +443,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           parentThreadId: "thread-a",
           taskCycleId: "cycle-old",
           rootTurnId: "old-turn",
+          rootTurnStartedAt: "2026-11-15T11:30:00Z",
           scopeBasis: "parent-root-turn",
           status: "ready",
-          observedAt: null,
+          observedAt: "2026-11-15T12:00:00Z",
           runningCount: null,
           runningBasis: "unknown",
           complete: true,
@@ -527,6 +529,95 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       await context.close();
     });
     await t.test(
+      "source-scoped agent members require exact active source and verified root start",
+      async () => {
+        const sourcePath = "/workspace/heartbeat.md";
+        const { context, page, panel } = await open("?defaultSubagents");
+        await page.evaluate(
+          ({ value, sourcePath }) => {
+            window.fixture.task = {
+              ...value,
+              phase: "active",
+              source: { kind: "kit-heartbeat", path: sourcePath, readOnly: true },
+            };
+            window.fixture.taskSource = { status: "ready", path: sourcePath, readOnly: true };
+            window.fixture.subagents = {
+              schemaVersion: 1,
+              parentThreadId: "thread-a",
+              taskCycleId: null,
+              taskSourcePath: sourcePath,
+              rootTurnId: "turn-source-1",
+              rootTurnStartedAt: "2026-11-15T11:30:00Z",
+              scopeBasis: "parent-root-turn",
+              status: "ready",
+              observedAt: "2026-11-15T12:00:00Z",
+              runningCount: null,
+              runningBasis: "unknown",
+              complete: true,
+              truncated: false,
+              agents: [
+                {
+                  id: "current",
+                  name: "Current root member",
+                  state: "unknown",
+                  observedAt: null,
+                  progress: null,
+                  progressBasis: null,
+                },
+              ],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { value: task, sourcePath },
+        );
+        await panel.getByText("Current root member", { exact: true }).waitFor();
+        assert.equal(await panel.locator(".agent-row").count(), 1);
+        const ring = panel.locator(".agent-counts .allocation-ring");
+        assert.equal(await ring.getAttribute("role"), "img");
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
+        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 1/);
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /0\/0|1\/1|100%/);
+        await page.evaluate(() => {
+          window.fixture.task.phase = "completed";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 1);
+        for (const patch of [
+          { snapshot: { taskSourcePath: "/workspace/other.md" } },
+          { task: { source: { path: "/workspace/other.md" } } },
+          { taskSource: { status: "stale" } },
+          { snapshot: { parentThreadId: "thread-other" } },
+          { snapshot: { taskCycleId: undefined } },
+          { snapshot: { taskCycleId: "unexpected-cycle" } },
+          { snapshot: { rootTurnStartedAt: "2026-11-15T12:01:00Z" } },
+        ]) {
+          await page.evaluate(
+            ({ value, sourcePath }) => {
+              Object.assign(window.fixture.subagents, {
+                parentThreadId: "thread-a",
+                taskCycleId: null,
+                taskSourcePath: sourcePath,
+                rootTurnStartedAt: "2026-11-15T11:30:00Z",
+              });
+              window.fixture.task.source.path = sourcePath;
+              Object.assign(window.fixture.taskSource, { status: "ready", path: sourcePath });
+              if (value.snapshot) Object.assign(window.fixture.subagents, value.snapshot);
+              if (value.task) Object.assign(window.fixture.task, value.task);
+              if (value.taskSource) Object.assign(window.fixture.taskSource, value.taskSource);
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { value: patch, sourcePath },
+          );
+          assert.equal(await panel.locator(".agent-row").count(), 0);
+          assert.equal(await ring.getAttribute("role"), "img");
+          assert.equal(await ring.getAttribute("aria-valuenow"), null);
+          assert.match(await panel.locator(".subagents").innerText(), /本轮 Agent 记录尚未就绪/);
+        }
+        await context.close();
+      },
+    );
+    await t.test(
       "subagent mode state is isolated and panel fills short and tall windows",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
@@ -544,6 +635,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           window.fixture.subagents = {
             taskCycleId: "cycle-1",
             rootTurnId: "turn-1",
+            rootTurnStartedAt: "2026-11-15T11:30:00Z",
             scopeBasis: "parent-root-turn",
             schemaVersion: 1,
             parentThreadId: "thread-a",
@@ -2303,6 +2395,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await panel.locator(".summary .main").click();
         await panel.locator(".scroll .info-card").filter({ hasText: "任务需要关注" }).waitFor();
         await panel.getByText("台账文件已删除", { exact: true }).waitFor();
+        await panel.getByRole("button", { name: "子 Agent", exact: true }).click();
+        await panel.getByText("台账文件已删除", { exact: true }).waitFor();
+        await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
 
         await page.evaluate(() => {
           window.fixture.taskSource = {
@@ -2377,7 +2472,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const mainButton = panel.locator(".summary .main");
         if ((await mainButton.getAttribute("aria-expanded")) !== "true") await mainButton.click();
         assert.equal(await mainButton.getAttribute("aria-expanded"), "true");
-        await panel.getByText("不安全的父子关联项将分别显示", { exact: true }).waitFor();
+        await panel.getByText("部分父子关联需要检查。", { exact: true }).waitFor();
         await panel.getByText("任务需要关注", { exact: true }).waitFor();
         let taskText = await panel.locator(".scroll").innerText();
         assert.doesNotMatch(taskText, /P1: missing child C1|P1: done · C1: blocked|heartbeat\.md/);
@@ -2396,6 +2491,21 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         taskText = await panel.locator(".scroll").innerText();
         assert.match(taskText, /进度按全部项目计算/);
         assert.doesNotMatch(taskText, /P1: done|状态列表已截断|heartbeat\.md/);
+        await panel.getByRole("button", { name: "子 Agent", exact: true }).click();
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /200\/1453|进度按全部项目计算|部分父子关联需要检查/,
+        );
+        await page.evaluate(() => {
+          window.fixture.task.source.error = "Bound source read failed";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("Bound source read failed", { exact: true }).waitFor();
+        await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
+        await page.evaluate(() => {
+          delete window.fixture.task.source.error;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
         await page.evaluate(() => {
           window.fixture.task.source.presentation = {
             truncated: true,

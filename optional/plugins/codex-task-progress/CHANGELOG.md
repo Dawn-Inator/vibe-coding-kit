@@ -1,3 +1,7 @@
+# Task Progress 0.9.7
+
+- Version 0.9.7 supports current-turn agent views for read-only Kit-bound sources without a managed task lifecycle by fencing the canonical source path and verified latest root start. Ordinary managed task cycle rules remain unchanged. The adapter uses official summary turns and deferred paginated `thread/items/list` metadata with wrapper timestamps, without falling back to the parent’s full historical child inventory. A `notLoaded` child is not evidence of live activity; missing orchestration or an agent plan leaves the planned allocation unknown. The registered-task projection treats `-` on a non-tracking row as empty and accepts valid shared-child DAGs while retaining genuine invalid-link risks. The bounded metadata window is not shown as a Subagents list. Native host acceptance remains separate.
+
 # Task Progress 0.9.6
 
 - Version 0.9.6 uses the Kit’s read-only bounded display reader for current Items, the latest wake and paginated history. For paired ledgers it verifies history and backup integrity in chunks without imposing the full-audit reader’s combined 32 MiB limit on the whole history. The head, individual records and pages remain bounded, as does a legacy single-file head. Integrity verification is not a current business audit; display reads report audit as not performed. Any display index is reconstructible in-memory state, and canonical records remain unchanged.

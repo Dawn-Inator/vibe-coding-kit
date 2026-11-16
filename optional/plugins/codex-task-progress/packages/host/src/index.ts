@@ -1701,6 +1701,7 @@ export class GoalProgressHelper {
             sourceTask.status === "pending" ||
             sourceTask.status === "pending-selection"
               ? {
+                  ...(sourceTask.sourcePath ? { kind: "kit-heartbeat" } : {}),
                   status: sourceTask.status,
                   ...(sourceTask.sourcePath ? { path: sourceTask.sourcePath } : {}),
                   readOnly: true,
@@ -1855,16 +1856,58 @@ export class GoalProgressHelper {
           source &&
           typeof source === "object" &&
           "status" in source &&
-          ["pending", "error", "pending-selection"].includes(String(source.status))
+          ["pending", "error", "stale", "pending-selection"].includes(String(source.status))
         );
       const task = snapshot.value?.result.task as
-        | { lifecycle?: { id?: unknown; startedAt?: unknown } }
+        | {
+            lifecycle?: { id?: unknown; startedAt?: unknown };
+            source?: {
+              kind?: unknown;
+              readOnly?: unknown;
+              path?: unknown;
+              contentHash?: unknown;
+            };
+          }
         | null
         | undefined;
-      const cycleId = typeof task?.lifecycle?.id === "string" ? task.lifecycle.id : undefined;
-      const cycleStartedAt =
-        typeof task?.lifecycle?.startedAt === "string" ? task.lifecycle.startedAt : undefined;
-      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify(source ?? null)}:${JSON.stringify([cycleId, cycleStartedAt])}`;
+      const lifecycleId = task?.lifecycle?.id;
+      const lifecycleStartedAt = task?.lifecycle?.startedAt;
+      const validLifecycle =
+        typeof lifecycleId === "string" &&
+        lifecycleId.trim().length > 0 &&
+        typeof lifecycleStartedAt === "string" &&
+        Number.isFinite(Date.parse(lifecycleStartedAt));
+      const cycleId = validLifecycle ? lifecycleId : undefined;
+      const cycleStartedAt = validLifecycle ? lifecycleStartedAt : undefined;
+      const boundSource =
+        source && typeof source === "object"
+          ? (source as {
+              status?: unknown;
+              kind?: unknown;
+              readOnly?: unknown;
+              path?: unknown;
+              contentHash?: unknown;
+            })
+          : undefined;
+      const sourcePath =
+        !validLifecycle &&
+        boundSource?.status === "ready" &&
+        boundSource.kind === "kit-heartbeat" &&
+        boundSource.readOnly === true &&
+        typeof boundSource.path === "string" &&
+        boundSource.path.trim().length > 0 &&
+        task?.source?.path === boundSource.path &&
+        typeof boundSource.contentHash === "string" &&
+        task?.source?.contentHash === boundSource.contentHash &&
+        task?.source?.kind === "kit-heartbeat" &&
+        task.source.readOnly === true
+          ? boundSource.path
+          : undefined;
+      const sourceIdentity = sourcePath
+        ? JSON.stringify([sourcePath, boundSource?.contentHash ?? null])
+        : null;
+      const hasSubagentScope = validLifecycle || sourcePath !== undefined;
+      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
       let subagents: SubagentProgressSnapshot = {
         schemaVersion: 1,
         parentThreadId: threadId,
@@ -1876,10 +1919,18 @@ export class GoalProgressHelper {
         complete: false,
         truncated: false,
       };
-      if (sourceReady && (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns))
+      if (sourceReady && !hasSubagentScope) subagents = { ...subagents, status: "unavailable" };
+      if (
+        sourceReady &&
+        hasSubagentScope &&
+        (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns)
+      )
+        subagents = { ...subagents, status: "unavailable" };
+      if (snapshot.value && boundSource?.status === "stale")
         subagents = { ...subagents, status: "unavailable" };
       if (
         sourceReady &&
+        hasSubagentScope &&
         typeof storage?.root === "string" &&
         this.#runtime.listDirectSubagents &&
         this.#runtime.listSubagentTurns
@@ -1903,6 +1954,9 @@ export class GoalProgressHelper {
                   listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
                   ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
                   ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
+                  ...(sourcePath === undefined
+                    ? {}
+                    : { taskCycleId: null, cycleStartedAt: null, taskSourcePath: sourcePath }),
                 });
                 return result;
               })();

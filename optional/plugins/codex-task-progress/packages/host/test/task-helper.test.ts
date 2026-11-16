@@ -3514,7 +3514,7 @@ test("native cache keeps the last task during source discovery and replaces it o
   }
 });
 
-test("subagent snapshot is background, scoped to its parent, and never invents runtime count", async () => {
+test("subagent snapshot is background, scoped to its parent, and reports the known runtime count", async () => {
   const root = await mkdtemp("/tmp/ctph-subagents-");
   await mkdir(join(root, ".git"));
   const testRuntime = runtime(root);
@@ -3609,7 +3609,7 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
       a = await native("chat-A");
     }
     assert.equal(a.subagents.status, "ready");
-    assert.equal(a.subagents.runningCount, null);
+    assert.equal(a.subagents.runningCount, 1);
     assert.deepEqual(
       a.subagents.agents.map((agent) => [agent.id, agent.state]),
       [["chat-A-child", "working"]],
@@ -3626,6 +3626,256 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
   } finally {
     release();
     KitTaskStore.prototype.get = originalGet;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native get uses a ready bound Kit heartbeat source when no task lifecycle exists", async () => {
+  const root = await mkdtemp("/tmp/ctph-subagents-kit-source-");
+  await mkdir(join(root, ".git"));
+  let sourcePath = join(root, "heartbeat.md");
+  let sourceStatus: "ready" | "pending" | "pending-selection" | "error" | "stale" = "ready";
+  let childId = "source-chat-child";
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  await writeFile(sourcePath, "bound heartbeat source");
+  const testRuntime = runtime(root);
+  const turnCollections: string[] = [];
+  testRuntime.listDirectSubagents = async (parentThreadId) => ({
+    data: [
+      {
+        id: childId,
+        parentThreadId,
+        cwd: root,
+        source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+        status: { type: "active", activeFlags: [] },
+      },
+      {
+        id: "foreign-child",
+        parentThreadId: "different-chat",
+        cwd: root,
+        source: { subAgent: { thread_spawn: { parent_thread_id: "different-chat" } } },
+        status: { type: "active", activeFlags: [] },
+      },
+    ],
+    nextCursor: null,
+  });
+  testRuntime.listSubagentTurns = async (threadId) => {
+    turnCollections.push(threadId);
+    return {
+      data: [
+        {
+          id: "root-turn-current",
+          rootTurnId: "root-turn-current",
+          startedAt: 1794830400,
+          itemsView: "full",
+          items: [
+            {
+              type: "collabAgentToolCall",
+              senderThreadId: threadId,
+              receiverThreadIds: [childId],
+              tool: "spawnAgent",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    };
+  };
+  const originalProjection = HeartbeatService.prototype.taskProjection;
+  HeartbeatService.prototype.taskProjection = async (threadId) => {
+    if (threadId === "source-chat-no-scope")
+      return { status: "none", sourcePath: null, task: null };
+    const task = {
+      schemaVersion: 3 as const,
+      kind: "task" as const,
+      threadId,
+      title: "Bound task",
+      revision: 0,
+      createdAt: "2026-11-16T12:00:00Z",
+      updatedAt: "2026-11-16T12:00:00Z",
+      objectives: [],
+      progress: { completed: 0, total: 0, percent: null },
+      phase: "active" as const,
+      source: {
+        kind: "kit-heartbeat" as const,
+        path: sourcePath,
+        readOnly: true as const,
+        contentHash: threadId === "source-chat-mismatch" ? "mismatched-hash" : `hash:${sourcePath}`,
+        itemStatuses: {},
+        linkRisks: [],
+        presentation: {
+          truncated: false,
+          sourceItemCount: 0,
+          displayedItemCount: 0,
+          itemStatusesTruncated: false,
+          linkRisksTruncated: false,
+        },
+        itemStatusCount: 0,
+        linkRiskCount: 0,
+      },
+    };
+    return {
+      status: sourceStatus,
+      sourcePath,
+      contentHash: `hash:${sourcePath}`,
+      task: sourceStatus === "ready" ? task : null,
+    };
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const native = async (threadId = "source-chat") =>
+    (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId, input: {} },
+      })
+    ).result as {
+      taskSource?: { status: string; kind?: string; path?: string; readOnly?: boolean } | null;
+      taskSourcePending?: boolean;
+      presentation?: { pending?: boolean };
+      subagents: {
+        status: string;
+        parentThreadId: string;
+        taskCycleId?: string | null;
+        taskSourcePath?: string | null;
+        rootTurnId?: string;
+        agents: { id: string }[];
+      };
+    };
+  const waitForProjection = async (
+    threadId: string,
+    expectedStatus: string,
+    expectedPath: string,
+    requireReadySubagents: boolean,
+    observe?: (value: Awaited<ReturnType<typeof native>>) => void,
+  ) => {
+    let result = await native(threadId);
+    let lastObserved = "initial response not observed";
+    for (let i = 0; i < 100; i++) {
+      observe?.(result);
+      lastObserved = JSON.stringify({
+        parentThreadId: result.subagents.parentThreadId,
+        taskSourceStatus: result.taskSource?.status ?? null,
+        taskSourcePath: result.taskSource?.path ?? null,
+        subagentsStatus: result.subagents.status,
+        subagentsSourcePath: result.subagents.taskSourcePath ?? null,
+      });
+      if (
+        result.subagents.parentThreadId === threadId &&
+        result.taskSource?.status === expectedStatus &&
+        result.taskSource.path === expectedPath &&
+        (!requireReadySubagents ||
+          (result.subagents.status === "ready" && result.subagents.taskSourcePath === expectedPath))
+      )
+        return result;
+      await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
+      result = await native(threadId);
+    }
+    assert.fail(
+      `projection did not converge for ${threadId} (${expectedStatus}, ${expectedPath}); last=${lastObserved}`,
+    );
+  };
+  try {
+    await helper.start();
+    let result = await waitForProjection("source-chat", "ready", sourcePath, true);
+    assert.deepEqual(result.taskSource, {
+      kind: "kit-heartbeat",
+      status: "ready",
+      path: sourcePath,
+      readOnly: true,
+      contentHash: `hash:${sourcePath}`,
+    });
+    assert.equal(result.subagents.status, "ready");
+    assert.equal(result.subagents.taskCycleId, null);
+    assert.equal(result.subagents.taskSourcePath, sourcePath);
+    assert.equal(result.subagents.rootTurnId, "root-turn-current");
+    assert.deepEqual(
+      result.subagents.agents.map((agent) => agent.id),
+      ["source-chat-child"],
+    );
+    const firstScopeCalls = turnCollections.filter((thread) => thread === "source-chat").length;
+    assert.ok(firstScopeCalls > 0);
+
+    // A changed bound source gets a distinct child-list cache entry.
+    const previousPath = sourcePath;
+    const previousChild = childId;
+    sourcePath = join(root, "heartbeat-next.md");
+    childId = "source-chat-next-child";
+    await writeFile(sourcePath, "next bound heartbeat source");
+    now += 5_001;
+    result = await waitForProjection("source-chat", "ready", sourcePath, true, (observed) => {
+      if (observed.taskSource?.status === "ready" && observed.taskSource.path === previousPath) {
+        assert.ok(
+          observed.presentation?.pending || observed.taskSourcePending,
+          "the previous verified source may only be retained while canonical refresh is pending",
+        );
+        if (observed.subagents.status === "ready") {
+          assert.equal(observed.subagents.taskSourcePath, previousPath);
+          assert.deepEqual(
+            observed.subagents.agents.map((agent) => agent.id),
+            [previousChild],
+          );
+        }
+      }
+    });
+    assert.equal(result.taskSource?.path, sourcePath);
+    assert.equal(result.subagents.taskSourcePath, sourcePath);
+    assert.deepEqual(
+      result.subagents.agents.map((agent) => agent.id),
+      [childId],
+    );
+    assert.ok(
+      turnCollections.filter((thread) => thread === "source-chat").length > firstScopeCalls,
+    );
+
+    for (const status of ["pending", "pending-selection", "error", "stale"] as const) {
+      sourceStatus = status;
+      now += 5_001;
+      const threadId = `source-chat-${status}`;
+      result = await waitForProjection(threadId, status, sourcePath, false);
+      assert.notEqual(result.subagents.status, "ready", `${status} source must not be used`);
+      assert.deepEqual(result.subagents.agents, [], `${status} source must not leak cached agents`);
+      assert.equal(
+        turnCollections.filter((thread) => thread === threadId).length,
+        0,
+        `${status} source must not trigger collection for its chat`,
+      );
+    }
+
+    sourceStatus = "ready";
+    now += 5_001;
+    result = await waitForProjection("source-chat-mismatch", "ready", sourcePath, false);
+    assert.equal(
+      result.subagents.status,
+      "unavailable",
+      "mismatched task/source hashes cannot select a scope",
+    );
+    assert.deepEqual(result.subagents.agents, []);
+    assert.equal(turnCollections.filter((thread) => thread === "source-chat-mismatch").length, 0);
+
+    now += 5_001;
+    let noScope = await native("source-chat-no-scope");
+    for (let i = 0; i < 100 && noScope.subagents.status !== "unavailable"; i++) {
+      await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
+      noScope = await native("source-chat-no-scope");
+    }
+    assert.equal(noScope.taskSource, null);
+    assert.equal(noScope.subagents.parentThreadId, "source-chat-no-scope");
+    assert.equal(noScope.subagents.status, "unavailable");
+    assert.deepEqual(noScope.subagents.agents, []);
+    assert.equal(turnCollections.filter((thread) => thread === "source-chat-no-scope").length, 0);
+  } finally {
+    Date.now = originalNow;
+    HeartbeatService.prototype.taskProjection = originalProjection;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

@@ -230,7 +230,10 @@ test('different older root stops bounded turn pagination and does not mix agents
       ], nextCursor: 'older' }; },
       listPage: async () => { throw new Error('should not list historical children'); },
     });
-    assert.equal(pages, 1); assert.equal(result.complete, false); assert.deepEqual(result.agents, []);
+    // The current root was fully observed before the older root: this is a
+    // successful scope boundary, while older members remain excluded.
+    assert.equal(pages, 1); assert.equal(result.complete, true); assert.deepEqual(result.agents, []);
+    assert.equal(result.runningCount, 0); assert.equal(result.runningBasis, 'runtime');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -327,5 +330,119 @@ test('later continuation dispatch supersedes root completion across descending p
       listPage: async () => ({ data: [{ id: 'child', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'notLoaded' } }], nextCursor: null }),
     });
     assert.equal(result.agents[0].state, 'unknown'); assert.equal(result.rootTurnStartedAt, new Date((start + 1) * 1000).toISOString());
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('source scope uses the verified latest parent root and fences reused checklist progress', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-source-scope-'));
+  try {
+    const { realpath } = await import('node:fs/promises');
+    const canonicalRoot = await realpath(root), source = join(canonicalRoot, 'heartbeat.md');
+    const store = new TaskStore(root, { schemas });
+    await store.initialize('current', { requestId: 'init', expectedRevision: 0, reason: 'Start', title: 'Work', objectives: [{ id: 'a', title: 'A', items: [{ id: 'a1', title: 'Do' }] }] });
+    await store.update('current', { requestId: 'done', expectedRevision: 1, reason: 'Done', changes: [{ targetId: 'a1', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }] });
+    const childStart = Date.parse((await store.get('current')).createdAt);
+    const start = Math.floor(childStart / 1000) - 60;
+    const dispatch = at => ({ type: 'collabAgentToolCall', senderThreadId: 'p', receiverThreadIds: ['current'], tool: 'followupTask', status: 'completed', startedAtMs: at });
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskSourcePath: source,
+      listPage: async () => ({ data: ['historic', 'current'].map(id => ({ id, cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'notLoaded' } })), nextCursor: null }) };
+    const collect = (items, itemsView = 'full', taskSourcePath = source) => collectScoped({ ...base, taskSourcePath,
+      listTurnsPage: async () => ({ data: [
+        { id: 'continuation', rootTurnId: 'root', startedAt: start + 2, itemsView, items },
+        { id: 'root', rootTurnId: 'root', startedAt: start, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'current', kind: 'completed' }] },
+      ], nextCursor: null }),
+    });
+    const fresh = await collect([dispatch(childStart - 1)]);
+    assert.equal(fresh.taskCycleId, null); assert.equal(fresh.taskSourcePath, source);
+    assert.equal(fresh.scopeBasis, 'parent-root-turn'); assert.equal(fresh.rootTurnStartedAt, new Date(start * 1000).toISOString());
+    assert.deepEqual(fresh.agents.map(agent => agent.id), ['current']);
+    assert.equal(fresh.agents[0].state, 'unknown'); assert.equal(fresh.agents[0].progress.percent, 100);
+    assert.equal(fresh.runningCount, null); assert.equal(fresh.runningBasis, 'unknown');
+    const reused = await collect([dispatch(childStart + 1000)]);
+    assert.equal(reused.agents[0].progress, null); assert.equal(reused.agents[0].state, 'unknown');
+    const partial = await collect([dispatch(childStart - 1)], 'summary');
+    assert.equal(partial.complete, false); assert.equal(partial.status, 'partial');
+    const other = join(canonicalRoot, 'other.md');
+    assert.equal((await collect([dispatch(childStart - 1)], 'full', other)).taskSourcePath, other);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('source scope fails closed for missing or ambiguous root metadata and malformed scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-source-invalid-'));
+  try {
+    const { realpath } = await import('node:fs/promises');
+    const source = join(await realpath(root), 'heartbeat.md'), start = 1767225600;
+    const latest = { id: 'continuation', rootTurnId: 'root', startedAt: start + 2, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'historic', kind: 'started' }] };
+    let childReads = 0;
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskSourcePath: source,
+      listPage: async () => { childReads++; return { data: [], nextCursor: null }; } };
+    for (const data of [
+      [latest],
+      [{ ...latest, rootTurnId: '' }],
+      [latest, { id: 'root', rootTurnId: 'root', itemsView: 'full', items: [] }],
+      [latest, { id: 'root', rootTurnId: 'root', startedAt: start + 3, itemsView: 'full', items: [] }],
+    ]) {
+      const result = await collectScoped({ ...base, listTurnsPage: async () => ({ data, nextCursor: null }) });
+      assert.equal(result.status, 'unavailable'); assert.deepEqual(result.agents, []); assert.equal(result.runningCount, null);
+    }
+    for (const scope of [
+      { taskSourcePath: 'relative/path' }, { taskSourcePath: '/tmp/../tmp/path' },
+      { taskSourcePath: source, taskCycleId: 'cycle' }, { taskSourcePath: source, cycleStartedAt },
+      { taskSourcePath: source, taskCycleId: 'cycle', cycleStartedAt },
+    ]) {
+      const result = await collectScoped({ ...base, ...scope, listTurnsPage: async () => { throw new Error('invalid scope must not query'); } });
+      assert.equal(result.status, 'unavailable'); assert.deepEqual(result.agents, []);
+    }
+    assert.equal(childReads, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('running count is exact only for complete verified roots with known runtime states', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-running-count-'));
+  try {
+    const { realpath } = await import('node:fs/promises');
+    const source = join(await realpath(root), 'heartbeat.md'), start = Date.parse(cycleStartedAt) / 1000;
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskSourcePath: source };
+    const activity = id => ({ type: 'subAgentActivity', agentThreadId: id, kind: id === 'done' ? 'completed' : 'started' });
+    const child = (id, status) => ({ id, cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status });
+    const collect = (items, children, itemsView = 'full', rootTurnId = 'root') => collectScoped({ ...base,
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId, startedAt: start + 1, itemsView, items }], nextCursor: null }),
+      listPage: async () => ({ data: children, nextCursor: null }),
+    });
+    const items = ['active', 'waiting', 'idle', 'done'].map(activity);
+    const children = [child('active', { type: 'active', activeFlags: [] }), child('waiting', { type: 'active', activeFlags: ['waitingOnUserInput'] }), child('idle', { type: 'idle' }), child('done', { type: 'idle' })];
+    const exact = await collect(items, children);
+    assert.equal(exact.complete, true); assert.equal(exact.runningCount, 1); assert.equal(exact.runningBasis, 'runtime');
+    assert.deepEqual(exact.agents.map(agent => agent.state), ['working', 'waiting', 'idle', 'completed']);
+    const empty = await collect([], []);
+    assert.equal(empty.complete, true); assert.equal(empty.runningCount, 0); assert.equal(empty.runningBasis, 'runtime');
+    const unknown = await collect(items, [child('active', { type: 'notLoaded' }), ...children.slice(1)]);
+    assert.equal(unknown.complete, true); assert.equal(unknown.runningCount, null); assert.equal(unknown.runningBasis, 'unknown');
+    const unloadedDone = await collect(items, [...children.slice(0, 3), child('done', { type: 'notLoaded' })]);
+    assert.equal(unloadedDone.runningCount, null);
+    const partial = await collect(items, children, 'summary');
+    assert.equal(partial.complete, false); assert.equal(partial.runningCount, null);
+    const missing = await collect(items, children.slice(0, 3));
+    assert.equal(missing.complete, false); assert.equal(missing.runningCount, null);
+    const noRoot = await collect(items, children, 'full', 'missing-root');
+    assert.equal(noRoot.status, 'unavailable'); assert.equal(noRoot.runningCount, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('source scope stops cleanly at an older root only after seeing the current root', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-source-boundary-'));
+  try {
+    const { realpath } = await import('node:fs/promises');
+    const source = join(await realpath(root), 'heartbeat.md'), start = Date.parse(cycleStartedAt) / 1000;
+    const previous = { id: 'previous', rootTurnId: 'previous', startedAt: start, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'historic', kind: 'started' }] };
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskSourcePath: source,
+      listPage: async () => { throw new Error('historical child must not be listed'); } };
+    const complete = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'current', rootTurnId: 'current', startedAt: start + 1, itemsView: 'full', items: [] }, previous], nextCursor: 'older' }) });
+    assert.equal(complete.complete, true); assert.equal(complete.status, 'ready');
+    assert.deepEqual(complete.agents, []); assert.equal(complete.runningCount, 0);
+    const unseen = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'continuation', rootTurnId: 'unseen', startedAt: start + 2, itemsView: 'full', items: [] }, previous], nextCursor: null }) });
+    assert.equal(unseen.status, 'unavailable'); assert.equal(unseen.complete, false);
+    assert.deepEqual(unseen.agents, []); assert.equal(unseen.runningCount, null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

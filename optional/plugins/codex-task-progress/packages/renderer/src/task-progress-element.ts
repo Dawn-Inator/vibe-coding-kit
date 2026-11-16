@@ -1616,13 +1616,17 @@ export class TaskProgressElement extends LitElement {
           sourceInfo?.status === "pending-selection"
         ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
         : source?.error;
+    const registeredMetadata = this.taskMode === "registered-tasks";
     const notice =
-      presentation && presentation.displayedItemCount < presentation.sourceItemCount
+      registeredMetadata &&
+      presentation &&
+      presentation.displayedItemCount < presentation.sourceItemCount
         ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("items. Progress counts all items.", "项；进度按全部项目计算。")}</p>`
         : nothing;
-    if (!sourceError && !risks.length) return notice;
+    const showLinkRisks = registeredMetadata && risks.length > 0;
+    if (!sourceError && !showLinkRisks) return notice;
     const body = html`${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
-      ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}</div>` : nothing}`;
+      ${showLinkRisks ? html`<div class="error">${this.t("Some parent-child links need review.", "部分父子关联需要检查。")}</div>` : nothing}`;
     return html`${notice}${this.framedCard(
       this.t("Task needs attention", "任务需要关注"),
       FileText,
@@ -1633,15 +1637,36 @@ export class TaskProgressElement extends LitElement {
 
   private currentRunSubagents(): SubagentProgressSnapshot | null {
     const snapshot = this.data.subagents;
-    const cycleId = this.data.task?.lifecycle?.id;
+    const task = this.data.task;
+    const source = task?.source;
+    const sourcePath =
+      this.data.taskSource?.status === "ready" ? this.data.taskSource.path : undefined;
+    const rootTurnStartedAt = snapshot?.rootTurnStartedAt;
+    const observedAt = snapshot?.observedAt;
+    const verifiedRootStart =
+      typeof rootTurnStartedAt === "string" &&
+      Number.isFinite(Date.parse(rootTurnStartedAt)) &&
+      typeof observedAt === "string" &&
+      Number.isFinite(Date.parse(observedAt)) &&
+      Date.parse(observedAt) >= Date.parse(rootTurnStartedAt);
+    const managedCycleMatches =
+      !!task?.lifecycle?.id && snapshot?.taskCycleId === task.lifecycle.id;
+    const sourceScopeMatches =
+      !task?.lifecycle?.id &&
+      source?.kind === "kit-heartbeat" &&
+      source.readOnly === true &&
+      !!sourcePath &&
+      source.path === sourcePath &&
+      snapshot?.taskSourcePath === sourcePath &&
+      snapshot.taskCycleId === null;
     if (
       !snapshot ||
       snapshot.parentThreadId !== this.threadId ||
-      !cycleId ||
-      snapshot.taskCycleId !== cycleId ||
+      (!managedCycleMatches && !sourceScopeMatches) ||
       snapshot.scopeBasis !== "parent-root-turn" ||
       typeof snapshot.rootTurnId !== "string" ||
       !snapshot.rootTurnId.trim() ||
+      !verifiedRootStart ||
       (snapshot.status !== "ready" && snapshot.status !== "partial")
     )
       return null;

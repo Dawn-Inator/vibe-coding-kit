@@ -369,48 +369,152 @@ export class CodexAppServerClient implements ThreadCatalog {
           cursor: cursor ?? null,
           limit: 2,
           sortDirection: "desc",
-          itemsView: "full",
+          itemsView: "summary",
         }),
       );
-    // Only carry identity and activity metadata across the adapter boundary.
-    const data = raw.data.map((value) => {
-      const turn = value as Record<string, unknown>;
-      const items = Array.isArray(turn?.items)
-        ? turn.items.flatMap((value: unknown): unknown[] => {
-            if (!value || typeof value !== "object") return [];
-            const item = value as Record<string, unknown>;
-            if (item.type === "collabAgentToolCall")
-              return [
-                {
-                  type: item.type,
-                  senderThreadId: item.senderThreadId,
-                  receiverThreadIds: item.receiverThreadIds,
-                  tool: item.tool,
-                  status: item.status,
-                  startedAtMs: item.startedAtMs,
-                },
-              ];
-            if (item.type === "subAgentActivity")
-              return [
-                {
-                  type: item.type,
-                  agentThreadId: item.agentThreadId,
-                  kind: item.kind,
-                  startedAtMs: item.startedAtMs,
-                },
-              ];
-            return [];
-          })
-        : null;
-      return {
-        id: turn?.id,
-        rootTurnId: turn?.rootTurnId,
-        startedAt: turn?.startedAt,
-        completedAt: turn?.completedAt,
-        itemsView: turn?.itemsView,
+    const turns = raw.data.map((value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {},
+    );
+    const root = turns[0]?.rootTurnId;
+    const data = [];
+    for (const turn of turns) {
+      const items: Record<string, unknown>[] = [];
+      let complete = false;
+      // Do not read events from an older root that happens to share this page.
+      if (
+        typeof turn.id === "string" &&
+        turn.id.length > 0 &&
+        turn.id.length <= 256 &&
+        typeof root === "string" &&
+        root.length > 0 &&
+        root.length <= 256 &&
+        turn.rootTurnId === root
+      ) {
+        let itemCursor: string | null = null;
+        const cursors = new Set<string>();
+        const ids = new Set<string>();
+        let metadataBytes = 0;
+        let capped = false;
+        // At most 120 recent entries per turn, with a separate metadata budget.
+        for (let page = 0; page < 4; page++) {
+          const result = z
+            .object({ data: z.array(z.unknown()).max(30), nextCursor: z.string().nullable() })
+            .parse(
+              await this.#request("thread/items/list", {
+                threadId,
+                turnId: turn.id,
+                cursor: itemCursor,
+                limit: 30,
+                sortDirection: "desc",
+                deferOutput: { commandExecution: true, mcpToolCall: true },
+              }),
+            );
+          for (const value of result.data) {
+            if (!value || typeof value !== "object" || Array.isArray(value))
+              throw new Error("Invalid subagent item entry");
+            const entry = value as Record<string, unknown>;
+            if (
+              entry.turnId !== turn.id ||
+              !entry.item ||
+              typeof entry.item !== "object" ||
+              Array.isArray(entry.item)
+            )
+              throw new Error("Subagent item turn mismatch");
+            const item = entry.item as Record<string, unknown>;
+            if (typeof item.id === "string" && item.id) {
+              if (item.id.length > 256) throw new Error("Invalid subagent item identity");
+              if (ids.has(item.id)) throw new Error("Duplicate subagent item");
+              ids.add(item.id);
+            }
+            let metadata: Record<string, unknown> | null = null;
+            if (item.type === "collabAgentToolCall") {
+              if (
+                typeof item.id !== "string" ||
+                !item.id ||
+                !Array.isArray(item.receiverThreadIds) ||
+                item.receiverThreadIds.length > 100 ||
+                item.receiverThreadIds.some((id) => typeof id !== "string" || id.length > 256)
+              ) {
+                capped = true;
+                break;
+              }
+              metadata = {
+                type: item.type,
+                senderThreadId:
+                  typeof item.senderThreadId === "string" && item.senderThreadId.length <= 256
+                    ? item.senderThreadId
+                    : null,
+                receiverThreadIds: item.receiverThreadIds,
+                tool: typeof item.tool === "string" && item.tool.length <= 40 ? item.tool : null,
+                status:
+                  typeof item.status === "string" && item.status.length <= 40 ? item.status : null,
+                startedAtMs:
+                  typeof entry.startedAtMs === "number" && Number.isFinite(entry.startedAtMs)
+                    ? entry.startedAtMs
+                    : null,
+              };
+            } else if (item.type === "subAgentActivity") {
+              if (typeof item.id !== "string" || !item.id)
+                throw new Error("Invalid subagent activity identity");
+              metadata = {
+                type: item.type,
+                agentThreadId:
+                  typeof item.agentThreadId === "string" && item.agentThreadId.length <= 256
+                    ? item.agentThreadId
+                    : null,
+                kind: typeof item.kind === "string" && item.kind.length <= 40 ? item.kind : null,
+                startedAtMs:
+                  typeof entry.startedAtMs === "number" && Number.isFinite(entry.startedAtMs)
+                    ? entry.startedAtMs
+                    : null,
+              };
+            }
+            if (metadata) {
+              metadataBytes += Buffer.byteLength(JSON.stringify(metadata));
+              if (metadataBytes > 256 * 1024) {
+                capped = true;
+                break;
+              }
+              items.push(metadata);
+            }
+          }
+          if (capped) break;
+          if (result.nextCursor === null) {
+            complete = true;
+            break;
+          }
+          if (
+            !result.nextCursor ||
+            result.nextCursor.length > 4096 ||
+            cursors.has(result.nextCursor)
+          )
+            throw new Error("Repeated subagent item cursor");
+          cursors.add(result.nextCursor);
+          itemCursor = result.nextCursor;
+        }
+      }
+      // Public item pagination is descending; collector expects chronological items.
+      items.reverse();
+      data.push({
+        id: typeof turn.id === "string" && turn.id.length <= 256 ? turn.id : null,
+        rootTurnId:
+          typeof turn.rootTurnId === "string" && turn.rootTurnId.length <= 256
+            ? turn.rootTurnId
+            : null,
+        startedAt:
+          typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt)
+            ? turn.startedAt
+            : null,
+        completedAt:
+          typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt)
+            ? turn.completedAt
+            : null,
+        itemsView: complete ? "full" : "partial",
         items,
-      };
-    });
+      });
+    }
     return { data, nextCursor: raw.nextCursor ?? null };
   }
 

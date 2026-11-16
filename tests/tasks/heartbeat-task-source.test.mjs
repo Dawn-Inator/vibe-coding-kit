@@ -482,9 +482,7 @@ test("nested tracking hierarchies flatten to real leaves once and shared-child D
 		false,
 	);
 	assert.deepEqual(state.progress, { completed: 1, total: 3, percent: 33.33 });
-	assert.deepEqual(state.source.linkRisks, [
-		"C1: shared child link; counted once under P1",
-	]);
+	assert.equal(state.source.linkRisks, undefined, "a valid shared child is counted once without an unsafe-link warning");
 });
 
 test("projection rejects parser errors and duplicate IDs, and surfaces unresolved child links", () => {
@@ -1408,4 +1406,58 @@ test("a selected task root counts its transitive leaves once and excludes unrela
 	]) assert.throws(() => projectHeartbeatTask({ ...options, report: { mode: "items", findings: [], items }, taskRootId: "R" }), /task root/);
 	assert.throws(() => projectHeartbeatTask({ ...options, taskRootId: "MISSING" }), /missing/);
 	assert.throws(() => projectHeartbeatTask({ ...options, report: { ...report, findings: [{ severity: "error", message: "unrelated invalid row" }] }, taskRootId: "R1-BUSINESS" }), /invalid heartbeat Items/);
+});
+
+
+test("optional dash and blank leaf children do not create invalid-JSON warnings", () => {
+ const text = ledger([
+  ["ROOT", "report:root", "Root", "tracking", "coordination evidence", '["DASH","BLANK","ARRAY"]'],
+  ["DASH", "report:dash", "Dash leaf", "done", "receipt", "-"],
+  ["BLANK", "report:blank", "Blank leaf", "done", "receipt", ""],
+  ["ARRAY", "report:array", "Array leaf", "done", "receipt", "[]"],
+ ]);
+ const report = inspectHeartbeatLedger(text, {mode: "items"});
+ assert.equal(report.passed, true, JSON.stringify(report.findings));
+ const state = projectHeartbeatTask({report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "dash", modifiedAt: "2026-01-01T00:00:00Z", taskRootId: "ROOT"});
+ assert.equal(state.source.linkRisks, undefined);
+ assert.deepEqual(state.progress, {completed: 3, total: 3, percent: 100});
+ assert.deepEqual(state.objectives[0].items.map(item => item.id), ["DASH", "BLANK", "ARRAY"]);
+});
+
+test("full inventory validates children beyond display window and deduplicates shared leaves", () => {
+ const ids = Array.from({length: 225}, (_, i) => `L${i}`);
+ const rows = [
+  ["P1", "report:root", "Root", "tracking", "coordination evidence", JSON.stringify(ids)],
+  ["P2", "report:root", "Second root", "tracking", "coordination evidence", '["L224"]'],
+  ...ids.map((id, i) => [id, `report:${id}`, id, i < 150 ? "done" : `blocked <- resource-${i}`, "receipt", i % 2 ? "-" : "[]"]),
+ ];
+ const report = inspectHeartbeatLedger(ledger(rows), {mode: "items"});
+ assert.equal(report.passed, true, JSON.stringify(report.findings));
+ const state = projectHeartbeatTask({report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "many", modifiedAt: "2026-01-01T00:00:00Z"});
+ assert.equal(Object.keys(state.source.itemStatuses).length, 227);
+ assert.equal(state.source.linkRisks, undefined);
+ assert.deepEqual(state.progress, {completed: 150, total: 225, percent: 66.67});
+ const idsInTask = state.objectives.flatMap(objective => [objective.id, ...objective.items.map(item => item.id)]);
+ assert.equal(idsInTask.filter(id => id === "L224").length, 1);
+ assert.equal(state.objectives.find(objective => objective.id === "P1").items.length, 225);
+});
+
+test("real malformed child values and unsafe links retain their diagnostic risks", () => {
+ const report = {mode: "items", findings: [], items: [
+  {id: "BAD", status: "done", children: "not-json"},
+  {id: "EMDASH", status: "done", children: "—"},
+  {id: "NONTRACKING", status: "done", children: '["L"]'},
+  {id: "MISSING", status: "tracking", children: '["ABSENT"]'},
+  {id: "DUP", status: "tracking", children: '["L","L"]'},
+  {id: "SELF", status: "tracking", children: '["SELF"]'},
+  {id: "CYCLE1", status: "tracking", children: '["CYCLE2"]'},
+  {id: "CYCLE2", status: "tracking", children: '["CYCLE1"]'},
+  {id: "TRACKING_EMPTY", status: "tracking", children: "-"},
+  {id: "L", status: "done", children: "-"},
+ ]};
+ const state = projectHeartbeatTask({report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "invalid", modifiedAt: "2026-01-01T00:00:00Z"});
+ const risks = state.source.linkRisks;
+ for (const expected of [/BAD: children is not a JSON array/, /EMDASH: children is not a JSON array/, /NONTRACKING: child links are only aggregated for tracking parents/, /MISSING: missing child ABSENT/, /DUP: duplicate child link/, /SELF: self-link/, /CYCLE1: cyclic child link/, /CYCLE2: cyclic child link/, /TRACKING_EMPTY: tracking parent requires nonempty child links/])
+  assert.ok(risks.some(risk => expected.test(risk)), `missing risk ${expected}`);
+ assert.ok(!risks.some(risk => risk.startsWith("L:")));
 });

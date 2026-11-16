@@ -1,11 +1,16 @@
 import { realpath } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 import { TaskStore } from './task-store.mjs';
 
-export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, taskCycleId, cycleStartedAt, now = () => new Date() }) {
+export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, taskCycleId, cycleStartedAt, taskSourcePath, now = () => new Date() }) {
   const observedAt = now().toISOString();
-  const snapshot = { schemaVersion: 1, parentThreadId, observedAt, status: 'ready', runningCount: null, runningBasis: 'unknown', agents: [], complete: true, truncated: false, taskCycleId: taskCycleId ?? null, scopeBasis: 'unknown' };
-  const cycleMs = Date.parse(cycleStartedAt);
-  if (typeof taskCycleId !== 'string' || !taskCycleId || !Number.isFinite(cycleMs) || typeof listTurnsPage !== 'function') {
+  const snapshot = { schemaVersion: 1, parentThreadId, observedAt, status: 'ready', runningCount: null, runningBasis: 'unknown', agents: [], complete: true, truncated: false, taskCycleId: taskCycleId ?? null, taskSourcePath: taskSourcePath ?? null, scopeBasis: 'unknown' };
+  const hasCycle = taskCycleId != null || cycleStartedAt != null;
+  const validCycle = typeof taskCycleId === 'string' && !!taskCycleId.trim() && Number.isFinite(Date.parse(cycleStartedAt));
+  const validSource = typeof taskSourcePath === 'string' && !!taskSourcePath.trim() && !taskSourcePath.includes('\0') && isAbsolute(taskSourcePath) && resolve(taskSourcePath) === taskSourcePath;
+  const sourceScope = !hasCycle && validSource;
+  let cycleMs = validCycle ? Date.parse(cycleStartedAt) : NaN;
+  if ((taskSourcePath != null && !validSource) || (hasCycle && taskSourcePath != null) || (hasCycle && !validCycle) || (!hasCycle && !sourceScope) || typeof listTurnsPage !== 'function') {
     snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot;
   }
   const members = new Set();
@@ -15,6 +20,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   let rootTurnId;
   let turnCursor;
   let boundary = false;
+  let rootCount = 0;
   try {
     for (let page = 0; page < 8; page++) {
       const result = await listTurnsPage(turnCursor);
@@ -33,8 +39,12 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       for (const turn of result.data) {
         if (!turn || typeof turn.id !== 'string' || !turn.id.trim() || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { snapshot.complete = false; continue; }
         const startMs = turn.startedAt * 1000;
-        if (turn.rootTurnId !== rootTurnId) { boundary = true; snapshot.complete = false; break; }
-        if (turn.id === rootTurnId) snapshot.rootTurnStartedAt = new Date(startMs).toISOString();
+        if (turn.rootTurnId !== rootTurnId) { boundary = true; if (rootCount !== 1) snapshot.complete = false; break; }
+        if (turn.id === rootTurnId) {
+          rootCount++;
+          if (sourceScope && rootCount > 1) throw new Error('Ambiguous root turn');
+          snapshot.rootTurnStartedAt = new Date(startMs).toISOString();
+        }
         if (Number.isFinite(turn.completedAt) && turn.completedAt * 1000 < cycleMs) { boundary = true; continue; }
         if (turn.itemsView !== 'full') snapshot.complete = false;
         turns.push(turn);
@@ -43,6 +53,15 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor === turnCursor) { snapshot.complete = false; break; }
       turnCursor = result.nextCursor;
       if (page === 7) { snapshot.complete = false; snapshot.truncated = true; }
+    }
+    if (sourceScope) {
+      if (!rootTurnId || rootCount !== 1 || !snapshot.rootTurnStartedAt) {
+        snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot;
+      }
+      cycleMs = Date.parse(snapshot.rootTurnStartedAt);
+      if (!Number.isFinite(cycleMs) || turns.some(turn => turn.startedAt * 1000 < cycleMs)) {
+        snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot;
+      }
     }
     // Pages are newest first, while items inside each turn are ordered oldest first.
     // Replaying the turns in reverse makes a later dispatch invalidate an earlier completion.
@@ -68,7 +87,14 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     }
     if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
   } catch { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; }
-  if (!members.size) { if (!snapshot.complete) snapshot.status = 'partial'; return snapshot; }
+  let runtimeStatusesComplete = true;
+  const finalizeRunningCount = () => {
+    if (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && runtimeStatusesComplete && snapshot.agents.every(agent => ['working', 'waiting', 'idle', 'completed'].includes(agent.state))) {
+      snapshot.runningCount = snapshot.agents.filter(agent => agent.state === 'working').length;
+      snapshot.runningBasis = 'runtime';
+    }
+  };
+  if (!members.size) { if (!snapshot.complete) snapshot.status = 'partial'; finalizeRunningCount(); return snapshot; }
   let cursor;
   const seen = new Set();
   const canonicalCwd = await realpath(cwd);
@@ -84,6 +110,8 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         seen.add(child.id);
         if (snapshot.agents.length >= 100) { snapshot.complete = false; snapshot.truncated = true; break; }
         const entry = { id: child.id, name: String(child.name || spawn.agent_nickname || spawn.agent_role || child.id).slice(0, 200), state: 'unknown', observedAt, progress: null, progressBasis: null };
+        const statusType = child.status?.type;
+        if (!((statusType === 'active' && Array.isArray(child.status.activeFlags)) || statusType === 'idle' || statusType === 'completed')) runtimeStatusesComplete = false;
         const activity = recorded.get(child.id);
         if (activity?.kind === 'completed') { entry.state = 'completed'; entry.observedAt = new Date(activity.timestamp).toISOString(); }
         if (child.status?.type === 'active' && Array.isArray(child.status.activeFlags)) {
@@ -112,5 +140,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   } catch { snapshot.complete = false; snapshot.status = snapshot.agents.length ? 'partial' : 'unavailable'; }
   if (seen.size !== members.size) snapshot.complete = false;
   if (!snapshot.complete && snapshot.status === 'ready') snapshot.status = 'partial';
+  finalizeRunningCount();
   return snapshot;
 }
