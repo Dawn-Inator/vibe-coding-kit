@@ -75,8 +75,8 @@ At every timer wake, the orchestrator itself must:
 4. Audit the complete backlog with the [backlog audit](references/backlog-audit.md) and
    [module delivery audit](references/module-delivery-audit.md). Decompose every non-done item into a concrete
    next step; delegated implementation units need persistent module owners through tests, fixes and acceptance.
-   Drain pending acceptance, repair and verification queues before expanding work that would add to the same
-   bottleneck. Dispatch free independent units when authorized and execution plus acceptance capacity exists;
+   Balance wiring, execution and acceptance from queue evidence; review the previous adjustment's effect.
+   Dispatch free independent units when authorized and execution plus acceptance capacity exists;
    do not wait to be asked. Name repository, worktree, mode and exact relative write set. Re-split only when
    the current boundary no longer holds; a new wake does not itself require replacing an owner.
 5. Check direction against known project signals and record the evidence. An unsubstantiated impression is
@@ -93,12 +93,11 @@ and wake mechanism; child modules do not each create a heartbeat, timer or paral
 
 ## Orchestration snapshot
 
-For each new v2 wake, probe actual running children before and after coordination; record each count, ISO
-time and evidence. Exclude the orchestrator, catalogs, completed children and acceptance-only receipts.
-Audit blocked tasks and Owner intervention from evidence, using unknown when not established. Use the
-optional Kit `orchestration` metadata in the same wake, never a parallel plugin record. Read the exact
-[snapshot fields and writer contract](references/ledger-api.md#orchestration-snapshot) before writing one.
-When there is an explicit agent plan, record `agentPlan: { parentThreadId, planId, revision, plannedAgents, taskCycleId? }` with actual observations in that same wake. Use the trusted parent thread and, for a managed task cycle, its matching lifecycle ID; advance the plan revision when the plan changes. Do not infer a plan from the number listed or create another ledger or timer. Keep ten raw rows; do not infer snapshots from them or rewrite historical wakes.
+For each v2 wake, read the [snapshot and writer contract](references/ledger-api.md#orchestration-snapshot).
+Record actual child observations before/after coordination, blocked tasks and known Owner intervention
+in that wake's optional Kit `orchestration` metadata, not a parallel plugin record. For an explicit plan,
+record trusted `agentPlan` identity and update its revision when allocation changes. Unknown stays unknown;
+keep ten raw rows, never infer plans/activity from them or rewrite historical wakes.
 
 ## Ledger contract
 

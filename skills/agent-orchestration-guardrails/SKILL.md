@@ -29,6 +29,9 @@ or test-running steps. Each owner carries a bounded, independently acceptable fu
 implementation, tests, fixes and resubmission. This applies from the first dispatch, not after two hours.
 Explorers and reviewers support delivery; their reports do not replace an implementation owner.
 Read [module delivery](references/module-delivery.md) before decomposing or dispatching implementation.
+At intake, before each wave and when queues change, read [capacity balance](references/capacity-balance.md).
+Adjust cross-module wiring, execution and acceptance effort from observed bottlenecks, not fixed agent counts;
+preserve module ownership, independent review and all host/authorization limits.
 
 **Threshold B:** when a single-agent autonomous session has run or is expected to run over two hours
 (including overnight or unattended work), the orchestrator switches to dispatch-only: delegate each

@@ -79,3 +79,5 @@ On every candidate return, the orchestrator:
 Handle a private candidate final promptly; it need not wait for the next heartbeat. When acceptance or test
 queues accumulate, prioritize draining them and completing current modules before opening more work.
 Concurrency follows independent work, host capacity and acceptance capacity, not a target agent count.
+Use [capacity balance](capacity-balance.md) to adjust wiring, execution and acceptance effort from the
+observed limiting stage, retaining module owners and comparing the effect at the next review point.

@@ -238,3 +238,7 @@ audit reference or `null`. Use nonblank references for observed counts, nonnegat
 and `true`, `false`, or `null` for `requiresOwner`. The Kit writer records the optional v2 metadata in the
 same wake; do not create a parallel plugin record. Retain the ten raw audit rows for compatibility and audit,
 not as the main UI. Missing historical snapshots remain unknown: do not guess or rewrite old wakes.
+
+### Explicit agent plan
+
+When there is an explicit agent plan, record `agentPlan: { parentThreadId, planId, revision, plannedAgents, taskCycleId? }` with actual observations in that same wake. Use the trusted parent thread and, for a managed task cycle, its matching lifecycle ID; advance the plan revision when the plan changes. Do not infer a plan from the number listed or create another ledger or timer. Keep ten raw rows; do not infer snapshots from them or rewrite historical wakes.
