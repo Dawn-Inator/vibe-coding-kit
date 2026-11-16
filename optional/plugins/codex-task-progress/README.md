@@ -18,7 +18,7 @@ Version 0.9.0 shows a frameless allocation ring for the recorded running-agent c
 
 During a pending Heartbeat refresh, retain an already verified ready allocation only while its parent and task cycle match. Missing records, terminal errors or mismatches remain unknown. The new native entry still requires actual host acceptance.
 
-Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Archive data and logic are unchanged. This updated native UI still requires actual host acceptance.
+Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. Archive data and logic are unchanged. This updated native UI still requires actual host acceptance.
 
 ## Version 0.8.0
 

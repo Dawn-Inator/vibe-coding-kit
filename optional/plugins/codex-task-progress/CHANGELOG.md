@@ -1,6 +1,6 @@
 # Task Progress 0.9.2
 
-- Align Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. No archive data or logic changes. Native UI acceptance remains pending.
+- Align Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. No archive data or logic changes. Native UI acceptance remains pending.
 
 # Task Progress 0.9.1
 

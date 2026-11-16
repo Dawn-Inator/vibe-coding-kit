@@ -3807,6 +3807,44 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "none",
         );
         await panel.locator(".archive-node").filter({ hasText: "Archived objective" }).waitFor();
+        assert.equal(await first.getAttribute("aria-expanded"), "true");
+        const fullTitle = first.locator(":scope > span:nth-child(2)");
+        const archiveDate = first.locator(":scope > .archive-date");
+        assert.equal(await fullTitle.innerText(), summary.title);
+        for (const width of [420, 320]) {
+          await page.setViewportSize({ width, height: 740 });
+          const titleLayout = await fullTitle.evaluate((element) => {
+            const titleRect = element.getBoundingClientRect();
+            const dateRect = element.nextElementSibling.getBoundingClientRect();
+            const cardRect = element.closest(".archive-card").getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return {
+              titleWidth: titleRect.width,
+              titleHeight: titleRect.height,
+              scrollWidth: element.scrollWidth,
+              clientWidth: element.clientWidth,
+              scrollHeight: element.scrollHeight,
+              clientHeight: element.clientHeight,
+              whiteSpace: style.whiteSpace,
+              textOverflow: style.textOverflow,
+              titleRight: titleRect.right,
+              dateLeft: dateRect.left,
+              dateRight: dateRect.right,
+              cardLeft: cardRect.left,
+              cardRight: cardRect.right,
+            };
+          });
+          assert.ok(titleLayout.titleWidth > 0 && titleLayout.titleHeight > 0);
+          assert.ok(titleLayout.scrollWidth <= titleLayout.clientWidth);
+          assert.ok(titleLayout.scrollHeight <= titleLayout.clientHeight);
+          assert.notEqual(titleLayout.whiteSpace, "nowrap");
+          assert.notEqual(titleLayout.textOverflow, "ellipsis");
+          assert.ok(titleLayout.titleRight <= titleLayout.dateLeft);
+          assert.ok(titleLayout.dateLeft >= titleLayout.cardLeft);
+          assert.ok(titleLayout.dateRight <= titleLayout.cardRight);
+          await assertNoArchiveOverflow();
+        }
+        await page.setViewportSize(archiveChildViewport);
         const nodesMore = panel.getByRole("button", { name: "Load more", exact: true });
         assert.equal(await nodesMore.getAttribute("class"), "pagination-button");
         assert.equal(await nodesMore.locator("svg").count(), 1);

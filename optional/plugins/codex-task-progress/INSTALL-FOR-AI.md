@@ -68,7 +68,7 @@ An optional standalone `task_root: <Items ID>` selects a tracking root and its l
 
 Version 0.9.0 shows a frameless allocation ring for the recorded running-agent count against an explicit agent plan. The after-audit Heartbeat observation supplies the numerator and the before-to-after observation is supporting context; listed agents are not the denominator. A missing or unmatched plan or observation, zero denominator, or an over-plan count does not produce a misleading progress arc. Unknown values use a gray ring. This is a timestamped observation, not a live Desktop count. The native entry moves to `task_progress_dashboard`; `task_progress_panel` remains model-only and read-only for compatibility. Native rendering and migration must be verified in the host.
 
-Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Archive data and logic are unchanged. Verify this UI in the native host; release and build checks do not establish host acceptance.
+Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. Archive data and logic are unchanged. Verify this UI in the native host; release and build checks do not establish host acceptance.
 
 ## Storage compatibility
 

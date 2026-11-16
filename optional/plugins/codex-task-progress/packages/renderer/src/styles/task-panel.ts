@@ -220,6 +220,8 @@ export const taskPanelStyles = css`
   .archive-cycle-toggle { min-height: 34px; border-radius: 8px; padding: 7px 9px; font-size: 11px; overflow-wrap: anywhere; }
   .archive-cycle-toggle:focus:not(:focus-visible) { outline: none; }
   .archive-cycle-toggle > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .archive-cycle-toggle[aria-expanded="true"] { align-items: flex-start; }
+  .archive-cycle-toggle[aria-expanded="true"] > span:nth-child(2) { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
   .archive-date, .archive-note { color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
   .archive-date { flex: none; white-space: nowrap; }
   .archive-nodes { padding: 0 8px 8px 22px; }
