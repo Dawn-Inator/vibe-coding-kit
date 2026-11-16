@@ -44,6 +44,10 @@ export interface CodexAppServerSession {
   listLoadedThreads(): Promise<readonly ThreadCatalogEntry[]>;
   listThreads(filter?: { readonly cwd?: string }): Promise<readonly ThreadCatalogEntry[]>;
   listTurnIds(threadId: string): Promise<readonly string[]>;
+  listSubagentTurns?(
+    threadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }>;
   listDirectSubagents?(
     parentThreadId: string,
     cursor?: string,
@@ -52,6 +56,10 @@ export interface CodexAppServerSession {
 }
 
 export interface CodexAppServerRuntime {
+  listSubagentTurns?(
+    threadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }>;
   listDirectSubagents?(
     parentThreadId: string,
     cursor?: string,
@@ -251,6 +259,15 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#setTimeout = options.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout));
     this.#clearTimeout = options.clearTimeout ?? ((id) => clearTimeout(id as NodeJS.Timeout));
+  }
+
+  async listSubagentTurns(
+    threadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }> {
+    const client = await this.#enqueue(() => this.#ensureClient());
+    if (!client.listSubagentTurns) throw new Error("Subagent turn history unavailable");
+    return client.listSubagentTurns(threadId, cursor);
   }
 
   async listDirectSubagents(

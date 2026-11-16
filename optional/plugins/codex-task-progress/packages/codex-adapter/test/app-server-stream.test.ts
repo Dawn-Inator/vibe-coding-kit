@@ -257,14 +257,14 @@ test("default bounded mode retains the cumulative 4 MiB output cap", async () =>
   assert.equal(client.failed?.message, "GOAL_PROGRESS_APP_SERVER_OUTPUT_LIMIT");
 });
 
-test("direct subagent listing sends parent, bounded page and all subagent kinds", async () => {
+test("direct subagent listing requests only spawn children with parent and bounded pagination", async () => {
   const script = responderScript(`
     input.on("line", (line) => {
       const request = JSON.parse(line);
       if (request.method === "thread/list") {
         const p = request.params;
         const valid = p.parentThreadId === "parent" && p.cursor === "next" && p.limit === 50 &&
-          JSON.stringify(p.sourceKinds) === JSON.stringify(["subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"]);
+          JSON.stringify(p.sourceKinds) === JSON.stringify(["subAgentThreadSpawn"]);
         process.stdout.write(JSON.stringify({ id: request.id, result: { data: valid ? [{ id: "child" }] : [], nextCursor: null } }) + "\\n");
       }
     });
@@ -275,6 +275,32 @@ test("direct subagent listing sends parent, bounded page and all subagent kinds"
       data: [{ id: "child" }],
       nextCursor: null,
     });
+  } finally {
+    await client.close();
+  }
+});
+
+test("parent turns request full bounded pages and discard message and prompt content", async () => {
+  const script = responderScript(`
+    input.on("line", (line) => {
+      const request = JSON.parse(line);
+      if (request.method === "thread/turns/list") {
+        if (request.params.itemsView !== "full" || request.params.limit !== 2 || request.params.cursor !== "cursor") process.exit(2);
+        process.stdout.write(JSON.stringify({ id: request.id, result: { data: [{ id: "t", rootTurnId: "t", startedAt: 123, itemsView: "full", items: [
+          { type: "userMessage", text: "private" },
+          { type: "collabAgentToolCall", senderThreadId: "p", receiverThreadIds: ["c"], tool: "spawnAgent", status: "completed", prompt: "private" },
+          { type: "subAgentActivity", agentThreadId: "c", kind: "started", agentPath: "private" }
+        ] }], nextCursor: null } }) + "\\n");
+      }
+    });
+  `);
+  const client = await clientFor(script, { outputMode: "stream" });
+  try {
+    const result = await client.listSubagentTurns("p", "cursor");
+    assert.equal(result.data.length, 1);
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.match(JSON.stringify(result), /collabAgentToolCall/);
+    assert.match(JSON.stringify(result), /subAgentActivity/);
   } finally {
     await client.close();
   }

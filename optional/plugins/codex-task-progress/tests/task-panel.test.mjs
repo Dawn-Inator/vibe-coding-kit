@@ -9,6 +9,9 @@ import { build } from "esbuild";
 const controlsEvidenceDir = fileURLToPath(
   new URL("../.playwright-img/panel-controls-080/", import.meta.url),
 );
+const archiveEvidenceDir = fileURLToPath(
+  new URL("../.playwright-img/archive-polish-093/", import.meta.url),
+);
 const metricsEvidenceDir = fileURLToPath(
   new URL("../.playwright-img/panel-allocation-090/", import.meta.url),
 );
@@ -214,8 +217,19 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
         await page.evaluate((value) => {
-          window.fixture.task = value;
+          window.fixture.task = {
+            ...value,
+            lifecycle: {
+              id: "cycle-1",
+              sequence: 1,
+              startedAt: "2026-11-15T11:00:00Z",
+              completion: null,
+            },
+          };
           window.fixture.subagents = {
+            taskCycleId: "cycle-1",
+            rootTurnId: "turn-1",
+            scopeBasis: "parent-root-turn",
             schemaVersion: 1,
             parentThreadId: "thread-a",
             observedAt: "2026-11-15T12:00:00Z",
@@ -272,7 +286,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await ring.locator(".allocation-fill").getAttribute("stroke-dashoffset"),
           "50",
         );
-        assert.match(await panel.locator(".agent-counts").innerText(), /已列出 Agent 3/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 3/);
         assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /99|实时/);
         assert.equal(await panel.locator(".agent-counts .allocation-ring").count(), 1);
         assert.equal(
@@ -314,6 +328,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "0",
         );
         assert.equal(await rows.nth(1).locator('[role="meter"]').count(), 0);
+        assert.match(await rows.nth(1).innerText(), /进度未登记/);
+        assert.doesNotMatch(await rows.nth(1).innerText(), /—|0\/0/);
+        assert.equal(await rows.nth(1).locator(".module-percent, .module-track").count(), 0);
+        assert.ok(
+          (await rows.nth(1).boundingBox()).height < (await rows.nth(0).boundingBox()).height + 4,
+        );
         for (const sample of [
           { runningCount: 0, ratio: 0, offset: "100" },
           { runningCount: 10, ratio: 0.5, offset: "50" },
@@ -353,7 +373,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await ring.getAttribute("role"), "img");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
-        assert.match(await panel.locator(".agent-counts").innerText(), /已列出 Agent 100/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 100/);
         assert.equal(await ring.locator("strong").innerText(), "—");
         await page.evaluate(() => {
           window.fixture.subagents.allocation = {
@@ -405,14 +425,126 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await context.close();
       },
     );
+    await t.test("agent members require current cycle and root-turn evidence", async () => {
+      const { context, page, panel } = await open("?defaultSubagents");
+      await page.evaluate((value) => {
+        window.fixture.task = {
+          ...value,
+          lifecycle: {
+            id: "cycle-new",
+            sequence: 2,
+            startedAt: "2026-11-15T11:00:00Z",
+            completion: null,
+          },
+        };
+        window.fixture.subagents = {
+          schemaVersion: 1,
+          parentThreadId: "thread-a",
+          taskCycleId: "cycle-old",
+          rootTurnId: "old-turn",
+          scopeBasis: "parent-root-turn",
+          status: "ready",
+          observedAt: null,
+          runningCount: null,
+          runningBasis: "unknown",
+          complete: true,
+          truncated: false,
+          allocation: {
+            status: "ready",
+            planId: "old-plan",
+            planRevision: 1,
+            plannedCount: 10,
+            runningCount: 5,
+            ratio: 0.5,
+            observedAt: "2026-11-15T12:00:00Z",
+            basis: "heartbeat",
+          },
+          agents: Array.from({ length: 100 }, (_, i) => ({
+            id: `old-${i}`,
+            name: `Historical ${i}`,
+            state: "unknown",
+            progress: null,
+            progressBasis: null,
+            observedAt: null,
+          })),
+        };
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      }, task);
+      const assertNotReady = async () => {
+        assert.equal(await panel.locator(".agent-row").count(), 0);
+        const ring = panel.locator(".agent-counts .allocation-ring");
+        assert.equal(await ring.getAttribute("role"), "img");
+        assert.equal(await ring.getAttribute("aria-valuenow"), null);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /5\/10|50%/);
+        assert.match(await panel.locator(".subagents").innerText(), /本轮 Agent 记录尚未就绪/);
+        assert.doesNotMatch(await panel.locator(".panel-foot").innerText(), /100|0/);
+      };
+      await assertNotReady();
+      for (const patch of [
+        { taskCycleId: "cycle-new", scopeBasis: undefined },
+        { scopeBasis: "unknown", rootTurnId: "new-turn" },
+        { scopeBasis: "parent-root-turn", rootTurnId: "  " },
+        { rootTurnId: "new-turn", status: "pending" },
+      ]) {
+        await page.evaluate((value) => {
+          Object.assign(window.fixture.subagents, value);
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, patch);
+        await assertNotReady();
+      }
+      await page.evaluate(() => {
+        Object.assign(window.fixture.subagents, {
+          status: "ready",
+          agents: Array.from({ length: 4 }, (_, i) => ({
+            id: `current-${i}`,
+            name: `Current ${i}`,
+            state: i === 0 ? "working" : "unknown",
+            progress: null,
+            progressBasis: null,
+            observedAt: null,
+          })),
+        });
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      assert.deepEqual(
+        await panel
+          .locator(".agent-row")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.agent)),
+        ["current-0", "current-1", "current-2", "current-3"],
+      );
+      assert.match(await panel.locator(".panel-foot").innerText(), /本轮 Agent 4/);
+      assert.equal(
+        await panel.locator(".agent-counts .allocation-ring").getAttribute("aria-valuenow"),
+        "50",
+      );
+      assert.doesNotMatch(await panel.locator(".subagents").innerText(), /Historical|100/);
+      await page.evaluate(() => {
+        window.fixture.task.lifecycle.id = "cycle-later";
+        return window.__CODEX_TASK_PROGRESS__.refresh();
+      });
+      await assertNotReady();
+      await context.close();
+    });
     await t.test(
       "subagent mode state is isolated and panel fills short and tall windows",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.evaluate((value) => {
-          window.fixture.task = value;
+          window.fixture.task = {
+            ...value,
+            lifecycle: {
+              id: "cycle-1",
+              sequence: 1,
+              startedAt: "2026-11-15T11:00:00Z",
+              completion: null,
+            },
+          };
           window.fixture.subagents = {
+            taskCycleId: "cycle-1",
+            rootTurnId: "turn-1",
+            scopeBasis: "parent-root-turn",
             schemaVersion: 1,
             parentThreadId: "thread-a",
             observedAt: "2026-11-15T12:00:00Z",
@@ -3547,13 +3679,21 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           ({ managed, summary, second }) => {
             Object.assign(window.fixture, {
               task: managed,
-              archiveCount: 2,
+              archiveCount: 3,
+              holdNextArchive: true,
               completionBasis: "task-lifecycle",
               archiveResponses: {
                 "tasks:first": {
                   kind: "tasks",
-                  tasks: [summary],
-                  total: 2,
+                  tasks: [
+                    summary,
+                    {
+                      ...summary,
+                      id: "old-3",
+                      title: "历史任务：为归档界面增加清晰层级和中文长标题展示",
+                    },
+                  ],
+                  total: 3,
                   nextCursor: "older",
                   currentTaskId: "cycle-2",
                   threadId: "thread-a",
@@ -3577,8 +3717,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                       kind: "objective",
                       required: true,
                     },
+                    {
+                      id: "cancelled",
+                      title: "取消的历史子任务仍需保留记录",
+                      status: "cancelled",
+                      kind: "item",
+                      parentId: "o",
+                    },
                   ],
-                  totalNodes: 2,
+                  totalNodes: 3,
                   nextCursor: "node-2",
                   currentTaskId: "cycle-2",
                   threadId: "thread-a",
@@ -3629,7 +3776,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "66.67");
         const archive = panel.locator(".archive-toggle");
         assert.equal(await archive.getAttribute("aria-expanded"), "false");
-        assert.match(await archive.innerText(), /Archive\s*2/);
+        assert.match(await archive.innerText(), /Archive\s*3/);
         assert.equal(await archive.locator(".archive-icon").count(), 1);
         assert.equal(await archive.locator(".archive-chevron").count(), 1);
         const assertInsetHitArea = async (button) => {
@@ -3760,6 +3907,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         }
         await page.setViewportSize(archiveViewport);
         await archive.click();
+        await page.waitForFunction(() => typeof window.fixture.releaseHeldArchive === "function");
+        assert.equal(await panel.locator(".archive-list").getAttribute("aria-busy"), "true");
+        assert.equal(await panel.locator(".archive-skeleton span").count(), 3);
+        assert.equal(await panel.getByText("Loading archive…").count(), 0);
+        await mkdir(archiveEvidenceDir, { recursive: true });
+        await panel.locator(".body").screenshot({ path: `${archiveEvidenceDir}/loading.png` });
+        await page.evaluate(() => window.fixture.releaseHeldArchive());
+        await panel.locator(".archive-cycle-toggle").first().waitFor();
+        assert.equal(await panel.locator(".archive-list").getAttribute("aria-busy"), "false");
         assert.equal(await archive.evaluate((element) => element.matches(":focus-visible")), false);
         assert.equal(
           await archive.evaluate((element) => getComputedStyle(element).outlineStyle),
@@ -3807,6 +3963,16 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "none",
         );
         await panel.locator(".archive-node").filter({ hasText: "Archived objective" }).waitFor();
+        assert.equal(
+          await panel
+            .locator('.archive-group .archive-children .archive-node[data-status="cancelled"]')
+            .count(),
+          1,
+        );
+        assert.match(
+          await panel.locator('.archive-node[data-status="cancelled"] .archive-status').innerText(),
+          /cancelled/i,
+        );
         assert.equal(await first.getAttribute("aria-expanded"), "true");
         const fullTitle = first.locator(":scope > span:nth-child(2)");
         const archiveDate = first.locator(":scope > .archive-date");
@@ -3844,6 +4010,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           assert.ok(titleLayout.dateRight <= titleLayout.cardRight);
           await assertNoArchiveOverflow();
         }
+        for (const width of [1100, 420, 320]) {
+          await page.setViewportSize({ width, height: 740 });
+          await panel
+            .locator(".body")
+            .screenshot({ path: `${archiveEvidenceDir}/expanded-${width}.png` });
+        }
         await page.setViewportSize(archiveChildViewport);
         const nodesMore = panel.getByRole("button", { name: "Load more", exact: true });
         assert.equal(await nodesMore.getAttribute("class"), "pagination-button");
@@ -3865,6 +4037,20 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await page.setViewportSize(viewport);
         await nodesMore.click();
         await panel.locator(".archive-node").filter({ hasText: "Archived child" }).waitFor();
+        assert.equal(
+          await panel.locator(".archive-group .archive-children .archive-node").count(),
+          2,
+        );
+        await first.focus();
+        await page.keyboard.press("Tab");
+        await page.keyboard.press("Shift+Tab");
+        assert.equal(await first.evaluate((element) => element.matches(":focus-visible")), true);
+        await first.click();
+        assert.equal(
+          await first.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
+        await first.click();
         await page.evaluate(() => {
           window.fixture.holdNextArchive = true;
         });
@@ -3873,6 +4059,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await olderMore.click();
         await page.waitForFunction(() => typeof window.fixture.releaseHeldArchive === "function");
         assert.equal(await olderMore.isDisabled(), true);
+        assert.equal(await panel.locator(".archive-cycle-toggle").count(), 2);
+        assert.equal(await panel.locator(".archive-skeleton").count(), 0);
         await page.evaluate(() => window.fixture.releaseHeldArchive());
         const older = panel
           .locator(".archive-cycle-toggle")

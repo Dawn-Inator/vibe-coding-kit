@@ -1,3 +1,7 @@
+# Task Progress 0.9.3
+
+- Version 0.9.3 updates Archive loading, grouped hierarchy states and focus treatment. Subagent results use causally scoped dispatch evidence instead of treating the parent chat’s historical child inventory as the current turn. Missing cycle or records, or an incomplete summary, remains unknown rather than falling back to historical inventory. This does not establish a live running count. Native host acceptance remains pending.
+
 # Task Progress 0.9.2
 
 - Align Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. No archive data or logic changes. Native UI acceptance remains pending.

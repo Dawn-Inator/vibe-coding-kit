@@ -350,17 +350,68 @@ export class CodexAppServerClient implements ThreadCatalog {
       parentThreadId,
       cursor: cursor ?? null,
       limit: 50,
-      sourceKinds: [
-        "subAgent",
-        "subAgentReview",
-        "subAgentCompact",
-        "subAgentThreadSpawn",
-        "subAgentOther",
-      ],
+      sourceKinds: ["subAgentThreadSpawn"],
     });
     return z
       .object({ data: z.array(z.unknown()).max(50), nextCursor: z.string().nullable() })
       .parse(result);
+  }
+
+  async listSubagentTurns(
+    threadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }> {
+    const raw = z
+      .object({ data: z.array(z.unknown()).max(2), nextCursor: z.string().nullish() })
+      .parse(
+        await this.#request("thread/turns/list", {
+          threadId,
+          cursor: cursor ?? null,
+          limit: 2,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      );
+    // Only carry identity and activity metadata across the adapter boundary.
+    const data = raw.data.map((value) => {
+      const turn = value as Record<string, unknown>;
+      const items = Array.isArray(turn?.items)
+        ? turn.items.flatMap((value: unknown): unknown[] => {
+            if (!value || typeof value !== "object") return [];
+            const item = value as Record<string, unknown>;
+            if (item.type === "collabAgentToolCall")
+              return [
+                {
+                  type: item.type,
+                  senderThreadId: item.senderThreadId,
+                  receiverThreadIds: item.receiverThreadIds,
+                  tool: item.tool,
+                  status: item.status,
+                  startedAtMs: item.startedAtMs,
+                },
+              ];
+            if (item.type === "subAgentActivity")
+              return [
+                {
+                  type: item.type,
+                  agentThreadId: item.agentThreadId,
+                  kind: item.kind,
+                  startedAtMs: item.startedAtMs,
+                },
+              ];
+            return [];
+          })
+        : null;
+      return {
+        id: turn?.id,
+        rootTurnId: turn?.rootTurnId,
+        startedAt: turn?.startedAt,
+        completedAt: turn?.completedAt,
+        itemsView: turn?.itemsView,
+        items,
+      };
+    });
+    return { data, nextCursor: raw.nextCursor ?? null };
   }
 
   async settle(milliseconds: number): Promise<void> {

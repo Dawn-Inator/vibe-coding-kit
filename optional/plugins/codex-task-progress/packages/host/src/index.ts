@@ -1857,7 +1857,14 @@ export class GoalProgressHelper {
           "status" in source &&
           ["pending", "error", "pending-selection"].includes(String(source.status))
         );
-      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify(source ?? null)}`;
+      const task = snapshot.value?.result.task as
+        | { lifecycle?: { id?: unknown; startedAt?: unknown } }
+        | null
+        | undefined;
+      const cycleId = typeof task?.lifecycle?.id === "string" ? task.lifecycle.id : undefined;
+      const cycleStartedAt =
+        typeof task?.lifecycle?.startedAt === "string" ? task.lifecycle.startedAt : undefined;
+      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify(source ?? null)}:${JSON.stringify([cycleId, cycleStartedAt])}`;
       let subagents: SubagentProgressSnapshot = {
         schemaVersion: 1,
         parentThreadId: threadId,
@@ -1869,13 +1876,19 @@ export class GoalProgressHelper {
         complete: false,
         truncated: false,
       };
-      if (sourceReady && !this.#runtime.listDirectSubagents)
+      if (sourceReady && (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns))
         subagents = { ...subagents, status: "unavailable" };
-      if (sourceReady && typeof storage?.root === "string" && this.#runtime.listDirectSubagents) {
+      if (
+        sourceReady &&
+        typeof storage?.root === "string" &&
+        this.#runtime.listDirectSubagents &&
+        this.#runtime.listSubagentTurns
+      ) {
         const previous = this.#subagentPresentation.peek(subagentKey);
         const recent =
           previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
         const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
+        const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
         const children = recent
           ? previous
           : this.#subagentPresentation.read(subagentKey, async () => {
@@ -1887,50 +1900,10 @@ export class GoalProgressHelper {
                   storageRoot: storage.root as string,
                   schemas: createTaskProgressSchemas(z),
                   listPage: (cursor) => listDirectSubagents(threadId, cursor),
+                  listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
+                  ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
+                  ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
                 });
-                if (
-                  source &&
-                  typeof source === "object" &&
-                  "path" in source &&
-                  typeof source.path === "string" &&
-                  "contentHash" in source &&
-                  typeof source.contentHash === "string"
-                ) {
-                  try {
-                    const workspace = await this.#workspaceStorage.forThread(
-                      threadId,
-                      canonicalCwd,
-                    );
-                    const history = await workspace.heartbeat.history(threadId, canonicalCwd, {
-                      limit: 1,
-                    });
-                    if (
-                      !history.error &&
-                      history.sourcePath === source.path &&
-                      history.contentHash === source.contentHash
-                    ) {
-                      const orchestration = history.wakes.at(-1)?.orchestration as
-                        | {
-                            after?: { activeAgents?: unknown; observedAt?: unknown };
-                            before?: { activeAgents?: unknown; observedAt?: unknown };
-                          }
-                        | undefined;
-                      const observation = orchestration?.after ?? orchestration?.before;
-                      if (
-                        Number.isSafeInteger(observation?.activeAgents) &&
-                        (observation?.activeAgents as number) >= 0 &&
-                        typeof observation?.observedAt === "string" &&
-                        Number.isFinite(Date.parse(observation.observedAt))
-                      ) {
-                        result.runningCount = observation.activeAgents as number;
-                        result.runningBasis = "heartbeat";
-                        result.observedAt = observation.observedAt;
-                      }
-                    }
-                  } catch {
-                    /* An unavailable source never implies zero. */
-                  }
-                }
                 return result;
               })();
               this.#presentationLoads.add(load);
@@ -1945,18 +1918,24 @@ export class GoalProgressHelper {
       }
       // Allocation is projected from the current presentation each time, never retained in the
       // child-list cache. A changed source, cycle, or plan therefore cannot reuse an old ratio.
-      const task = snapshot.value?.result.task as
-        | { lifecycle?: { id?: unknown } }
-        | null
-        | undefined;
-      const cycleId = typeof task?.lifecycle?.id === "string" ? task.lifecycle.id : undefined;
       const projectHeartbeat = snapshot.value?.result.heartbeat as
         | { status?: unknown; wakes?: unknown[] }
         | null
         | undefined;
-      const latestWake = projectHeartbeat?.wakes?.at(-1) as { orchestration?: unknown } | undefined;
+      const latestWake = projectHeartbeat?.wakes?.at(-1) as
+        | { orchestration?: { after?: { observedAt?: unknown } } }
+        | undefined;
+      const allocationObservedAt = latestWake?.orchestration?.after?.observedAt;
+      const scopeStartedAt = subagents.rootTurnStartedAt;
+      const allocationInScope =
+        subagents.scopeBasis === "parent-root-turn" &&
+        typeof scopeStartedAt === "string" &&
+        typeof allocationObservedAt === "string" &&
+        Number.isFinite(Date.parse(scopeStartedAt)) &&
+        Number.isFinite(Date.parse(allocationObservedAt)) &&
+        Date.parse(allocationObservedAt) >= Date.parse(scopeStartedAt);
       const allocation =
-        sourceReady && projectHeartbeat?.status === "ready"
+        sourceReady && allocationInScope && projectHeartbeat?.status === "ready"
           ? projectAgentAllocation(latestWake?.orchestration, {
               parentThreadId: threadId,
               ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),

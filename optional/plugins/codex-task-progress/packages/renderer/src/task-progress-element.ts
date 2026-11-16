@@ -23,6 +23,7 @@ import type {
   SubagentProgressSnapshot,
 } from "vibe-coding-kit/src/tasks/subagent-progress.mjs";
 import type {
+  TaskArchiveNode,
   TaskArchivePage,
   TaskArchiveSubtasksPage,
   TaskArchiveTasksPage,
@@ -1550,6 +1551,39 @@ export class TaskProgressElement extends LitElement {
     return html`<div class="pagination"><button class="pagination-button" ?disabled=${disabled} @click=${load}>${label}${this.lucideIcon(ChevronDown)}</button></div>`;
   }
 
+  private archivePointerFocus(event: PointerEvent): void {
+    const button = event.currentTarget as HTMLButtonElement;
+    // A pointer click on a keyboard-focused button otherwise retains :focus-visible.
+    if (button.matches(":focus-visible")) button.blur();
+  }
+
+  private archiveSkeleton() {
+    return html`<div class="archive-skeleton" role="status" aria-label=${this.t("Loading archive", "正在加载归档")}>
+      <span></span><span></span><span></span>
+    </div>`;
+  }
+
+  private renderArchiveNode(node: TaskArchiveNode) {
+    return html`<div class="archive-node" data-kind=${node.kind} data-status=${node.status}>
+      <span class="archive-node-icon" aria-hidden="true">${node.status === "completed" ? "✓" : node.status === "cancelled" ? "−" : "·"}</span>
+      <span class="archive-node-title">${node.title}</span><span class="archive-status">${this.status(node.status)}</span>
+    </div>`;
+  }
+
+  private renderArchiveNodes(nodes: readonly TaskArchiveNode[]) {
+    const objectives = nodes.filter((node) => node.kind === "objective");
+    const objectiveIds = new Set(objectives.map((node) => node.id));
+    const ungrouped = nodes.filter(
+      (node) => node.kind === "item" && (!node.parentId || !objectiveIds.has(node.parentId)),
+    );
+    return html`${objectives.map(
+      (objective) => html`<div class="archive-group">
+      ${this.renderArchiveNode(objective)}
+      <div class="archive-children">${nodes.filter((node) => node.kind === "item" && node.parentId === objective.id).map((node) => this.renderArchiveNode(node))}</div>
+    </div>`,
+    )}${ungrouped.length ? html`<div class="archive-children archive-ungrouped">${ungrouped.map((node) => this.renderArchiveNode(node))}</div>` : nothing}`;
+  }
+
   private renderArchive() {
     if (
       !this.observed ||
@@ -1563,27 +1597,27 @@ export class TaskProgressElement extends LitElement {
         ? null
         : this.data.archiveCount;
     return html`<section class="info-card archive-card">
-      <button class="archive-toggle" aria-expanded=${this.archiveOpen} aria-controls="archive-list" @click=${this.toggleArchive}>
+      <button class="archive-toggle" aria-expanded=${this.archiveOpen} aria-controls="archive-list" @pointerdown=${this.archivePointerFocus} @click=${this.toggleArchive}>
         ${this.lucideIcon(Archive, "archive-icon")}<span class="archive-title">${this.t("Archive", "归档")}</span><span class="info-card-count">${typeof count === "number" ? count : "—"}</span>${this.lucideIcon(ChevronRight, "archive-chevron")}
       </button>
       ${
         this.archiveOpen
-          ? html`<div class="info-card-body archive-list" id="archive-list">
+          ? html`<div class="info-card-body archive-list" id="archive-list" aria-busy=${this.archiveBusy}>
         ${this.archiveError ? html`<p class="info-card-error" role="status">${this.archiveError}</p>` : nothing}
         ${this.archivePage?.tasks.map((task) => {
           const open = this.archiveExpanded.has(task.id);
           const detail = this.archiveDetails.get(task.id);
           const detailId = `archive-detail-${encodeURIComponent(task.id)}`;
-          return html`<div class="archive-cycle"><button class="archive-cycle-toggle" ?disabled=${this.archiveBusy} aria-expanded=${open} aria-controls=${detailId} @click=${() => this.toggleArchiveTask(task.id)}>${this.lucideIcon(ChevronRight, "archive-chevron")}<span>${task.title}</span><span class="archive-date">${this.dateOnly(task.completedAt)}</span></button>
+          return html`<div class="archive-cycle"><button class="archive-cycle-toggle" ?disabled=${this.archiveBusy} aria-expanded=${open} aria-controls=${detailId} @pointerdown=${this.archivePointerFocus} @click=${() => this.toggleArchiveTask(task.id)}>${this.lucideIcon(ChevronRight, "archive-chevron")}<span>${task.title}</span><span class="archive-date">${this.dateOnly(task.completedAt)}</span></button>
             ${
               open
-                ? html`<div class="archive-nodes" id=${detailId}>${detail?.nodes.map((node) => html`<div class="archive-node" data-kind=${node.kind}><span>${node.title}</span><span>${this.status(node.status)}</span></div>`)}
+                ? html`<div class="archive-nodes" id=${detailId}>${detail ? this.renderArchiveNodes(detail.nodes) : this.archiveBusy ? this.archiveSkeleton() : nothing}
               ${detail?.nextCursor ? this.pagination(this.t("Load more", "加载更多"), this.archiveBusy, () => void this.loadArchive(task.id, detail.nextCursor ?? undefined)) : nothing}</div>`
                 : nothing
             }</div>`;
         })}
-        ${this.archivePage && !this.archivePage.tasks.length ? html`<p class="archive-note">${this.t("No archived tasks.", "暂无归档任务。")}</p>` : nothing}
-        ${this.archiveBusy ? html`<p class="archive-note" role="status">${this.t("Loading archive…", "正在加载归档…")}</p>` : nothing}
+        ${this.archivePage && !this.archivePage.tasks.length && !this.archiveBusy ? html`<p class="archive-note">${this.t("No archived tasks.", "暂无归档任务。")}</p>` : nothing}
+        ${this.archiveBusy && !this.archivePage ? this.archiveSkeleton() : nothing}
         ${this.archivePage?.nextCursor ? this.pagination(this.t("Older tasks", "更早的任务"), this.archiveBusy, () => void this.loadArchive(undefined, this.archivePage?.nextCursor ?? undefined)) : nothing}
         ${this.archiveError && !this.archiveBusy ? html`<button class="info-card-action" @click=${() => void this.loadArchive(this.archiveRetry.taskId, this.archiveRetry.cursor)}>${this.t("Retry", "重试")}</button>` : nothing}
       </div>`
@@ -1620,9 +1654,25 @@ export class TaskProgressElement extends LitElement {
     )}`;
   }
 
+  private currentRunSubagents(): SubagentProgressSnapshot | null {
+    const snapshot = this.data.subagents;
+    const cycleId = this.data.task?.lifecycle?.id;
+    if (
+      !snapshot ||
+      snapshot.parentThreadId !== this.threadId ||
+      !cycleId ||
+      snapshot.taskCycleId !== cycleId ||
+      snapshot.scopeBasis !== "parent-root-turn" ||
+      typeof snapshot.rootTurnId !== "string" ||
+      !snapshot.rootTurnId.trim() ||
+      (snapshot.status !== "ready" && snapshot.status !== "partial")
+    )
+      return null;
+    return snapshot;
+  }
+
   private renderSubagents() {
-    const snapshot =
-      this.data.subagents?.parentThreadId === this.threadId ? this.data.subagents : null;
+    const snapshot = this.currentRunSubagents();
     const agents = snapshot?.agents ?? [];
     const ranked = [...agents].sort((a, b) => {
       const rank = (state: SubagentProgressEntry["state"]) =>
@@ -1642,7 +1692,7 @@ export class TaskProgressElement extends LitElement {
       unknown: this.t("Unknown", "未知"),
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
-      <div class="agent-counts">${this.allocationMeter(snapshot?.allocation, this.t("Working agents / planned", "工作中 Agent / 计划派发"), `${this.t("Listed agents", "已列出 Agent")} ${listed}`)}</div>
+      <div class="agent-counts">${this.allocationMeter(snapshot?.allocation, this.t("Working agents / planned", "工作中 Agent / 计划派发"), snapshot ? `${this.t("This run's agents", "本轮 Agent")} ${listed}` : undefined)}</div>
       ${
         ranked.length
           ? ranked.map((agent) => {
@@ -1652,12 +1702,12 @@ export class TaskProgressElement extends LitElement {
               const bounded = known ? Math.max(0, Math.min(100, percent)) : null;
               return html`<article class="row agent-row" data-agent=${agent.id}>
           <span class="module-icon" data-status=${agent.state === "working" ? "active" : agent.state}>${agent.state === "completed" ? this.icon("check") : "·"}</span>
-          <span class="module-content"><span class="module-title-line"><span class="name">${agent.name}</span><span class="module-percent">${known ? `${percent}%` : "—"}</span></span>
+          <span class="module-content"><span class="module-title-line"><span class="name">${agent.name}</span>${known ? html`<span class="module-percent">${percent}%</span>` : nothing}</span>
           ${known ? html`<span class="module-track" role="meter" aria-label=${agent.name} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${bounded as number} aria-valuetext=${`${progress?.completed}/${progress?.total}`}><span class="module-fill" style=${`transform:scaleX(${(bounded as number) / 100})`}></span></span>` : nothing}
-          <span class="module-meta"><span>${progress ? `${progress.completed}/${progress.total}` : "—"}</span><span class="status">${labels[agent.state]}</span></span></span>
+          <span class="module-meta">${known && progress ? html`<span>${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}<span class="status">${labels[agent.state]}</span></span></span>
         </article>`;
             })
-          : html`<p class="empty">${!snapshot || snapshot.status === "pending" ? this.t("Agent activity is not available yet.", "尚未获取 Agent 活动。") : snapshot.status === "unavailable" ? this.t("Agent activity is unavailable.", "Agent 活动暂不可用。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`
+          : html`<p class="empty">${!snapshot ? this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`
       }
       ${snapshot?.truncated ? html`<p class="muted">${this.t("The agent list is incomplete.", "Agent 列表未完整显示。")}</p>` : nothing}
     </section>`;
@@ -1782,7 +1832,7 @@ export class TaskProgressElement extends LitElement {
                     }${this.renderArchive()}${this.renderTaskSource()}`
           }
         </div>
-        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? `${this.data.subagents?.parentThreadId === this.threadId && (this.data.subagents.status === "ready" || this.data.subagents.status === "partial") ? this.data.subagents.agents.length : "—"} ${this.t("agents listed", "个已列出 Agent")}` : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
+        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? (this.currentRunSubagents() ? `${this.t("This run's agents", "本轮 Agent")} ${this.currentRunSubagents()?.agents.length}` : this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。")) : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
       </div>
     </section>`;
   }

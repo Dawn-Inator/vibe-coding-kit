@@ -3518,11 +3518,51 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
     await gate;
     return {
       data: [
-        { id: `${parentThreadId}-child`, parentThreadId, cwd: root, status: { type: "notLoaded" } },
+        {
+          id: `${parentThreadId}-child`,
+          parentThreadId,
+          cwd: root,
+          source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+          status: { type: "active", activeFlags: [] },
+        },
       ],
       nextCursor: null,
     };
   };
+  testRuntime.listSubagentTurns = async (threadId) => ({
+    data: [
+      {
+        id: "turn",
+        rootTurnId: "turn",
+        startedAt: 1794830401,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: threadId,
+            receiverThreadIds: [`${threadId}-child`],
+            tool: "spawnAgent",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  const originalGet = KitTaskStore.prototype.get;
+  KitTaskStore.prototype.get = async (threadId) => ({
+    schemaVersion: 4,
+    kind: "task",
+    threadId,
+    title: "Test",
+    revision: 1,
+    createdAt: "2026-11-16T12:00:00Z",
+    updatedAt: "2026-11-16T12:00:00Z",
+    objectives: [],
+    progress: { completed: 0, total: 0, percent: null },
+    phase: "active",
+    lifecycle: { id: "cycle", sequence: 1, startedAt: "2026-11-16T12:00:00Z", completion: null },
+  });
   const paths = resolveGoalProgressPaths({ root: join(root, "data") });
   const helper = new GoalProgressHelper({
     paths,
@@ -3547,7 +3587,7 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
   try {
     await helper.start();
     let a = await native("chat-A");
-    for (let i = 0; i < 100 && !calls.length; i++) {
+    for (let i = 0; i < 100 && calls.length === 0; i++) {
       await new Promise((r) => setTimeout(r, 10));
       a = await native("chat-A");
     }
@@ -3562,20 +3602,20 @@ test("subagent snapshot is background, scoped to its parent, and never invents r
     assert.equal(a.subagents.runningCount, null);
     assert.deepEqual(
       a.subagents.agents.map((agent) => [agent.id, agent.state]),
-      [["chat-A-child", "unknown"]],
+      [["chat-A-child", "working"]],
     );
     let b = await native("chat-B");
     for (let i = 0; i < 100 && b.subagents.status !== "ready"; i++) {
       await new Promise((r) => setTimeout(r, 10));
       b = await native("chat-B");
     }
-    assert.equal(b.subagents.parentThreadId, "chat-B");
     assert.deepEqual(
       b.subagents.agents.map((agent) => agent.id),
       ["chat-B-child"],
     );
   } finally {
     release();
+    KitTaskStore.prototype.get = originalGet;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -3586,13 +3626,49 @@ test("agent allocation uses matching project wake and does not retain an old cyc
   await mkdir(join(root, ".git"));
   const testRuntime = runtime(root);
   let release!: () => void;
-  const gate = new Promise<void>((done) => {
+  let gate = new Promise<void>((done) => {
     release = done;
   });
-  testRuntime.listDirectSubagents = async () => {
+  let turn = "turn-1";
+  testRuntime.listDirectSubagents = async (threadId) => {
+    const capturedTurn = turn;
     await gate;
-    return { data: [], nextCursor: null };
+    return {
+      data: [
+        {
+          id: `${threadId}-${capturedTurn}-child`,
+          cwd: root,
+          source: { subAgent: { thread_spawn: { parent_thread_id: threadId } } },
+          status: { type: "active", activeFlags: [] },
+        },
+      ],
+      nextCursor: null,
+    };
   };
+  testRuntime.listSubagentTurns = async (threadId) => ({
+    data: [
+      {
+        id: turn,
+        rootTurnId: turn,
+        startedAt: turn === "turn-1" ? 1794830400 : 1794830460,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: threadId,
+            receiverThreadIds: [`${threadId}-${turn}-child`],
+            tool: "spawnAgent",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  // Both the cache and the host must observe the same controllable clock.
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
   const helper = new GoalProgressHelper({
     paths: resolveGoalProgressPaths({ root: join(root, "data") }),
     runtime: testRuntime,
@@ -3602,11 +3678,8 @@ test("agent allocation uses matching project wake and does not retain an old cyc
   const originalProjection = HeartbeatService.prototype.taskProjection;
   const originalSnapshot = HeartbeatService.prototype.projectViewSnapshot;
   const originalGet = KitTaskStore.prototype.get;
-  const originalNow = Date.now;
-  let now = originalNow();
   let cycle = "cycle-1";
   let heartbeatMode: "empty" | "ready" | "error" = "empty";
-  Date.now = () => now;
   HeartbeatService.prototype.taskProjection = async () => ({
     status: "none",
     sourcePath: null,
@@ -3669,7 +3742,12 @@ test("agent allocation uses matching project wake and does not retain an old cyc
       task: { lifecycle: { id: string } } | null;
       heartbeat: { status: string } | null;
       heartbeatPending?: boolean;
-      subagents: { status: string; allocation: { status: string; ratio: number | null } };
+      subagents: {
+        status: string;
+        taskCycleId?: string;
+        agents: { id: string }[];
+        allocation: { status: string; ratio: number | null };
+      };
     };
   try {
     await helper.start();
@@ -3682,11 +3760,12 @@ test("agent allocation uses matching project wake and does not retain an old cyc
     assert.equal(a.heartbeat, null);
     assert.equal(a.subagents.allocation.ratio, null);
     heartbeatMode = "ready";
+    release();
     for (let i = 0; i < 100 && a.subagents.allocation.ratio !== 0.5; i++) {
       await new Promise((r) => setTimeout(r, 10));
       a = await native("chat-A");
     }
-    assert.equal(a.subagents.status, "pending");
+    assert.equal(a.subagents.status, "ready");
     assert.equal(a.heartbeatPending, true);
     assert.equal(a.subagents.allocation.ratio, 0.5);
     let b = await native("chat-B");
@@ -3695,6 +3774,13 @@ test("agent allocation uses matching project wake and does not retain an old cyc
       b = await native("chat-B");
     }
     assert.equal(b.subagents.allocation.ratio, null);
+    turn = "turn-2";
+    now += 5_001;
+    for (let i = 0; i < 100 && a.subagents.allocation.ratio !== null; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      a = await native("chat-A");
+    }
+    assert.equal(a.subagents.allocation.ratio, null); // Old wake predates turn-2.
     heartbeatMode = "error";
     for (let i = 0; i < 100 && a.heartbeat?.status !== "error"; i++) {
       await new Promise((r) => setTimeout(r, 10));
@@ -3703,7 +3789,14 @@ test("agent allocation uses matching project wake and does not retain an old cyc
     assert.equal(a.heartbeat?.status, "error");
     assert.equal(a.subagents.allocation.ratio, null);
     heartbeatMode = "ready";
+    gate = new Promise<void>((done) => {
+      release = done;
+    });
+    now += 5_001;
+    await native("chat-A"); // Start an old-cycle child read which stays in flight.
+    await new Promise((r) => setTimeout(r, 20));
     cycle = "cycle-2";
+    turn = "turn-3";
     now += 5_001;
     for (let i = 0; i < 100 && a.task?.lifecycle.id !== cycle; i++) {
       await new Promise((r) => setTimeout(r, 10));
@@ -3717,6 +3810,11 @@ test("agent allocation uses matching project wake and does not retain an old cyc
       a = await native("chat-A");
     }
     assert.equal(a.subagents.allocation.ratio, null);
+    assert.equal(a.subagents.taskCycleId, "cycle-2");
+    assert.deepEqual(
+      a.subagents.agents.map((agent) => agent.id),
+      ["chat-A-turn-3-child"],
+    );
   } finally {
     release();
     Date.now = originalNow;

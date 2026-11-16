@@ -4,10 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { collectSubagentProgress } from '../../src/tasks/subagent-progress.mjs';
+import { collectSubagentProgress as collectScoped } from '../../src/tasks/subagent-progress.mjs';
 import { createTaskProgressSchemas } from '../../src/tasks/task-contract.mjs';
 import { TaskStore, taskMarkdownPaths } from '../../src/tasks/task-store.mjs';
 import { TaskSourceRelations } from '../../src/tasks/task-source-relations.mjs';
+const cycleStartedAt = '2026-01-01T00:00:00.000Z';
+const collectSubagentProgress = options => collectScoped({
+  ...options, taskCycleId: 'cycle', cycleStartedAt,
+  listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'collabAgentToolCall', senderThreadId: options.parentThreadId, receiverThreadIds: ['child', 'foreign', 'bound', 'unresolved', 'huge'], tool: 'spawnAgent', status: 'completed' }] }], nextCursor: null }),
+  listPage: async cursor => { const page = await options.listPage(cursor); return { ...page, data: page.data.map(child => ({ ...child, source: { subAgent: { thread_spawn: { parent_thread_id: child.parentThreadId } } } })) }; },
+});
 const schemas = createTaskProgressSchemas(z);
 test('direct child checklist is read without writes; other parents and cwd cannot leak', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-'));
@@ -177,4 +183,65 @@ test('root alias changes after open fail closed before reading', async () => {
     } }), /storage root changed/);
     await unlink(root); await rename(saved, root); moved = false;
   } finally { if (moved) { await rm(root, { force: true }); await (await import('node:fs/promises')).rename(saved, root); } await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+
+test('cycle membership uses accepted parent dispatch and fails closed when evidence is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-cycle-'));
+  try {
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'cycle', cycleStartedAt,
+      listPage: async () => ({ data: ['old', 'new', 'failed', 'wrong'].map(id => ({ id, cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } } })), nextCursor: null }) };
+    const missing = await collectScoped(base);
+    assert.equal(missing.status, 'unavailable'); assert.deepEqual(missing.agents, []); assert.equal(missing.runningCount, null);
+    const dispatch = (id, tool, status = 'completed', senderThreadId = 'p') => ({ type: 'collabAgentToolCall', senderThreadId, receiverThreadIds: [id], tool, status });
+    const result = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [dispatch('old', 'followupTask'), dispatch('new', 'spawnAgent'), dispatch('new', 'sendInput'), dispatch('failed', 'spawnAgent', 'failed'), dispatch('wrong', 'spawnAgent', 'completed', 'other')] }], nextCursor: null }) });
+    assert.deepEqual(result.agents.map(x => x.id), ['old', 'new']);
+    assert.equal(result.complete, true); assert.equal(result.scopeBasis, 'parent-root-turn'); assert.equal(result.runningCount, null);
+    const summary = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'summary', items: [] }], nextCursor: null }) });
+    assert.equal(summary.complete, false); assert.deepEqual(summary.agents, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('full current root scopes live child and a missing child leaves membership partial', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-live-'));
+  try {
+    const turn = { id: 'root', rootTurnId: 'root', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [
+      { type: 'subAgentActivity', agentThreadId: 'live', kind: 'started' },
+      { type: 'subAgentActivity', agentThreadId: 'absent', kind: 'interacted' },
+    ] };
+    const result = await collectScoped({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      listTurnsPage: async () => ({ data: [turn], nextCursor: null }),
+      listPage: async () => ({ data: [{ id: 'live', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }),
+    });
+    assert.equal(result.scopeBasis, 'parent-root-turn'); assert.equal(result.rootTurnId, 'root');
+    assert.equal(result.agents[0].state, 'working'); assert.equal(result.complete, false); assert.equal(result.status, 'partial');
+    assert.equal(result.runningCount, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('different older root stops bounded turn pagination and does not mix agents', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-root-boundary-'));
+  try {
+    let pages = 0;
+    const result = await collectScoped({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      listTurnsPage: async () => { pages++; return { data: [
+        { id: 'new', rootTurnId: 'new', startedAt: Date.parse(cycleStartedAt) / 1000 + 2, itemsView: 'full', items: [] },
+        { id: 'old', rootTurnId: 'old', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'old-child', kind: 'started' }] },
+      ], nextCursor: 'older' }; },
+      listPage: async () => { throw new Error('should not list historical children'); },
+    });
+    assert.equal(pages, 1); assert.equal(result.complete, false); assert.deepEqual(result.agents, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('child inventory stops once all current members have been resolved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-found-'));
+  try {
+    let pages = 0;
+    const result = await collectScoped({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'live', kind: 'started' }] }], nextCursor: null }),
+      listPage: async () => { pages++; return { data: [{ id: 'live', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'notLoaded' } }], nextCursor: 'historic' }; },
+    });
+    assert.equal(pages, 1); assert.equal(result.complete, true); assert.equal(result.truncated, false); assert.equal(result.agents[0].state, 'unknown');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

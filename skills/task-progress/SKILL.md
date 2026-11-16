@@ -15,6 +15,8 @@ Keep row IDs, titles, raw statuses, and reported evidence tied to the source. Un
 
 When agent tools are available, a child may register and update its own module checklist in its own trusted child context using the normal Kit APIs. Do not copy the parent task or Native Goal. A private final is not module acceptance. Child progress is derived from its canonical checklist when available; missing, bound, uncertain or different-cwd data remains unknown. Recorded Heartbeat counts are timestamped observations only when related to the current chat, not real-time Desktop activity; no parallel state store is needed.
 
+For the current-turn subagent view, use the normalized snapshot’s `taskCycleId`, `rootTurnId`, `rootTurnStartedAt` and `scopeBasis`. A `parent-root-turn` scope requires causally confirmed dispatch, continuation or subAgentActivity from the trusted parent’s latest root turn, fenced by the matching task lifecycle ID and start time. Check direct `thread_spawn` evidence to exclude internal review and compaction threads. Missing cycle or records, incomplete summaries or unknown scope remain unknown; never substitute the parent chat’s full historical child inventory. Child `createdAt` and `updatedAt` do not establish dispatch, and `notLoaded` does not establish running. Do not present a Heartbeat allocation from before the current root turn as its current ratio. Cache and display must respect the same cycle and scope fences.
+
 Report completion from recorded task state and evidence. Use the applicable project planning guidance when a plan is needed; this skill does not add a separate planning or heartbeat policy.
 
 ## Helper-managed task lifecycle
