@@ -1246,10 +1246,6 @@ export class TaskProgressElement extends LitElement {
       return html`<div class="heartbeat hb-panel"><p class="empty" role="status" aria-live="polite">${statusText}</p>${this.framedCard(this.t("Heartbeat history", "巡检记录"), List, unavailableBody, { count: 0, className: "hb-history" })}</div>`;
     }
     const sourcePath = heartbeat.sourcePath;
-    const incompleteDiscoveryOnly = this.isIncompleteDiscoveryOnly(heartbeat);
-    const hasAlert = Boolean(
-      (heartbeat.warning && !incompleteDiscoveryOnly) || heartbeat.findings.length,
-    );
     return html`<div class="heartbeat hb-panel">
       ${
         sourcePath
@@ -1273,30 +1269,11 @@ export class TaskProgressElement extends LitElement {
       </section>`
           : html`<p class="empty" role="status">${heartbeat.status === "pending" || heartbeat.retryable || this.data.heartbeatPending ? this.t("Reading project heartbeat…", "正在读取项目心跳…") : this.t("No current project heartbeat source is available.", "当前项目没有可显示的心跳来源。")}</p>`
       }
-      ${
-        hasAlert
-          ? this.framedCard(
-              this.t("Validation notice", "校验提示"),
-              AlertTriangle,
-              html`<p>${heartbeat.findings.length ? (heartbeat.findingsTruncated ? this.t(`At least ${heartbeat.findings.length} validation issues need attention.`, `发现至少 ${heartbeat.findings.length} 项校验问题，需要关注。`) : this.t(`${heartbeat.findings.length} validation issues need attention.`, `发现 ${heartbeat.findings.length} 项校验问题，需要关注。`)) : this.t("The heartbeat record has a validation notice that needs attention.", "心跳记录存在校验提示，需要关注。")}</p>`,
-              { tone: "warning", className: "hb-alert" },
-            )
-          : nothing
-      }
       ${heartbeat.error && !heartbeat.retryable && heartbeat.status !== "pending" ? this.diagnostic(this.t("Project heartbeat error", "项目心跳错误"), heartbeat.error) : nothing}
 
       ${this.renderHeartbeatHistory(heartbeat)}
 
     </div>`;
-  }
-
-  private isIncompleteDiscoveryOnly(heartbeat: TaskPanelHeartbeat): boolean {
-    if (heartbeat.discoveryComplete !== false || !heartbeat.warning) return false;
-    const reasonText = heartbeat.discoveryReasons?.join(", ") || "scan limit";
-    return (
-      heartbeat.warning ===
-      `Project heartbeat discovery was incomplete (${reasonText}); the displayed record is the best available result.`
-    );
   }
 
   private renderHistory() {

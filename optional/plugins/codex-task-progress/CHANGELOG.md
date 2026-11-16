@@ -1,6 +1,10 @@
+# Task Progress 0.9.5
+
+- Version 0.9.5 removes the visible Validation notice card and its count from the Heartbeat view. Records and validation remain intact. The 0.9.5 appearance still requires release and native host acceptance.
+
 # Task Progress 0.9.4
 
-- Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; 0.9.4 still requires native host verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex.
+- Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; The user confirmed that 0.9.4 restored the native page, Archive worked and the historical 100-agent list was absent. Do not assume every open tab refreshes automatically. Do not restart Codex.
 
 # Task Progress 0.9.3
 

@@ -1827,8 +1827,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .locator(".hb-wake")
             .getByText("verified cached record", { exact: true })
             .waitFor();
-          assert.equal(await panel.locator(".hb-alert .info-card-title").count(), 1);
-          assert.match(await panel.locator(".hb-alert").innerText(), /校验问题，需要关注/);
+          assert.equal(await panel.locator(".hb-alert").count(), 0);
+          assert.doesNotMatch(
+            await panel.locator("section.panel").innerText(),
+            /校验提示|校验问题，需要关注/,
+          );
           const cardRects = async () =>
             panel.evaluate((element) =>
               [".hb-time-card", ".hb-history"].map((selector) => {
@@ -5142,6 +5145,95 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
+      "validation findings never create notices in task, history, or heartbeat views",
+      async () => {
+        const { context, page, panel } = await open();
+        await page.evaluate(
+          ({ taskValue, heartbeatValue }) => {
+            window.fixture.task = taskValue;
+            window.fixture.history = {
+              events: [{ reason: "Recorded event remains visible", at: "2026-11-15T12:00:00Z" }],
+              nextCursor: null,
+            };
+            window.fixture.heartbeat = {
+              ...heartbeatValue,
+              status: "ready",
+              passed: false,
+              warning: "Discovery warning sentinel",
+              findings: Array.from({ length: 27 }, (_, i) => ({
+                severity: "error",
+                message: `Finding sentinel ${i}`,
+              })),
+              wakes: [
+                {
+                  timeMs: Date.parse("2026-11-15T12:00:00Z"),
+                  orchestration: { scope: "Flow remains visible", blockedTasks: [] },
+                },
+              ],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { taskValue: task, heartbeatValue: heartbeat },
+        );
+        const noValidationNotice = async () => {
+          const text = await panel.locator("section.panel").innerText();
+          assert.equal(await panel.locator(".hb-alert").count(), 0);
+          assert.doesNotMatch(
+            text,
+            /Validation notice|validation issues need attention|校验提示|校验问题，需要关注|Finding sentinel|Discovery warning sentinel/i,
+          );
+        };
+        for (const locale of ["zh-CN", "en-US"]) {
+          await panel.evaluate(async (host, value) => {
+            host.locale = value;
+            await host.updateComplete;
+          }, locale);
+          for (const variant of [
+            { passed: false, findingsTruncated: false, warning: "Discovery warning sentinel" },
+            { passed: true, findingsTruncated: true, warning: "Discovery warning sentinel" },
+            {
+              passed: false,
+              findingsTruncated: false,
+              warning: "Discovery warning sentinel",
+              findings: [],
+            },
+          ]) {
+            await page.evaluate((value) => {
+              const findings = Array.from({ length: 27 }, (_, i) => ({
+                severity: "error",
+                message: `Finding sentinel ${i}`,
+              }));
+              Object.assign(window.fixture.heartbeat, { findings, ...value });
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            }, variant);
+            assert.equal(
+              await page.evaluate(() => window.fixture.heartbeat.findings.length),
+              variant.findings ? 0 : 27,
+            );
+            await panel.locator(".summary .main").click();
+            await noValidationNotice();
+            await panel.locator(".history-trigger").click();
+            await panel.getByText("Recorded event remains visible").waitFor();
+            await noValidationNotice();
+            await panel.locator(".heartbeat-trigger").click();
+            await panel.locator(".hb-flow").waitFor();
+            assert.equal(await panel.locator(".hb-time-card").count(), 1);
+            assert.ok((await panel.locator(".hb-wake").count()) > 0);
+            assert.match(
+              await panel.locator(".hb-flow-record").innerText(),
+              /Flow remains visible/,
+            );
+            await noValidationNotice();
+          }
+        }
+        assert.equal(
+          await page.evaluate(() => window.fixture.heartbeat.warning),
+          "Discovery warning sentinel",
+        );
+        await context.close();
+      },
+    );
+    await t.test(
       "automatic project Heartbeat status, stale state, findings, history and source details",
       async () => {
         const { context, page, panel } = await open();
@@ -5217,15 +5309,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        await panel.locator(".hb-alert .info-card-title").waitFor();
         await assertNoHeaderStatus();
-        assert.match(await panel.locator(".hb-alert").innerText(), /发现 1 项校验问题，需要关注/);
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
         assert.doesNotMatch(
-          await panel
-            .locator(".hb-alert, .hb-source")
-            .allInnerTexts()
-            .then((texts) => texts.join(" ")),
-          /Project heartbeat discovery was incomplete/,
+          await panel.locator("section.panel").innerText(),
+          /校验提示|校验问题，需要关注|Project heartbeat discovery was incomplete/,
         );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
@@ -5243,7 +5331,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
         await assertNoHeaderStatus();
-        assert.match(await panel.locator(".hb-alert").innerText(), /发现 1 项校验问题，需要关注/);
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /校验提示|校验问题，需要关注|signature mismatch/,
+        );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,
@@ -5256,21 +5348,21 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        const alertText = await panel.locator(".hb-alert").innerText();
-        assert.match(alertText, /发现 80 项校验问题，需要关注/);
-        assert.doesNotMatch(alertText, /v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/);
-        assert.ok(alertText.length < 100);
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /校验提示|校验问题，需要关注|v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/,
+        );
         assert.ok((await panel.locator(".hb-wake").count()) > 0);
         await page.evaluate(() => {
           window.fixture.heartbeat.findings = window.fixture.heartbeat.findings.slice(0, 30);
           window.fixture.heartbeat.findingsTruncated = true;
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        const truncatedAlert = await panel.locator(".hb-alert").innerText();
-        assert.match(truncatedAlert, /发现至少 30 项校验问题，需要关注/);
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
         assert.doesNotMatch(
-          truncatedAlert,
-          /v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/,
+          await panel.locator("section.panel").innerText(),
+          /校验提示|校验问题，需要关注|v2-write-conflict|resplit-row-unverdicted|heartbeat\.md/,
         );
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
@@ -5280,11 +5372,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         }, heartbeat);
-        assert.match(
-          await panel.locator(".hb-alert").innerText(),
-          /心跳记录存在校验提示，需要关注/,
+        assert.equal(await panel.locator(".hb-alert").count(), 0);
+        assert.doesNotMatch(
+          await panel.locator("section.panel").innerText(),
+          /校验提示|校验问题，需要关注|heartbeat\.md/,
         );
-        assert.doesNotMatch(await panel.locator(".hb-alert").innerText(), /heartbeat\.md/);
         await page.evaluate((value) => {
           window.fixture.heartbeat = {
             ...value,

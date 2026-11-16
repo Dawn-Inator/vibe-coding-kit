@@ -260,8 +260,6 @@ export const taskPanelStyles = css`
   .pagination-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; border: 1px solid var(--ctp-panel-line); border-radius: 999px; padding: 5px 11px; background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.4; }
   .pagination-button svg { width: 13px; height: 13px; }
   .pagination-button:focus:not(:focus-visible) { outline: none; }
-  .hb-alert .info-card-body { font-size: 11px; line-height: 1.55; }
-  .hb-alert p { margin: 0 0 6px; overflow-wrap: anywhere; }
   .hb-history { min-width: 0; }
   .hb-history-head { min-height: 38px; }
   .hb-wake { min-width: 0; }
