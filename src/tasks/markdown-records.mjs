@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { atomicWriteFile } from "./task-io.mjs";
 const queues = new Map();
 export async function withMarkdownLock(key, work) {
@@ -13,10 +14,27 @@ export async function withMarkdownLock(key, work) {
 		if (queues.get(key) === result) queues.delete(key);
 	}
 }
-async function readManagedRecords(path, kind) {
+/** Read no more than maxBytes even if a file grows while being read. */
+export async function readBoundedText(path, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 16 * 1024 * 1024) throw new RangeError("Invalid record byte limit");
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error("Task record is not a regular file");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let used = 0;
+    while (used < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, used, buffer.length - used, used);
+      if (!bytesRead) break;
+      used += bytesRead;
+    }
+    if (used > maxBytes) throw new RangeError("Task record exceeds byte limit");
+    return buffer.subarray(0, used).toString("utf8");
+  } finally { await handle.close(); }
+}
+async function readManagedRecords(path, kind, reader = readFile) {
 	let text;
 	try {
-		text = await readFile(path, "utf8");
+		text = await reader(path, "utf8");
 	} catch (error) {
 		if (error?.code === "ENOENT") return null;
 		throw error;
@@ -51,8 +69,8 @@ async function readManagedRecords(path, kind) {
 export async function inspectMarkdownRecordsIdentity(path, { kind }) {
 	return (await readManagedRecords(path, kind))?.identity ?? null;
 }
-export async function readMarkdownRecords(path, { kind, identity }) {
-	const payload = await readManagedRecords(path, kind);
+export async function readMarkdownRecords(path, { kind, identity, reader }) {
+	const payload = await readManagedRecords(path, kind, reader);
 	if (!payload) return { exists: false, records: [] };
 	if (payload.identity !== identity)
 		throw new Error(`Invalid Markdown records identity, kind or version: ${path}`);
@@ -94,10 +112,10 @@ function taskHistoryDigest(records) {
 		.digest("hex");
 }
 /** Validate a committed head against the history prefix before mutating either file. */
-export async function verifyTaskHistoryHead(path, identity, records) {
+export async function verifyTaskHistoryHead(path, identity, records, reader = readFile) {
 	let text;
 	try {
-		text = await readFile(path, "utf8");
+		text = await reader(path, "utf8");
 	} catch (e) {
 		if (e?.code === "ENOENT") return;
 		throw e;

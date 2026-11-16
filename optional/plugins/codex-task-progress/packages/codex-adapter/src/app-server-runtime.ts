@@ -44,10 +44,18 @@ export interface CodexAppServerSession {
   listLoadedThreads(): Promise<readonly ThreadCatalogEntry[]>;
   listThreads(filter?: { readonly cwd?: string }): Promise<readonly ThreadCatalogEntry[]>;
   listTurnIds(threadId: string): Promise<readonly string[]>;
+  listDirectSubagents?(
+    parentThreadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }>;
   close(): Promise<void>;
 }
 
 export interface CodexAppServerRuntime {
+  listDirectSubagents?(
+    parentThreadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }>;
   getGoal(threadId: string): Promise<ThreadGoal | null>;
   readThreadIdentity(threadId: string): Promise<CodexThreadIdentity>;
   resolveCurrentThread(input: CurrentThreadResolverInput): Promise<RuntimeIdentity>;
@@ -243,6 +251,15 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#setTimeout = options.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout));
     this.#clearTimeout = options.clearTimeout ?? ((id) => clearTimeout(id as NodeJS.Timeout));
+  }
+
+  async listDirectSubagents(
+    parentThreadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }> {
+    const client = await this.#enqueue(() => this.#ensureClient());
+    if (!client.listDirectSubagents) throw new Error("Subagent listing unavailable");
+    return client.listDirectSubagents(parentThreadId, cursor);
   }
 
   async getGoal(threadId: string): Promise<ThreadGoal | null> {

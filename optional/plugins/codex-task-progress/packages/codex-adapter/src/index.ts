@@ -342,6 +342,27 @@ export class CodexAppServerClient implements ThreadCatalog {
     });
   }
 
+  async listDirectSubagents(
+    parentThreadId: string,
+    cursor?: string,
+  ): Promise<{ data: unknown[]; nextCursor: string | null }> {
+    const result = await this.#request("thread/list", {
+      parentThreadId,
+      cursor: cursor ?? null,
+      limit: 50,
+      sourceKinds: [
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+      ],
+    });
+    return z
+      .object({ data: z.array(z.unknown()).max(50), nextCursor: z.string().nullable() })
+      .parse(result);
+  }
+
   async settle(milliseconds: number): Promise<void> {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
   }

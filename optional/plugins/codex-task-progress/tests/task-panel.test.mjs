@@ -7,12 +7,12 @@ import { build } from "esbuild";
 
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
 :root{color-scheme:light dark;--ctp-surface:Canvas;--ctp-text:CanvasText;--ctp-accent:var(--ctp-text);--ctp-muted:GrayText;--ctp-border:color-mix(in srgb,currentColor 18%,transparent)}
-body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box-sizing:border-box;min-height:100vh;padding:12px;display:flex;flex-direction:column}
+body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box-sizing:border-box;height:100dvh;min-height:0;padding:12px;display:flex;flex-direction:column}
 #messages{flex:1;min-height:0;overflow:auto}#composer{width:100%;height:100px;flex-shrink:0;background:var(--ctp-surface);border:1px solid #ccc;margin-bottom:20px;box-sizing:border-box}[role=textbox]{height:80px}
 </style></head><body>
 <main id="native-panel-shell" aria-label="Task progress"><div id="messages">Native task progress panel</div><div id="composer" data-codex-composer-root><div role="textbox" contenteditable="true"></div></div></main>
 <script>
-window.fixture = {delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,taskSourcePending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, archiveCount:0, completionBasis:undefined, archiveResponses:{}, holdNextArchive:false, releaseHeldArchive:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
+window.fixture = {subagents:null,delay:Number(new URL(location.href).searchParams.get("initialDelay") || 0),getFailureNext:new URL(location.href).searchParams.get("initialGetFailure"),holdNextGetFailure:false,releaseHeldGetFailure:null,holdNextGetSuccess:false,releaseHeldGetSuccess:null,getFailureThrownCount:0,fixtureEvents:[],delayNextHistory:0,holdNextHistoryFailure:false,releaseHeldHistoryFailure:null,historyFailureNext:null,heartbeatHistoryFailureNext:null,holdNextHeartbeatHistory:false,releaseHeldHeartbeatHistory:null,heartbeatHistoryResponses:[],heartbeatPending:false,taskSourcePending:false,task:null, taskSource:null, heartbeat:null, execution:{state:"unknown",observedAt:"2026-11-11T12:00:00Z",source:"codex-app-server"}, history:{events:[],nextCursor:null}, heartbeatHistory:null, archiveCount:0, completionBasis:undefined, archiveResponses:{}, holdNextArchive:false, releaseHeldArchive:null, calls:[],disabled:new URL(location.href).searchParams.get("disabled")==="true"};
 window.fixture.threadId = "thread-a";
 window.__codexTaskProgressRequest = async function(request) {
   window.fixture.calls.push(request);
@@ -22,7 +22,7 @@ window.__codexTaskProgressRequest = async function(request) {
   if(request.method === 'bind-heartbeat') {
     window.fixture.heartbeat = request.path ? {...window.fixture.heartbeat,status:'ready',sourcePath:request.path} : null;
   }
-  const result = {task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,taskSourcePending:window.fixture.taskSourcePending,execution:window.fixture.execution,archiveCount:window.fixture.archiveCount,completionBasis:window.fixture.completionBasis,...(request.method==='archive'?{archive:structuredClone(window.fixture.archiveResponses[(request.taskId || "tasks") + ":" + (request.cursor || "first")])}:{}),...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
+  const result = {subagents:window.fixture.subagents,task:window.fixture.disabled?null:window.fixture.task,taskSource:window.fixture.disabled?null:window.fixture.taskSource,heartbeat:window.fixture.disabled?null:window.fixture.heartbeat,heartbeatPending:window.fixture.heartbeatPending,taskSourcePending:window.fixture.taskSourcePending,execution:window.fixture.execution,archiveCount:window.fixture.archiveCount,completionBasis:window.fixture.completionBasis,...(request.method==='archive'?{archive:structuredClone(window.fixture.archiveResponses[(request.taskId || "tasks") + ":" + (request.cursor || "first")])}:{}),...(window.fixture.disabled?{enabled:false}:{}),...(request.method==='history'?{history:window.fixture.history}:{}),...(request.method==='heartbeat-history'?{heartbeatHistory:window.fixture.heartbeatHistory}:{})};
   if(request.method==='archive' && window.fixture.holdNextArchive) { window.fixture.holdNextArchive=false; await new Promise(resolve => { window.fixture.releaseHeldArchive=resolve; }); window.fixture.releaseHeldArchive=null; }
   if(request.method==='history' && window.fixture.historyFailureNext) { const message=window.fixture.historyFailureNext; window.fixture.historyFailureNext=null; if(window.fixture.holdNextHistoryFailure) { window.fixture.holdNextHistoryFailure=false; await new Promise(resolve => { window.fixture.releaseHeldHistoryFailure=resolve; }); window.fixture.releaseHeldHistoryFailure=null; } throw new Error(message); }
   if(request.method==='heartbeat-history' && window.fixture.holdNextHeartbeatHistory) { window.fixture.holdNextHeartbeatHistory=false; await new Promise(resolve => { window.fixture.releaseHeldHeartbeatHistory=resolve; }); window.fixture.releaseHeldHeartbeatHistory=null; }
@@ -195,9 +195,252 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         if (pageErrors.length) error.message += `\nPage errors: ${pageErrors.join("\n")}`;
         throw error;
       });
-    return { context, page, panel: page.locator("codex-task-panel") };
+    const panel = page.locator("codex-task-panel");
+    if (!query.includes("defaultSubagents"))
+      await panel.locator(".task-mode button").nth(1).click();
+    return { context, page, panel };
   };
   try {
+    await t.test(
+      "subagent default shows honest recorded counts and preserves the parent goal",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.subagents = {
+            schemaVersion: 1,
+            parentThreadId: "thread-a",
+            observedAt: "2026-11-15T12:00:00Z",
+            status: "ready",
+            runningCount: 30,
+            runningBasis: "heartbeat",
+            complete: true,
+            truncated: false,
+            agents: [
+              {
+                id: "done",
+                name: "Finished agent",
+                state: "completed",
+                observedAt: null,
+                progress: { completed: 2, total: 2, percent: 100 },
+                progressBasis: "registered-checklist",
+              },
+              {
+                id: "unknown",
+                name: "Unknown agent",
+                state: "waiting",
+                observedAt: null,
+                progress: null,
+                progressBasis: null,
+              },
+              {
+                id: "working",
+                name: "Working agent",
+                state: "working",
+                observedAt: null,
+                progress: { completed: 0, total: 4, percent: 0 },
+                progressBasis: "task-lifecycle",
+              },
+            ],
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.getByText("Working agent", { exact: true }).waitFor();
+        assert.equal(
+          await panel
+            .getByRole("button", { name: "子 Agent", exact: true })
+            .getAttribute("aria-pressed"),
+          "true",
+        );
+        const cards = panel.locator(".agent-counts .hb-time");
+        assert.match(await cards.nth(0).innerText(), /30/);
+        assert.match(await cards.nth(0).innerText(), /心跳记录.*更新于/s);
+        assert.doesNotMatch(await cards.nth(0).innerText(), /实时/);
+        assert.match(await cards.nth(1).innerText(), /3/);
+        const rows = panel.locator(".agent-row");
+        assert.deepEqual(await rows.locator(".name").allInnerTexts(), [
+          "Working agent",
+          "Unknown agent",
+          "Finished agent",
+        ]);
+        assert.equal(
+          await rows.nth(0).locator('[role="meter"]').getAttribute("aria-valuenow"),
+          "0",
+        );
+        assert.equal(await rows.nth(1).locator('[role="meter"]').count(), 0);
+        assert.match(await rows.nth(1).innerText(), /—/);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        assert.match(await panel.locator(".total-line").innerText(), /1\/2/);
+        await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
+        await panel.getByRole("button", { name: /普通聊天界面/ }).waitFor();
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        assert.match(await panel.locator(".total-line").innerText(), /1\/2/);
+        await panel.getByRole("button", { name: "子 Agent", exact: true }).click();
+        await page.evaluate(() => {
+          window.fixture.subagents = {
+            ...window.fixture.subagents,
+            status: "partial",
+            runningCount: null,
+            runningBasis: "unknown",
+            observedAt: null,
+            agents: [],
+            complete: false,
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("当前没有可显示的子 Agent。", { exact: true }).waitFor();
+        assert.match(await cards.nth(0).innerText(), /—/);
+        assert.match(await cards.nth(1).innerText(), /0/);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        await page.evaluate(() => {
+          window.fixture.subagents.runningCount = 0;
+          window.fixture.subagents.runningBasis = "runtime";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await cards.nth(0).locator("strong").innerText(), "0");
+        await page.evaluate(() => {
+          window.fixture.subagents = null;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("尚未获取 Agent 活动。", { exact: true }).waitFor();
+        assert.match(await cards.nth(1).innerText(), /—/);
+        await context.close();
+      },
+    );
+    await t.test(
+      "subagent mode state is isolated and panel fills short and tall windows",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.evaluate((value) => {
+          window.fixture.task = value;
+          window.fixture.subagents = {
+            schemaVersion: 1,
+            parentThreadId: "thread-a",
+            observedAt: "2026-11-15T12:00:00Z",
+            status: "ready",
+            runningCount: 30,
+            runningBasis: "heartbeat",
+            complete: true,
+            truncated: false,
+            agents: Array.from({ length: 35 }, (_, i) => ({
+              id: `a${i}`,
+              name: `Agent ${i} ${"verylongname".repeat(20)}`,
+              state: "working",
+              observedAt: null,
+              progress: null,
+              progressBasis: null,
+            })),
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        for (const size of [
+          { width: 390, height: 430 },
+          { width: 800, height: 1000 },
+        ]) {
+          await page.setViewportSize(size);
+          await page.locator("#messages, #composer").evaluateAll((nodes) => {
+            for (const node of nodes) node.remove();
+          });
+          for (const view of ["tasks", "history", "heartbeat"]) {
+            await showView(panel, view);
+            const geometry = await panel.evaluate((host) => {
+              const body = host.shadowRoot.querySelector(".body").getBoundingClientRect();
+              const foot = host.shadowRoot.querySelector(".panel-foot").getBoundingClientRect();
+              return {
+                bottom: body.bottom,
+                footer: foot.bottom,
+                scrollWidth: host.scrollWidth,
+                width: host.clientWidth,
+              };
+            });
+            assert.ok(Math.abs(geometry.bottom - geometry.footer) <= 2);
+            assert.ok(
+              geometry.bottom >= size.height - 15 && geometry.bottom <= size.height,
+              `${view} ${JSON.stringify(size)} ${JSON.stringify(geometry)}`,
+            );
+            assert.ok(geometry.scrollWidth <= geometry.width);
+            if (view === "tasks")
+              assert.equal(
+                await panel
+                  .locator(".scroll")
+                  .evaluate((element) => element.scrollHeight > element.clientHeight),
+                true,
+              );
+          }
+        }
+        await showView(panel, "tasks");
+        await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
+        const state = await panel.evaluate(async (host) => {
+          const saved = host.captureViewState();
+          host.taskMode = "subagents";
+          host.restoreViewState(saved);
+          const restored = host.taskMode;
+          const legacy = { ...saved };
+          delete legacy.taskMode;
+          host.taskMode = "subagents";
+          host.restoreViewState(legacy);
+          const legacyMode = host.taskMode;
+          host.resetThread("thread-b");
+          host.data = {
+            ...host.data,
+            subagents: {
+              schemaVersion: 1,
+              parentThreadId: "thread-a",
+              observedAt: null,
+              status: "ready",
+              runningCount: 1,
+              runningBasis: "runtime",
+              agents: [
+                {
+                  id: "old",
+                  name: "stale agent",
+                  state: "working",
+                  progress: null,
+                  progressBasis: null,
+                  observedAt: null,
+                },
+              ],
+              complete: true,
+              truncated: false,
+            },
+          };
+          host.restoreViewState(saved);
+          await host.updateComplete;
+          const other = host.taskMode;
+          const staleVisible = host.shadowRoot.textContent.includes("stale agent");
+          host.resetThread("thread-a");
+          host.selectedObjective = "ui";
+          host.data = {
+            ...host.data,
+            presentation: {
+              scope: "changed-project",
+              pending: false,
+              cached: false,
+              updatedAt: null,
+            },
+          };
+          host.restoreViewState(saved);
+          return {
+            restored,
+            legacyMode,
+            other,
+            staleVisible,
+            changedScope: host.taskMode,
+            changedSelection: host.selectedObjective,
+          };
+        });
+        assert.deepEqual(state, {
+          restored: "registered-tasks",
+          legacyMode: "registered-tasks",
+          other: "subagents",
+          staleVisible: false,
+          changedScope: "subagents",
+          changedSelection: null,
+        });
+        await context.close();
+      },
+    );
     await t.test(
       "view snapshots retain cached pages only within their thread and source fences",
       async () => {
@@ -2006,7 +2249,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").isVisible(), true);
         assert.equal(await sourceDiagnostic.locator(".diagnostic-text").textContent(), longError);
         assert.doesNotMatch(await scroll.innerText(), /very-long-unbroken-path-segment/);
-        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
+        assert.ok(
+          (await panel.locator(".body").boundingBox()).height <=
+            (await page.evaluate(() => innerHeight)),
+        );
         assert.ok(
           (await scroll.boundingBox()).height < (await panel.locator(".body").boundingBox()).height,
         );
@@ -2078,7 +2324,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await projectError.click();
         const projectDiagnostic = scroll.locator(".info-card").filter({ hasText: "项目心跳错误" });
         assert.equal(await projectDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
+        assert.ok(
+          (await panel.locator(".body").boundingBox()).height <=
+            (await page.evaluate(() => innerHeight)),
+        );
 
         for (const [status, expected] of [
           ["error", /心跳任务来源暂不可用/],
@@ -2106,7 +2355,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           .locator(".info-card")
           .filter({ hasText: "台账历史不可用" });
         assert.equal(await historyDiagnostic.locator(".diagnostic-text").textContent(), longError);
-        assert.ok((await panel.locator(".body").boundingBox()).height <= 640);
+        assert.ok(
+          (await panel.locator(".body").boundingBox()).height <=
+            (await page.evaluate(() => innerHeight)),
+        );
 
         await panel.getByRole("button", { name: "心跳", exact: true }).click();
         assert.equal(await panel.locator(".body").isVisible(), true);
@@ -3438,6 +3690,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         });
         if ((await panel.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
           await panel.locator(".summary .main").click();
+        await panel.locator(".task-mode button").nth(1).click();
         assert.equal(await panel.locator(".archive-toggle").getAttribute("aria-expanded"), "false");
         await panel.locator(".archive-toggle").click();
         await panel.getByText("No archived tasks.").waitFor();
@@ -3951,8 +4204,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             `expected the native panel to use its available width, got ${bounds?.width}`,
           );
           assert.ok(
-            bounds.height <= 640,
-            `expected a panel no taller than 640px, got ${bounds.height}`,
+            bounds.height <= (await page.evaluate(() => innerHeight)),
+            `expected a panel within the viewport, got ${bounds.height}`,
           );
           const light = await body.screenshot({
             path: ".playwright-img/heartbeat-time-cards-light.png",
@@ -3961,8 +4214,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           const lightHeight = light.readUInt32BE(20);
           assert.equal(lightWidth, Math.round(bounds.width * 2));
           assert.ok(
-            lightHeight > 0 && lightHeight <= 640 * 2 + 1,
-            `expected a non-empty screenshot within the 640px panel limit; PNG=${lightWidth}x${lightHeight}, panel=${bounds.width}x${bounds.height}`,
+            lightHeight > 0 && lightHeight <= (await page.evaluate(() => innerHeight)) * 2 + 1,
+            `expected a non-empty screenshot within the viewport; PNG=${lightWidth}x${lightHeight}, panel=${bounds.width}x${bounds.height}`,
           );
 
           const lightBackground = await body.evaluate(
@@ -5017,6 +5270,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         window.fixture.task = value;
         return window.__CODEX_TASK_PROGRESS__.refresh();
       }, task);
+      await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
       assert.match(await panel.locator("section.panel").innerText(), /普通聊天界面/);
       assert.equal(await panel.locator(".summary .main").getAttribute("aria-expanded"), "true");
       await page.evaluate(() => {

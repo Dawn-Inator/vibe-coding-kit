@@ -1,9 +1,10 @@
 // Adapted from https://github.com/Dawn-Inator/codex-task-progress; see src/tasks/LICENSE.
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
 	readMarkdownRecords,
+	readBoundedText,
 	writeMarkdownRecords,
 	withMarkdownLock,
 	verifyTaskHistoryHead,
@@ -332,10 +333,10 @@ export class TaskStore {
 			return raw;
 		});
 	}
-	async legacy(path, threadId) {
+	async legacy(path, threadId, reader = readFile) {
 		let text;
 		try {
-			text = await readFile(path, "utf8");
+			text = await reader(path, "utf8");
 		} catch (error) {
 			if (isMissing(error))
 				return { exists: false, events: [], partialTail: false };
@@ -419,20 +420,22 @@ export class TaskStore {
 				);
 		}
 	}
-	async load(threadId, { persist = true } = {}) {
+	async load(threadId, { persist = true, reader = readFile } = {}) {
+		if (persist && reader !== readFile) throw new TypeError("Custom readers cannot authorize writes");
 		const paths = this.paths(threadId);
 		let data;
 		try {
 			data = await readMarkdownRecords(paths.history, {
 				kind: "task-progress",
 				identity: threadId,
+				reader,
 			});
 		} catch (error) {
 			throw new TaskStoreError("TASK_HISTORY_CORRUPT", error.message);
 		}
 		if (!data.exists) {
 			try {
-				await readFile(paths.heartbeat);
+				await reader(paths.heartbeat, "utf8");
 				throw new TaskStoreError(
 					"TASK_HISTORY_CORRUPT",
 					"Managed heartbeat exists without task history",
@@ -446,7 +449,7 @@ export class TaskStore {
 			threadId,
 			data.records.filter((r) => r.type === "task-event").map((r) => r.event),
 		);
-		const legacy = await this.legacy(paths.legacyEvents, threadId);
+		const legacy = await this.legacy(paths.legacyEvents, threadId, reader);
 		const common = Math.min(events.length, legacy.events.length);
 		if (
 			legacy.events
@@ -472,7 +475,7 @@ export class TaskStore {
 			events.push(...legacy.events.slice(events.length));
 		}
 		try {
-			await verifyTaskHistoryHead(paths.heartbeat, threadId, data.records);
+			await verifyTaskHistoryHead(paths.heartbeat, threadId, data.records, reader);
 		} catch (error) {
 			throw new TaskStoreError("TASK_HISTORY_CORRUPT", error.message);
 		}
@@ -487,6 +490,29 @@ export class TaskStore {
 		return { ...data, events, dirty, partialTail: legacy.partialTail };
 	}
 
+	/** Bounded display-only read. Does not publish heads, migrate legacy records or bind sources. */
+	async getReadOnly(threadId, { maxBytes = 1024 * 1024 } = {}) {
+		return this.serialize(threadId, async () => {
+			let canonicalRoot;
+			let canonicalDirectory;
+			try {
+				canonicalRoot = await realpath(this.root);
+				canonicalDirectory = await realpath(this.paths(threadId).directory);
+			} catch (error) {
+				if (isMissing(error)) return { state: null, sourceBound: false, uncertain: false };
+				throw error;
+			}
+			const boundary = relative(canonicalRoot, canonicalDirectory);
+			if (boundary === ".." || boundary.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(boundary)) throw new Error("Task record directory escapes storage root");
+			const reader = (path) => {
+				if (dirname(path) !== this.paths(threadId).directory) throw new Error("Unexpected task record path");
+				return readBoundedText(resolve(canonicalDirectory, relative(dirname(path), path)), maxBytes);
+			};
+			const loaded = await this.load(threadId, { persist: false, reader });
+			const binding = loaded.records.filter((record) => record.type === "source-binding").at(-1);
+			return { state: loaded.dirty || loaded.partialTail || (binding && binding.binding !== null) ? null : (loaded.events.at(-1)?.state ?? null), sourceBound: Boolean(binding && binding.binding !== null), uncertain: loaded.dirty || loaded.partialTail };
+		});
+	}
 	async replay(threadId) {
 		return (await this.load(threadId)).events;
 	}

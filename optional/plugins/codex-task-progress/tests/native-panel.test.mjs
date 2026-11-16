@@ -285,6 +285,180 @@ test("native panel MCP Apps integration", async (t) => {
         ),
     );
 
+    await t.test("pending subagents retry promptly, then return to quiet polling", () =>
+      scenario(
+        async (page, frame) => {
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel")?.data.task?.title ===
+              "Native task panel",
+          );
+          await page.evaluate(() => {
+            const subagents = {
+              schemaVersion: 1,
+              parentThreadId: window.currentThreadId,
+              observedAt: null,
+              status: "pending",
+              runningCount: null,
+              runningBasis: "unknown",
+              agents: [],
+              complete: false,
+              truncated: false,
+            };
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.subagents?.status ===
+              "pending",
+          );
+          const count = () =>
+            page.evaluate(
+              () => window.hostCalls.filter((c) => c.name === "task_progress_get").length,
+            );
+          const before = await count();
+          await page.evaluate(() => {
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents: {
+                ...window.currentResponse.subagents,
+                status: "ready",
+                complete: true,
+              },
+            };
+          });
+          await page.clock.fastForward(150);
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.subagents?.status ===
+              "ready",
+          );
+          assert.equal(await count(), before + 1);
+          const snapshot = await frame
+            .locator("codex-task-panel")
+            .evaluate((panel) => panel.data.subagents);
+          assert.equal(snapshot.runningCount, null);
+          assert.equal(snapshot.runningBasis, "unknown");
+          await page.clock.fastForward(4_999);
+          assert.equal(await count(), before + 1);
+        },
+        "",
+        true,
+      ),
+    );
+
+    await t.test(
+      "agent-only pushes read fresh data and scoped cache rejects late responses and revocation",
+      () =>
+        scenario(async (page, frame) => {
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel")?.data.task?.title ===
+              "Native task panel",
+          );
+          await page.evaluate(() => {
+            const subagents = {
+              schemaVersion: 1,
+              parentThreadId: window.currentThreadId,
+              observedAt: null,
+              status: "ready",
+              runningCount: null,
+              runningBasis: "unknown",
+              agents: [],
+              complete: true,
+              truncated: false,
+            };
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.subagents?.status ===
+              "ready",
+          );
+          await page.evaluate(() => {
+            window.holdGet = true;
+            window.deliverToolResult(window.currentThreadId, {
+              subagents: { ...window.currentResponse.subagents, runningCount: 99 },
+              presentation: window.currentResponse.presentation,
+            });
+          });
+          await page.waitForFunction(() => typeof window.releaseHeldGet === "function");
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((p) => p.data.task.title),
+            "Native task panel",
+          );
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((p) => p.data.subagents.runningCount),
+            null,
+          );
+          await page.evaluate(() => {
+            window.deliverToolResult(window.currentThreadId, {
+              ...window.currentResponse,
+              task: { ...window.currentResponse.task, title: "Source B", source: { path: "/b" } },
+              subagents: { ...window.currentResponse.subagents, runningCount: 2 },
+              presentation: { scope: "project-b", pending: false, cached: false, updatedAt: 20 },
+            });
+            window.deliverToolResult(window.currentThreadId, {
+              task: null,
+              heartbeat: null,
+              presentation: { scope: "project-a", pending: true, cached: false, updatedAt: null },
+            });
+            window.holdGet = false;
+            window.releaseHeldGet();
+          });
+          await page.waitForFunction(() => {
+            const p = document
+              .getElementById("app")
+              .contentWindow.document.querySelector("codex-task-panel");
+            return (
+              p.data.presentation?.scope === "project-a" && p.data.subagents?.runningCount === null
+            );
+          });
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((p) => p.data.task.title),
+            "Native task panel",
+          );
+          await page.evaluate(() => {
+            window.deliverToolResult(window.currentThreadId, {
+              enabled: false,
+              task: null,
+              heartbeat: null,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 30 },
+            });
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.enabled === false,
+          );
+          assert.equal(
+            await frame.locator("codex-task-panel").evaluate((p) => p.data.subagents ?? null),
+            null,
+          );
+        }),
+    );
+
     await t.test("scoped cached views restore immediately and stay isolated", () =>
       scenario(
         async (page, frame) => {
@@ -616,6 +790,7 @@ test("native panel MCP Apps integration", async (t) => {
         await panel.locator(".summary .main").waitFor();
         if ((await panel.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
           await panel.locator(".summary .main").click();
+        await panel.getByRole("button", { name: "Registered tasks" }).click();
         const archive = panel.locator(".archive-toggle");
         await archive.waitFor();
         assert.equal(await archive.getAttribute("aria-expanded"), "false");
@@ -677,6 +852,7 @@ test("native panel MCP Apps integration", async (t) => {
       const main = frame.locator(".summary .main");
       await main.waitFor();
       if ((await main.getAttribute("aria-expanded")) !== "true") await main.click();
+      await frame.getByRole("button", { name: "Registered tasks" }).click();
       await frame.getByText("Reuse current task data", { exact: true }).waitFor();
     }
     async function normalizeColors(frame, colors) {
@@ -804,6 +980,7 @@ test("native panel MCP Apps integration", async (t) => {
                   element.threadId = response.task.threadId;
                   element.requester = async () => response;
                 }, initialResponse);
+                await frame.getByRole("button", { name: "Registered tasks" }).click();
                 await frame.getByText("Reuse current task data", { exact: true }).waitFor();
               } else {
                 await ready(frame);
@@ -1105,6 +1282,7 @@ test("native panel MCP Apps integration", async (t) => {
         await frame.locator(".summary .main").waitFor();
         if ((await frame.locator(".summary .main").getAttribute("aria-expanded")) !== "true")
           await frame.locator(".summary .main").click();
+        await frame.getByRole("button", { name: "Registered tasks" }).click();
         await frame.getByText("Recovered B objective", { exact: true }).waitFor();
         await waitForPanelThread(page, "thread-b");
         assert.equal(await frame.getByText("Reuse current task data", { exact: true }).count(), 0);

@@ -10,8 +10,11 @@ export const taskPanelStyles = css`
     --ctp-panel-line: var(--ctp-border, #343a4024);
     --ctp-panel-track: var(--ctp-track, color-mix(in srgb, var(--ctp-text, #343a40) 12%, var(--ctp-surface, #fff)));
     --ctp-panel-ease: cubic-bezier(.16, 1, .3, 1);
-    display: block;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
     min-width: 0;
+    min-height: 0;
     color: var(--ctp-text, #343a40);
     color-scheme: light dark;
     font: inherit;
@@ -40,7 +43,7 @@ export const taskPanelStyles = css`
     stroke-linejoin: round;
     pointer-events: none;
   }
-  .panel { position: relative; width: 100%; min-width: 0; }
+  .panel { position: relative; display: flex; flex: 1 1 auto; flex-direction: column; width: 100%; min-width: 0; min-height: 0; }
   .summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 44px; }
   .main, .orb {
     position: relative;
@@ -96,7 +99,7 @@ export const taskPanelStyles = css`
     width: 100%;
     display: flex;
     flex-direction: column;
-    max-height: var(--ctp-panel-max-height, min(640px, calc(100dvh - 72px)));
+    flex: 1 1 auto;
     min-height: 0;
     margin-top: 8px;
     overflow: hidden;
@@ -123,6 +126,12 @@ export const taskPanelStyles = css`
   .panel-title { display: -webkit-box; min-width: 0; max-height: 2.8em; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; font-size: 17px; font-weight: 600; line-height: 1.4; letter-spacing: -.4px; overflow-wrap: anywhere; }
   .panel-title:focus { outline: none; }
   .panel-subtitle { margin: 7px 0 0; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+  .task-mode { display: flex; gap: 5px; margin-top: 12px; padding: 3px; border-radius: 10px; background: var(--ctp-hover, #343a400a); }
+  .task-mode button { flex: 1; min-width: 0; font-size: 11px; }
+  .task-mode button[aria-pressed="true"] { background: var(--ctp-surface, #fff); box-shadow: 0 1px 4px #00000012; }
+  .subagents { min-width: 0; }
+  .agent-counts { margin: 0 0 12px; }
+  .agent-row { cursor: default; }
   .total-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 14px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
   .total-line strong { color: var(--ctp-text, #343a40); font-weight: 550; }
   .total-line .execution { margin-inline-start: auto; color: var(--ctp-panel-ink); }

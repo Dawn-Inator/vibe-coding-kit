@@ -13,6 +13,8 @@ An optional standalone `task_root: <Items ID>` selects a tracking root and its l
 
 Keep row IDs, titles, raw statuses, and reported evidence tied to the source. Unknown statuses remain incomplete. Completion requires evidence from the source; an inventory or its percentage alone never certifies the whole delivery. Preserve invalid IDs, duplicate IDs, parser errors, and unsafe or missing child links as visible errors or source risks. For a valid tracking parent, count its linked children as progress leaves without counting the parent twice. `reported` evidence records a claim; `verified` requires an actual check against the relevant oracle. Never infer task progress from elapsed time, token use, or activity alone.
 
+When agent tools are available, a child may register and update its own module checklist in its own trusted child context using the normal Kit APIs. Do not copy the parent task or Native Goal. A private final is not module acceptance. Child progress is derived from its canonical checklist when available; missing, bound, uncertain or different-cwd data remains unknown. Recorded Heartbeat counts are timestamped observations only when related to the current chat, not real-time Desktop activity; no parallel state store is needed.
+
 Report completion from recorded task state and evidence. Use the applicable project planning guidance when a plan is needed; this skill does not add a separate planning or heartbeat policy.
 
 ## Helper-managed task lifecycle

@@ -1,3 +1,7 @@
+# Unreleased local candidate
+
+- The local unreleased candidate defaults to Subagents; Registered tasks remains available and retains the full parent goal denominator. The top count and per-agent progress come from the Kit normalized snapshot. A recorded Heartbeat count is shown with its observation time only when its source is related to the current chat; it is not a live count. A separate app-server cannot establish which Desktop agents are running in real time. An individual child’s canonical checklist can supply its progress; missing, bound, uncertain or different-cwd data stays unknown rather than becoming 0% or 100%. No additional state store is created. The panel uses available height, scrolls the middle list and keeps its footer at the bottom. A local standalone fixture preview exists; it is not production data.
+
 # Task Progress 0.7.9
 
 - An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.

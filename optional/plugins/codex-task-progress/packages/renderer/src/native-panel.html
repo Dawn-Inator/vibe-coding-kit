@@ -20,7 +20,10 @@
       html, body { width: 100%; min-height: 100%; margin: 0; background: transparent; }
       body { color: var(--ctp-text); font-family: var(--font-sans, system-ui, sans-serif); }
       #native-panel-shell {
-        min-height: 100dvh;
+        height: 100dvh;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
         padding: max(12px, var(--safe-top, env(safe-area-inset-top, 0px)))
           max(12px, var(--safe-right, env(safe-area-inset-right, 0px)))
           max(12px, var(--safe-bottom, env(safe-area-inset-bottom, 0px)))

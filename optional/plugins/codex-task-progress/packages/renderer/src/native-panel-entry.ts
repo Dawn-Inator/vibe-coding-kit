@@ -239,6 +239,7 @@ function schedule(response?: TaskPanelResponse): void {
   const pending =
     response?.heartbeatPending === true ||
     response?.taskSourcePending === true ||
+    response?.subagents?.status === "pending" ||
     (response as ScopedResponse | undefined)?.presentation?.pending === true;
   const delay = pending ? (pendingDelays[pendingAttempts++] ?? 5_000) : 5_000;
   if (!pending) pendingAttempts = 0;
@@ -420,7 +421,10 @@ async function readTaskResponse(
     throw new IdentityError(
       "Trusted conversation identity was not returned. Reload the current task to retry.",
     );
-  if (parsed.result.task?.threadId && parsed.result.task.threadId !== threadId)
+  if (
+    (parsed.result.task?.threadId && parsed.result.task.threadId !== threadId) ||
+    (parsed.result.subagents && parsed.result.subagents.parentThreadId !== threadId)
+  )
     throw new IdentityError(
       "Task progress identity did not match the trusted conversation. Reload the current task to retry.",
     );
@@ -532,7 +536,8 @@ app.ontoolresult = (result) => {
     const verifiedThreadId = trustedThreadId(result);
     if (
       !verifiedThreadId ||
-      (parsed.result.task?.threadId && parsed.result.task.threadId !== verifiedThreadId)
+      (parsed.result.task?.threadId && parsed.result.task.threadId !== verifiedThreadId) ||
+      (parsed.result.subagents && parsed.result.subagents.parentThreadId !== verifiedThreadId)
     ) {
       invalidateIdentity();
       element.connectionError =
@@ -561,6 +566,11 @@ app.ontoolresult = (result) => {
         setIdentity(verifiedThreadId, scope);
         element.data = { task: null, heartbeat: null };
         element.observed = true;
+        void refresh();
+      } else if (Object.hasOwn(parsed.result, "subagents")) {
+        // Partial pushes have no generation proof. Read the complete snapshot rather
+        // than replacing the trusted task or accepting a late agent-only packet.
+        invalidatePendingRefresh();
         void refresh();
       }
       return;

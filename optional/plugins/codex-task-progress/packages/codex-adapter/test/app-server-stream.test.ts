@@ -256,3 +256,26 @@ test("default bounded mode retains the cumulative 4 MiB output cap", async () =>
   await client.closed;
   assert.equal(client.failed?.message, "GOAL_PROGRESS_APP_SERVER_OUTPUT_LIMIT");
 });
+
+test("direct subagent listing sends parent, bounded page and all subagent kinds", async () => {
+  const script = responderScript(`
+    input.on("line", (line) => {
+      const request = JSON.parse(line);
+      if (request.method === "thread/list") {
+        const p = request.params;
+        const valid = p.parentThreadId === "parent" && p.cursor === "next" && p.limit === 50 &&
+          JSON.stringify(p.sourceKinds) === JSON.stringify(["subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"]);
+        process.stdout.write(JSON.stringify({ id: request.id, result: { data: valid ? [{ id: "child" }] : [], nextCursor: null } }) + "\\n");
+      }
+    });
+  `);
+  const client = await clientFor(script);
+  try {
+    assert.deepEqual(await client.listDirectSubagents("parent", "next"), {
+      data: [{ id: "child" }],
+      nextCursor: null,
+    });
+  } finally {
+    await client.close();
+  }
+});

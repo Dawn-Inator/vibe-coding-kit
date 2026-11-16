@@ -74,6 +74,7 @@
   "tasks/task-contract.test.mjs",
   "tasks/markdown-records.test.mjs",
   "tasks/task-store.test.mjs",
+  "tasks/subagent-progress.test.mjs",
   "tasks/task-source-relations.test.mjs",
   "tasks/workspace-storage.test.mjs",
   "tasks/heartbeat-task-source.test.mjs",

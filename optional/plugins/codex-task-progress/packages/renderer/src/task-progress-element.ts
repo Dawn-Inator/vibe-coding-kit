@@ -14,6 +14,10 @@ import { repeat } from "lit/directives/repeat.js";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import type { HeartbeatOrchestrationProjection } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import type {
+  SubagentProgressEntry,
+  SubagentProgressSnapshot,
+} from "vibe-coding-kit/src/tasks/subagent-progress.mjs";
+import type {
   TaskArchivePage,
   TaskArchiveSubtasksPage,
   TaskArchiveTasksPage,
@@ -134,6 +138,7 @@ export interface TaskPanelExecution {
   activeFlags?: readonly string[];
 }
 export interface TaskPanelResponse {
+  subagents?: SubagentProgressSnapshot | null;
   enabled?: boolean;
   presentation?: {
     scope: string;
@@ -170,6 +175,7 @@ export type TaskPanelViewState = Readonly<{
   threadId: string;
   tab: "tasks" | "history" | "heartbeat";
   selectedObjective: string | null;
+  taskMode?: "subagents" | "registered-tasks";
   taskContext: string;
   history: TaskPanelHistory | TaskPanelSourceHistory | null;
   historyContext: string | null;
@@ -201,6 +207,7 @@ export class TaskProgressElement extends LitElement {
     expanded: { state: true },
     tab: { state: true },
     selectedObjective: { state: true },
+    taskMode: { state: true },
     history: { state: true },
     heartbeatHistory: { state: true },
     heartbeatBusy: { state: true },
@@ -219,6 +226,15 @@ export class TaskProgressElement extends LitElement {
   }
   set data(value: TaskPanelResponse) {
     const old = this.panelData;
+    const previousScope = JSON.stringify([
+      old.presentation?.scope ?? null,
+      old.task?.source?.path ?? old.taskSource?.path ?? null,
+    ]);
+    const nextScope = JSON.stringify([
+      value.presentation?.scope ?? null,
+      value.task?.source?.path ?? value.taskSource?.path ?? null,
+    ]);
+    if (previousScope !== nextScope) this.selectedObjective = null;
     this.panelData = value;
     const context = this.currentArchiveContext();
     if (context !== this.archiveContext) {
@@ -242,6 +258,7 @@ export class TaskProgressElement extends LitElement {
   private heartbeatRequest = 0;
   private refreshViewGeneration = 0;
   private declare selectedObjective: string | null;
+  private declare taskMode: "subagents" | "registered-tasks";
   private declare history: TaskPanelHistory | TaskPanelSourceHistory | null;
   private declare heartbeatHistory: TaskPanelHeartbeatHistory | null;
   private declare heartbeatBusy: boolean;
@@ -284,6 +301,7 @@ export class TaskProgressElement extends LitElement {
     this.presentation = "panel";
     this.locale = "en";
     this.tab = "tasks";
+    this.taskMode = "subagents";
     this.selectedObjective = null;
     this.history = null;
     this.heartbeatHistory = null;
@@ -371,6 +389,7 @@ export class TaskProgressElement extends LitElement {
   private currentTaskContext(): string {
     return JSON.stringify([
       this.threadId,
+      this.data.presentation?.scope ?? null,
       this.data.task?.source?.path ?? this.data.taskSource?.path ?? null,
       this.data.task?.source?.contentHash ?? this.data.taskSource?.contentHash ?? null,
       this.data.task?.lifecycle ?? null,
@@ -430,6 +449,7 @@ export class TaskProgressElement extends LitElement {
       threadId: this.threadId,
       tab: this.tab,
       selectedObjective: this.selectedObjective,
+      taskMode: this.taskMode,
       taskContext: this.currentTaskContext(),
       history: this.history,
       historyContext: this.historyContext,
@@ -444,6 +464,7 @@ export class TaskProgressElement extends LitElement {
     if (!this.threadId || snapshot.threadId !== this.threadId) return;
     const taskMatches = snapshot.taskContext === this.currentTaskContext();
     this.tab = snapshot.tab;
+    this.taskMode = taskMatches ? (snapshot.taskMode ?? "registered-tasks") : "subagents";
     this.selectedObjective =
       taskMatches &&
       this.data.task?.objectives.some((item) => item.id === snapshot.selectedObjective)
@@ -501,6 +522,7 @@ export class TaskProgressElement extends LitElement {
     this.historyContext = null;
     this.historyRequest++;
     this.selectedObjective = null;
+    this.taskMode = "subagents";
     this.connectionError = null;
     this.busy = false;
   }
@@ -1548,6 +1570,64 @@ export class TaskProgressElement extends LitElement {
     )}`;
   }
 
+  private renderSubagents() {
+    const snapshot =
+      this.data.subagents?.parentThreadId === this.threadId ? this.data.subagents : null;
+    const agents = snapshot?.agents ?? [];
+    const ranked = [...agents].sort((a, b) => {
+      const rank = (state: SubagentProgressEntry["state"]) =>
+        state === "working" ? 0 : state === "completed" ? 2 : 1;
+      return rank(a.state) - rank(b.state);
+    });
+    const count =
+      snapshot?.runningBasis === "heartbeat" && !snapshot.observedAt
+        ? null
+        : snapshot?.runningCount;
+    const running = typeof count === "number" ? String(count) : "—";
+    const listed =
+      snapshot && (snapshot.status === "ready" || snapshot.status === "partial")
+        ? String(agents.length)
+        : "—";
+    const updated = snapshot?.observedAt ? this.date(snapshot.observedAt) : "—";
+    const basis =
+      snapshot?.runningBasis === "heartbeat"
+        ? this.t("Heartbeat record", "心跳记录")
+        : snapshot?.runningBasis === "runtime"
+          ? this.t("Runtime", "运行状态")
+          : this.t("Unknown", "未知");
+    const labels: Record<SubagentProgressEntry["state"], string> = {
+      working: this.t("Working", "正在执行"),
+      waiting: this.t("Waiting", "等待中"),
+      idle: this.t("Idle", "空闲"),
+      completed: this.t("Completed", "已完成"),
+      failed: this.t("Failed", "失败"),
+      unknown: this.t("Unknown", "未知"),
+    };
+    return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
+      <div class="hb-times agent-counts">
+        <div class="hb-time"><div class="hb-time-label">${this.t("Running", "正在执行")}</div><strong>${running}</strong><div class="hb-time-date">${basis} · ${this.t("Updated", "更新于")} ${updated}</div></div>
+        <div class="hb-time"><div class="hb-time-label">${this.t("Listed agents", "已列出 Agent")}</div><strong>${listed}</strong></div>
+      </div>
+      ${
+        ranked.length
+          ? ranked.map((agent) => {
+              const progress = agent.progress;
+              const percent = progress?.percent;
+              const known = typeof percent === "number" && Number.isFinite(percent);
+              const bounded = known ? Math.max(0, Math.min(100, percent)) : null;
+              return html`<article class="row agent-row" data-agent=${agent.id}>
+          <span class="module-icon" data-status=${agent.state === "working" ? "active" : agent.state}>${agent.state === "completed" ? this.icon("check") : "·"}</span>
+          <span class="module-content"><span class="module-title-line"><span class="name">${agent.name}</span><span class="module-percent">${known ? `${percent}%` : "—"}</span></span>
+          ${known ? html`<span class="module-track" role="meter" aria-label=${agent.name} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${bounded as number} aria-valuetext=${`${progress?.completed}/${progress?.total}`}><span class="module-fill" style=${`transform:scaleX(${(bounded as number) / 100})`}></span></span>` : nothing}
+          <span class="module-meta"><span>${progress ? `${progress.completed}/${progress.total}` : "—"}</span><span class="status">${labels[agent.state]}</span></span></span>
+        </article>`;
+            })
+          : html`<p class="empty">${!snapshot || snapshot.status === "pending" ? this.t("Agent activity is not available yet.", "尚未获取 Agent 活动。") : snapshot.status === "unavailable" ? this.t("Agent activity is unavailable.", "Agent 活动暂不可用。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`
+      }
+      ${snapshot?.truncated ? html`<p class="muted">${this.t("The agent list is incomplete.", "Agent 列表未完整显示。")}</p>` : nothing}
+    </section>`;
+  }
+
   protected override render() {
     const task = this.data.task;
     const progress = task?.progress;
@@ -1632,7 +1712,19 @@ export class TaskProgressElement extends LitElement {
         <header class="panel-head" data-view=${this.tab}>
           <div class="panel-topline"><div class="panel-kicker">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}${this.tab === "tasks" ? this.t("Current task", "当前任务") : this.tab === "history" ? this.t("Recorded changes", "变更记录") : this.t("Project activity", "项目动态")}</div><button class="panel-refresh" aria-label=${refreshLabel} aria-busy=${String(refreshBusy)} ?disabled=${!this.refreshTask || !this.threadId || refreshBusy} @click=${() => void this.refreshCurrentView()}>${this.lucideIcon(RefreshCw)}</button></div>
           <div class="panel-heading"><h2 class="panel-title" id="panel-title" title=${viewTitle} tabindex="-1">${viewTitle}</h2></div>
-          ${this.tab === "tasks" ? html`<div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}` : this.tab === "history" ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>` : this.tab === "heartbeat" ? html`<p class="panel-subtitle">${this.t("Agent activity and tasks that need attention.", "Agent 活动与需要关注的任务。")}</p>` : nothing}
+          ${
+            this.tab === "tasks"
+              ? html`<div class="task-mode" role="group" aria-label=${this.t("Task view", "任务视图")}><button aria-pressed=${String(this.taskMode === "subagents")} @click=${() => {
+                  this.taskMode = "subagents";
+                }}>${this.t("Subagents", "子 Agent")}</button><button aria-pressed=${String(this.taskMode === "registered-tasks")} @click=${() => {
+                  this.taskMode = "registered-tasks";
+                }}>${this.t("Registered tasks", "已登记任务")}</button></div><div class="total-line"><span>${this.checklistLabel()}</span><span>${execution}</span></div>${showProgressBar ? html`<div class="track" aria-hidden="true"><div class="fill" style=${`transform:scaleX(${countedPercent / 100})`}></div></div>` : nothing}`
+              : this.tab === "history"
+                ? html`<p class="panel-subtitle">${this.t("Task changes and their recorded evidence.", "任务变更与已记录的依据。")}</p>`
+                : this.tab === "heartbeat"
+                  ? html`<p class="panel-subtitle">${this.t("Agent activity and tasks that need attention.", "Agent 活动与需要关注的任务。")}</p>`
+                  : nothing
+          }
         </header>
         <div class=${`scroll ${this.tab === "tasks" ? "modules" : ""}`}>
           ${this.connectionError ? this.diagnostic(this.t("Connection error details", "连接错误详情"), this.connectionError) : nothing}
@@ -1641,19 +1733,21 @@ export class TaskProgressElement extends LitElement {
               ? this.renderHistory()
               : this.tab === "heartbeat"
                 ? this.renderHeartbeat()
-                : html`${
-                    orderedObjectives.length
-                      ? repeat(
-                          orderedObjectives,
-                          ({ objective }) => objective.id,
-                          ({ objective, display }, index) =>
-                            this.objective(objective, index, display),
-                        )
-                      : html`<p class="empty">${sourceUnavailable || this.taskSourceIsPending() ? this.checklistLabel() : !this.observed || this.connectionError ? this.checklistLabel() : fresh ? this.t("Start a task in this chat to see its progress here.", "在此会话中开始任务后，即可在这里查看进度。") : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`
-                  }${this.renderCloseout()}${this.renderArchive()}${this.renderTaskSource()}`
+                : this.taskMode === "subagents"
+                  ? html`${this.renderSubagents()}${this.renderTaskSource()}`
+                  : html`${
+                      orderedObjectives.length
+                        ? repeat(
+                            orderedObjectives,
+                            ({ objective }) => objective.id,
+                            ({ objective, display }, index) =>
+                              this.objective(objective, index, display),
+                          )
+                        : html`<p class="empty">${sourceUnavailable || this.taskSourceIsPending() ? this.checklistLabel() : !this.observed || this.connectionError ? this.checklistLabel() : fresh ? this.t("Start a task in this chat to see its progress here.", "在此会话中开始任务后，即可在这里查看进度。") : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`
+                    }${this.renderCloseout()}${this.renderArchive()}${this.renderTaskSource()}`
           }
         </div>
-        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}` : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
+        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? `${this.data.subagents?.parentThreadId === this.threadId && (this.data.subagents.status === "ready" || this.data.subagents.status === "partial") ? this.data.subagents.agents.length : "—"} ${this.t("agents listed", "个已列出 Agent")}` : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
       </div>
     </section>`;
   }

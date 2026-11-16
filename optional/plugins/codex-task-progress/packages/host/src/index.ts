@@ -8,6 +8,11 @@ import {
   ReadOnlySnapshotCache,
   taskPresentationScope,
 } from "vibe-coding-kit/src/tasks/presentation-cache.mjs";
+import {
+  collectSubagentProgress,
+  type SubagentProgressSnapshot,
+} from "vibe-coding-kit/src/tasks/subagent-progress.mjs";
+import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
 import { resolveVerifiedCodexCli } from "../../../platform/macos/src/plugin-controller.js";
@@ -277,6 +282,7 @@ export class GoalProgressHelper {
     result: Record<string, unknown>;
   }>({ now: () => Date.now() });
   #taskPresentationEpoch = 0;
+  readonly #subagentPresentation = new ReadOnlySnapshotCache<SubagentProgressSnapshot>();
   #stopping = false;
   readonly #presentationLoads = new Set<Promise<unknown>>();
   readonly #runtime: CodexAppServerRuntime;
@@ -1408,6 +1414,7 @@ export class GoalProgressHelper {
     if (!project.enabled) {
       this.#taskPresentationEpoch++;
       this.#taskPresentation.delete(scope);
+      this.#subagentPresentation.clear();
       if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
@@ -1838,10 +1845,108 @@ export class GoalProgressHelper {
           threadKey: hashGoalProgressIdentity(threadId),
         });
       }
+      const source = snapshot.value?.result.taskSource;
+      const storage = snapshot.value?.result.storage as { root?: unknown } | undefined;
+      const sourceReady =
+        snapshot.value &&
+        snapshot.value.result.taskSourcePending !== true &&
+        !(
+          source &&
+          typeof source === "object" &&
+          "status" in source &&
+          ["pending", "error", "pending-selection"].includes(String(source.status))
+        );
+      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify(source ?? null)}`;
+      let subagents: SubagentProgressSnapshot = {
+        schemaVersion: 1,
+        parentThreadId: threadId,
+        observedAt: null,
+        status: "pending",
+        runningCount: null,
+        runningBasis: "unknown",
+        agents: [],
+        complete: false,
+        truncated: false,
+      };
+      if (sourceReady && !this.#runtime.listDirectSubagents)
+        subagents = { ...subagents, status: "unavailable" };
+      if (sourceReady && typeof storage?.root === "string" && this.#runtime.listDirectSubagents) {
+        const previous = this.#subagentPresentation.peek(subagentKey);
+        const recent =
+          previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
+        const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
+        const children = recent
+          ? previous
+          : this.#subagentPresentation.read(subagentKey, async () => {
+              if (this.#stopping) throw new Error("Helper is stopping");
+              const load = (async () => {
+                const result = await collectSubagentProgress({
+                  parentThreadId: threadId,
+                  cwd: canonicalCwd,
+                  storageRoot: storage.root as string,
+                  schemas: createTaskProgressSchemas(z),
+                  listPage: (cursor) => listDirectSubagents(threadId, cursor),
+                });
+                if (
+                  source &&
+                  typeof source === "object" &&
+                  "path" in source &&
+                  typeof source.path === "string" &&
+                  "contentHash" in source &&
+                  typeof source.contentHash === "string"
+                ) {
+                  try {
+                    const workspace = await this.#workspaceStorage.forThread(
+                      threadId,
+                      canonicalCwd,
+                    );
+                    const history = await workspace.heartbeat.history(threadId, canonicalCwd, {
+                      limit: 1,
+                    });
+                    if (
+                      !history.error &&
+                      history.sourcePath === source.path &&
+                      history.contentHash === source.contentHash
+                    ) {
+                      const orchestration = history.wakes.at(-1)?.orchestration as
+                        | {
+                            after?: { activeAgents?: unknown; observedAt?: unknown };
+                            before?: { activeAgents?: unknown; observedAt?: unknown };
+                          }
+                        | undefined;
+                      const observation = orchestration?.after ?? orchestration?.before;
+                      if (
+                        Number.isSafeInteger(observation?.activeAgents) &&
+                        (observation?.activeAgents as number) >= 0 &&
+                        typeof observation?.observedAt === "string" &&
+                        Number.isFinite(Date.parse(observation.observedAt))
+                      ) {
+                        result.runningCount = observation.activeAgents as number;
+                        result.runningBasis = "heartbeat";
+                        result.observedAt = observation.observedAt;
+                      }
+                    }
+                  } catch {
+                    /* An unavailable source never implies zero. */
+                  }
+                }
+                return result;
+              })();
+              this.#presentationLoads.add(load);
+              try {
+                return await load;
+              } finally {
+                this.#presentationLoads.delete(load);
+              }
+            });
+        if (children.value) subagents = children.value;
+        else if (children.error) subagents = { ...subagents, status: "unavailable" };
+      }
       return {
         revision: snapshot.value?.revision ?? null,
         result: {
           ...(snapshot.value?.result ?? { task: null, heartbeat: null }),
+          subagents,
           ...(snapshot.value === null && snapshot.error === null
             ? { taskSourcePending: true, heartbeatPending: true }
             : {}),
@@ -1997,6 +2102,7 @@ export class GoalProgressHelper {
     await server?.stop();
     await Promise.allSettled([...this.#presentationLoads]);
     this.#taskPresentation.clear();
+    this.#subagentPresentation.clear();
     this.#workspaceStorage.close();
     await this.#runtime.close();
     await this.#log({

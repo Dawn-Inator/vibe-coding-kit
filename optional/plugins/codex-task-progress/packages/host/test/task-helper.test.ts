@@ -3503,3 +3503,80 @@ test("native cache keeps the last task during source discovery and replaces it o
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("subagent snapshot is background, scoped to its parent, and never invents runtime count", async () => {
+  const root = await mkdtemp("/tmp/ctph-subagents-");
+  await mkdir(join(root, ".git"));
+  const testRuntime = runtime(root);
+  let release!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const calls: string[] = [];
+  testRuntime.listDirectSubagents = async (parentThreadId) => {
+    calls.push(parentThreadId);
+    await gate;
+    return {
+      data: [
+        { id: `${parentThreadId}-child`, parentThreadId, cwd: root, status: { type: "notLoaded" } },
+      ],
+      nextCursor: null,
+    };
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const native = async (threadId: string) =>
+    (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId, input: {} },
+      })
+    ).result as {
+      subagents: {
+        status: string;
+        parentThreadId: string;
+        runningCount: number | null;
+        agents: { id: string; state: string }[];
+      };
+    };
+  try {
+    await helper.start();
+    let a = await native("chat-A");
+    for (let i = 0; i < 100 && !calls.length; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      a = await native("chat-A");
+    }
+    assert.equal(a.subagents.status, "pending");
+    assert.deepEqual(a.subagents.agents, []);
+    release();
+    for (let i = 0; i < 100 && a.subagents.status !== "ready"; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      a = await native("chat-A");
+    }
+    assert.equal(a.subagents.status, "ready");
+    assert.equal(a.subagents.runningCount, null);
+    assert.deepEqual(
+      a.subagents.agents.map((agent) => [agent.id, agent.state]),
+      [["chat-A-child", "unknown"]],
+    );
+    let b = await native("chat-B");
+    for (let i = 0; i < 100 && b.subagents.status !== "ready"; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      b = await native("chat-B");
+    }
+    assert.equal(b.subagents.parentThreadId, "chat-B");
+    assert.deepEqual(
+      b.subagents.agents.map((agent) => agent.id),
+      ["chat-B-child"],
+    );
+  } finally {
+    release();
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});

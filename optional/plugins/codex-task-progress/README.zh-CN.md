@@ -12,6 +12,10 @@
 
 可选的独立 `task_root: <Items ID>` 从现有 Items 登记表选择 tracking 根节点及其关联后代用于任务投影；未设置时仍使用全部 Items。围栏代码块中的示例会被忽略；仅有围栏示例时仍使用全部 Items。无效或空的活动声明、重复或冲突的声明，以及缺失、非 tracking 或循环的根节点均 fail closed。生产者从权威来源派生同一登记表中的所选 Items，不要手工维护另一份业务计数或创建第二个存储。
 
+## 未发布的本地候选
+
+本地未发布候选默认展示 Subagents；可切换到 Registered tasks，并保留父目标的完整分母。顶部数量和各 agent 进度来自 Kit 规范化快照。仅当 Heartbeat 来源与当前聊天相关时才展示其记录数量及观察时间；这不是实时计数。独立 app-server 无法证明 Desktop 中哪些 agent 正在实时运行。子 agent 自己的规范清单可提供其进度；数据缺失、已绑定、来源不确定或工作目录不同时保持未知，不推为 0% 或 100%。不创建额外状态存储。面板使用可用高度，中间列表滚动，页脚留在底部。本地独立 fixture 预览存在，但不是生产数据。
+
 ## 原生面板
 
 原生 MCP App 使用 Codex Desktop 的 MCP Apps 入口和可选 `enable_mcp_apps` 功能。Kit 安装或复用插件与 Helper 时不会询问 Dock 入口。安装前用 `codex features list` 检查宿主功能；如果尚未启用且用户选择使用原生 MCP Apps，需显式运行 `codex features enable enable_mcp_apps`。安装器不会修改宿主设置；无法确认原生 MCP 支持或功能未启用时会返回 `NATIVE_MCP_SETUP_REQUIRED`。按 Codex 要求重新打开或新建聊天，然后在普通聊天中确认面板和数据实际可见。插件已注册、构建成功或 Helper 健康，都不能证明宿主显示了界面；不支持该功能的宿主不保证可见。
