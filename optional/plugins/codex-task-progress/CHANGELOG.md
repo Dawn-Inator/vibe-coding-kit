@@ -1,6 +1,10 @@
+# Task Progress 0.8.2
+
+- Version 0.8.2 presents Running and List metrics without large card frames, using compact rings and numbers. Unknown values use a gray ring; an arc is drawn only for a reliable same-scope ratio. Heartbeat time metrics have no fabricated percentage. The new appearance awaits native host verification.
+
 # Task Progress 0.8.1
 
-- Beginning with 0.8.1, metadata and the resource list advertise the release-versioned `ui://codex-task-progress/panel-0.8.1.html` URI. The old `panel-v1.html` and compatible published semver aliases remain read-compatible and return the serving server’s current panel HTML. An older server rejects an unknown future-version URI explicitly rather than silently serving its older page. Version 0.7.7 previously advertised the stable `panel-v1.html` URI. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. If necessary, reenter the chat or switch away and back to refresh the host catalog; do not restart Codex. Actual native host behavior after the update remains to be verified.
+- Beginning with 0.8.1, metadata and the resource list advertise the release-versioned `ui://codex-task-progress/panel-0.8.1.html` URI. The old `panel-v1.html` and compatible published semver aliases remain read-compatible and return the serving server’s current panel HTML. An older server rejects an unknown future-version URI explicitly rather than silently serving its older page. Version 0.7.7 previously advertised the stable `panel-v1.html` URI. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. If necessary, reenter the chat or switch away and back to refresh the host catalog; do not restart Codex. The user confirmed that the updated native UI loaded; this does not establish the host cache mechanism.
 
 # Task Progress 0.8.0
 

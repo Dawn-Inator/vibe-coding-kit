@@ -1013,6 +1013,19 @@ export class TaskProgressElement extends LitElement {
     }
   }
 
+  private statRing(
+    value: string,
+    label: string,
+    meta?: string,
+    className = "",
+    accessibleLabel?: string,
+  ) {
+    return html`<div class=${`metric ${className}`} role="group" aria-label=${accessibleLabel ?? nothing}>
+      <span class="metric-ring" data-unknown=${String(value === "—")}><svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="25"></circle></svg><strong>${value}</strong></span>
+      <span class="metric-copy"><span class="metric-label">${label}</span>${meta ? html`<span class="metric-meta">${meta}</span>` : nothing}</span>
+    </div>`;
+  }
+
   private renderOrchestration(value: unknown, error: unknown) {
     if (typeof error === "string" && error.trim())
       return html`<p class="muted" role="status">${this.t("Invalid orchestration snapshot; metrics not recorded", "编排快照无效，指标未记录")}</p>`;
@@ -1024,16 +1037,17 @@ export class TaskProgressElement extends LitElement {
       typeof v === "number" && Number.isFinite(v) ? String(v) : unknown;
     const flag = (v: unknown) =>
       v === true ? this.t("Yes", "是") : v === false ? this.t("No", "否") : unknown;
-    const agentCount = (v: unknown) =>
-      v && typeof v === "object" && !Array.isArray(v)
-        ? number((v as Record<string, unknown>).activeAgents)
-        : unknown;
+    const agentCount = (v: unknown) => {
+      if (!v || typeof v !== "object" || Array.isArray(v)) return "—";
+      const count = (v as Record<string, unknown>).activeAgents;
+      return typeof count === "number" && Number.isFinite(count) ? String(count) : "—";
+    };
     const tasks = snapshot.blockedTasks ?? [];
     return html`
       <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Agent flow", "Agent 编排")}</h3></div><div class="info-card-body hb-snapshot">
         <p class="muted">${this.t("Audit / task scope", "巡检 / 任务范围")}: ${typeof snapshot.scope === "string" && snapshot.scope ? snapshot.scope : unknown}</p>
-        <p>${this.t("Active child agents", "活跃子 Agent")} <strong>${agentCount(snapshot.before)} → ${agentCount(snapshot.after)}</strong></p>
-        <p class="muted">${this.t("Before audit / re-split → after dispatch", "巡检 / 重新拆分前 → 派发后")}</p>
+        <p>${this.t("Active child agents", "活跃子 Agent")}</p>
+        <div class="hb-flow">${this.statRing(agentCount(snapshot.before), this.t("Before audit / re-split", "巡检 / 重新拆分前"))}<span class="hb-flow-arrow" aria-hidden="true">→</span>${this.statRing(agentCount(snapshot.after), this.t("After dispatch", "派发后"))}</div>
       </div></section>
       <section class="info-card hb-record"><div class="info-card-head"><h3 class="info-card-title">${this.t("Blocked tasks and Owner actions", "阻塞任务与 Owner 操作")}</h3></div><div class="info-card-body hb-snapshot">
         <p>${this.t("Blocked tasks", "阻塞任务数")} <strong>${number(snapshot.blockedTaskCount)}</strong></p>
@@ -1195,18 +1209,18 @@ export class TaskProgressElement extends LitElement {
           ? html`<section class="hb-time-card" aria-label=${this.t("Heartbeat times", "心跳时间")}>
         <div class="hb-times">
           <div class="hb-time hb-time-latest">
-            <div class="hb-time-label">${this.lucideIcon(Clock)}<span>${this.t("Latest record", "最近记录")}</span></div>
+            <span class="hb-time-icon">${this.lucideIcon(Clock)}</span><div class="hb-time-copy"><div class="hb-time-label">${this.t("Latest record", "最近记录")}</div>
             <strong>${this.time(heartbeat.lastWakeAt)}</strong>
-            <div class="hb-time-date">${heartbeat.lastWakeAt ? this.dateOnly(heartbeat.lastWakeAt) : this.t("No heartbeat time recorded", "尚无心跳时间记录")}</div>
+            <div class="hb-time-date">${heartbeat.lastWakeAt ? this.dateOnly(heartbeat.lastWakeAt) : this.t("No heartbeat time recorded", "尚无心跳时间记录")}</div></div>
           </div>
           <div class="hb-time hb-time-next" data-missing=${String(!heartbeat.nextWakeAt)}>
-            <div class="hb-time-label">${this.lucideIcon(CalendarDays)}<span>${this.t("Next audit", "下次巡检")}</span></div>
+            <span class="hb-time-icon">${this.lucideIcon(CalendarDays)}</span><div class="hb-time-copy"><div class="hb-time-label">${this.t("Next audit", "下次巡检")}</div>
             <strong>${heartbeat.nextWakeAt ? this.time(heartbeat.nextWakeAt) : this.t("Not recorded", "未记录")}</strong>
             ${
               heartbeat.nextWakeAt
                 ? html`<div class="hb-time-date">${this.dateOnly(heartbeat.nextWakeAt)}</div>`
                 : html`<div class="hb-time-caption">${this.t("Awaiting next audit time", "等待记录下次巡检时间")}</div>`
-            }
+            }</div>
           </div>
         </div>
       </section>`
@@ -1583,13 +1597,32 @@ export class TaskProgressElement extends LitElement {
       snapshot && (snapshot.status === "ready" || snapshot.status === "partial")
         ? String(agents.length)
         : "—";
-    const updated = snapshot?.observedAt ? this.date(snapshot.observedAt) : "—";
+    const observed = snapshot?.observedAt ? new Date(snapshot.observedAt) : null;
+    const validObserved = observed && Number.isFinite(observed.getTime()) ? observed : null;
+    const today = new Date();
+    const sameDay =
+      validObserved &&
+      validObserved.getFullYear() === today.getFullYear() &&
+      validObserved.getMonth() === today.getMonth() &&
+      validObserved.getDate() === today.getDate();
+    const updated = validObserved
+      ? `${sameDay ? "" : `${this.dateOnly(validObserved.getTime())} `}${this.time(validObserved.getTime())}`
+      : "—";
     const basis =
       snapshot?.runningBasis === "heartbeat"
         ? this.t("Heartbeat record", "心跳记录")
         : snapshot?.runningBasis === "runtime"
           ? this.t("Runtime", "运行状态")
           : this.t("Unknown", "未知");
+    const runningLabel = this.t("Running", "正在执行");
+    const runningMeta =
+      running === "—"
+        ? this.t("Status not recorded", "状态未记录")
+        : `${basis} · ${this.t("Updated", "更新于")} ${updated}`;
+    const runningAccessibleLabel =
+      validObserved && running !== "—"
+        ? `${runningLabel}: ${running} · ${basis} · ${this.t("Updated", "更新于")} ${this.date(validObserved.getTime())}`
+        : undefined;
     const labels: Record<SubagentProgressEntry["state"], string> = {
       working: this.t("Working", "正在执行"),
       waiting: this.t("Waiting", "等待中"),
@@ -1600,8 +1633,8 @@ export class TaskProgressElement extends LitElement {
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
       <div class="hb-times agent-counts">
-        <div class="hb-time"><div class="hb-time-label">${this.t("Running", "正在执行")}</div><strong>${running}</strong><div class="hb-time-date">${basis} · ${this.t("Updated", "更新于")} ${updated}</div></div>
-        <div class="hb-time"><div class="hb-time-label">${this.t("Listed agents", "已列出 Agent")}</div><strong>${listed}</strong></div>
+        ${this.statRing(running, runningLabel, runningMeta, "agent-stat", runningAccessibleLabel)}
+        ${this.statRing(listed, this.t("Listed agents", "已列出 Agent"), undefined, "agent-stat")}
       </div>
       ${
         ranked.length

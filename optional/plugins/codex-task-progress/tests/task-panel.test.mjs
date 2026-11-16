@@ -9,6 +9,9 @@ import { build } from "esbuild";
 const controlsEvidenceDir = fileURLToPath(
   new URL("../.playwright-img/panel-controls-080/", import.meta.url),
 );
+const metricsEvidenceDir = fileURLToPath(
+  new URL("../.playwright-img/panel-metrics-082/", import.meta.url),
+);
 
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
 :root{color-scheme:light dark;--ctp-surface:Canvas;--ctp-text:CanvasText;--ctp-accent:var(--ctp-text);--ctp-muted:GrayText;--ctp-border:color-mix(in srgb,currentColor 18%,transparent)}
@@ -257,11 +260,69 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .getAttribute("aria-pressed"),
           "true",
         );
-        const cards = panel.locator(".agent-counts .hb-time");
+        const cards = panel.locator(".agent-counts .agent-stat");
         assert.match(await cards.nth(0).innerText(), /30/);
         assert.match(await cards.nth(0).innerText(), /心跳记录.*更新于/s);
         assert.doesNotMatch(await cards.nth(0).innerText(), /实时/);
         assert.match(await cards.nth(1).innerText(), /3/);
+        assert.equal(await cards.locator(".metric-ring svg circle").count(), 2);
+        assert.equal(
+          await panel
+            .locator(
+              ".agent-counts [role=meter], .agent-counts [role=progressbar], .agent-counts [aria-valuenow]",
+            )
+            .count(),
+          0,
+        );
+        const metricsLayout = await panel.locator(".agent-counts").evaluate((element) => ({
+          height: element.getBoundingClientRect().height,
+          overflow: element.scrollWidth > element.clientWidth,
+          borders: [...element.querySelectorAll(".agent-stat")].map(
+            (item) => getComputedStyle(item).borderTopWidth,
+          ),
+          backgrounds: [...element.querySelectorAll(".agent-stat")].map(
+            (item) => getComputedStyle(item).backgroundColor,
+          ),
+        }));
+        assert.ok(metricsLayout.height < 118);
+        assert.equal(metricsLayout.overflow, false);
+        assert.deepEqual(metricsLayout.borders, ["0px", "0px"]);
+        assert.deepEqual(metricsLayout.backgrounds, ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"]);
+        await mkdir(metricsEvidenceDir, { recursive: true });
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${metricsEvidenceDir}/subagents-wide.png` });
+        const oldViewport = page.viewportSize();
+        await page.setViewportSize({ width: 360, height: 740 });
+        assert.equal(
+          await panel
+            .locator(".agent-counts")
+            .evaluate((element) => element.scrollWidth <= element.clientWidth),
+          true,
+        );
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${metricsEvidenceDir}/subagents-narrow.png` });
+        await page.setViewportSize(oldViewport);
+        await page.evaluate(() => {
+          window.fixture.subagents.truncated = true;
+          window.fixture.subagents.observedAt = new Date().toISOString();
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        await panel.getByText("Agent 列表未完整显示。", { exact: true }).waitFor();
+        assert.equal(await panel.locator(".agent-counts [aria-valuenow]").count(), 0);
+        const todayMeta = await cards.nth(0).locator(".metric-meta").innerText();
+        assert.match(todayMeta, /更新于\s*\d{1,2}:\d{2}/);
+        assert.doesNotMatch(todayMeta, /\d{1,2}:\d{2}:\d{2}/);
+        assert.match(await cards.nth(0).getAttribute("aria-label"), /\d{1,2}:\d{2}:\d{2}/);
+        await page.evaluate(() => {
+          window.fixture.subagents.truncated = false;
+          window.fixture.subagents.observedAt = "2020-01-02T12:34:56Z";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const earlierMeta = await cards.nth(0).locator(".metric-meta").innerText();
+        assert.match(earlierMeta, /1月[23]日/);
+        assert.doesNotMatch(earlierMeta, /\d{1,2}:\d{2}:\d{2}/);
         const rows = panel.locator(".agent-row");
         assert.deepEqual(await rows.locator(".name").allInnerTexts(), [
           "Working agent",
@@ -295,6 +356,12 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         });
         await panel.getByText("当前没有可显示的子 Agent。", { exact: true }).waitFor();
         assert.match(await cards.nth(0).innerText(), /—/);
+        assert.match(await cards.nth(0).innerText(), /状态未记录/);
+        assert.equal(
+          await cards.nth(0).locator(".metric-ring").getAttribute("data-unknown"),
+          "true",
+        );
+        assert.equal(await panel.locator(".agent-counts [aria-valuenow]").count(), 0);
         assert.match(await cards.nth(1).innerText(), /0/);
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
         await page.evaluate(() => {
@@ -2842,7 +2909,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /历史台账/);
         assert.match(await panel.locator("section.panel").innerText(), /台账记录.*2/s);
         assert.match(await panel.locator("section.panel").innerText(), /bound task/);
-        assert.match(await panel.locator("section.panel").innerText(), /2 → 4/);
+        assert.deepEqual(await panel.locator(".hb-flow .metric-ring strong").allInnerTexts(), [
+          "2",
+          "4",
+        ]);
         assert.match(await panel.locator("section.panel").innerText(), /Owner decision/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /Feature · active/);
         assert.doesNotMatch(await panel.locator("section.panel").innerText(), /暂无变更记录/);
@@ -4214,7 +4284,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await latestTime
               .locator("strong")
               .evaluate((element) => getComputedStyle(element).fontSize),
-            "22px",
+            "15px",
           );
           assert.match(await latestTime.locator(".hb-time-date").innerText(), /13/);
           assert.doesNotMatch(await timeSection.innerText(), /heartbeat\.md/);
@@ -4227,7 +4297,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             await nextTime
               .locator("strong")
               .evaluate((element) => getComputedStyle(element).fontSize),
-            "17px",
+            "13px",
             "unknown next time uses secondary-size text",
           );
           await page.evaluate(() => {
@@ -4380,10 +4450,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             .evaluateAll((cards) => cards.map((card) => getComputedStyle(card).backgroundColor));
           assert.equal(darkCardSurfaces.length, 2);
           assert.equal(darkCardSurfaces[0], darkCardSurfaces[1]);
-          assert.notEqual(
+          assert.equal(
             darkCardSurfaces[0],
+            "rgba(0, 0, 0, 0)",
+            "time rows remain frameless in dark mode",
+          );
+          assert.equal(
             lightCardSurfaces[0],
-            "card surfaces follow the host dark theme",
+            "rgba(0, 0, 0, 0)",
+            "time rows remain frameless in light mode",
           );
           await page.evaluate(() => document.documentElement.classList.remove("dark"));
           await page.evaluate(
@@ -4449,9 +4524,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               `cards have a visible 12px gap at ${width}px`,
             );
             assert.ok(Math.abs(layout.widths[0] - layout.widths[1]) <= 1);
-            assert.deepEqual(layout.borders, ["1px", "1px"], "cards have separate outlines");
-            assert.deepEqual(layout.radii, ["16px", "16px"]);
-            assert.ok(layout.heights.every((height) => height >= 118));
+            assert.deepEqual(layout.borders, ["0px", "0px"], "time rows have no enclosing borders");
+            assert.ok(
+              layout.heights.every((height) => height < 100),
+              "time rows remain compact",
+            );
           }
           await page.evaluate(() => {
             document.documentElement.dir = "rtl";
@@ -4486,8 +4563,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           await page.setViewportSize({ width: 360, height: 420 });
           await panel.locator(".hb-time-latest").waitFor();
+          await mkdir(metricsEvidenceDir, { recursive: true });
           await timeSection.screenshot({
-            path: ".playwright-img/heartbeat-time-cards-narrow.png",
+            path: `${metricsEvidenceDir}/heartbeat-time-narrow.png`,
           });
           await page.setViewportSize({ width: 319, height: 420 });
           const stacked = await panel
@@ -4918,7 +4996,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const wakes = panel.locator(".hb-wake");
         await wakes.first().getByText("Needs decision").waitFor();
         const text = await wakes.first().innerText();
-        assert.match(text, /Active child agents\s*2 → 4/i);
+        assert.match(text, /Active child agents/i);
+        assert.deepEqual(
+          await wakes.first().locator(".hb-flow .metric-ring strong").allInnerTexts(),
+          ["2", "4"],
+        );
+        assert.equal(await wakes.first().locator(".hb-flow .metric-ring svg circle").count(), 2);
+        assert.equal(await wakes.first().locator(".hb-flow [aria-valuenow]").count(), 0);
         assert.match(text, /Import task only/);
         assert.match(text, /Choose a policy/);
         assert.match(text, /Waiting for fix[\s\S]*Requires Owner: No/);
@@ -4932,8 +5016,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         for (const category of categories) assert.equal(text.includes(category), false);
         await mkdir(".playwright-img", { recursive: true });
         await wakes.first().scrollIntoViewIfNeeded();
+        await mkdir(metricsEvidenceDir, { recursive: true });
         await panel.locator(".body").screenshot({
-          path: ".playwright-img/heartbeat-orchestration-metrics.png",
+          path: `${metricsEvidenceDir}/heartbeat-flow.png`,
         });
         await wakes.nth(1).locator(":scope > summary").click();
         assert.match(await wakes.nth(1).innerText(), /Blocked tasks\s*0/);
@@ -4953,10 +5038,15 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await wakes.nth(4).innerText(), /Owner intervention required\s*Not recorded/);
         assert.match(await wakes.nth(4).innerText(), /Confirmed Owner actions\s*0/);
         assert.match(await wakes.nth(4).innerText(), /Requires Owner: Not recorded/);
-        assert.match(
-          await wakes.nth(4).innerText(),
-          /Active child agents\s*Not recorded → Not recorded/,
+        assert.deepEqual(
+          await wakes.nth(4).locator(".hb-flow .metric-ring strong").allInnerTexts(),
+          ["—", "—"],
         );
+        assert.equal(
+          await wakes.nth(4).locator('.hb-flow .metric-ring[data-unknown="true"]').count(),
+          2,
+        );
+        assert.equal(await wakes.nth(4).locator(".hb-flow [aria-valuenow]").count(), 0);
         for (const direction of ["ltr", "rtl"]) {
           await page.setViewportSize({ width: 320, height: 380 });
           await panel.evaluate((element, dir) => {

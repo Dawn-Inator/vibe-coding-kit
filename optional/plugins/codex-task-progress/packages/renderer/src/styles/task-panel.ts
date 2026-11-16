@@ -182,13 +182,26 @@ export const taskPanelStyles = css`
   .hb-count { display: inline-flex; flex: none; align-items: center; border-radius: 999px; padding: 3px 8px; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.35; }
   .hb-time-card { min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; }
   .hb-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .hb-time { min-width: 0; min-height: 118px; border: 1px solid var(--ctp-panel-line); border-radius: 16px; padding: 14px; background: var(--ctp-surface, #fff); }
-  .hb-time-label { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--ctp-muted, #697078); font-size: 12px; line-height: 1.45; }
-  .hb-time-label svg { width: 16px; height: 16px; }
-  .hb-time > strong { display: block; min-width: 0; margin-top: 9px; font-size: 22px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: -.45px; overflow-wrap: anywhere; }
-  .hb-time-date { margin-top: 7px; color: var(--ctp-muted, #697078); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-  .hb-time-caption { margin-top: 4px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
-  .hb-time-next[data-missing="true"] > strong { color: var(--ctp-muted, #697078); font-size: 17px; font-weight: 450; letter-spacing: 0; }
+  .metric { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .metric-ring { position: relative; display: grid; flex: none; place-items: center; width: 56px; height: 56px; color: var(--ctp-panel-ink); }
+  .metric-ring svg { position: absolute; inset: 0; width: 100%; height: 100%; stroke: var(--ctp-panel-line); stroke-width: 2; }
+  .metric-ring[data-unknown="true"] { color: var(--ctp-muted, #697078); }
+  .metric-ring strong { position: relative; max-width: 46px; overflow: hidden; font-size: 16px; font-weight: 600; line-height: 1; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .metric-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+  .metric-label { color: var(--ctp-text, #343a40); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+  .metric-meta { color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+  .agent-counts { align-items: center; gap: 12px; min-height: 64px; }
+  .hb-time { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 3px 0; border: 0; background: transparent; }
+  .hb-time-icon { display: grid; flex: none; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--ctp-hover, #343a400a); color: var(--ctp-muted, #697078); }
+  .hb-time-icon svg { width: 16px; height: 16px; }
+  .hb-time-copy { flex: 1; min-width: 0; }
+  .hb-time-label { color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+  .hb-time-copy > strong { display: block; margin-top: 2px; color: var(--ctp-text, #343a40); font-size: 15px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .hb-time-date, .hb-time-caption { color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+  .hb-time-next[data-missing="true"] .hb-time-copy > strong { color: var(--ctp-muted, #697078); font-size: 13px; font-weight: 450; }
+  .hb-flow { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 8px 0; }
+  .hb-flow .metric { flex: 1; }
+  .hb-flow-arrow { flex: none; color: var(--ctp-muted, #697078); }
   .archive-toggle, .archive-cycle-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; text-align: start; }
   .archive-card { margin-top: 10px; border-radius: 14px; background: var(--ctp-surface, #fff); }
   .archive-toggle { min-height: 46px; gap: 10px; border-radius: 13px; padding: 10px 13px; font-size: 12px; font-weight: 550; }
@@ -291,9 +304,6 @@ export const taskPanelStyles = css`
     .panel-foot { padding-inline: 15px; }
     .detail { padding-inline-start: 17px; padding-inline-end: 8px; }
     .hb-panel { gap: 8px; }
-    .hb-time { min-height: 118px; padding: 12px; }
-    .hb-time-label { gap: 5px; font-size: 11px; }
-    .hb-time-label svg { width: 15px; height: 15px; }
     .info-card-head { padding-inline: 8px; }
     .info-card-body { padding-inline: 8px; }
     .hb-wake-body { margin-inline-start: 8px; padding: 7px; }
@@ -301,7 +311,8 @@ export const taskPanelStyles = css`
   }
   @media (max-width: 319px) {
     .hb-times { grid-template-columns: minmax(0, 1fr); }
-    .hb-time { min-height: 0; }
+    .hb-flow { flex-wrap: wrap; }
+    .hb-flow .metric { flex-basis: calc(50% - 12px); }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
