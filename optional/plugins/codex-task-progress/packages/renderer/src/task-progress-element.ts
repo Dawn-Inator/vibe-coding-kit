@@ -1579,11 +1579,16 @@ export class TaskProgressElement extends LitElement {
         state === "working" ? 0 : state === "completed" ? 2 : 1;
       return rank(a.state) - rank(b.state);
     });
-    const count =
-      snapshot?.runningBasis === "heartbeat" && !snapshot.observedAt
-        ? null
-        : snapshot?.runningCount;
-    const running = typeof count === "number" ? String(count) : "—";
+    const count = snapshot?.runningCount;
+    const basisValid =
+      snapshot?.runningBasis === "runtime" ||
+      (snapshot?.runningBasis === "heartbeat" &&
+        !!snapshot.observedAt &&
+        Number.isFinite(Date.parse(snapshot.observedAt)));
+    const running =
+      basisValid && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+        ? String(count)
+        : "—";
     const listed =
       snapshot && (snapshot.status === "ready" || snapshot.status === "partial")
         ? String(agents.length)

@@ -280,7 +280,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           window.fixture.subagents = {
             ...window.fixture.subagents,
             status: "partial",
-            runningCount: null,
+            runningCount: 0,
             runningBasis: "unknown",
             observedAt: null,
             agents: [],
@@ -292,6 +292,26 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await cards.nth(0).innerText(), /—/);
         assert.match(await cards.nth(1).innerText(), /0/);
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "50");
+        await page.evaluate(() => {
+          window.fixture.subagents.runningCount = 30;
+          window.fixture.subagents.runningBasis = "heartbeat";
+          window.fixture.subagents.observedAt = "invalid timestamp";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
+        await page.evaluate(() => {
+          window.fixture.subagents.runningCount = -1;
+          window.fixture.subagents.runningBasis = "runtime";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
+        for (const invalidCount of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
+          await page.evaluate((count) => {
+            window.fixture.subagents.runningCount = count;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, invalidCount);
+          assert.equal(await cards.nth(0).locator("strong").innerText(), "—");
+        }
         await page.evaluate(() => {
           window.fixture.subagents.runningCount = 0;
           window.fixture.subagents.runningBasis = "runtime";

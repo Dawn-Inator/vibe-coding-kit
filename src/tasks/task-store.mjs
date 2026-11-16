@@ -1,7 +1,7 @@
 // Adapted from https://github.com/Dawn-Inator/codex-task-progress; see src/tasks/LICENSE.
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
 	readMarkdownRecords,
 	readBoundedText,
@@ -491,28 +491,21 @@ export class TaskStore {
 	}
 
 	/** Bounded display-only read. Does not publish heads, migrate legacy records or bind sources. */
-	async getReadOnly(threadId, { maxBytes = 1024 * 1024 } = {}) {
+	async getReadOnly(threadId, { maxBytes = 1024 * 1024, beforeOpen, afterOpen } = {}) {
 		return this.serialize(threadId, async () => {
 			let canonicalRoot;
-			let canonicalDirectory;
-			try {
-				canonicalRoot = await realpath(this.root);
-				canonicalDirectory = await realpath(this.paths(threadId).directory);
-			} catch (error) {
+			try { canonicalRoot = await realpath(this.root); }
+			catch (error) {
 				if (isMissing(error)) return { state: null, sourceBound: false, uncertain: false };
 				throw error;
 			}
-			const boundary = relative(canonicalRoot, canonicalDirectory);
-			if (boundary === ".." || boundary.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(boundary)) throw new Error("Task record directory escapes storage root");
-			const reader = (path) => {
-				if (dirname(path) !== this.paths(threadId).directory) throw new Error("Unexpected task record path");
-				return readBoundedText(resolve(canonicalDirectory, relative(dirname(path), path)), maxBytes);
-			};
+			const reader = (path) => readBoundedText(path, maxBytes, { trustedRoot: canonicalRoot, beforeOpen, afterOpen });
 			const loaded = await this.load(threadId, { persist: false, reader });
 			const binding = loaded.records.filter((record) => record.type === "source-binding").at(-1);
 			return { state: loaded.dirty || loaded.partialTail || (binding && binding.binding !== null) ? null : (loaded.events.at(-1)?.state ?? null), sourceBound: Boolean(binding && binding.binding !== null), uncertain: loaded.dirty || loaded.partialTail };
 		});
 	}
+
 	async replay(threadId) {
 		return (await this.load(threadId)).events;
 	}

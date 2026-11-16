@@ -102,7 +102,8 @@ test('bounded reads reject a symlinked record and an escaping child directory', 
     const store = new TaskStore(root, { schemas });
     const childDir = taskMarkdownPaths(root, 'child').directory;
     await mkdir(join(root, 'tasks', 'v3'), { recursive: true });
-    await symlink(outside, childDir);
+    await new TaskStore(outside, { schemas }).initialize('child', { requestId: 'outside', expectedRevision: 0, reason: 'Start', title: 'Outside', objectives: [{ id: 'a', title: 'A' }] });
+    await symlink(taskMarkdownPaths(outside, 'child').directory, childDir);
     await assert.rejects(store.getReadOnly('child'), /escapes storage root/);
     const result = await collectSubagentProgress({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, listPage: async () => ({ data: [{ id: 'child', parentThreadId: 'p', cwd: root }], nextCursor: null }) });
     assert.equal(result.status, 'partial');
@@ -130,4 +131,50 @@ test('custom readers cannot be used by persistent task loads', async () => {
     assert.equal(created.state.revision, 1);
     assert.equal((await store.get('child')).revision, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('directory swap around every record open rejects a valid outside task before reading bytes', async () => {
+  for (const target of ['taskhistory.md', 'heartbeat.md', 'events.jsonl']) {
+    const root = await mkdtemp(join(tmpdir(), 'subagent-race-'));
+    const outside = await mkdtemp(join(tmpdir(), 'subagent-race-outside-'));
+    try {
+      const { rename, symlink, unlink, writeFile } = await import('node:fs/promises');
+      const local = new TaskStore(root, { schemas });
+      const external = new TaskStore(outside, { schemas });
+      const init = (store, title) => store.initialize('child', { requestId: `init-${title}`, expectedRevision: 0, reason: 'Start', title, objectives: [{ id: 'a', title: 'A' }] });
+      await init(local, 'inside'); await init(external, 'outside');
+      const dir = taskMarkdownPaths(root, 'child').directory;
+      const outsideDir = taskMarkdownPaths(outside, 'child').directory;
+      await writeFile(join(outsideDir, 'events.jsonl'), '');
+      const saved = `${dir}.saved`;
+      let swapped = false; let restored = false;
+      await assert.rejects(local.getReadOnly('child', {
+        beforeOpen: async path => {
+          if (path.endsWith(target) && !swapped) { await rename(dir, saved); await symlink(outsideDir, dir); swapped = true; }
+        },
+        afterOpen: async () => {
+          if (swapped && !restored) { await unlink(dir); await rename(saved, dir); restored = true; }
+        },
+      }), /changed during open/);
+      assert.equal(swapped, true, target); assert.equal(restored, true, target);
+      assert.equal((await local.getReadOnly('child')).state.title, 'inside');
+    } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+  }
+});
+
+test('root alias changes after open fail closed before reading', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-root-race-'));
+  const outside = await mkdtemp(join(tmpdir(), 'subagent-root-outside-'));
+  const saved = `${root}.saved`;
+  let moved = false;
+  try {
+    const { rename, symlink, unlink, writeFile } = await import('node:fs/promises');
+    const { readBoundedText } = await import('../../src/tasks/markdown-records.mjs');
+    await writeFile(join(root, 'record'), 'inside');
+    await assert.rejects(readBoundedText(join(root, 'record'), 100, { trustedRoot: root, afterOpen: async () => {
+      await rename(root, saved); moved = true; await symlink(outside, root);
+    } }), /storage root changed/);
+    await unlink(root); await rename(saved, root); moved = false;
+  } finally { if (moved) { await rm(root, { force: true }); await (await import('node:fs/promises')).rename(saved, root); } await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });

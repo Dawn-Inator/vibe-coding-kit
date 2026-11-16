@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, relative, sep } from "node:path";
 import { atomicWriteFile } from "./task-io.mjs";
 const queues = new Map();
 export async function withMarkdownLock(key, work) {
@@ -15,11 +16,30 @@ export async function withMarkdownLock(key, work) {
 	}
 }
 /** Read no more than maxBytes even if a file grows while being read. */
-export async function readBoundedText(path, maxBytes) {
+export async function readBoundedText(path, maxBytes, { trustedRoot, beforeOpen, afterOpen } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 16 * 1024 * 1024) throw new RangeError("Invalid record byte limit");
+  await beforeOpen?.(path);
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
-    if (!(await handle.stat()).isFile()) throw new Error("Task record is not a regular file");
+    await afterOpen?.(path);
+    const opened = await handle.stat();
+    if (!opened.isFile()) throw new Error("Task record is not a regular file");
+    if (trustedRoot !== undefined) {
+      let verifiedRoot;
+      try { verifiedRoot = await realpath(trustedRoot); }
+      catch (error) { throw new Error("Task storage root changed", { cause: error }); }
+      if (verifiedRoot !== trustedRoot) throw new Error("Task storage root changed");
+      let canonicalPath;
+      try { canonicalPath = await realpath(path); }
+      catch (error) { throw new Error("Task record changed during open", { cause: error }); }
+      const boundary = relative(trustedRoot, canonicalPath);
+      if (boundary === ".." || boundary.startsWith(`..${sep}`) || isAbsolute(boundary)) throw new Error("Task record escapes storage root");
+      let entry;
+      let current;
+      try { entry = await lstat(path); current = await stat(canonicalPath); }
+      catch (error) { throw new Error("Task record changed during open", { cause: error }); }
+      if (!entry.isFile() || opened.dev !== current.dev || opened.ino !== current.ino || opened.dev !== entry.dev || opened.ino !== entry.ino) throw new Error("Task record changed during open");
+    }
     const buffer = Buffer.alloc(maxBytes + 1);
     let used = 0;
     while (used < buffer.length) {

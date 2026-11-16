@@ -20,7 +20,7 @@ export class TaskStore {
 	readonly root: string;
 	constructor(root: string, options: { schemas: TaskProgressSchemas });
 	get(threadId: string): Promise<TaskState | null>;
-	getReadOnly(threadId: string, options?: { maxBytes?: number }): Promise<{ state: TaskState | null; sourceBound: boolean; uncertain: boolean }>;
+	getReadOnly(threadId: string, options?: { maxBytes?: number; beforeOpen?: (path: string) => Promise<void>; afterOpen?: (path: string) => Promise<void> }): Promise<{ state: TaskState | null; sourceBound: boolean; uncertain: boolean }>;
 	/** Imports prefix-compatible history without modifying the source. */
 	importFrom(
 		threadId: string,

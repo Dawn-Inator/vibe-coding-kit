@@ -1,5 +1,5 @@
 /** Bounded UTF-8 read that fails if content exceeds maxBytes, including concurrent growth. */
-export function readBoundedText(path: string, maxBytes: number): Promise<string>;
+export function readBoundedText(path: string, maxBytes: number, options?: { trustedRoot?: string; beforeOpen?: (path: string) => Promise<void>; afterOpen?: (path: string) => Promise<void> }): Promise<string>;
 /** Return the identity of a strictly validated managed record, or null if absent. */
 export function inspectMarkdownRecordsIdentity(
  path: string,
