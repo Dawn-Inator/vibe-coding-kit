@@ -1889,29 +1889,36 @@ test("project snapshot retains same-config verified view only for retryable inva
   }
 });
 
-
 test("explicit binding reads a large legacy ledger and its migrated pair without losing history", async () => {
   const f = await fixture();
   const service = new HeartbeatService(resolve(f.root, "large-data"), {
-    kitPath: PINNED_KIT_HEARTBEAT_API, fallbackKitPath: null, refreshMs: 0,
+    kitPath: PINNED_KIT_HEARTBEAT_API,
+    fallbackKitPath: null,
+    refreshMs: 0,
   });
   try {
     const source = resolve(f.project, "deep/heartbeat-large.md");
     await mkdir(resolve(f.project, "deep"));
     const text = [
-      "# Supervision", "## Items",
+      "# Supervision",
+      "## Items",
       "| id | source | item | status | evidence | children | owner | repository | worktree | mode | write_set | dispatch_ref |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       "| A | owner:request | test | done | verified | [] | - | - | - | - | - | - |",
       "## 2026-11-11T09:00:00Z wake (10-row ledger)",
       `| ${"x".repeat(9 * 1024 * 1024)} |`,
-      "## 2026-11-11T10:00:00Z wake (10-row ledger)", "contract: heartbeat/v2",
-      "| # | category | state |", "| --- | --- | --- |",
+      "## 2026-11-11T10:00:00Z wake (10-row ledger)",
+      "contract: heartbeat/v2",
+      "| # | category | state |",
+      "| --- | --- | --- |",
       ...Array.from({ length: 10 }, (_, i) => `| ${i + 1} | audit | done |`),
       "",
     ].join("\n");
     await writeFile(source, text);
-    const automatic = await discoverHeartbeatLedgerSources({ root: f.project, threadId: "large-chat" });
+    const automatic = await discoverHeartbeatLedgerSources({
+      root: f.project,
+      threadId: "large-chat",
+    });
     assert.equal(automatic.complete, false);
     assert.ok(automatic.reasons.includes("oversized-file"));
     assert.equal((await service.bind("large-chat", source, f.project))?.status, "ready");
@@ -1923,7 +1930,12 @@ test("explicit binding reads a large legacy ledger and its migrated pair without
     const root = await realpath(f.project);
     const path = await realpath(source);
     const legacy = readHeartbeatLedgerPair({ root, path, maxBytes: HEARTBEAT_BOUND_MAX_BYTES });
-    const migrated = migrateHeartbeatLedgerPair({ root, path, legacyWritersQuiescent: true, expectedContentHash: legacy.contentHash });
+    const migrated = migrateHeartbeatLedgerPair({
+      root,
+      path,
+      legacyWritersQuiescent: true,
+      expectedContentHash: legacy.contentHash,
+    });
     assert.ok(Buffer.byteLength(migrated.historyText ?? "") > 8 * 1024 * 1024);
     assert.equal((await service.view("large-chat", f.project))?.status, "ready");
     assert.equal((await service.taskProjection("large-chat", f.project)).status, "ready");
@@ -1941,5 +1953,8 @@ test("explicit binding reads a large legacy ledger and its migrated pair without
     await truncate(migrated.historyPath, HEARTBEAT_BOUND_MAX_BYTES + 1);
     await assert.rejects(service.bind("oversized-chat", path, f.project), /limit|exceed|bytes/i);
     assert.equal((await service.view("oversized-chat", f.project))?.sourcePath, null);
-  } finally { service.close(); await f.close(); }
+  } finally {
+    service.close();
+    await f.close();
+  }
 });

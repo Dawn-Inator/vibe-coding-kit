@@ -1152,7 +1152,11 @@ export class HeartbeatService {
       if (!source) return null;
       this.#observeFile(threadId, source);
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source, maxBytes: HEARTBEAT_BOUND_MAX_BYTES });
+      const pair = pairApi.readHeartbeatLedgerPair({
+        root,
+        path: source,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
+      });
       const info = await stat(source);
       const text = pair.fullText;
       const inspect = await this.#inspector(root, config);
@@ -1547,7 +1551,9 @@ export class HeartbeatService {
         throw new Error("Heartbeat source must be a valid project ledger within the read limit.");
       const absolutePath = candidate.path;
       const pair = (await loadPairFilesApi()).readHeartbeatLedgerPair({
-        root, path: absolutePath, maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
+        root,
+        path: absolutePath,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
       });
       if (hash(pair.headText) !== discovery.boundSourceDigest)
         throw new Error("Heartbeat source changed during binding; retry required.");
