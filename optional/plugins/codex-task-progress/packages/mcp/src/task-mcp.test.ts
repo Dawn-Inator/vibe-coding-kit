@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 import {
   GoalProgressIpcClient,
@@ -21,10 +23,7 @@ import {
 import { resolveNativeReadIdentity, resolveTrustedToolAuthorization } from "./runtime-identity.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
-  assert.equal(
-    TASK_PROGRESS_PANEL_RESOURCE_URI,
-    createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
-  );
+  assert.equal(TASK_PROGRESS_PANEL_RESOURCE_URI, "ui://codex-task-progress/panel-v1.html");
   assert.notEqual(
     createTaskProgressPanelResourceUri("0.6.0"),
     createTaskProgressPanelResourceUri("0.6.1"),
@@ -177,7 +176,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       "ui://codex-task-progress/panel-0.6.7.html",
       "ui://codex-task-progress/panel-0.6.3.html",
       "ui://codex-task-progress/panel-0.6.1.html",
-      "ui://codex-task-progress/panel-v1.html",
+      createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
     ];
     for (const uri of compatiblePanelUris) {
       const compatiblePanel = await client.readResource({ uri });
@@ -531,6 +530,110 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
   }
 });
 
+test("stable native panel identity survives releases and each transport serves its own asset", async () => {
+  const oldServer = createGoalProgressMcpServer({
+    nativePanelReleaseVersion: "0.9.4",
+    nativePanelHtmlLoader: async () => "<!doctype html><title>release 0.9.4</title>",
+  });
+  const newServer = createGoalProgressMcpServer({
+    nativePanelReleaseVersion: "0.9.5",
+    nativePanelHtmlLoader: async () => "<!doctype html><title>release 0.9.5</title>",
+  });
+  const oldClient = new Client({ name: "old-transport", version: "1" });
+  const newClient = new Client({ name: "new-transport", version: "1" });
+  const [oldClientTransport, oldServerTransport] = InMemoryTransport.createLinkedPair();
+  const [newClientTransport, newServerTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await oldServer.connect(oldServerTransport);
+    await oldClient.connect(oldClientTransport);
+    await newServer.connect(newServerTransport);
+    await newClient.connect(newClientTransport);
+    for (const [client, asset] of [
+      [oldClient, "<!doctype html><title>release 0.9.4</title>"],
+      [newClient, "<!doctype html><title>release 0.9.5</title>"],
+    ] as const) {
+      const catalog = await client.listTools();
+      const panel = catalog.tools.find((tool) => tool.name === "task_progress_dashboard");
+      const uri = (panel?._meta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri;
+      assert.equal(uri, TASK_PROGRESS_PANEL_RESOURCE_URI);
+      assert.equal(panel?._meta?.["ui/resourceUri"], uri);
+      assert.equal(panel?._meta?.["openai/outputTemplate"], uri);
+      assert.deepEqual(
+        (await client.listResources()).resources.map((resource) => resource.uri),
+        [uri],
+      );
+      const result = await client.readResource({ uri: TASK_PROGRESS_PANEL_RESOURCE_URI });
+      const content = result.contents[0];
+      assert.ok(content && "text" in content);
+      assert.equal(content.text, asset);
+    }
+    for (const version of ["0.9.2", "0.9.3", "0.9.4"]) {
+      const result = await newClient.readResource({
+        uri: createTaskProgressPanelResourceUri(version),
+      });
+      const content = result.contents[0];
+      assert.ok(content && "text" in content);
+      assert.equal(content.text, "<!doctype html><title>release 0.9.5</title>");
+    }
+    await assert.rejects(
+      newClient.readResource({ uri: createTaskProgressPanelResourceUri("0.9.6") }),
+      { code: -32602 },
+    );
+  } finally {
+    await oldClient.close();
+    await newClient.close();
+    await oldServer.close();
+    await newServer.close();
+  }
+});
+
+test("historical versioned catalog rejects a future resource instead of returning old HTML", async () => {
+  const legacyVersion = "0.9.2";
+  const oldUri = createTaskProgressPanelResourceUri(legacyVersion);
+  const newUri = createTaskProgressPanelResourceUri("0.9.3");
+  // This models the historical server's versioned descriptor and resource guard;
+  // it deliberately does not use the new stable-URI server fixture.
+  const server = new McpServer({ name: "legacy-panel", version: legacyVersion });
+  const read = async (uri: URL) => ({
+    contents: [{ uri: uri.href, mimeType: "text/html;profile=mcp-app", text: "old asset" }],
+  });
+  server.registerTool(
+    "task_progress_dashboard",
+    { _meta: { ui: { resourceUri: oldUri } } },
+    async () => ({ content: [] }),
+  );
+  server.registerResource("panel", oldUri, {}, read);
+  server.registerResource(
+    "aliases",
+    new ResourceTemplate("ui://codex-task-progress/{panel}.html", { list: undefined }),
+    {},
+    async (uri) => {
+      if (!isCompatibleTaskProgressPanelResourceUri(uri.href, legacyVersion)) {
+        throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
+      }
+      return read(uri);
+    },
+  );
+  const client = new Client({ name: "legacy-catalog-probe", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const panel = (await client.listTools()).tools.find(
+      (tool) => tool.name === "task_progress_dashboard",
+    );
+    assert.equal((panel?._meta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri, oldUri);
+    assert.notEqual(oldUri, TASK_PROGRESS_PANEL_RESOURCE_URI);
+    const existing = await client.readResource({ uri: oldUri });
+    assert.ok(existing.contents[0] && "text" in existing.contents[0]);
+    assert.equal(existing.contents[0].text, "old asset");
+    await assert.rejects(client.readResource({ uri: newUri }), { code: -32602 });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("native panel resource URI compatibility accepts only shipped same-origin versions", () => {
   const [major = "0", minor = "0", patch = "0"] = GOAL_PROGRESS_RELEASE_VERSION.split(".");
   const futureVersion = `${Number(major)}.${Number(minor)}.${Number(patch) + 1}`;
@@ -545,13 +648,14 @@ test("native panel resource URI compatibility accepts only shipped same-origin v
     assert.equal(isCompatibleTaskProgressPanelResourceUri(uri), true, uri);
   }
 
-  // A new catalog must fail closed on an old server, rather than serve old HTML.
-  // Conversely old catalog addresses remain readable by the newer server.
-  const oldCatalogUri = createTaskProgressPanelResourceUri("0.8.0");
-  const newCatalogUri = createTaskProgressPanelResourceUri("0.8.1");
+  // Simulate the version guard of historical 0.9.2/0.9.3 servers. These
+  // versions advertised semver URIs; the new stable-URI test above does not
+  // model their old catalog metadata.
+  const oldCatalogUri = createTaskProgressPanelResourceUri("0.9.2");
+  const newCatalogUri = createTaskProgressPanelResourceUri("0.9.3");
   assert.notEqual(oldCatalogUri, newCatalogUri);
-  assert.equal(isCompatibleTaskProgressPanelResourceUri(newCatalogUri, "0.8.0"), false);
-  assert.equal(isCompatibleTaskProgressPanelResourceUri(oldCatalogUri, "0.8.1"), true);
+  assert.equal(isCompatibleTaskProgressPanelResourceUri(newCatalogUri, "0.9.2"), false);
+  assert.equal(isCompatibleTaskProgressPanelResourceUri(oldCatalogUri, "0.9.3"), true);
   assert.equal(
     isCompatibleTaskProgressPanelResourceUri("ui://codex-task-progress/panel-v1.html", "0.8.1"),
     true,

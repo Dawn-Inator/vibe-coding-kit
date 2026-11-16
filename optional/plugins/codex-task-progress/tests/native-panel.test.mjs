@@ -295,6 +295,16 @@ test("native panel MCP Apps integration", async (t) => {
                 .contentWindow.document.querySelector("codex-task-panel")?.data.task?.title ===
               "Native task panel",
           );
+          // Capture the actual ready-poll deadline: the installed clock advances
+          // during protocol round trips, so 4,999 ms after observation is too late.
+          await page.locator("#app").evaluate((iframe) => {
+            const win = iframe.contentWindow;
+            const original = win.setTimeout;
+            win.setTimeout = function (callback, delay, ...args) {
+              if (delay === 5_000) win.lastQuietPollScheduledAt = win.Date.now();
+              return original.call(this, callback, delay, ...args);
+            };
+          });
           await page.evaluate(() => {
             const subagents = {
               schemaVersion: 1,
@@ -350,8 +360,24 @@ test("native panel MCP Apps integration", async (t) => {
             .evaluate((panel) => panel.data.subagents);
           assert.equal(snapshot.runningCount, null);
           assert.equal(snapshot.runningBasis, "unknown");
-          await page.clock.fastForward(4_999);
-          assert.equal(await count(), before + 1);
+          await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1);
+          const remaining = await page.locator("#app").evaluate((iframe) => {
+            const win = iframe.contentWindow;
+            return win.lastQuietPollScheduledAt + 5_000 - win.Date.now();
+          });
+          assert.ok(
+            remaining > 4_000 && remaining <= 5_000,
+            `invalid quiet-poll deadline: ${remaining}`,
+          );
+          await page.clock.fastForward(remaining - 1);
+          assert.equal(await count(), before + 1, "no poll before the five-second deadline");
+          await page.clock.fastForward(1);
+          await page.clock.resume();
+          await page.waitForFunction(
+            (expected) =>
+              window.hostCalls.filter((c) => c.name === "task_progress_get").length === expected,
+            before + 2,
+          );
         },
         "",
         true,

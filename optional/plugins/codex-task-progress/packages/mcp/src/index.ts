@@ -238,6 +238,8 @@ interface GoalProgressMcpServerOptions {
   readonly ipcClient?: GoalProgressIpcClient;
   readonly uninstall?: () => Promise<{ code: string; statusFile: string }>;
   readonly nativePanelHtmlLoader?: NativePanelHtmlLoader;
+  /** Test seam for exercising mixed-release catalog/transport handoff. */
+  readonly nativePanelReleaseVersion?: string;
 }
 
 function truncateText(value: string, maximumLength: number): string {
@@ -666,6 +668,8 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     return ipcClient;
   };
   const loadPanelHtml = options.nativePanelHtmlLoader ?? loadNativePanelHtml;
+  const panelVersion = options.nativePanelReleaseVersion ?? GOAL_PROGRESS_RELEASE_VERSION;
+  const panelResourceUri = TASK_PROGRESS_PANEL_RESOURCE_URI;
   const readPanelResource = async (uri: URL) => ({
     contents: [
       {
@@ -697,7 +701,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
   };
   server.registerResource(
     "task-progress-panel",
-    TASK_PROGRESS_PANEL_RESOURCE_URI,
+    panelResourceUri,
     panelResourceMetadata,
     readPanelResource,
   );
@@ -706,7 +710,7 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
     new ResourceTemplate("ui://codex-task-progress/{panel}.html", { list: undefined }),
     panelResourceMetadata,
     async (uri) => {
-      if (!isCompatibleTaskProgressPanelResourceUri(uri.href)) {
+      if (!isCompatibleTaskProgressPanelResourceUri(uri.href, panelVersion)) {
         throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
       }
       return readPanelResource(uri);
@@ -859,13 +863,13 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
         _meta: {
           ui: {
             visibility: readOnly && !isLegacyPanel ? ["model", "app"] : ["model"],
-            ...(isPanel ? { resourceUri: TASK_PROGRESS_PANEL_RESOURCE_URI } : {}),
+            ...(isPanel ? { resourceUri: panelResourceUri } : {}),
           },
           ...(readOnly && !isLegacyPanel ? { "openai/widgetAccessible": true } : {}),
           ...(isPanel
             ? {
-                "ui/resourceUri": TASK_PROGRESS_PANEL_RESOURCE_URI,
-                "openai/outputTemplate": TASK_PROGRESS_PANEL_RESOURCE_URI,
+                "ui/resourceUri": panelResourceUri,
+                "openai/outputTemplate": panelResourceUri,
                 "openai/ui": { entrypoints: [{ type: "thread" }] },
               }
             : {}),

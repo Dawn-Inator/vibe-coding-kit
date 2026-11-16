@@ -1,6 +1,10 @@
+# Task Progress 0.9.4
+
+- Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; 0.9.4 still requires native host verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex.
+
 # Task Progress 0.9.3
 
-- Version 0.9.3 updates Archive loading, grouped hierarchy states and focus treatment. Subagent results use causally scoped dispatch evidence instead of treating the parent chat’s historical child inventory as the current turn. Missing cycle or records, or an incomplete summary, remains unknown rather than falling back to historical inventory. A later continuation invalidates an earlier completed state; child progress requires a verified latest dispatch and a child task cycle started or created no earlier than that dispatch. Otherwise it remains unknown. A plan ratio also remains unknown without a verified root start time. This does not establish a live running count. Native host acceptance remains pending.
+- Version 0.9.3 updates Archive loading, grouped hierarchy states and focus treatment. Subagent results use causally scoped dispatch evidence instead of treating the parent chat’s historical child inventory as the current turn. Missing cycle or records, or an incomplete summary, remains unknown rather than falling back to historical inventory. A later continuation invalidates an earlier completed state; child progress requires a verified latest dispatch and a child task cycle started or created no earlier than that dispatch. Otherwise it remains unknown. A plan ratio also remains unknown without a verified root start time. This does not establish a live running count. Actual native host acceptance failed with “Couldn’t display” and “Try again”.
 
 # Task Progress 0.9.2
 

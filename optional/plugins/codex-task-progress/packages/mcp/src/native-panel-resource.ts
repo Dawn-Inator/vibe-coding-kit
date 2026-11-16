@@ -12,11 +12,8 @@ export function createTaskProgressPanelResourceUri(releaseVersion: string): stri
   return `ui://codex-task-progress/panel-${encodeURIComponent(releaseVersion.trim())}.html`;
 }
 
-// A new release gets a distinct cache key; older transports reject future versions.
-export const TASK_PROGRESS_PANEL_RESOURCE_URI = createTaskProgressPanelResourceUri(
-  GOAL_PROGRESS_RELEASE_VERSION,
-);
-const LEGACY_TASK_PROGRESS_PANEL_RESOURCE_URI = "ui://codex-task-progress/panel-v1.html";
+// Stable protocol identity lets a saved host view match the tool across releases.
+export const TASK_PROGRESS_PANEL_RESOURCE_URI = "ui://codex-task-progress/panel-v1.html";
 
 // Only previously shipped panel addresses may resolve to the current bundled HTML.
 // Compare decimal components as strings so arbitrarily large inputs cannot overflow.
@@ -37,7 +34,7 @@ export function isCompatibleTaskProgressPanelResourceUri(
   uri: string,
   currentVersion: string = GOAL_PROGRESS_RELEASE_VERSION,
 ): boolean {
-  if (uri === LEGACY_TASK_PROGRESS_PANEL_RESOURCE_URI) return true;
+  if (uri === TASK_PROGRESS_PANEL_RESOURCE_URI) return true;
   const match =
     /^ui:\/\/codex-task-progress\/panel-((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\.html$/.exec(
       uri,
