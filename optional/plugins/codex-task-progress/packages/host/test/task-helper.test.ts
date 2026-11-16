@@ -3835,3 +3835,91 @@ test("agent allocation uses matching project wake and does not retain an old cyc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("large canonical orchestration history fits each real IPC response and preserves every cursor record", async () => {
+  const root = await mkdtemp("/tmp/ctph-heartbeat-wire-");
+  await mkdir(join(root, ".git"));
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: runtime(root),
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  try {
+    const blockedTasks = Array.from({ length: 20 }, (_, i) => ({
+      id: `B${i}`,
+      title: "T".repeat(500),
+      reason: "R".repeat(2_000),
+      evidence: "E".repeat(1_000),
+      requiresOwner: true,
+    }));
+    const snapshot = {
+      scope: "session",
+      before: null,
+      after: null,
+      blockedTasks,
+      blockersEvidence: "checked",
+    };
+    const start = Date.parse("2026-11-11T10:00:00Z");
+    const wakes = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `## ${new Date(start + i * 60_000).toISOString()} wake (10-row ledger)\norchestration: ${JSON.stringify(snapshot)}\n| # | category | state |\n| --- | --- | --- |\n| 1 | audit | done |\n`,
+    ).join("");
+    await writeFile(
+      join(root, "heartbeat.md"),
+      `# Supervision\n${wakes}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | report:test | task | done | receipt |\n`,
+    );
+    await helper.start();
+    let cursor: string | undefined;
+    let call = 0;
+    const seen: number[] = [];
+    do {
+      const response = await client.request({
+        method: "task.request",
+        params: {
+          action: "heartbeat-history",
+          auth: {
+            kind: "codex-request",
+            toolName: "task_progress_heartbeat_history",
+            identity: {
+              threadId: "wire-chat",
+              sessionId: "wire-chat",
+              turnId: "turn-1",
+              callId: `wire-${++call}`,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input: { limit: 10, ...(cursor === undefined ? {} : { cursor }) },
+        },
+      });
+      const page = (
+        response.result as {
+          heartbeatHistory: {
+            wakes: { timeMs: number }[];
+            nextCursor: string | null;
+            total: number;
+            error?: string;
+          };
+        }
+      ).heartbeatHistory;
+      assert.equal(page.error, undefined);
+      assert.equal(page.total, 12);
+      assert.ok(page.wakes.length > 0 && page.wakes.length < 10);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 192 * 1024);
+      assert.ok(Buffer.byteLength(JSON.stringify(response)) < 1024 * 1024);
+      seen.push(...page.wakes.map((wake) => wake.timeMs));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    assert.deepEqual(
+      seen,
+      Array.from({ length: 12 }, (_, i) => start + (11 - i) * 60_000),
+    );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
