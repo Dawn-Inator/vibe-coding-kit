@@ -4155,6 +4155,152 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
+      "dense archive groups retain hierarchy across detail pages at narrow widths",
+      async () => {
+        const { context, page, panel } = await open("", { locale: "zh-CN" });
+        await page.evaluate((value) => {
+          const summary = {
+            id: "dense-old",
+            title: "历史归档：完整验证多个目标和中文长标题在窄面板中的展示效果",
+            completedAt: "2026-11-12T12:00:00Z",
+            completionRevision: 5,
+            progress: { completed: 10, total: 13, percent: 76.9 },
+            objectiveCount: 3,
+            itemCount: 10,
+          };
+          const objective = (id, title) => ({
+            id,
+            title,
+            kind: "objective",
+            status: "completed",
+            required: true,
+          });
+          const item = (id, parentId, title, status = "completed") => ({
+            id,
+            parentId,
+            title,
+            kind: "item",
+            status,
+          });
+          const nodes = [
+            objective("o1", "目标一：建立归档记录并清晰展示每个历史任务的完成情况"),
+            item("i11", "o1", "保留已完成的历史记录并显示简洁状态"),
+            item("i12", "o1", "验证中文长标题在窄屏下完整换行且不会覆盖状态标签"),
+            item("i13", "o1", "已取消但需要保留审计记录的子任务", "cancelled"),
+            objective("o2", "目标二：检查分页、加载状态与历史记录的层级关系"),
+            item("i21", "o2", "首次加载时展示轻量骨架屏"),
+            item("i22", "o2", "翻页加载期间保留已经显示的列表"),
+            item("i23", "o2", "取消过期的展示方案", "cancelled"),
+            item("i24", "o2", "跨页返回的子任务仍归属于原来的目标"),
+            objective("o3", "目标三：在不同面板宽度下验证完整记录"),
+            item("i31", "o3", "检查三百二十像素宽度的层级和换行"),
+            item("i32", "o3", "检查四百二十像素宽度的标签与标题间距"),
+            item("i33", "o3", "保留不再执行的历史节点", "cancelled"),
+          ];
+          window.fixture.task = {
+            ...value,
+            lifecycle: {
+              id: "cycle-current",
+              sequence: 2,
+              startedAt: "2026-11-13T12:00:00Z",
+              completion: null,
+            },
+          };
+          window.fixture.archiveCount = 1;
+          window.fixture.archiveResponses = {
+            "tasks:first": {
+              kind: "tasks",
+              tasks: [summary],
+              total: 1,
+              nextCursor: null,
+              currentTaskId: "cycle-current",
+              threadId: "thread-a",
+            },
+            "dense-old:first": {
+              kind: "subtasks",
+              task: summary,
+              nodes: nodes.slice(0, 8),
+              totalNodes: nodes.length,
+              nextCursor: "remaining",
+              currentTaskId: "cycle-current",
+              threadId: "thread-a",
+            },
+            "dense-old:remaining": {
+              kind: "subtasks",
+              task: summary,
+              nodes: nodes.slice(8),
+              totalNodes: nodes.length,
+              nextCursor: null,
+              currentTaskId: "cycle-current",
+              threadId: "thread-a",
+            },
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        await panel.locator(".archive-toggle").click();
+        await panel.locator(".archive-cycle-toggle").click();
+        await panel.getByRole("button", { name: "加载更多", exact: true }).click();
+        await panel
+          .locator(".archive-node")
+          .filter({ hasText: "保留不再执行的历史节点" })
+          .waitFor();
+        assert.equal(await panel.locator(".archive-group").count(), 3);
+        assert.deepEqual(
+          await panel
+            .locator(".archive-group")
+            .evaluateAll((groups) =>
+              groups.map(
+                (group) => group.querySelectorAll('.archive-node[data-kind="item"]').length,
+              ),
+            ),
+          [3, 4, 3],
+        );
+        assert.equal(await panel.locator('.archive-node[data-status="cancelled"]').count(), 3);
+        await mkdir(archiveEvidenceDir, { recursive: true });
+        for (const width of [420, 320]) {
+          await page.setViewportSize({ width, height: 1500 });
+          const geometry = await panel.locator(".archive-list").evaluate((list) => {
+            const groups = [...list.querySelectorAll(".archive-group")];
+            const rows = [...list.querySelectorAll(".archive-node")];
+            return {
+              overflow:
+                list.scrollWidth > list.clientWidth ||
+                document.documentElement.scrollWidth > innerWidth,
+              overlap: rows.some((row) => {
+                const title = row.querySelector(".archive-node-title").getBoundingClientRect();
+                const status = row.querySelector(".archive-status").getBoundingClientRect();
+                return title.right > status.left + 0.5 || title.width <= 0 || status.width <= 0;
+              }),
+              indent: groups.every(
+                (group) =>
+                  group.querySelector(".archive-children").getBoundingClientRect().left >
+                  group
+                    .querySelector('.archive-node[data-kind="objective"]')
+                    .getBoundingClientRect().left,
+              ),
+              gaps: groups
+                .slice(1)
+                .map(
+                  (group, i) =>
+                    group.getBoundingClientRect().top - groups[i].getBoundingClientRect().bottom,
+                ),
+            };
+          });
+          assert.equal(geometry.overflow, false, `overflow at ${width}`);
+          assert.equal(geometry.overlap, false, `title/status overlap at ${width}`);
+          assert.equal(geometry.indent, true, `missing child indent at ${width}`);
+          assert.ok(
+            geometry.gaps.every((gap) => gap >= 10),
+            `group spacing at ${width}: ${geometry.gaps}`,
+          );
+          await panel
+            .locator(".body")
+            .screenshot({ path: `${archiveEvidenceDir}/dense-expanded-${width}.png` });
+        }
+        await context.close();
+      },
+    );
+    await t.test(
       "archive rejects delayed results across chat, cycle and source changes",
       async () => {
         const { context, page, panel } = await open("", { locale: "en-US" });

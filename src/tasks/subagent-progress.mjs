@@ -10,6 +10,8 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   }
   const members = new Set();
   const recorded = new Map();
+  const dispatches = new Map();
+  const turns = [];
   let rootTurnId;
   let turnCursor;
   let boundary = false;
@@ -17,35 +19,52 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     for (let page = 0; page < 8; page++) {
       const result = await listTurnsPage(turnCursor);
       if (!result || !Array.isArray(result.data) || result.data.length > 2) throw new Error('Invalid turn page');
+      if (page === 0) {
+        const latest = result.data[0];
+        if (result.data.length === 0) {
+          if (result.nextCursor != null) throw new Error('Missing newest turn');
+          snapshot.complete = false;
+          break;
+        }
+        if (!latest || typeof latest !== 'object' || Array.isArray(latest) || typeof latest.id !== 'string' || !latest.id.trim() || typeof latest.rootTurnId !== 'string' || !latest.rootTurnId.trim() || !Number.isFinite(latest.startedAt) || !Array.isArray(latest.items)) throw new Error('Invalid newest turn');
+        rootTurnId = latest.rootTurnId;
+        snapshot.rootTurnId = rootTurnId;
+      }
       for (const turn of result.data) {
-        if (!turn || typeof turn.id !== 'string' || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { if (rootTurnId === undefined) throw new Error('Invalid newest turn'); snapshot.complete = false; continue; }
-        if (rootTurnId === undefined) {
-          if (typeof turn.rootTurnId !== 'string' || !turn.rootTurnId) throw new Error('Missing newest root turn');
-          rootTurnId = turn.rootTurnId;
-          snapshot.rootTurnId = rootTurnId;
-          snapshot.rootTurnStartedAt = new Date(turn.startedAt * 1000).toISOString();
-        }
+        if (!turn || typeof turn.id !== 'string' || !turn.id.trim() || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { snapshot.complete = false; continue; }
         const startMs = turn.startedAt * 1000;
-        if (Number.isFinite(turn.completedAt) && turn.completedAt * 1000 < cycleMs) { boundary = true; continue; }
         if (turn.rootTurnId !== rootTurnId) { boundary = true; snapshot.complete = false; break; }
+        if (turn.id === rootTurnId) snapshot.rootTurnStartedAt = new Date(startMs).toISOString();
+        if (Number.isFinite(turn.completedAt) && turn.completedAt * 1000 < cycleMs) { boundary = true; continue; }
         if (turn.itemsView !== 'full') snapshot.complete = false;
-        for (const item of turn.items) {
-          if (!item) continue;
-          const itemMs = Number.isFinite(item.startedAtMs) ? item.startedAtMs : null;
-          if (itemMs !== null ? itemMs < cycleMs : startMs < cycleMs) { if (itemMs === null && startMs < cycleMs) snapshot.complete = false; continue; }
-          if (item.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed' && Array.isArray(item.receiverThreadIds)) {
-            for (const id of item.receiverThreadIds) if (typeof id === 'string' && id && id.length <= 256) members.add(id);
-          } else if (item.type === 'subAgentActivity' && typeof item.agentThreadId === 'string' && item.agentThreadId && item.agentThreadId.length <= 256 && ['started', 'interacted', 'completed', 'interrupted'].includes(item.kind)) {
-            members.add(item.agentThreadId);
-            const timestamp = itemMs ?? startMs;
-            if (!recorded.has(item.agentThreadId) || recorded.get(item.agentThreadId).timestamp <= timestamp) recorded.set(item.agentThreadId, { kind: item.kind, timestamp });
-          }
-        }
+        turns.push(turn);
       }
       if (boundary || result.nextCursor == null) break;
       if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor === turnCursor) { snapshot.complete = false; break; }
       turnCursor = result.nextCursor;
       if (page === 7) { snapshot.complete = false; snapshot.truncated = true; }
+    }
+    // Pages are newest first, while items inside each turn are ordered oldest first.
+    // Replaying the turns in reverse makes a later dispatch invalidate an earlier completion.
+    for (const turn of turns.reverse()) {
+      const startMs = turn.startedAt * 1000;
+      for (const item of turn.items) {
+        if (!item) continue;
+        const itemMs = Number.isFinite(item.startedAtMs) ? item.startedAtMs : null;
+        if (itemMs !== null ? itemMs < cycleMs : startMs < cycleMs) { if (itemMs === null && startMs < cycleMs) snapshot.complete = false; continue; }
+        if (item.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed' && Array.isArray(item.receiverThreadIds)) {
+          for (const id of item.receiverThreadIds) if (typeof id === 'string' && id && id.length <= 256) {
+            members.add(id);
+            recorded.delete(id);
+            // Only an item timestamp can bind a child cycle to this particular dispatch.
+            dispatches.set(id, itemMs);
+          }
+        } else if (item.type === 'subAgentActivity' && typeof item.agentThreadId === 'string' && item.agentThreadId && item.agentThreadId.length <= 256 && ['started', 'interacted', 'completed', 'interrupted'].includes(item.kind)) {
+          members.add(item.agentThreadId);
+          if (item.kind === 'interacted') dispatches.delete(item.agentThreadId);
+          recorded.set(item.agentThreadId, { kind: item.kind, timestamp: itemMs ?? startMs });
+        }
+      }
     }
     if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
   } catch { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; }
@@ -76,7 +95,9 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           if (typeof child.cwd !== 'string' || await realpath(child.cwd) !== canonicalCwd) { snapshot.complete = false; continue; }
           const { state, uncertain } = await store.getReadOnly(child.id, { maxBytes: 1024 * 1024 });
           if (uncertain) snapshot.complete = false;
-          if (state?.threadId === child.id && state.progress) {
+          const dispatchedAt = dispatches.get(child.id);
+          const progressStart = Date.parse(state?.lifecycle?.startedAt ?? state?.createdAt);
+          if (state?.threadId === child.id && state.progress && Number.isFinite(dispatchedAt) && Number.isFinite(progressStart) && progressStart >= dispatchedAt) {
             entry.progress = state.progress;
             entry.progressBasis = state.lifecycle ? 'task-lifecycle' : 'registered-checklist';
           }

@@ -1,6 +1,6 @@
 # Task Progress 0.9.3
 
-- Version 0.9.3 updates Archive loading, grouped hierarchy states and focus treatment. Subagent results use causally scoped dispatch evidence instead of treating the parent chat’s historical child inventory as the current turn. Missing cycle or records, or an incomplete summary, remains unknown rather than falling back to historical inventory. This does not establish a live running count. Native host acceptance remains pending.
+- Version 0.9.3 updates Archive loading, grouped hierarchy states and focus treatment. Subagent results use causally scoped dispatch evidence instead of treating the parent chat’s historical child inventory as the current turn. Missing cycle or records, or an incomplete summary, remains unknown rather than falling back to historical inventory. A later continuation invalidates an earlier completed state; child progress requires a verified latest dispatch and a child task cycle started or created no earlier than that dispatch. Otherwise it remains unknown. A plan ratio also remains unknown without a verified root start time. This does not establish a live running count. Native host acceptance remains pending.
 
 # Task Progress 0.9.2
 
