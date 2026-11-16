@@ -8,10 +8,9 @@ import {
 	readHeartbeatLedgerPair,
 	summarizeHeartbeatLedgerPair,
 } from "../supervision/heartbeat-ledger-files.mjs";
-import { discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
+import { HEARTBEAT_BOUND_MAX_BYTES, discoverHeartbeatLedgerSources } from "./heartbeat-task-source.mjs";
 import { resolveProjectLedgerPath } from "./project-ledger-path.mjs";
 
-const MAX_BYTES = 8 * 1024 * 1024;
 
 function resultWithoutSource(discovery, status, basis, error) {
 	return {
@@ -41,8 +40,8 @@ function lastRecordedWakeAt(report, now) {
 
 async function readCanonicalPair(projectRoot, path, now) {
 	const { path: canonicalPath, info } = await resolveProjectLedgerPath(projectRoot, path);
-	if (info.size > MAX_BYTES) throw new Error("Heartbeat ledger exceeds the 8 MiB read limit");
-	const pair = readHeartbeatLedgerPair({ root: projectRoot, path: canonicalPath, maxBytes: MAX_BYTES });
+	if (info.size > HEARTBEAT_BOUND_MAX_BYTES) throw new Error(`Heartbeat ledger exceeds the ${HEARTBEAT_BOUND_MAX_BYTES} byte read limit`);
+	const pair = readHeartbeatLedgerPair({ root: projectRoot, path: canonicalPath, maxBytes: HEARTBEAT_BOUND_MAX_BYTES });
 	const summary = summarizeHeartbeatLedgerPair(pair);
 	return {
 		path: canonicalPath, info, pair,

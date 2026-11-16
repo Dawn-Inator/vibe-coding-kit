@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { readProjectHeartbeat } from "../../src/tasks/project-heartbeat.mjs";
+import { HEARTBEAT_BOUND_MAX_BYTES } from "../../src/tasks/heartbeat-task-source.mjs";
 import { readHeartbeatLedgerPair, inspectHeartbeatLedgerPair, summarizeHeartbeatLedgerPair, migrateHeartbeatLedgerPair } from "../../src/supervision/heartbeat-ledger-files.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
 
@@ -251,7 +252,7 @@ test("configured paired source rejects oversized history before parsing the comp
 	const path = writeLedger(root, "heartbeat.md", { wake: "2026-01-01T10:00Z" });
 	const companion = join(root, "taskhistory.md");
 	writeFileSync(companion, "unrelated");
-	truncateSync(companion, 8 * 1024 * 1024 + 1);
+	truncateSync(companion, HEARTBEAT_BOUND_MAX_BYTES + 1);
 	const view = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
 	assert.equal(view.status, "error");
 	assert.match(view.error, /exceeds.*byte read limit/i);
@@ -286,4 +287,31 @@ test("a corrupt unselected pair remains a discovery error and selected findings 
 		const expected = inspectHeartbeatLedgerPair(pair, { mode, latest: mode !== "history", now: NOW, ledgerPath: selected });
 		assert.deepEqual(result.source[mode === "items" ? "inventory" : mode].findings, expected.findings);
 	}
+});
+
+
+test("project selection reads a configured large legacy source and its automatically selected migrated history", async () => {
+	const root = projectRoot();
+	const path = writeLedger(root, "heartbeat.md", { wake: "2026-01-01T10:00Z" });
+	const initial = readHeartbeatLedgerPair({ root, path });
+	writeFileSync(path, `## 2026-01-01T09:00Z wake (10-row ledger)\n| ${"x".repeat(9 * 1024 * 1024)} |\n${initial.headText}`);
+	const legacy = readHeartbeatLedgerPair({ root, path, maxBytes: HEARTBEAT_BOUND_MAX_BYTES });
+	const configured = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
+	assert.equal(configured.status, "ready");
+	assert.equal(configured.basis, "configured");
+	assert.equal(configured.discovery.complete, false);
+	assert.ok(configured.discovery.reasons.includes("oversized-file"));
+	assert.equal(configured.source.history.wakes.length, 2);
+	const migrated = migrateHeartbeatLedgerPair({ root, path, legacyWritersQuiescent: true, expectedContentHash: legacy.contentHash });
+	assert.ok(Buffer.byteLength(migrated.historyText) > 8 * 1024 * 1024);
+	const automatic = await readProjectHeartbeat({ root, now: NOW });
+	assert.equal(automatic.status, "ready");
+	assert.equal(automatic.source.path, path);
+	assert.equal(automatic.source.historyPath, migrated.historyPath);
+	assert.deepEqual(automatic.source.history.wakes.map((wake) => wake.heading), configured.source.history.wakes.map((wake) => wake.heading));
+	truncateSync(migrated.historyPath, HEARTBEAT_BOUND_MAX_BYTES + 1);
+	const rejected = await readProjectHeartbeat({ root, ledgerPath: path, now: NOW });
+	assert.equal(rejected.status, "error");
+	assert.equal(rejected.source, null);
+	assert.match(rejected.error, /exceeds.*byte read limit/i);
 });

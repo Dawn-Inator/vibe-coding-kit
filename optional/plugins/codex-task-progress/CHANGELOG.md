@@ -1,3 +1,9 @@
+# Task Progress 0.7.8
+
+- Support explicitly selected Heartbeat ledgers and head/history pairs up to a combined 32 MiB through the shared Kit reader, while retaining bounded general discovery. Explicit recovery validates the requested project ledger without depending on a broad scan.
+- Keep canonical records and writing under Kit ownership; the panel remains read-only. Live ledger migration requires quiescent writers and preservation of history and is not performed silently by installation or reads. Migration and actual native panel data require separate verification.
+- Preserve the stable panel URI, scoped snapshot behavior and safety boundaries from 0.7.7. Cold initial reads do not have a universal one-second guarantee.
+
 # Task Progress 0.7.7
 
 - Advertise the stable `ui://codex-task-progress/panel-v1.html` resource across patch releases. Strict compatible legacy semver aliases still resolve to the serving release’s panel HTML. A new catalog can therefore reach a compatible older live MCP server, but may receive that server’s older embedded asset; this does not guarantee hot reload. Inspect `data-task-progress-version` on the rendered element to identify the frontend actually served. Reenter the chat or switch away and back when needed; do not restart Codex. Actual native host behavior remains to be verified.

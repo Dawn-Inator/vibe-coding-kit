@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { linkSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+	HEARTBEAT_BOUND_MAX_BYTES,
 	discoverHeartbeatLedgers,
 	discoverBoundHeartbeatSource,
 	HeartbeatDiscoveryIndex,
@@ -1349,4 +1350,19 @@ test("discovery observation limit fails closed for cache reuse", async () => {
 		await index.discover({ root });
 		assert.equal(scans, 2);
 	} finally { index.close(); }
+});
+
+
+test("explicit bound discovery allows large ledgers while generic scans and the hard ceiling remain bounded", async () => {
+	const root = projectRoot();
+	const path = join(root, "heartbeat.md");
+	writeFileSync(path, `${ledger([["I", "source", "one", "done", "", "[]"]])}\n<!-- ${"x".repeat(9 * 1024 * 1024)} -->\n`);
+	const scan = await discoverHeartbeatLedgerSources({ root });
+	assert.equal(scan.complete, false);
+	assert.ok(scan.reasons.includes("oversized-file"));
+	assert.equal((await discoverBoundHeartbeatSource({ root, ledgerPath: path })).candidates.length, 1);
+	truncateSync(path, HEARTBEAT_BOUND_MAX_BYTES + 1);
+	const oversized = await discoverBoundHeartbeatSource({ root, ledgerPath: path });
+	assert.equal(oversized.candidates.length, 0);
+	assert.ok(oversized.reasons.includes("oversized-file"));
 });

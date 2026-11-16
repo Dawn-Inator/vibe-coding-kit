@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync, watch } from "node:fs";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { constants, lstatSync, realpathSync, watch } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { calculateTaskProgress } from "./task-contract.mjs";
@@ -20,7 +20,9 @@ const SKIP = new Set([
 	".cache",
 	".tmp",
 ]);
-const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_SCAN_BYTES = 8 * 1024 * 1024;
+/** Total head and history budget for explicitly bound heartbeat sources. */
+export const HEARTBEAT_BOUND_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_FILTER_DIRECTORIES = 16384;
 const MAX_FILTER_SOURCE_IDENTITIES = 2500;
 const MAX_DIRECTORY_ENTRIES = 65536;
@@ -127,14 +129,32 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	// bounded number of reads may be outstanding, and reservations are consumed
 	// in order so duplicate paths and maxFiles retain their serial semantics.
 	const pending = [];
-	const prepare = async (candidatePath) => {
+	const prepare = async (candidatePath, explicitlySelected = false) => {
 		try {
 			const { path, info } = await pathScan.resolve(candidatePath);
-			if (info.size > MAX_BYTES) return { path, info, oversized: true };
+			const limit = boundOnly || explicitlySelected ? HEARTBEAT_BOUND_MAX_BYTES : MAX_SCAN_BYTES;
+			if (info.size > limit) return { path, info, oversized: true };
+			let handle;
 			try {
-				return { path, info, original: await readFile(path, "utf8") };
+				handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+				const initial = await handle.stat();
+				if (!initial.isFile() || metadataStamp(initial) !== metadataStamp(info)) throw new Error("Source changed while opening");
+				const chunks = [];
+				let total = 0;
+				for (;;) {
+					const chunk = Buffer.allocUnsafe(Math.min(65536, limit - total + 1));
+					const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+					if (!bytesRead) break;
+					total += bytesRead;
+					if (total > limit) return { path, info, oversized: true };
+					chunks.push(chunk.subarray(0, bytesRead));
+				}
+				if (metadataStamp(await handle.stat()) !== metadataStamp(initial)) throw new Error("Source changed while reading");
+				return { path, info, original: Buffer.concat(chunks, total).toString("utf8") };
 			} catch {
 				return { path, info, unreadable: true };
+			} finally {
+				await handle?.close();
 			}
 		} catch (error) {
 			return { error };
@@ -197,7 +217,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		const explicit = resolve(projectRoot, ledgerPath);
 		if (isHeartbeatCompanion(basename(explicit)))
 			throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
-		commit(await prepare(explicit), true);
+		commit(await prepare(explicit, true), true);
 	}
 
 	if (boundOnly) {

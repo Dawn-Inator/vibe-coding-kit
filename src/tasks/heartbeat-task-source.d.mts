@@ -1,3 +1,5 @@
+export const HEARTBEAT_BOUND_MAX_BYTES: number;
+
 import type { TaskSource, TaskState } from "./task-contract.mjs";
 
 export interface HeartbeatLedgerCandidate {

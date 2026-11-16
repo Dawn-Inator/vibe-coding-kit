@@ -18,6 +18,7 @@ import type {
   HeartbeatTaskState,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
 import {
+  HEARTBEAT_BOUND_MAX_BYTES,
   HeartbeatDiscoveryInvalidatedError,
   isHeartbeatDiscoveryInvalidatedError,
 } from "vibe-coding-kit/src/tasks/heartbeat-task-source.mjs";
@@ -340,7 +341,7 @@ export class HeartbeatProjectViewCache {
     this.clear();
   }
 }
-const MAX_BYTES = 8 * 1024 * 1024;
+
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const nowFunctionIds = new WeakMap<() => Date, number>();
 let nextNowFunctionId = 1;
@@ -730,7 +731,7 @@ export class HeartbeatService {
         ? (await loadPairFilesApi()).readHeartbeatLedgerPair({
             root,
             path: source.path,
-            maxBytes: MAX_BYTES,
+            maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
           })
         : null;
       const inventoryItems = source?.inventory.items ?? [];
@@ -896,7 +897,7 @@ export class HeartbeatService {
       const pair = (await loadPairFilesApi()).readHeartbeatLedgerPair({
         root,
         path: candidate.path,
-        maxBytes: MAX_BYTES,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
       });
       if (
         pair.contentHash !== view.contentHash ||
@@ -1151,7 +1152,7 @@ export class HeartbeatService {
       if (!source) return null;
       this.#observeFile(threadId, source);
       const pairApi = await loadPairFilesApi();
-      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source, maxBytes: MAX_BYTES });
+      const pair = pairApi.readHeartbeatLedgerPair({ root, path: source, maxBytes: HEARTBEAT_BOUND_MAX_BYTES });
       const info = await stat(source);
       const text = pair.fullText;
       const inspect = await this.#inspector(root, config);
@@ -1286,7 +1287,7 @@ export class HeartbeatService {
       const pair = pairApi.readHeartbeatLedgerPair({
         root,
         path: sourcePath,
-        maxBytes: MAX_BYTES,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
       });
       const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
@@ -1376,7 +1377,7 @@ export class HeartbeatService {
       const pair = pairApi.readHeartbeatLedgerPair({
         root,
         path: canonicalSource,
-        maxBytes: MAX_BYTES,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
       });
       const historyPath = pair.isLegacy ? pair.headPath : pair.historyPath;
       if (pair.contentHash !== view.contentHash)
@@ -1486,7 +1487,7 @@ export class HeartbeatService {
       const pair = pairApi.readHeartbeatLedgerPair({
         root,
         path: view.sourcePath,
-        maxBytes: MAX_BYTES,
+        maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
       });
       const contentHash = pair.contentHash;
       if (contentHash !== view.contentHash)
@@ -1539,25 +1540,17 @@ export class HeartbeatService {
   async bind(threadId: string, path: string | null, cwd: string): Promise<HeartbeatView | null> {
     if (path !== null) {
       const root = await this.#project(cwd);
-      const config = await this.#config(root);
-      const { discoverHeartbeatLedgerSources } = await loadHeartbeatTaskSourceApi();
-      const maxFiles = config.heartbeat?.maxFiles ?? this.#options.maxFiles;
-      const maxDepth = config.heartbeat?.maxDepth ?? this.#options.maxDepth;
-      const discoveryOptions = {
-        root,
-        threadId,
-        ...(config.heartbeat?.ledgerPath ? { ledgerPath: config.heartbeat.ledgerPath } : {}),
-        ...(maxFiles === undefined ? {} : { maxFiles }),
-        ...(maxDepth === undefined ? {} : { maxDepth }),
-      };
-      const discovery = await (this.#options.discoveryIndex
-        ? this.#options.discoveryIndex.discover(discoveryOptions, { force: true })
-        : discoverHeartbeatLedgerSources(discoveryOptions));
-      const candidates = discovery.candidates;
-      const requestedPath = resolve(root, path);
-      const absolutePath = await realpath(requestedPath).catch(() => requestedPath);
-      if (!candidates.some((candidate) => candidate.path === absolutePath))
-        throw new Error("Heartbeat source must be a discovered project ledger.");
+      const { discoverBoundHeartbeatSource } = await loadHeartbeatTaskSourceApi();
+      const discovery = await discoverBoundHeartbeatSource({ root, threadId, ledgerPath: path });
+      const candidate = discovery.candidates[0];
+      if (!candidate || !discovery.boundSourceDigest)
+        throw new Error("Heartbeat source must be a valid project ledger within the read limit.");
+      const absolutePath = candidate.path;
+      const pair = (await loadPairFilesApi()).readHeartbeatLedgerPair({
+        root, path: absolutePath, maxBytes: HEARTBEAT_BOUND_MAX_BYTES,
+      });
+      if (hash(pair.headText) !== discovery.boundSourceDigest)
+        throw new Error("Heartbeat source changed during binding; retry required.");
       await (await this.#relations()).set(threadId, { path: absolutePath, origin: "explicit" });
     } else {
       await (await this.#relations()).set(threadId, null);
@@ -1565,7 +1558,7 @@ export class HeartbeatService {
       this.#watchers.delete(threadId);
     }
     this.#cache.delete(threadId);
-    return this.view(threadId, cwd, { forceDiscovery: true });
+    return this.view(threadId, cwd);
   }
 
   close(): void {

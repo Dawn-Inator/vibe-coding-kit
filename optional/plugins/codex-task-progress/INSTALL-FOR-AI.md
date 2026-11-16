@@ -1,4 +1,4 @@
-# Install Task Progress 0.7.7
+# Install Task Progress 0.7.8
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
@@ -42,7 +42,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.7.7`. Version 0.7.7 advertises the stable `ui://codex-task-progress/panel-v1.html` resource URI across patch releases. A strict read-only template also accepts compatible previously shipped semver panel aliases from 0.5.16 through the server release, serving that server’s matching panel HTML. This stable address lets a new catalog reach a compatible older live MCP server, but that server can still serve its own older embedded asset; it does not guarantee a hot reload. Check the rendered element’s `data-task-progress-version` to identify the actual frontend. If necessary, reenter the chat or switch away and back to refresh the host catalog; closing the panel tab alone may not suffice. Do not restart Codex. Actual native host visibility and data require separate verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.7.8`. Version 0.7.7 advertises the stable `ui://codex-task-progress/panel-v1.html` resource URI across patch releases. A strict read-only template also accepts compatible previously shipped semver panel aliases from 0.5.16 through the server release, serving that server’s matching panel HTML. This stable address lets a new catalog reach a compatible older live MCP server, but that server can still serve its own older embedded asset; it does not guarantee a hot reload. Check the rendered element’s `data-task-progress-version` to identify the actual frontend. If necessary, reenter the chat or switch away and back to refresh the host catalog; closing the panel tab alone may not suffice. Do not restart Codex. Actual native host visibility and data require separate verification. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
 
 ## Signing and protected folders
 
@@ -63,6 +63,8 @@ The release builder also accepts `GOAL_PROGRESS_CODESIGN_IDENTITY` or a private 
 The Helper is installed at the stable real path `install/bin/goal-progress`; versioned release assets are retained in `install/releases/<version>/`. Existing grants are not copied to a new executable path. A macOS permission prompt remains a user decision.
 
 ## Storage compatibility
+
+The shared Kit reader supports explicitly selected Heartbeat ledgers and head/history pairs up to a combined 32 MiB; general discovery remains separately bounded. Explicit recovery validates the requested project ledger without relying on a broad scan. Kit owns the canonical writer and records. Installation and read-only panel access do not silently migrate a ledger: a live migration requires quiescent writers and preservation of history. Verify migration and native panel data independently.
 
 Existing canonical task and Heartbeat formats remain in place. The History summary is bounded presentation data only: it keeps a 512 KiB input limit and 512 Unicode-character summaries with full Markdown paths, while Kit's complete records remain unchanged. Native Goal records remain readable under their original formats. Do not migrate, truncate or rewrite source records as part of UI summarization.
 
