@@ -37,11 +37,29 @@ as an event; the full ten-row audit need not run on every such event unless due.
 
 ## Capacity and backlog decisions
 
+Apply the orchestration skill's [capacity balance policy](../../agent-orchestration-guardrails/references/capacity-balance.md)
+at each full audit and material bottleneck event. That reference owns role definitions, example ratios,
+evidence and reallocation rules; do not turn them into fixed staffing requirements in this audit.
+
 Before opening another module, inspect pending candidate acceptance and queued checks. If those queues are
 the bottleneck, spend available coordination/verification capacity draining them and resuming current owners.
 Do not chase a target active-agent count or split implementation/testing/fixing into unrelated seats that
 discard the module owner. New independent modules may proceed when their work and acceptance capacity exist;
 do not pause unrelated development just because one queue is blocked.
+
+Read the previous allocation decision from the existing linked checkpoint. For the same scope/window,
+record distinct waiting modules/candidates and their shared dependency or queue owner, known wait age,
+planned role allocation versus actual activity, arrivals, newly accepted modules and landings separately.
+Do not count repeated reports on one dependency as independent queues or infer live workers from roles.
+If evidence is missing, record unknown rather than a made-up trend. Check whether the last adjustment
+cleared its targeted dependency or reduced its queue and whether arrivals/host availability changed.
+
+Record a bounded change or an evidence-backed hold, responsible owner, expected effect and next review
+point in that same checkpoint. Changing a ratio never changes module acceptance, owner responsibility,
+write isolation, user staffing constraints or resource limits. If an explicit agent plan changes, update
+its existing revision using the normal writer workflow; only actual probes/receipts establish activity.
+The audit recommends and records coordination; it never kills, replaces or redispatches workers under
+its own authority. Do not create another registry, timer, status enum or certification field for ratios.
 
 Keep existing Item IDs, statuses, receipts, Decomposition syntax and `heartbeat/v2` certification unchanged.
 For an inactive leaf with a queue or candidate final, cite its real private-final/checkpoint in the existing

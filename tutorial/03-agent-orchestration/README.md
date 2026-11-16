@@ -60,6 +60,12 @@ owner 在批准的契约内决定局部实现，内部依赖缺失由编排者�
 [模块交付](../../skills/agent-orchestration-guardrails/references/module-delivery.md)和
 [模块闭环审计](../../skills/agent-task-supervision/references/module-delivery-audit.md)。
 
+接线、执行和验收的投入随瓶颈调整，比例示例及证据口径统一见
+[容量平衡规则](../../skills/agent-orchestration-guardrails/references/capacity-balance.md)。例如多个模块等待同一个启动
+接线时先推进该依赖；候选堆积时优先验收；重测试槽位已满时调整检查范围与调度。模块 owner 继续负责自己的
+内部接线和修复，新增接线席位也必须有独立写入边界。每次调整记录预期效果和复查点，按实际依赖解除、等待时间
+及已验收和已落地模块变化判断效果，不能把活跃 agent 数或参考比例当成效率证明。
+
 ## 可复用技术模式:小任务走单 agent
 
 不是所有任务都值得走"拆分+派发+等待+核对"这套完整流程。当一个任务**同时满足**以下几个条件时,
