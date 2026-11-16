@@ -207,18 +207,21 @@ export const taskPanelStyles = css`
   .hb-flow-record .info-card-body { padding-inline: 0; }
   .archive-toggle, .archive-cycle-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; text-align: start; }
   .archive-card { margin-top: 10px; border-radius: 14px; background: var(--ctp-surface, #fff); }
-  .archive-toggle { min-height: 46px; gap: 10px; border-radius: 13px; padding: 10px 13px; font-size: 12px; font-weight: 550; }
+  .archive-card > .archive-toggle { width: calc(100% - 8px); min-height: 42px; margin: 4px; gap: 10px; border-radius: 9px; padding: 9px 10px; font-size: 12px; font-weight: 550; }
   .archive-toggle:focus:not(:focus-visible) { outline: none; }
-  .archive-toggle:focus-visible { outline-offset: -3px; }
+  .archive-toggle:focus-visible, .archive-cycle-toggle:focus-visible { outline-offset: -2px; }
   .archive-icon { width: 17px; height: 17px; color: var(--ctp-muted, #697078); }
   .archive-title { flex: 1; min-width: 0; }
-  .archive-list { border-top: 1px solid var(--ctp-panel-line); padding-top: 7px; }
+  .archive-card > .info-card-body.archive-list { margin: 0 4px 4px; border-top: 1px solid var(--ctp-panel-line); padding: 5px 0 0; }
   .archive-chevron { width: 14px; height: 14px; transition: transform 180ms var(--ctp-panel-ease); }
   [aria-expanded="true"] > .archive-chevron { transform: rotate(90deg); }
-  .archive-cycle { border-top: 1px solid var(--ctp-panel-line); }
-  .archive-cycle-toggle { font-size: 11px; overflow-wrap: anywhere; }
-  .archive-cycle-toggle > span:nth-child(2) { min-width: 0; flex: 1; }
+  .archive-cycle { margin-inline: 4px; border-top: 1px solid var(--ctp-panel-line); padding-block: 3px; }
+  .archive-list > .archive-cycle:first-child { border-top: 0; }
+  .archive-cycle-toggle { min-height: 34px; border-radius: 8px; padding: 7px 9px; font-size: 11px; overflow-wrap: anywhere; }
+  .archive-cycle-toggle:focus:not(:focus-visible) { outline: none; }
+  .archive-cycle-toggle > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .archive-date, .archive-note { color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
+  .archive-date { flex: none; white-space: nowrap; }
   .archive-nodes { padding: 0 8px 8px 22px; }
   .archive-node { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 11px; overflow-wrap: anywhere; }
   .archive-node[data-kind="item"] { padding-inline-start: 14px; }

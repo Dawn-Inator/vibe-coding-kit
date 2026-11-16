@@ -3509,7 +3509,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const { context, page, panel } = await open("", { locale: "en-US" });
         const summary = {
           id: "old-1",
-          title: "First delivered task",
+          title:
+            "First delivered task 这是一个用于验证中文长标题和日期在窄面板内仍能正常换行的历史归档任务标题",
           completedAt: "2026-11-12T12:00:00Z",
           completionRevision: 5,
           progress: { completed: 3, total: 3, percent: 100 },
@@ -3519,7 +3520,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         const second = {
           ...summary,
           id: "old-2",
-          title: "Older delivered task",
+          title: "Older delivered task 这是另一个很长的中文归档标题用于检查布局边界不会溢出",
           completionRevision: 2,
         };
         const managed = {
@@ -3631,6 +3632,96 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await archive.innerText(), /Archive\s*2/);
         assert.equal(await archive.locator(".archive-icon").count(), 1);
         assert.equal(await archive.locator(".archive-chevron").count(), 1);
+        const assertInsetHitArea = async (button) => {
+          const gaps = await button.evaluate((element) => {
+            const buttonRect = element.getBoundingClientRect();
+            const rowRect = element.closest(".archive-card").getBoundingClientRect();
+            return {
+              left: buttonRect.left - rowRect.left,
+              right: rowRect.right - buttonRect.right,
+              top: buttonRect.top - rowRect.top,
+              bottom: rowRect.bottom - buttonRect.bottom,
+            };
+          });
+          for (const [edge, gap] of Object.entries(gaps)) {
+            assert.ok(gap > 1, `archive header hit area should be inset at ${edge}: ${gap}px`);
+          }
+        };
+        const assertInsetArchiveRow = async (button) => {
+          const geometry = await button.evaluate((element) => {
+            const buttonRect = element.getBoundingClientRect();
+            const listRect = element.closest(".archive-list").getBoundingClientRect();
+            const row = element.closest(".archive-cycle");
+            const rowRect = row.getBoundingClientRect();
+            const style = getComputedStyle(row);
+            return {
+              left: buttonRect.left - listRect.left,
+              right: listRect.right - buttonRect.right,
+              top: buttonRect.top - rowRect.top,
+              bottom: rowRect.bottom - buttonRect.bottom,
+              separatorWidth: Number.parseFloat(style.borderTopWidth),
+              separatorGap: buttonRect.top - rowRect.top,
+            };
+          });
+          assert.ok(
+            geometry.left > 1 && geometry.right > 1,
+            "archive row hit area should be inset from the list edges",
+          );
+          assert.ok(
+            geometry.top > 1 && geometry.bottom > 1,
+            "archive row hover area should clear its row boundaries",
+          );
+          if (geometry.separatorWidth > 0) {
+            assert.ok(
+              geometry.separatorGap > geometry.separatorWidth,
+              "archive row hover area should clear its separator",
+            );
+          }
+          const hitTargets = await button.evaluate((element) => {
+            const buttonRect = element.getBoundingClientRect();
+            const listRect = element.closest(".archive-list").getBoundingClientRect();
+            const rowRect = element.closest(".archive-cycle").getBoundingClientRect();
+            const root = element.getRootNode();
+            const center = root.elementFromPoint(
+              buttonRect.left + buttonRect.width / 2,
+              buttonRect.top + buttonRect.height / 2,
+            );
+            const listGutter = root.elementFromPoint(
+              listRect.left + 1,
+              buttonRect.top + buttonRect.height / 2,
+            );
+            const separator = rowRect.top + 0.5;
+            const separatorTarget = root.elementFromPoint(
+              rowRect.left + rowRect.width / 2,
+              separator,
+            );
+            return {
+              centerInside: center === element || element.contains(center),
+              gutterOutside: listGutter !== element && !element.contains(listGutter),
+              separatorOutside: separatorTarget !== element && !element.contains(separatorTarget),
+            };
+          });
+          assert.equal(hitTargets.centerInside, true);
+          assert.equal(hitTargets.gutterOutside, true);
+          assert.equal(hitTargets.separatorOutside, true);
+        };
+        const assertNoArchiveOverflow = async () => {
+          const widths = await panel.evaluate((element) => {
+            const card = element.shadowRoot.querySelector(".archive-card");
+            return {
+              document: [document.documentElement.scrollWidth, innerWidth],
+              panel: [element.scrollWidth, element.clientWidth],
+              card: [card.scrollWidth, card.clientWidth],
+            };
+          });
+          for (const [surface, [scrollWidth, clientWidth]] of Object.entries(widths)) {
+            assert.ok(
+              scrollWidth <= clientWidth,
+              `${surface} should not overflow horizontally: ${scrollWidth}px > ${clientWidth}px`,
+            );
+          }
+        };
+        await assertInsetHitArea(archive);
         const layout = await archive.evaluate((element) => {
           const title = element.querySelector(".archive-title").getBoundingClientRect();
           const badge = element.querySelector(".info-card-count").getBoundingClientRect();
@@ -3655,6 +3746,19 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           0,
         );
         assert.equal(await panel.locator(".archive-node").count(), 0);
+        await archive.hover();
+        await mkdir(controlsEvidenceDir, { recursive: true });
+        const archiveViewport = page.viewportSize();
+        for (const width of [1100, 420, 320]) {
+          await page.setViewportSize({ width, height: 740 });
+          await archive.hover();
+          await assertInsetHitArea(archive);
+          await assertNoArchiveOverflow();
+          await panel
+            .locator(".body")
+            .screenshot({ path: `${controlsEvidenceDir}/archive-header-hover-${width}.png` });
+        }
+        await page.setViewportSize(archiveViewport);
         await archive.click();
         assert.equal(await archive.evaluate((element) => element.matches(":focus-visible")), false);
         assert.equal(
@@ -3668,18 +3772,44 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await archive.evaluate((element) => getComputedStyle(element).outlineStyle),
           "none",
         );
+        await page.keyboard.press("Enter");
+        await page.keyboard.press("Enter");
         const first = panel
           .locator(".archive-cycle-toggle")
           .filter({ hasText: "First delivered task" });
         await first.waitFor();
         assert.equal(await first.getAttribute("aria-expanded"), "false");
-        assert.equal(await panel.locator(".archive-node").count(), 0);
+        await assertInsetArchiveRow(first);
+        await page.keyboard.press("Tab");
+        assert.equal(await first.evaluate((element) => element.matches(":focus-visible")), true);
+        assert.notEqual(
+          await first.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
+        await panel.locator(".panel-title").click();
+        assert.equal(await first.evaluate((element) => element.matches(":focus-visible")), false);
+        await first.hover();
+        const archiveChildViewport = page.viewportSize();
+        for (const width of [1100, 420, 320]) {
+          await page.setViewportSize({ width, height: 740 });
+          await first.hover();
+          await assertInsetArchiveRow(first);
+          await assertNoArchiveOverflow();
+          await panel
+            .locator(".body")
+            .screenshot({ path: `${controlsEvidenceDir}/archive-row-hover-${width}.png` });
+        }
+        await page.setViewportSize(archiveChildViewport);
         await first.click();
+        assert.equal(await first.evaluate((element) => element.matches(":focus-visible")), false);
+        assert.equal(
+          await first.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
         await panel.locator(".archive-node").filter({ hasText: "Archived objective" }).waitFor();
         const nodesMore = panel.getByRole("button", { name: "Load more", exact: true });
         assert.equal(await nodesMore.getAttribute("class"), "pagination-button");
         assert.equal(await nodesMore.locator("svg").count(), 1);
-        await mkdir(controlsEvidenceDir, { recursive: true });
         await nodesMore.scrollIntoViewIfNeeded();
         await panel
           .locator(".body")
@@ -3711,6 +3841,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           .filter({ hasText: "Older delivered task" });
         await older.waitFor();
         assert.equal(await older.getAttribute("aria-expanded"), "false");
+        await assertInsetArchiveRow(older);
+        await older.hover();
+        await assertNoArchiveOverflow();
         const calls = await page.evaluate(() =>
           window.fixture.calls.filter((call) => call.method === "archive"),
         );

@@ -1,3 +1,7 @@
+# Task Progress 0.9.2
+
+- Align Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. No archive data or logic changes. Native UI acceptance remains pending.
+
 # Task Progress 0.9.1
 
 - During a pending Heartbeat refresh, retain an already verified ready allocation only while its parent and task cycle match. Missing records, terminal errors or mismatches remain unknown. The new native entry still requires actual host acceptance.
