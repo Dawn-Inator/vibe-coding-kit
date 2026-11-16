@@ -1533,9 +1533,10 @@ export class TaskProgressElement extends LitElement {
           sourceInfo?.status === "pending-selection"
         ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
         : source?.error;
-    const notice = presentation?.truncated
-      ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("items. Progress counts all items.", "项；进度按全部项目计算。")}</p>`
-      : nothing;
+    const notice =
+      presentation && presentation.displayedItemCount < presentation.sourceItemCount
+        ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("items. Progress counts all items.", "项；进度按全部项目计算。")}</p>`
+        : nothing;
     if (!sourceError && !risks.length) return notice;
     const body = html`${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
       ${risks.length ? html`<div class="error">${this.t("Unsafe parent links remain separate items", "不安全的父子关联项将分别显示")}</div>` : nothing}`;

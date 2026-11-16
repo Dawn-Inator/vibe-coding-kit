@@ -64,6 +64,8 @@ The Helper is installed at the stable real path `install/bin/goal-progress`; ver
 
 Version 0.7.9 streamlines routine source details beneath task modules and presents Project Heartbeat validation as a compact audit summary that surfaces real risks. Verify actual native panel behavior separately.
 
+An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.
+
 ## Storage compatibility
 
 The shared Kit reader supports explicitly selected Heartbeat ledgers and head/history pairs up to a combined 32 MiB; general discovery remains separately bounded. Explicit recovery validates the requested project ledger without relying on a broad scan. Kit owns the canonical writer and records. Installation and read-only panel access do not silently migrate a ledger: a live migration requires quiescent writers and preservation of history. Verify migration and native panel data independently.

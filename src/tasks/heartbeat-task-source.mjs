@@ -52,6 +52,18 @@ function withoutFencedExamples(text) {
 		.join("\n");
 }
 
+/** Read a single optional task root from source-head metadata, outside fenced examples. */
+export function parseHeartbeatTaskRoot(text) {
+	if (typeof text !== "string") throw new TypeError("Heartbeat task root metadata requires text");
+	const declarations = withoutFencedExamples(text).split("\n")
+		.filter((line) => /^\s*task_root(?:\s|:|$)/i.test(line));
+	if (!declarations.length) return undefined;
+	if (declarations.length !== 1) throw new Error("Heartbeat task_root must be declared exactly once");
+	const match = /^\s*task_root\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s*$/i.exec(declarations[0]);
+	if (!match) throw new Error("Heartbeat task_root must name a valid nonblank Items ID");
+	return match[1];
+}
+
 function associatedThread(text) {
 	const values = [];
 	for (const line of text.split("\n")) {
@@ -656,6 +668,7 @@ export function projectHeartbeatTask({
 	contentHash,
 	modifiedAt,
 	title,
+	taskRootId,
 } = {}) {
 	if (
 		!report ||
@@ -712,6 +725,38 @@ export function projectHeartbeatTask({
 		if (byId.has(id))
 			throw new Error(`Heartbeat Items contains duplicate row ID ${id}`);
 		byId.set(id, row);
+	}
+
+	if (taskRootId !== undefined) {
+		if (typeof taskRootId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(taskRootId))
+			throw new Error("Heartbeat task root must name a valid nonblank Items ID");
+		const rootRow = byId.get(taskRootId);
+		if (!rootRow) throw new Error(`Heartbeat task root ${taskRootId} is missing from Items`);
+		if (!/^tracking\b/i.test(String(rootRow.status ?? "").trim()))
+			throw new Error(`Heartbeat task root ${taskRootId} must be tracking`);
+		const selected = new Set();
+		const visiting = new Set();
+		const walk = (id) => {
+			if (visiting.has(id)) throw new Error(`Heartbeat task root ${taskRootId} has cyclic child links`);
+			if (selected.has(id)) return;
+			const row = byId.get(id);
+			if (!row) throw new Error(`Heartbeat task root ${taskRootId} has missing child ${id}`);
+			const children = row.children === undefined || row.children === "" ? [] : parsedChildren(row.children);
+			if (!children) throw new Error(`Heartbeat task root ${taskRootId} has invalid children on ${id}`);
+			const tracking = /^tracking\b/i.test(String(row.status ?? "").trim());
+			if ((children.length && !tracking) || (tracking && !children.length))
+				throw new Error(`Heartbeat task root ${taskRootId} has invalid tracking children on ${id}`);
+			const normalized = children.map((child) => typeof child === "string" ? child.trim() : "");
+			if (normalized.some((child) => !child) || new Set(normalized).size !== normalized.length)
+				throw new Error(`Heartbeat task root ${taskRootId} has invalid child links on ${id}`);
+			visiting.add(id);
+			for (const child of normalized) walk(child);
+			visiting.delete(id);
+			selected.add(id);
+		};
+		walk(taskRootId);
+		for (const id of byId.keys()) if (!selected.has(id)) byId.delete(id);
+		if (!(typeof title === "string" && title.trim())) title = String(rootRow.item ?? "").trim();
 	}
 
 	const links = new Map();

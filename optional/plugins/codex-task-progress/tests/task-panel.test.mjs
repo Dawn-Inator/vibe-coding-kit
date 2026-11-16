@@ -1918,11 +1918,21 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(taskText, /进度按全部项目计算/);
         assert.doesNotMatch(taskText, /P1: done|状态列表已截断|heartbeat\.md/);
         await page.evaluate(() => {
-          window.fixture.task.source.presentation.truncated = false;
+          window.fixture.task.source.presentation = {
+            truncated: true,
+            displayedItemCount: 167,
+            sourceItemCount: 167,
+            itemStatusesTruncated: true,
+            linkRisksTruncated: false,
+          };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.getByText(/200\/1453/).waitFor({ state: "detached" });
         assert.equal(await panel.getByText("任务需要关注", { exact: true }).count(), 0);
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /167\/167|进度按全部项目计算/,
+        );
         await context.close();
       },
     );

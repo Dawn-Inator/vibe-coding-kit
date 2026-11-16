@@ -17,6 +17,7 @@ import {
 	isHeartbeatDiscoveryInvalidatedError,
 	discoverHeartbeatLedgerSources,
 	projectHeartbeatTask,
+	parseHeartbeatTaskRoot,
 } from "../../src/tasks/heartbeat-task-source.mjs";
 import { inspectHeartbeatLedger, summarizeHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
 import { cleanupTempDirs, mkdtempTracked } from "../support/temp-dirs.mjs";
@@ -1365,4 +1366,46 @@ test("explicit bound discovery allows large ledgers while generic scans and the 
 	const oversized = await discoverBoundHeartbeatSource({ root, ledgerPath: path });
 	assert.equal(oversized.candidates.length, 0);
 	assert.ok(oversized.reasons.includes("oversized-file"));
+});
+
+
+test("task root metadata is singular, valid, and ignores fenced examples", () => {
+	assert.equal(parseHeartbeatTaskRoot("# ledger\n"), undefined);
+	assert.equal(parseHeartbeatTaskRoot("```md\ntask_root: IGNORED\n```\ntask_root: R1-BUSINESS\n"), "R1-BUSINESS");
+	for (const text of ["task_root:", "task_root = A", "task_root: bad value", "task_root: A\ntask_root: A", "task_root: A\ntask_root: B"])
+		assert.throws(() => parseHeartbeatTaskRoot(text), /task_root/);
+});
+
+test("a selected task root counts its transitive leaves once and excludes unrelated Items", () => {
+	const children = Array.from({ length: 166 }, (_, i) => `F${i}`);
+	const report = { mode: "items", findings: [], items: [
+		{ id: "R1-BUSINESS", item: "Business features", status: "tracking", children: JSON.stringify(children) },
+		...children.map((id, i) => ({ id, item: id, status: i < 50 ? "done" : "blocked", children: "[]" })),
+		{ id: "OPS", item: "Ops", status: "done", children: "[]" },
+	] };
+	const options = { report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "abc", modifiedAt: "2026-01-01T00:00:00Z" };
+	const selected = projectHeartbeatTask({ ...options, taskRootId: "R1-BUSINESS" });
+	assert.deepEqual(selected.progress, { completed: 50, total: 166, percent: 30.12 });
+	assert.equal(selected.title, "Business features");
+	assert.equal(Object.keys(selected.source.itemStatuses).length, 167);
+	assert.equal(selected.source.itemStatuses.OPS, undefined);
+	assert.equal(projectHeartbeatTask(options).progress.total, 167);
+	const dag = { ...report, items: [
+		{ id: "R", status: "tracking", children: '["A","B"]' },
+		{ id: "A", status: "tracking", children: '["C"]' },
+		{ id: "B", status: "tracking", children: '["C"]' },
+		{ id: "C", status: "done", children: "[]" },
+	] };
+	assert.deepEqual(projectHeartbeatTask({ ...options, report: dag, taskRootId: "R" }).progress, { completed: 1, total: 1, percent: 100 });
+	for (const items of [
+		[{ id: "R", status: "done", children: "[]" }],
+		[{ id: "R", status: "tracking", children: "[]" }],
+		[{ id: "R", status: "tracking", children: '["MISSING"]' }],
+		[{ id: "R", status: "tracking", children: '["R"]' }],
+		[{ id: "R", status: "tracking", children: '["A"]' }, { id: "A", status: "tracking", children: '["R"]' }],
+		[{ id: "R", status: "tracking", children: '["A","A"]' }, { id: "A", status: "done" }],
+		[{ id: "R", status: "tracking", children: "bad" }],
+	]) assert.throws(() => projectHeartbeatTask({ ...options, report: { mode: "items", findings: [], items }, taskRootId: "R" }), /task root/);
+	assert.throws(() => projectHeartbeatTask({ ...options, taskRootId: "MISSING" }), /missing/);
+	assert.throws(() => projectHeartbeatTask({ ...options, report: { ...report, findings: [{ severity: "error", message: "unrelated invalid row" }] }, taskRootId: "R1-BUSINESS" }), /invalid heartbeat Items/);
 });

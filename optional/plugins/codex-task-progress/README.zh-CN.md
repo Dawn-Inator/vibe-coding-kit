@@ -10,6 +10,8 @@
 
 0.7.9 精简任务模块下方的常规来源详情，并将 Project Heartbeat 校验提示整理为紧凑的审计摘要，呈现真实风险。原生面板和数据的实际表现仍须单独验证。
 
+可选的独立 `task_root: <Items ID>` 从现有 Items 登记表选择 tracking 根节点及其关联后代用于任务投影；未设置时仍使用全部 Items。围栏代码块中的示例会被忽略；仅有围栏示例时仍使用全部 Items。无效或空的活动声明、重复或冲突的声明，以及缺失、非 tracking 或循环的根节点均 fail closed。生产者从权威来源派生同一登记表中的所选 Items，不要手工维护另一份业务计数或创建第二个存储。
+
 ## 原生面板
 
 原生 MCP App 使用 Codex Desktop 的 MCP Apps 入口和可选 `enable_mcp_apps` 功能。Kit 安装或复用插件与 Helper 时不会询问 Dock 入口。安装前用 `codex features list` 检查宿主功能；如果尚未启用且用户选择使用原生 MCP Apps，需显式运行 `codex features enable enable_mcp_apps`。安装器不会修改宿主设置；无法确认原生 MCP 支持或功能未启用时会返回 `NATIVE_MCP_SETUP_REQUIRED`。按 Codex 要求重新打开或新建聊天，然后在普通聊天中确认面板和数据实际可见。插件已注册、构建成功或 Helper 健康，都不能证明宿主显示了界面；不支持该功能的宿主不保证可见。

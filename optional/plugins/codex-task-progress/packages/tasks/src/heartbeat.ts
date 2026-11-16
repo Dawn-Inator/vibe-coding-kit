@@ -1512,7 +1512,8 @@ export class HeartbeatService {
       if (inspected.mode !== "items")
         throw new Error("Kit heartbeat inspector did not return an Items report.");
       const report = { ...inspected, mode: "items" as const };
-      const { projectHeartbeatTask } = await loadHeartbeatTaskSourceApi();
+      const { parseHeartbeatTaskRoot, projectHeartbeatTask } = await loadHeartbeatTaskSourceApi();
+      const taskRootId = parseHeartbeatTaskRoot(pair.headText);
       const canonicalTask = projectHeartbeatTask({
         report,
         root,
@@ -1520,6 +1521,7 @@ export class HeartbeatService {
         path: view.sourcePath,
         contentHash,
         modifiedAt: pair.modifiedAt,
+        ...(taskRootId === undefined ? {} : { taskRootId }),
       });
       const task = compactProjectedTask(canonicalTask);
       return {

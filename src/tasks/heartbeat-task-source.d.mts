@@ -67,6 +67,8 @@ export interface ProjectHeartbeatTaskOptions {
 	contentHash: string;
 	modifiedAt: string | Date;
 	title?: string;
+	/** Optional tracking root whose validated descendants form this task. */
+	taskRootId?: string;
 }
 
 export type HeartbeatTaskState = Omit<TaskState, "source"> & {
@@ -106,6 +108,9 @@ export function discoverBoundHeartbeatSource(
 export function discoverHeartbeatLedgers(
 	options: DiscoverHeartbeatLedgersOptions,
 ): Promise<HeartbeatLedgerCandidate[]>;
+
+/** Read the optional task_root declaration from the canonical source head. */
+export function parseHeartbeatTaskRoot(text: string): string | undefined;
 
 /** Purely project an inspected Items report into a read-only task state. */
 export function projectHeartbeatTask(

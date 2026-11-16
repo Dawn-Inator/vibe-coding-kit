@@ -1958,3 +1958,60 @@ test("explicit binding reads a large legacy ledger and its migrated pair without
     await f.close();
   }
 });
+
+test("task root metadata selects a bounded business subtree without changing source history", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      f.kitPath,
+      `export function inspectHeartbeatLedger(text,{mode}) {
+      const ids=Array.from({length:166},(_,i)=>'F'+i);
+      return {mode,certifiesCurrent:true,passed:true,
+        wakes:[{heading:'wake',timeMs:1794391200000,rows:[]}],
+        items:[{id:'R1-BUSINESS',item:'Business features',status:'tracking',children:JSON.stringify(ids)},
+          ...ids.map((id,i)=>({id,item:id,status:i<50?'done':'blocked',children:'[]'})),
+          {id:'OPS',item:'Operations',status:'done',children:'[]'}],findings:[]};
+    }`,
+    );
+    const source = `task_root: R1-BUSINESS\n${ledger("chat-A")}`;
+    await writeFile(f.source, source);
+    const before = await readFile(f.source, "utf8");
+    assert.equal((await f.service.bind("chat-A", f.source, f.project))?.status, "ready");
+    const projection = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(projection.status, "ready", projection.error);
+    assert.deepEqual(projection.task?.progress, { completed: 50, total: 166, percent: 30.12 });
+    assert.equal(projection.task?.title, "Business features");
+    assert.equal(projection.task?.source.itemStatusCount, 167);
+    assert.equal(projection.task?.source.presentation.itemStatusesTruncated, true);
+    assert.equal(projection.task?.source.itemStatuses.OPS, undefined);
+    const history = await f.service.history("chat-A", f.project);
+    assert.equal(history.sourcePath, await realpath(f.source));
+    assert.equal(history.historyPath, await realpath(f.source));
+    assert.equal(history.total, 1);
+    assert.equal(await readFile(f.source, "utf8"), before);
+    const root = await realpath(f.project);
+    const path = await realpath(f.source);
+    const legacy = readHeartbeatLedgerPair({ root, path });
+    const pair = migrateHeartbeatLedgerPair({
+      root,
+      path,
+      legacyWritersQuiescent: true,
+      expectedContentHash: legacy.contentHash,
+    });
+    const historyBytes = await readFile(pair.historyPath);
+    const afterMigration = await f.service.taskProjection("chat-A", f.project);
+    assert.deepEqual(afterMigration.task?.progress, { completed: 50, total: 166, percent: 30.12 });
+    const pairHistory = await f.service.history("chat-A", f.project);
+    assert.equal(pairHistory.historyPath, pair.historyPath);
+    assert.equal(pairHistory.total, history.total);
+    assert.deepEqual(await readFile(pair.historyPath), historyBytes);
+    await writeFile(f.source, source.replace("task_root: R1-BUSINESS", "task_root:"));
+    await rm(pair.historyPath);
+    await rm(`${path}.legacy`);
+    const invalid = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(invalid.status, "error");
+    assert.match(invalid.error ?? "", /task_root/);
+  } finally {
+    await f.close();
+  }
+});

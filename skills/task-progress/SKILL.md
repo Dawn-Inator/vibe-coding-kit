@@ -9,6 +9,8 @@ Use the shared Kit task contract and store for ordinary short tasks; a heartbeat
 
 When an existing heartbeat ledger is bound to the task, or one candidate is uniquely associated with it, use that ledger as the displayed task source. Automatic association requires one exact standalone `thread:`, `thread_id:`, or `threadId:` metadata field outside fenced examples; prose mentions and conflicting IDs do not bind a source. Claim a unique or absent source only after a complete discovery report; bounded or unreadable scans leave source selection uncertain and need an explicit binding or an uncertainty report. Keep any existing ordinary task record dormant while the heartbeat source is bound. The task projection consumer must not write or move the source ledger through task mutations; the project's existing ledger workflow remains responsible for maintaining it.
 
+An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.
+
 Keep row IDs, titles, raw statuses, and reported evidence tied to the source. Unknown statuses remain incomplete. Completion requires evidence from the source; an inventory or its percentage alone never certifies the whole delivery. Preserve invalid IDs, duplicate IDs, parser errors, and unsafe or missing child links as visible errors or source risks. For a valid tracking parent, count its linked children as progress leaves without counting the parent twice. `reported` evidence records a claim; `verified` requires an actual check against the relevant oracle. Never infer task progress from elapsed time, token use, or activity alone.
 
 Report completion from recorded task state and evidence. Use the applicable project planning guidance when a plan is needed; this skill does not add a separate planning or heartbeat policy.
@@ -61,5 +63,6 @@ ordinary task history and routing, but does not import the previous project's so
 
 Legacy JSONL task events, snapshots, and workspace routing indexes are compatibility inputs only. Preserve
 the old files as backups; if the old and Markdown histories conflict, fail closed and keep both copies for
-resolution rather than choosing one silently. See the [storage API reference](references/ledger-api.md) for
-file layout, migration functions, and the compatibility contract.
+resolution rather than choosing one silently. See the [task storage guide](../../tutorial/03-agent-orchestration/task-progress-storage.md) and the
+[heartbeat ledger API reference](../agent-task-supervision/references/ledger-api.md) for file layout,
+migration functions, and the compatibility contract.

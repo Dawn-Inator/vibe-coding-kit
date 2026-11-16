@@ -1,5 +1,7 @@
 # Task Progress 0.7.9
 
+- An optional standalone `task_root: <Items ID>` selects a tracking root and its linked descendants from the existing Items registry for task projection. Without the field, all Items remain in scope. Fenced examples are ignored; a ledger with only a fenced example still uses all Items. Invalid or empty active declarations, duplicate or conflicting declarations, and missing, non-tracking or cyclic roots fail closed. Producers derive the selected Items from their authoritative source in the same registry; do not hand-maintain separate business counts or create a second store.
+
 - Streamline routine source details beneath the task modules and present the Project Heartbeat validation notice as a compact audit summary. Surface real risks in that summary; verify the actual native panel separately.
 - Retain 0.7.8's bounded explicit-ledger reads and the stable panel URI and scoped snapshot behavior.
 
