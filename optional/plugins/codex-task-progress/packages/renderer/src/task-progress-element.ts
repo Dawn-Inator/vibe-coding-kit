@@ -1,6 +1,8 @@
 import {
   AlertTriangle,
+  Archive,
   CalendarDays,
+  ChevronDown,
   ChevronRight,
   Clock,
   FileText,
@@ -1085,7 +1087,7 @@ export class TaskProgressElement extends LitElement {
         </details>`;
       })}
       ${historyError ? html`<div class="info-card-error"><strong>${this.t("Heartbeat history error", "心跳历史错误")}</strong><pre class="diagnostic-text">${historyError}</pre></div>` : nothing}
-      ${history?.nextCursor ? html`<button class="hb-older" ?disabled=${this.heartbeatBusy} @click=${() => void this.loadHeartbeatHistory(true)}>${this.t("Load older heartbeats", "加载更早心跳")}</button>` : nothing}
+      ${history?.nextCursor ? this.pagination(this.t("Load older heartbeats", "加载更早心跳"), this.heartbeatBusy, () => void this.loadHeartbeatHistory(true)) : nothing}
       ${!history && heartbeat.wakesTruncated ? html`<p class="muted">${this.t("Recent records shown; load history to browse older audits.", "当前仅展示近期记录，可分页查看更早巡检。")}</p>` : nothing}
       ${!wakes.length && !historyError && this.heartbeatHistoryRetryContext !== this.currentHeartbeatHistoryContext() && heartbeat.sourcePath && !this.heartbeatBusy ? html`<p class="empty">${this.t("No heartbeat records are available.", "暂无可用的巡检记录。")}</p>` : nothing}
     `;
@@ -1285,14 +1287,14 @@ export class TaskProgressElement extends LitElement {
               : sourceHistory
                 ? html`<p class="empty">${this.t("No recorded wake audits in this ledger.", "此台账暂无已记录的心跳巡检。")}</p>`
                 : html`<p class="empty">${this.busy ? this.t("Loading ledger history…", "正在加载台账历史…") : this.t("Waiting for ledger history…", "等待台账历史…")}</p>`
-      }${sourceHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load older records", "加载更早记录")}</button>` : nothing}`;
+      }${sourceHistory?.nextCursor ? this.pagination(this.t("Load older records", "加载更早记录"), this.busy, () => void this.loadHistory(true)) : nothing}`;
       return this.framedCard(this.t("Ledger records", "台账记录"), List, body, {
         ...(sourceHistory && !sourceError ? { count: sourceHistory.total } : {}),
       });
     }
     if (this.historyThread !== this.threadId && !this.busy) void this.loadHistory();
     const localHistory = this.history && !("source" in this.history) ? this.history : null;
-    const localBody = html`${this.historyRetryContext === context && !(this.data.presentation?.cached && localHistory) ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? html`<button class="info-card-more" ?disabled=${this.busy} @click=${() => void this.loadHistory(true)}>${this.t("Load more", "加载更多")}</button>` : nothing}`;
+    const localBody = html`${this.historyRetryContext === context && !(this.data.presentation?.cached && localHistory) ? html`<p class="muted" role="status">${this.t("History is refreshing. Refresh to try again.", "历史记录正在刷新，可再次点击刷新重试。")}</p>` : nothing}${(localHistory?.events ?? []).map((event) => this.historyEvent(event))}${localHistory?.error && this.historyRetryContext !== context ? html`<div class="info-card-error"><strong>${this.t("History unavailable", "历史记录不可用")}</strong><pre class="diagnostic-text">${localHistory.error}</pre></div>` : !localHistory?.events.length && this.historyRetryContext !== context ? html`<p class="empty">${this.busy ? this.t("Loading…", "加载中…") : this.t("No recorded changes yet.", "暂无变更记录。")}</p>` : nothing}${localHistory?.nextCursor ? this.pagination(this.t("Load more", "加载更多"), this.busy, () => void this.loadHistory(true)) : nothing}`;
     return this.framedCard(this.t("History", "历史记录"), List, localBody, {
       ...(localHistory && !localHistory.error ? { count: localHistory.events.length } : {}),
     });
@@ -1484,20 +1486,8 @@ export class TaskProgressElement extends LitElement {
     this.requestUpdate();
   }
 
-  private renderCloseout() {
-    const lifecycle = this.data.task?.lifecycle;
-    if (!lifecycle || this.data.completionBasis !== "task-lifecycle") return nothing;
-    const completion = lifecycle.completion;
-    const receipt = completion?.receipt;
-    return this.framedCard(
-      this.t("Task closeout", "任务收尾"),
-      FileText,
-      html`<p class="archive-note">${
-        completion ? this.t("Recorded", "已记录") : this.t("Closeout not recorded", "尚未记录收尾")
-      } · ${completion ? "1/1" : "0/1"}</p>
-        ${receipt ? html`<p class="archive-note">${this.t("Branch", "分支")}: ${receipt.branch.status} · ${this.t("Merge", "合并")}: ${receipt.merge.status} · ${this.t("Push", "推送")}: ${receipt.push.status}</p><p class="archive-note">${this.t("Remaining work", "剩余工作")}: ${receipt.remainingWork} · ${this.t("Owner actions", "Owner 待办")}: ${receipt.ownerActions} · ${this.date(completion?.completedAt)}</p>` : nothing}`,
-      { className: "task-closeout" },
-    );
+  private pagination(label: string, disabled: boolean, load: () => void) {
+    return html`<div class="pagination"><button class="pagination-button" ?disabled=${disabled} @click=${load}>${label}${this.lucideIcon(ChevronDown)}</button></div>`;
   }
 
   private renderArchive() {
@@ -1514,7 +1504,7 @@ export class TaskProgressElement extends LitElement {
         : this.data.archiveCount;
     return html`<section class="info-card archive-card">
       <button class="archive-toggle" aria-expanded=${this.archiveOpen} aria-controls="archive-list" @click=${this.toggleArchive}>
-        ${this.lucideIcon(ChevronRight, "archive-chevron")}<span>${this.t("Archive", "归档")}</span><span class="info-card-count">${typeof count === "number" ? count : "—"}</span>
+        ${this.lucideIcon(Archive, "archive-icon")}<span class="archive-title">${this.t("Archive", "归档")}</span><span class="info-card-count">${typeof count === "number" ? count : "—"}</span>${this.lucideIcon(ChevronRight, "archive-chevron")}
       </button>
       ${
         this.archiveOpen
@@ -1528,13 +1518,13 @@ export class TaskProgressElement extends LitElement {
             ${
               open
                 ? html`<div class="archive-nodes" id=${detailId}>${detail?.nodes.map((node) => html`<div class="archive-node" data-kind=${node.kind}><span>${node.title}</span><span>${this.status(node.status)}</span></div>`)}
-              ${detail?.nextCursor ? html`<button class="info-card-action" ?disabled=${this.archiveBusy} @click=${() => void this.loadArchive(task.id, detail.nextCursor ?? undefined)}>${this.t("Load more", "加载更多")}</button>` : nothing}</div>`
+              ${detail?.nextCursor ? this.pagination(this.t("Load more", "加载更多"), this.archiveBusy, () => void this.loadArchive(task.id, detail.nextCursor ?? undefined)) : nothing}</div>`
                 : nothing
             }</div>`;
         })}
         ${this.archivePage && !this.archivePage.tasks.length ? html`<p class="archive-note">${this.t("No archived tasks.", "暂无归档任务。")}</p>` : nothing}
         ${this.archiveBusy ? html`<p class="archive-note" role="status">${this.t("Loading archive…", "正在加载归档…")}</p>` : nothing}
-        ${this.archivePage?.nextCursor ? html`<button class="info-card-action" ?disabled=${this.archiveBusy} @click=${() => void this.loadArchive(undefined, this.archivePage?.nextCursor ?? undefined)}>${this.t("Older tasks", "更早的任务")}</button>` : nothing}
+        ${this.archivePage?.nextCursor ? this.pagination(this.t("Older tasks", "更早的任务"), this.archiveBusy, () => void this.loadArchive(undefined, this.archivePage?.nextCursor ?? undefined)) : nothing}
         ${this.archiveError && !this.archiveBusy ? html`<button class="info-card-action" @click=${() => void this.loadArchive(this.archiveRetry.taskId, this.archiveRetry.cursor)}>${this.t("Retry", "重试")}</button>` : nothing}
       </div>`
           : nothing
@@ -1749,7 +1739,7 @@ export class TaskProgressElement extends LitElement {
                               this.objective(objective, index, display),
                           )
                         : html`<p class="empty">${sourceUnavailable || this.taskSourceIsPending() ? this.checklistLabel() : !this.observed || this.connectionError ? this.checklistLabel() : fresh ? this.t("Start a task in this chat to see its progress here.", "在此会话中开始任务后，即可在这里查看进度。") : this.threadId ? this.t("A checklist appears when work is registered. Questions do not create tasks.", "登记实施需求后展示清单，普通问答不会创建任务。") : this.t("Waiting for this chat’s identity…", "等待此聊天的身份确认…")}</p>`
-                    }${this.renderCloseout()}${this.renderArchive()}${this.renderTaskSource()}`
+                    }${this.renderArchive()}${this.renderTaskSource()}`
           }
         </div>
         <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? `${this.data.subagents?.parentThreadId === this.threadId && (this.data.subagents.status === "ready" || this.data.subagents.status === "partial") ? this.data.subagents.agents.length : "—"} ${this.t("agents listed", "个已列出 Agent")}` : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>

@@ -190,8 +190,13 @@ export const taskPanelStyles = css`
   .hb-time-caption { margin-top: 4px; color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
   .hb-time-next[data-missing="true"] > strong { color: var(--ctp-muted, #697078); font-size: 17px; font-weight: 450; letter-spacing: 0; }
   .archive-toggle, .archive-cycle-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; text-align: start; }
-  .archive-toggle { min-height: 40px; padding: 7px 11px; font-size: 12px; font-weight: 550; }
-  .archive-toggle .info-card-count { margin-inline-start: auto; }
+  .archive-card { margin-top: 10px; border-radius: 14px; background: var(--ctp-surface, #fff); }
+  .archive-toggle { min-height: 46px; gap: 10px; border-radius: 13px; padding: 10px 13px; font-size: 12px; font-weight: 550; }
+  .archive-toggle:focus:not(:focus-visible) { outline: none; }
+  .archive-toggle:focus-visible { outline-offset: -3px; }
+  .archive-icon { width: 17px; height: 17px; color: var(--ctp-muted, #697078); }
+  .archive-title { flex: 1; min-width: 0; }
+  .archive-list { border-top: 1px solid var(--ctp-panel-line); padding-top: 7px; }
   .archive-chevron { width: 14px; height: 14px; transition: transform 180ms var(--ctp-panel-ease); }
   [aria-expanded="true"] > .archive-chevron { transform: rotate(90deg); }
   .archive-cycle { border-top: 1px solid var(--ctp-panel-line); }
@@ -220,7 +225,10 @@ export const taskPanelStyles = css`
   .info-card-body > :first-child { margin-top: 0; }
   .info-card-body > :last-child { margin-bottom: 0; }
   .info-card-error { min-width: 0; margin-top: 6px; color: var(--ctp-error, #b15838); font-size: 11px; line-height: 1.5; }
-  .info-card-more { margin-top: 7px; }
+  .pagination { display: flex; justify-content: center; margin: 10px 0 3px; }
+  .pagination-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; border: 1px solid var(--ctp-panel-line); border-radius: 999px; padding: 5px 11px; background: var(--ctp-surface, #fff); color: var(--ctp-muted, #697078); font-size: 11px; line-height: 1.4; }
+  .pagination-button svg { width: 13px; height: 13px; }
+  .pagination-button:focus:not(:focus-visible) { outline: none; }
   .hb-alert .info-card-body { font-size: 11px; line-height: 1.55; }
   .hb-alert p { margin: 0 0 6px; overflow-wrap: anywhere; }
   .hb-history { min-width: 0; }
@@ -235,7 +243,6 @@ export const taskPanelStyles = css`
   .hb-snapshot p { margin: 4px 0; }
   .hb-blocked-task { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ctp-panel-line); }
   .hb-record .info-card-head { min-height: 32px; }
-  .hb-older { display: block; width: 100%; margin: 3px 0 0; border-top: 1px solid var(--ctp-panel-line); border-radius: 0; padding: 9px 5px 2px; color: var(--ctp-muted, #697078); text-align: start; font-size: 11px; }
   .heartbeat h3, h3 { margin: 0 0 9px; font-size: 12px; font-weight: 600; line-height: 1.5; }
   .audit-summary { display: flex; align-items: center; gap: 12px; border: 1px solid var(--ctp-panel-line); border-radius: 13px; padding: 14px; background: var(--ctp-hover, #343a400a); }
   .audit-symbol { display: grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--ctp-panel-tint); color: var(--ctp-panel-ink); }

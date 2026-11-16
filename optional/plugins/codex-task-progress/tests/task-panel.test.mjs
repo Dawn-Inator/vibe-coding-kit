@@ -5,6 +5,9 @@ import test from "node:test";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild";
 
+const controlsEvidenceDir =
+  "/Users/dawn/.codex/visualizations/2026/11/12/01a1cd6b-8e27-7681-8085-cf895135605b/panel-controls-080/.playwright-img";
+
 const fixture = `<!doctype html><html lang="zh-CN"><head><style>
 :root{color-scheme:light dark;--ctp-surface:Canvas;--ctp-text:CanvasText;--ctp-accent:var(--ctp-text);--ctp-muted:GrayText;--ctp-border:color-mix(in srgb,currentColor 18%,transparent)}
 body{font:14px system-ui;margin:0;background:transparent}#native-panel-shell{box-sizing:border-box;height:100dvh;min-height:0;padding:12px;display:flex;flex-direction:column}
@@ -1349,7 +1352,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             },
             { sourcePath },
           );
-          await panel.getByRole("button", { name: "加载更早心跳" }).click();
+          const heartbeatMore = panel.getByRole("button", { name: "加载更早心跳" });
+          assert.equal(await heartbeatMore.getAttribute("class"), "pagination-button");
+          assert.equal(await heartbeatMore.locator("svg").count(), 1);
+          await heartbeatMore.click();
           await page.waitForFunction(() => window.fixture.heartbeatHistoryResponses.length === 3);
           await page.evaluate(
             () =>
@@ -2686,8 +2692,26 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           events: [{ occurredAt: "2026-11-11T12:00:00Z", reason: "建立任务" }],
           nextCursor: null,
         };
+        window.fixture.delayNextHistory = 500;
       });
-      await panel.getByRole("button", { name: "加载更多" }).click();
+      const historyMore = panel.getByRole("button", { name: "加载更多" });
+      assert.equal(await historyMore.getAttribute("class"), "pagination-button");
+      assert.equal(await historyMore.locator("svg").count(), 1);
+      const center = await historyMore.evaluate((button) => {
+        const buttonBox = button.getBoundingClientRect();
+        const wrapperBox = button.parentElement.getBoundingClientRect();
+        return Math.abs(
+          (buttonBox.left + buttonBox.right) / 2 - (wrapperBox.left + wrapperBox.right) / 2,
+        );
+      });
+      assert.ok(center < 1);
+      await mkdir(controlsEvidenceDir, { recursive: true });
+      await historyMore.scrollIntoViewIfNeeded();
+      await panel
+        .locator(".body")
+        .screenshot({ path: `${controlsEvidenceDir}/history-load-more.png` });
+      await historyMore.click();
+      assert.equal(await historyMore.isDisabled(), true);
       await panel.getByText("建立任务", { exact: true }).waitFor();
       assert.match(await panel.locator("section.panel").innerText(), /新增验证任务/);
       assert.equal(await panel.locator(".history-source-note").count(), 1);
@@ -2831,7 +2855,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             source: { ...window.fixture.task.source },
           };
         });
-        await panel.getByRole("button", { name: "加载更早记录", exact: true }).click();
+        const ledgerMore = panel.getByRole("button", { name: "加载更早记录", exact: true });
+        assert.equal(await ledgerMore.getAttribute("class"), "pagination-button");
+        assert.equal(await ledgerMore.locator("svg").count(), 1);
+        await ledgerMore.click();
         await panel.getByText("wake older", { exact: true }).waitFor();
         assert.match(
           await panel.locator("section.panel").innerText(),
@@ -3521,13 +3548,30 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         await panel.locator(".summary .main").click();
-        assert.match(
-          await panel.locator('[aria-label="Task closeout"]').innerText(),
-          /Closeout not recorded.*0\/1/s,
-        );
+        assert.equal(await panel.locator('[aria-label="Task closeout"]').count(), 0);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "66.67");
         const archive = panel.locator(".archive-toggle");
         assert.equal(await archive.getAttribute("aria-expanded"), "false");
         assert.match(await archive.innerText(), /Archive\s*2/);
+        assert.equal(await archive.locator(".archive-icon").count(), 1);
+        assert.equal(await archive.locator(".archive-chevron").count(), 1);
+        const layout = await archive.evaluate((element) => {
+          const title = element.querySelector(".archive-title").getBoundingClientRect();
+          const badge = element.querySelector(".info-card-count").getBoundingClientRect();
+          const arrow = element.querySelector(".archive-chevron").getBoundingClientRect();
+          const card = element.closest(".archive-card");
+          return {
+            titleRight: title.right,
+            badgeLeft: badge.left,
+            badgeRight: badge.right,
+            arrowLeft: arrow.left,
+            radius: getComputedStyle(card).borderRadius,
+            background: getComputedStyle(card).backgroundColor,
+          };
+        });
+        assert.ok(layout.titleRight <= layout.badgeLeft && layout.badgeRight < layout.arrowLeft);
+        assert.notEqual(layout.radius, "0px");
+        assert.notEqual(layout.background, "rgba(0, 0, 0, 0)");
         assert.equal(
           await page.evaluate(
             () => window.fixture.calls.filter((call) => call.method === "archive").length,
@@ -3536,6 +3580,18 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         );
         assert.equal(await panel.locator(".archive-node").count(), 0);
         await archive.click();
+        assert.equal(await archive.evaluate((element) => element.matches(":focus-visible")), false);
+        assert.equal(
+          await archive.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
+        await page.keyboard.press("Shift+Tab");
+        await page.keyboard.press("Tab");
+        assert.equal(await archive.evaluate((element) => element.matches(":focus-visible")), true);
+        assert.notEqual(
+          await archive.evaluate((element) => getComputedStyle(element).outlineStyle),
+          "none",
+        );
         const first = panel
           .locator(".archive-cycle-toggle")
           .filter({ hasText: "First delivered task" });
@@ -3544,9 +3600,36 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await panel.locator(".archive-node").count(), 0);
         await first.click();
         await panel.locator(".archive-node").filter({ hasText: "Archived objective" }).waitFor();
-        await panel.getByRole("button", { name: "Load more", exact: true }).click();
+        const nodesMore = panel.getByRole("button", { name: "Load more", exact: true });
+        assert.equal(await nodesMore.getAttribute("class"), "pagination-button");
+        assert.equal(await nodesMore.locator("svg").count(), 1);
+        await mkdir(controlsEvidenceDir, { recursive: true });
+        await nodesMore.scrollIntoViewIfNeeded();
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${controlsEvidenceDir}/archive-expanded-wide.png` });
+        const viewport = page.viewportSize();
+        await page.setViewportSize({ width: 360, height: 740 });
+        await nodesMore.scrollIntoViewIfNeeded();
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+        await panel
+          .locator(".body")
+          .screenshot({ path: `${controlsEvidenceDir}/archive-expanded-narrow.png` });
+        await page.setViewportSize(viewport);
+        await nodesMore.click();
         await panel.locator(".archive-node").filter({ hasText: "Archived child" }).waitFor();
-        await panel.getByRole("button", { name: "Older tasks", exact: true }).click();
+        await page.evaluate(() => {
+          window.fixture.holdNextArchive = true;
+        });
+        const olderMore = panel.getByRole("button", { name: "Older tasks", exact: true });
+        assert.equal(await olderMore.getAttribute("class"), "pagination-button");
+        await olderMore.click();
+        await page.waitForFunction(() => typeof window.fixture.releaseHeldArchive === "function");
+        assert.equal(await olderMore.isDisabled(), true);
+        await page.evaluate(() => window.fixture.releaseHeldArchive());
         const older = panel
           .locator(".archive-cycle-toggle")
           .filter({ hasText: "Older delivered task" });
@@ -3593,9 +3676,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         });
         assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "100");
         assert.match(await panel.locator(".summary").innerText(), /unknown/i);
-        assert.match(
-          await panel.locator('[aria-label="Task closeout"]').innerText(),
-          /Recorded.*1\/1/s,
+        assert.equal(await panel.locator('[aria-label="Task closeout"]').count(), 0);
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /Task closeout|Remaining work|Owner actions/,
         );
         assert.equal(await panel.getByRole("button", { name: /complete task/i }).count(), 0);
         await page.evaluate(() => {
