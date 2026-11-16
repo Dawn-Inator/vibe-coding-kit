@@ -1,3 +1,7 @@
+# Task Progress 0.9.1
+
+- During a pending Heartbeat refresh, retain an already verified ready allocation only while its parent and task cycle match. Missing records, terminal errors or mismatches remain unknown. The new native entry still requires actual host acceptance.
+
 # Task Progress 0.9.0
 
 - Version 0.9.0 shows a frameless allocation ring for the recorded running-agent count against an explicit agent plan. The after-audit Heartbeat observation supplies the numerator and the before-to-after observation is supporting context; listed agents are not the denominator. A missing or unmatched plan or observation, zero denominator, or an over-plan count does not produce a misleading progress arc. Unknown values use a gray ring. This is a timestamped observation, not a live Desktop count. The native entry moves to `task_progress_dashboard`; `task_progress_panel` remains model-only and read-only for compatibility. Native rendering and migration must be verified in the host.

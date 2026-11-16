@@ -1956,9 +1956,7 @@ export class GoalProgressHelper {
         | undefined;
       const latestWake = projectHeartbeat?.wakes?.at(-1) as { orchestration?: unknown } | undefined;
       const allocation =
-        sourceReady &&
-        snapshot.value?.result.heartbeatPending !== true &&
-        projectHeartbeat?.status === "ready"
+        sourceReady && projectHeartbeat?.status === "ready"
           ? projectAgentAllocation(latestWake?.orchestration, {
               parentThreadId: threadId,
               ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),

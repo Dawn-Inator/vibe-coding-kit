@@ -3605,6 +3605,7 @@ test("agent allocation uses matching project wake and does not retain an old cyc
   const originalNow = Date.now;
   let now = originalNow();
   let cycle = "cycle-1";
+  let heartbeatMode: "empty" | "ready" | "error" = "empty";
   Date.now = () => now;
   HeartbeatService.prototype.taskProjection = async () => ({
     status: "none",
@@ -3612,24 +3613,33 @@ test("agent allocation uses matching project wake and does not retain an old cyc
     task: null,
   });
   HeartbeatService.prototype.projectViewSnapshot = async () => ({
-    view: {
-      status: "ready",
-      wakes: [
-        {
-          orchestration: {
-            after: { activeAgents: 3, observedAt: "2026-11-16T12:00:00Z", evidence: "recorded" },
-            agentPlan: {
-              parentThreadId: "chat-A",
-              planId: "plan",
-              revision: 1,
-              plannedAgents: 6,
-              taskCycleId: "cycle-1",
-            },
-          },
-        },
-      ],
-    } as never,
-    pending: false,
+    view:
+      heartbeatMode === "empty"
+        ? null
+        : heartbeatMode === "error"
+          ? ({ status: "error", wakes: [] } as never)
+          : ({
+              status: "ready",
+              wakes: [
+                {
+                  orchestration: {
+                    after: {
+                      activeAgents: 3,
+                      observedAt: "2026-11-16T12:00:00Z",
+                      evidence: "recorded",
+                    },
+                    agentPlan: {
+                      parentThreadId: "chat-A",
+                      planId: "plan",
+                      revision: 1,
+                      plannedAgents: 6,
+                      taskCycleId: "cycle-1",
+                    },
+                  },
+                },
+              ],
+            } as never),
+    pending: heartbeatMode !== "error",
   });
   KitTaskStore.prototype.get = async () => ({
     schemaVersion: 4,
@@ -3657,16 +3667,27 @@ test("agent allocation uses matching project wake and does not retain an old cyc
       })
     ).result as {
       task: { lifecycle: { id: string } } | null;
+      heartbeat: { status: string } | null;
+      heartbeatPending?: boolean;
       subagents: { status: string; allocation: { status: string; ratio: number | null } };
     };
   try {
     await helper.start();
     let a = await native("chat-A");
+    for (let i = 0; i < 100 && !a.task; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      a = await native("chat-A");
+    }
+    assert.equal(a.heartbeatPending, true);
+    assert.equal(a.heartbeat, null);
+    assert.equal(a.subagents.allocation.ratio, null);
+    heartbeatMode = "ready";
     for (let i = 0; i < 100 && a.subagents.allocation.ratio !== 0.5; i++) {
       await new Promise((r) => setTimeout(r, 10));
       a = await native("chat-A");
     }
     assert.equal(a.subagents.status, "pending");
+    assert.equal(a.heartbeatPending, true);
     assert.equal(a.subagents.allocation.ratio, 0.5);
     let b = await native("chat-B");
     for (let i = 0; i < 100 && !b.task; i++) {
@@ -3674,6 +3695,14 @@ test("agent allocation uses matching project wake and does not retain an old cyc
       b = await native("chat-B");
     }
     assert.equal(b.subagents.allocation.ratio, null);
+    heartbeatMode = "error";
+    for (let i = 0; i < 100 && a.heartbeat?.status !== "error"; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      a = await native("chat-A");
+    }
+    assert.equal(a.heartbeat?.status, "error");
+    assert.equal(a.subagents.allocation.ratio, null);
+    heartbeatMode = "ready";
     cycle = "cycle-2";
     now += 5_001;
     for (let i = 0; i < 100 && a.task?.lifecycle.id !== cycle; i++) {
