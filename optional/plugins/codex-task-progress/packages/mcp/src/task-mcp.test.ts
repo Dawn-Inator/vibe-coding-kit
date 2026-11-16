@@ -21,7 +21,10 @@ import {
 import { resolveNativeReadIdentity, resolveTrustedToolAuthorization } from "./runtime-identity.js";
 
 test("ordinary task MCP tool schemas and trusted identity cross the real IPC transport", async () => {
-  assert.equal(TASK_PROGRESS_PANEL_RESOURCE_URI, "ui://codex-task-progress/panel-v1.html");
+  assert.equal(
+    TASK_PROGRESS_PANEL_RESOURCE_URI,
+    createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
+  );
   assert.notEqual(
     createTaskProgressPanelResourceUri("0.6.0"),
     createTaskProgressPanelResourceUri("0.6.1"),
@@ -162,7 +165,7 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       "ui://codex-task-progress/panel-0.6.7.html",
       "ui://codex-task-progress/panel-0.6.3.html",
       "ui://codex-task-progress/panel-0.6.1.html",
-      createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
+      "ui://codex-task-progress/panel-v1.html",
     ];
     for (const uri of compatiblePanelUris) {
       const compatiblePanel = await client.readResource({ uri });
@@ -520,17 +523,16 @@ test("native panel resource URI compatibility accepts only shipped same-origin v
     assert.equal(isCompatibleTaskProgressPanelResourceUri(uri), true, uri);
   }
 
-  // Existing 0.6.7 transports accept the stable address advertised by newer catalogs.
+  // A new catalog must fail closed on an old server, rather than serve old HTML.
+  // Conversely old catalog addresses remain readable by the newer server.
+  const oldCatalogUri = createTaskProgressPanelResourceUri("0.8.0");
+  const newCatalogUri = createTaskProgressPanelResourceUri("0.8.1");
+  assert.notEqual(oldCatalogUri, newCatalogUri);
+  assert.equal(isCompatibleTaskProgressPanelResourceUri(newCatalogUri, "0.8.0"), false);
+  assert.equal(isCompatibleTaskProgressPanelResourceUri(oldCatalogUri, "0.8.1"), true);
   assert.equal(
-    isCompatibleTaskProgressPanelResourceUri(TASK_PROGRESS_PANEL_RESOURCE_URI, "0.6.7"),
+    isCompatibleTaskProgressPanelResourceUri("ui://codex-task-progress/panel-v1.html", "0.8.1"),
     true,
-  );
-  assert.equal(
-    isCompatibleTaskProgressPanelResourceUri(
-      createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
-      "0.6.7",
-    ),
-    false,
   );
 
   const rejected = [
