@@ -1013,14 +1013,14 @@ test("successive wakes retain snapshot history without orphaning superseded meta
 
 // Generate a genuine v3 pair rather than padding the bounded head. The archival
 // filler is independent prose so the wake records themselves remain small.
-function largeDisplayFixture(dir) {
+function largeDisplayFixture(dir, prefix = "") {
 	const path = join(realpathSync(dir), "heartbeat.md"),
 		paths = heartbeatLedgerPairPaths(path);
 	const marker = `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(paths.historyPath)} -->\n`;
 	const head = `${marker}# Current\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | report:r1 | 中文 | done | receipt |\n`;
 	const old = `${wake("2026-01-01T10:00Z")}## Notes\n${"x".repeat(4095)}\n`;
 	const newer = `${wake("2026-01-01T11:00Z")}## Notes\n中文\n`;
-	const body = `${old}${"x".repeat(4095).concat("\n").repeat(8193)}${newer}`;
+	const body = `${prefix}${old}${"x".repeat(4095).concat("\n").repeat(8193)}${newer}`;
 	const backup = "immutable legacy 中文\n";
 	const hash = (value) => createHash("sha256").update(value).digest("hex");
 	const header = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${hash(body)} base=${hash(head)} bytes=${Buffer.byteLength(head)} backup=${hash(backup)} previous=${hash(backup)} planned=${Buffer.from(head).toString("base64")} -->\n`;
@@ -1357,4 +1357,83 @@ test("display runs the selected items inspector for each cached read", async () 
 	assert.ok(first.inventory.findings.some((f) => f.rule === "custom-one"));
 	assert.ok(second.inventory.findings.some((f) => f.rule === "custom-two"));
 	assert.ok(!second.inventory.findings.some((f) => f.rule === "custom-one"));
+});
+
+function cadenceWake(time, count = 10, rows = count) {
+	return `## ${time} wake (${count}-row ledger)\n${Array.from({ length: rows }, (_, i) => `| ${i + 1} | category | done |`).join("\n")}\n`;
+}
+
+test("display cadence uses the last complete ten-row wake without certifying current", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md"),
+		now = new Date("2026-01-01T10:30:00Z");
+	const scenarios = [
+		[
+			cadenceWake("2026-01-01T10:10Z") +
+				cadenceWake("2026-01-01T10:29Z", 10, 2) +
+				cadenceWake("2026-01-01T10:30Z", 8),
+			"interval-elapsed",
+			"2026-01-01T10:30:00.000Z",
+		],
+		[
+			cadenceWake("2026-01-01T10:10Z") + cadenceWake("invalid-time"),
+			"invalid-audit-timestamp",
+			null,
+		],
+		[
+			cadenceWake("2026-01-01T10:10Z") + cadenceWake("2026-01-01T10:31Z"),
+			"future-audit-timestamp",
+			null,
+		],
+		[cadenceWake("2026-01-01T10:10Z", 8), "no-full-ten-row-audit", null],
+	];
+	for (const [text, reason, nextDueAt] of scenarios) {
+		writeFileSync(path, text);
+		const result = await readHeartbeatDisplay({
+			root: dir,
+			path,
+			intervalMinutes: 20,
+			now,
+		});
+		assert.equal(result.cadence.reason, reason);
+		assert.equal(result.cadence.nextDueAt, nextDueAt);
+		assert.equal(result.audit, "not-performed");
+		assert.equal(
+			(await readHeartbeatDisplay({ root: dir, path, now })).cadence,
+			null,
+		);
+	}
+});
+
+test("large history cadence survives paging without rescanning the history", async () => {
+	const dir = root(),
+		fixture = largeDisplayFixture(dir, cadenceWake("2026-01-01T10:10Z"));
+	const now = new Date("2026-01-01T10:30:00Z");
+	let historyBytes = 0;
+	const onRead = (read) => {
+		if (read.path === fixture.paths.historyPath) historyBytes += read.bytes;
+	};
+	clearHeartbeatDisplayCache();
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		intervalMinutes: 20,
+		now,
+		onRead,
+	});
+	assert.equal(first.cadence.nextDueAt, "2026-01-01T10:30:00.000Z");
+	assert.ok(historyBytes >= statSync(fixture.paths.historyPath).size);
+	historyBytes = 0;
+	const second = await readHeartbeatDisplay({
+		root: dir,
+		path: fixture.path,
+		pageSize: 1,
+		cursor: first.historyPage.nextCursor,
+		intervalMinutes: 20,
+		now,
+		onRead,
+	});
+	assert.deepEqual(second.cadence, first.cadence);
+	assert.ok(historyBytes < 8192);
 });

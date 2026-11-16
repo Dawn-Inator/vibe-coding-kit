@@ -2135,3 +2135,117 @@ test("stable incomplete companion surfaces a terminal error after a verified pro
     await f.close();
   }
 });
+
+test("real orchestration history pages honor the wire budget without losing cursor records", async () => {
+  const f = await fixture();
+  try {
+    const blockedTasks = Array.from({ length: 20 }, (_, i) => ({
+      id: `B${i}`,
+      title: "T".repeat(500),
+      reason: "R".repeat(2_000),
+      evidence: "E".repeat(1_000),
+      requiresOwner: true,
+    }));
+    const orchestration = {
+      scope: "session",
+      before: null,
+      after: null,
+      blockedTasks,
+      blockersEvidence: "checked",
+    };
+    const start = Date.parse("2026-11-11T10:00:00Z");
+    const wakes = Array.from({ length: 12 }, (_, i) =>
+      [
+        `## ${new Date(start + i * 60_000).toISOString()} wake (10-row ledger)`,
+        `orchestration: ${JSON.stringify(orchestration)}`,
+        "| # | category | state |",
+        "| --- | --- | --- |",
+        "| 1 | audit | done |",
+      ].join("\n"),
+    ).join("\n");
+    await writeFile(
+      f.source,
+      `# Supervision\nthread: chat-A\n${wakes}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | report:test | task | done | receipt |\n`,
+    );
+    const view = await f.service.bind("chat-A", f.source, f.project);
+    assert.equal(view?.status, "ready");
+    for (const getPage of [
+      (cursor?: string) =>
+        f.service.history("chat-A", f.project, {
+          limit: 10,
+          ...(cursor === undefined ? {} : { cursor }),
+        }),
+      (cursor?: string) =>
+        f.service.projectHistory(f.project, {
+          limit: 10,
+          ...(cursor === undefined ? {} : { cursor }),
+        }),
+    ]) {
+      let cursor: string | undefined;
+      const seen: number[] = [];
+      do {
+        const page = await getPage(cursor);
+        assert.equal(page.error, undefined);
+        assert.equal(page.total, 12);
+        assert.ok(page.wakes.length > 0 && page.wakes.length < 10);
+        assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 192 * 1024);
+        assert.ok(
+          Buffer.byteLength(
+            JSON.stringify({ method: "task.request", result: { heartbeatHistory: page } }),
+          ) <
+            1024 * 1024,
+        );
+        for (const wake of page.wakes) {
+          assert.ok(wake.orchestration);
+          seen.push(wake.timeMs as number);
+        }
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      assert.deepEqual(
+        seen,
+        Array.from({ length: 12 }, (_, i) => start + (11 - i) * 60_000),
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("project and bound cadence use full wake evidence, with explicit next wake taking priority", async () => {
+  const f = await fixture();
+  const now = new Date("2026-11-11T10:30:00Z");
+  const service = new HeartbeatService(resolve(f.root, "cadence-display"), {
+    kitPath: f.kitPath,
+    refreshMs: 0,
+    now: () => now,
+  });
+  try {
+    const full = [
+      "## 2026-11-11T10:00:00Z wake (10-row ledger)",
+      "| # | category | state |",
+      "| --- | --- | --- |",
+      ...Array.from({ length: 10 }, (_, i) => `| ${i + 1} | audit | done |`),
+    ].join("\n");
+    const partial =
+      "## 2026-11-11T10:25:00Z wake (10-row ledger)\n| # | category | state |\n| --- | --- | --- |\n| 1 | audit | done |";
+    await writeFile(
+      f.source,
+      `# Supervision\nthread: chat-A\n${full}\n${partial}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | report:test | task | done | receipt |\n`,
+    );
+    await writeFile(
+      resolve(f.project, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { cadenceMinutes: 20 } }),
+    );
+    assert.equal((await service.projectView(f.project)).nextWakeAt, "2026-11-11T10:20:00.000Z");
+    assert.equal((await service.view("chat-A", f.project))?.nextWakeAt, "2026-11-11T10:20:00.000Z");
+    await writeFile(
+      resolve(f.project, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { cadenceMinutes: 20, nextWakeAt: "2026-11-11T11:00:00Z" } }),
+    );
+    assert.equal((await service.projectView(f.project)).nextWakeAt, "2026-11-11T11:00:00.000Z");
+    assert.equal((await service.view("chat-A", f.project))?.nextWakeAt, "2026-11-11T11:00:00.000Z");
+  } finally {
+    service.close();
+    await f.close();
+  }
+});

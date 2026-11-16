@@ -15,7 +15,15 @@ import {
 	fsyncSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { parseWakes, WAKE_HEADING_RE } from "./check-heartbeat-ledger.mjs";
+import {
+	parseWakes,
+	WAKE_HEADING_RE,
+	matchHeartbeatLedgerRow,
+} from "./check-heartbeat-ledger.mjs";
+import {
+	heartbeatAuditDueForWake,
+	isFullTenRowWake,
+} from "./heartbeat-audit-due.mjs";
 import {
 	inspectHeartbeatLedger,
 	summarizeHeartbeatLedger,
@@ -822,12 +830,57 @@ async function displayReadFile(entry, limit) {
 	new TextDecoder("utf-8", { fatal: true }).decode(result);
 	return result;
 }
-function displayIndexer(path, firstLine = 1) {
+// Keep only at most eleven row numbers per open wake. This follows the same
+// section and row-token rules as parseWakes without retaining historical text.
+function displayCadenceTracker() {
+	const active = [];
+	let ordinal = 0,
+		last = null;
+	const close = (entry) => {
+		if (isFullTenRowWake(entry) && (!last || entry.ordinal > last.ordinal))
+			last = entry;
+	};
+	return {
+		line(text, path, line) {
+			const heading = /^(#{1,6})\s/.exec(text);
+			if (heading || /^-{3,}\s*$/.test(text)) {
+				for (let i = active.length - 1; i >= 0; i--) {
+					if (!heading || heading[1].length <= active[i].level) {
+						close(active[i]);
+						active.splice(i, 1);
+					}
+				}
+			}
+			const match = WAKE.exec(text);
+			if (match)
+				active.push({
+					heading: text.trim(),
+					line,
+					sourcePath: path,
+					level: heading[1].length,
+					ordinal: ordinal++,
+					layout: { count: Number(match[1]) },
+					rows: [],
+				});
+			const row = matchHeartbeatLedgerRow(text);
+			if (row)
+				for (const entry of active)
+					if (entry.layout.count === 10 && entry.rows.length < 11)
+						entry.rows.push({ num: Number(row[1]) });
+		},
+		finish() {
+			for (const entry of active) close(entry);
+			return last;
+		},
+	};
+}
+function displayIndexer(path, firstLine = 1, cadenceTracker) {
 	const records = [],
 		active = [];
 	let line = firstLine;
 	return {
 		line(text, start, end) {
+			cadenceTracker?.line(text, path, line);
 			const heading = /^(#{1,6})\s/.exec(text);
 			if (heading || /^-{3,}\s*$/.test(text)) {
 				for (let i = active.length - 1; i >= 0; i--) {
@@ -859,8 +912,14 @@ function displayIndexer(path, firstLine = 1) {
 		},
 	};
 }
-function indexDisplayBuffer(buffer, path, start = 0, firstLine = 1) {
-	const indexer = displayIndexer(path, firstLine);
+function indexDisplayBuffer(
+	buffer,
+	path,
+	start = 0,
+	firstLine = 1,
+	cadenceTracker,
+) {
+	const indexer = displayIndexer(path, firstLine, cadenceTracker);
 	let from = start;
 	while (from < buffer.length) {
 		const found = buffer.indexOf(10, from),
@@ -894,7 +953,7 @@ async function displayHashFile(entry) {
 	}
 	return hash.digest("hex");
 }
-async function displayScanHistory(entry, paths, headBuffer) {
+async function displayScanHistory(entry, paths, headBuffer, cadenceTracker) {
 	const pairHash = createHash("sha256").update(headBuffer).update("\0");
 	const bodyHash = createHash("sha256"),
 		decoder = new TextDecoder("utf-8", { fatal: true });
@@ -906,7 +965,7 @@ async function displayScanHistory(entry, paths, headBuffer) {
 		bodyLine = 2;
 	const headerChunks = [];
 	let headerBytes = 0;
-	const indexer = displayIndexer(paths.historyPath, bodyLine);
+	const indexer = displayIndexer(paths.historyPath, bodyLine, cadenceTracker);
 	for (;;) {
 		const { bytesRead } = await displayRead(
 			entry,
@@ -1081,6 +1140,7 @@ export async function readHeartbeatDisplay({
 	now = new Date(),
 	onRead,
 	inspect = inspectHeartbeatLedger,
+	intervalMinutes,
 }) {
 	if (typeof inspect !== "function")
 		throw new TypeError("inspect must be a function");
@@ -1090,6 +1150,8 @@ export async function readHeartbeatDisplay({
 		throw new TypeError("pageSize must be an integer from 1 to 25");
 	if (!(now instanceof Date) || !Number.isFinite(now.getTime()))
 		throw new TypeError("now must be a valid Date");
+	if (intervalMinutes !== undefined)
+		heartbeatAuditDueForWake(null, { now, intervalMinutes });
 	const paths = safePaths(root, path);
 	let head,
 		history,
@@ -1112,6 +1174,7 @@ export async function readHeartbeatDisplay({
 				headText = headBuffer.toString("utf8"),
 				headMatch = HEAD.exec(headText);
 			let records, contentHash, isLegacy;
+			const cadenceTracker = displayCadenceTracker();
 			if (!history) {
 				if (headMatch || /^<!-- heartbeat-head:v\d+\b/.test(headText))
 					throw new Error(
@@ -1122,13 +1185,24 @@ export async function readHeartbeatDisplay({
 					.update(headBuffer)
 					.update("\0")
 					.digest("hex");
-				records = indexDisplayBuffer(headBuffer, paths.headPath);
+				records = indexDisplayBuffer(
+					headBuffer,
+					paths.headPath,
+					0,
+					1,
+					cadenceTracker,
+				);
 			} else {
 				if (!backup)
 					throw new Error(
 						"Heartbeat pair is incomplete: immutable backup missing",
 					);
-				const scanned = await displayScanHistory(history, paths, headBuffer),
+				const scanned = await displayScanHistory(
+						history,
+						paths,
+						headBuffer,
+						cadenceTracker,
+					),
 					match = HISTORY.exec(scanned.header);
 				if (
 					!match ||
@@ -1182,6 +1256,7 @@ export async function readHeartbeatDisplay({
 						paths.headPath,
 						bytes,
 						prefixLines + 1,
+						cadenceTracker,
 					),
 				];
 				if (records.length > DISPLAY_INDEX_LIMIT)
@@ -1209,6 +1284,7 @@ export async function readHeartbeatDisplay({
 				headText,
 				headDigest: sha(headBuffer),
 				records,
+				lastCompleteWake: cadenceTracker.finish(),
 				contentHash,
 				isLegacy,
 				modifiedAt: new Date(
@@ -1318,6 +1394,13 @@ export async function readHeartbeatDisplay({
 					? null
 					: new Date(lastRecordedTime).toISOString(),
 			audit: "not-performed",
+			cadence:
+				intervalMinutes === undefined
+					? null
+					: heartbeatAuditDueForWake(snapshot.lastCompleteWake, {
+							now,
+							intervalMinutes,
+						}),
 		};
 	} catch (error) {
 		// An integrity or format error observed during concurrent publication is

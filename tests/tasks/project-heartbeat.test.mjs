@@ -358,3 +358,14 @@ test("stable incomplete or malformed display sources are errors, not transient p
  assert.equal(bad.status, "error");
  assert.match(bad.error, /invalid|format|incomplete/i);
 });
+
+test("display cadence forwards configured interval and preserves the latest full wake", async () => {
+ const root = projectRoot();
+ const path = writeLedger(root, "heartbeat.md");
+ const rows = Array.from({length: 10}, (_, i) => `| ${i + 1} | audit | done |`).join("\n");
+ writeFileSync(path, `## 2026-01-01T10:00Z wake (10-row ledger)\n| # | category | state |\n| --- | --- | --- |\n${rows}\n## 2026-01-01T11:00Z wake (10-row ledger)\n| # | category | state |\n| --- | --- | --- |\n| 1 | audit | done |\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | report:test | task | done | receipt |\n`);
+ const view = await readProjectHeartbeatDisplay({root, ledgerPath: path, now: NOW, intervalMinutes: 30});
+ assert.equal(view.status, "ready", view.error);
+ assert.equal(view.source.cadence.nextDueAt, "2026-01-01T10:30:00.000Z");
+ assert.equal(view.source.audit, "not-performed");
+});

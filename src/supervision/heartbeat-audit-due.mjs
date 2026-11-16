@@ -27,7 +27,7 @@ export function parseStrictIsoTimestamp(value, { requireTimezone = false } = {})
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function isFullTenRowWake(wake) {
+export function isFullTenRowWake(wake) {
   if (wake.layout.count !== 10 || wake.rows.length !== TEN_ROW_NUMBERS.length) return false;
   const rowNumbers = new Set(wake.rows.map((row) => row.num));
   return rowNumbers.size === TEN_ROW_NUMBERS.length && TEN_ROW_NUMBERS.every((number) => rowNumbers.has(number));
@@ -40,16 +40,19 @@ function isFullTenRowWake(wake) {
  * @param {string} text Markdown ledger contents.
  * @param {{now?: Date, intervalMinutes?: number}} options
  */
-export function heartbeatAuditDue(text, { now = new Date(), intervalMinutes = 20 } = {}) {
+export function heartbeatAuditDue(text, options = {}) {
   if (typeof text !== 'string') throw new TypeError('text must be a string');
+  return heartbeatAuditDueForWake(parseWakes(text).filter(isFullTenRowWake).at(-1), options);
+}
+
+/** Apply the same advisory policy to a previously parsed complete wake. */
+export function heartbeatAuditDueForWake(wake, { now = new Date(), intervalMinutes = 20 } = {}) {
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('now must be a valid Date');
   if (typeof intervalMinutes !== 'number' || !Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
     throw new TypeError('intervalMinutes must be a finite number greater than 0');
   }
-
   const intervalMs = intervalMinutes * 60_000;
   if (!Number.isFinite(intervalMs) || intervalMs > 8.64e15) throw new TypeError('intervalMinutes is too large');
-  const wake = parseWakes(text).filter(isFullTenRowWake).at(-1);
   const common = { schemaVersion: 1, intervalMinutes };
   if (!wake) {
     return { ...common, due: true, lastAuditAt: null, nextDueAt: null, reason: 'no-full-ten-row-audit' };

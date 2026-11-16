@@ -1,5 +1,6 @@
 import type {
 	HeartbeatFinding,
+	HeartbeatAuditDueResult,
 	HeartbeatInspectionMode,
 	HeartbeatInspectionReport,
 	HeartbeatItem,
@@ -134,6 +135,7 @@ export interface HeartbeatDisplayResult {
 	contentHash: string;
 	integrity: "verified";
 	audit: "not-performed";
+	cadence: HeartbeatAuditDueResult | null;
 	inventory: HeartbeatPairInspectionReport;
 	latestWake: HeartbeatPairInspectionReport["wakes"][number] | null;
 	historyPage: {
@@ -157,6 +159,7 @@ export function readHeartbeatDisplay(options: {
 	cursor?: string;
 	pageSize?: number;
 	now?: Date;
+	intervalMinutes?: number;
 	/** Custom items inspector; integrity validation remains in the core reader. */
 	inspect?: (
 		text: string,

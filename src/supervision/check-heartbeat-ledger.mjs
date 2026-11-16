@@ -88,6 +88,7 @@ const SECTION_END_RE = /^(#{1,6}\s|-{3,}\s*$)/;
 const SOURCES_RE = /^\s*sources:\s*\S/i;
 const DRIFT_MATRIX_RE = /matrix|unchecked\s*:/i;
 const ROW_RE = /^\|\s*(\d+)\s*\|([^|]*)\|(.*)\|\s*$/;
+export function matchHeartbeatLedgerRow(line) { return line.match(ROW_RE); }
 const ARROW = '(?:←|<-)';
 const BLOCKED_RE = new RegExp(`^blocked\\s*${ARROW}\\s*(\\S.*)$`, 'i');
 const VAGUE_RESOURCE_RE = /^(in[- ]?flight|busy|running|working|pending|waiting)\.?$/i;
@@ -161,7 +162,7 @@ export function parseWakes(text) {
         wake.sources = true;
         wake.sourcesLine = lines[j].trim();
       }
-      const row = lines[j].match(ROW_RE);
+      const row = matchHeartbeatLedgerRow(lines[j]);
       if (row) {
         const num = Number(row[1]);
         if (layout.count === 10) {

@@ -111,7 +111,7 @@ async function readProjectHeartbeatMode(display, {
 		let source;
 		try {
 			source = display
-				? await readDisplaySource(projectRoot, requestedPath, now)
+				? await readDisplaySource(projectRoot, requestedPath, now, intervalMinutes)
 				: await readCanonicalSource(projectRoot, requestedPath, now, intervalMinutes);
 		} catch (error) {
 			if (display && isDisplayTransient(error)) throw error;
@@ -139,7 +139,7 @@ async function readProjectHeartbeatMode(display, {
 	const comparePath = (a, b) => a.path.localeCompare(b.path);
 	for (const candidate of discovery.candidates) {
 		try {
-			const entry = display ? await readDisplaySource(projectRoot, candidate.path, now) : await readCanonicalPair(projectRoot, candidate.path, now);
+			const entry = display ? await readDisplaySource(projectRoot, candidate.path, now, intervalMinutes) : await readCanonicalPair(projectRoot, candidate.path, now);
 			// Keep at most two complete pair snapshots, regardless of project size.
 			const isRecorded = entry.lastRecordedAt !== null && (!bestRecorded ||
 				entry.lastRecordedAt > bestRecorded.lastRecordedAt ||
@@ -169,7 +169,7 @@ async function readProjectHeartbeatMode(display, {
 		try {
 			const snapshot = entry.path === bestRecorded?.path ? bestRecorded :
 				entry.path === bestInventory?.path ? bestInventory :
-				display ? await readDisplaySource(projectRoot, entry.path, now) : await readCanonicalPair(projectRoot, entry.path, now);
+				display ? await readDisplaySource(projectRoot, entry.path, now, intervalMinutes) : await readCanonicalPair(projectRoot, entry.path, now);
 			if (snapshot.lastRecordedAt !== entry.lastRecordedAt || snapshot.itemCount !== entry.itemCount)
 				throw new Error("Heartbeat source changed while selecting a candidate");
 			source = display ? snapshot : inspectCanonicalSource(snapshot, now, intervalMinutes);
@@ -206,9 +206,9 @@ function isDisplayTransient(error) {
  return error?.code === "HEARTBEAT_DISPLAY_CHANGED";
 }
 
-async function readDisplaySource(root, path, now) {
+async function readDisplaySource(root, path, now, intervalMinutes) {
 	const { path: canonicalPath } = await resolveProjectLedgerPath(root, path);
-	const display = await readHeartbeatDisplay({ root, path: canonicalPath, now, pageSize: 5 });
+	const display = await readHeartbeatDisplay({ root, path: canonicalPath, now, pageSize: 5, ...(intervalMinutes === undefined ? {} : { intervalMinutes }) });
 	return { ...display, path: canonicalPath, itemCount: display.inventory.items.length };
 }
 

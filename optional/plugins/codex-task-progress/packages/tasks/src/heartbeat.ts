@@ -6,8 +6,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   HeartbeatInspectionReport,
-  InspectHeartbeatLedgerOptions,
   HeartbeatWake,
+  InspectHeartbeatLedgerOptions,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import {
   inspectHeartbeatLedger as bundledHeartbeatInspector,
@@ -764,7 +764,7 @@ export class HeartbeatService {
       const nextWakeAt =
         explicitNext && Number.isFinite(Date.parse(explicitNext))
           ? new Date(explicitNext).toISOString()
-          : null;
+          : (source?.cadence?.nextDueAt ?? null);
       const itemStatusCounts = countItemStatuses(inventoryItems);
       const view = compactView({
         status: report.status,
@@ -1180,22 +1180,23 @@ export class HeartbeatService {
       if (!source) return null;
       this.#observeFile(threadId, source);
       const inspect = await this.#inspector(root, config);
+      const cadence = config.heartbeat?.cadenceMinutes;
+      const cadenceMinutes =
+        typeof cadence === "number" && cadence > 0 && Number.isFinite(cadence) ? cadence : null;
       const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
         root,
         path: source,
         now: this.#now(),
         pageSize: 5,
         inspect,
+        ...(cadenceMinutes === null ? {} : { intervalMinutes: cadenceMinutes }),
       });
       const inventory = pair.inventory;
-      const cadence = config.heartbeat?.cadenceMinutes;
-      const cadenceMinutes =
-        typeof cadence === "number" && cadence > 0 && Number.isFinite(cadence) ? cadence : null;
       const explicitNext = config.heartbeat?.nextWakeAt;
       const nextWakeAt =
         explicitNext && Number.isFinite(Date.parse(explicitNext))
           ? new Date(explicitNext).toISOString()
-          : null;
+          : (pair.cadence?.nextDueAt ?? null);
       const itemStatusCounts = countItemStatuses(inventory.items);
       const view: HeartbeatView = compactView({
         ...empty,
@@ -1240,6 +1241,37 @@ export class HeartbeatService {
         certifiesCurrent: false,
         error: String(error),
       });
+    }
+  }
+
+  async #readHistoryPage(
+    root: string,
+    sourcePath: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<HeartbeatHistoryPage> {
+    const api = await loadPairFilesApi();
+    let pageSize = limit;
+    while (true) {
+      const pair = await api.readHeartbeatDisplay({
+        root,
+        path: sourcePath,
+        now: this.#now(),
+        pageSize,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      const page: HeartbeatHistoryPage = {
+        wakes: pair.historyPage.wakes.map((wake) => compactWake(transportWake(wake))),
+        nextCursor: pair.historyPage.nextCursor,
+        total: pair.historyPage.total,
+        sourcePath,
+        historyPath: pair.isLegacy ? pair.headPath : pair.historyPath,
+        contentHash: pair.contentHash,
+      };
+      if (Buffer.byteLength(JSON.stringify(page), "utf8") <= PANEL_BYTES) return page;
+      if (page.wakes.length <= 1)
+        throw new Error("Heartbeat history record exceeds display byte limit.");
+      pageSize = Math.max(1, Math.floor(page.wakes.length / 2));
     }
   }
 
@@ -1293,29 +1325,15 @@ export class HeartbeatService {
       const sourcePath = await realpath(view.sourcePath);
       if (!within(root, sourcePath) || sourcePath !== view.sourcePath)
         throw new Error("Bound heartbeat source changed outside its verified project path.");
-      const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
-        root,
-        path: sourcePath,
-        now: this.#now(),
-        pageSize: limit,
-        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-      });
-      const historyPath = pair.isLegacy ? pair.headPath : pair.historyPath;
-      if (pair.contentHash !== view.contentHash)
+      const page = await this.#readHistoryPage(root, sourcePath, limit, options.cursor);
+      if (page.contentHash !== view.contentHash)
         return empty(
           sourcePath,
           "Heartbeat ledger changed while reading history; refresh before using its audit history.",
-          pair.contentHash,
-          historyPath,
+          page.contentHash,
+          page.historyPath,
         );
-      return {
-        wakes: pair.historyPage.wakes.map((wake) => compactWake(transportWake(wake))),
-        nextCursor: pair.historyPage.nextCursor,
-        total: pair.historyPage.total,
-        sourcePath,
-        historyPath,
-        contentHash: pair.contentHash,
-      };
+      return page;
     } catch (error) {
       if (isDisplayChanged(error) || isStaleCursor(error))
         return {
@@ -1366,28 +1384,14 @@ export class HeartbeatService {
         return failure("Project heartbeat source changed outside its verified project path.");
       if (!view.contentHash)
         return failure("Project heartbeat source has no verified content hash.");
-      const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
-        root,
-        path: canonicalSource,
-        now: this.#now(),
-        pageSize: limit,
-        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-      });
-      const historyPath = pair.isLegacy ? pair.headPath : pair.historyPath;
-      if (pair.contentHash !== view.contentHash)
+      const page = await this.#readHistoryPage(root, canonicalSource, limit, options.cursor);
+      if (page.contentHash !== view.contentHash)
         return failure(
           "Heartbeat ledger changed while reading history; refresh before using its audit history.",
-          pair.contentHash,
-          historyPath,
+          page.contentHash,
+          page.historyPath,
         );
-      return {
-        wakes: pair.historyPage.wakes.map((wake) => compactWake(transportWake(wake))),
-        nextCursor: pair.historyPage.nextCursor,
-        total: pair.historyPage.total,
-        sourcePath: canonicalSource,
-        historyPath,
-        contentHash: pair.contentHash,
-      };
+      return page;
     } catch (error) {
       if (isDisplayChanged(error) || isStaleCursor(error)) {
         const { error: _error, ...retry } = failure("");
