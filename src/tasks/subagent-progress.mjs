@@ -119,31 +119,30 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     }
   };
   const canonicalCwd = await realpath(cwd);
-  const pages = [], candidates = [], catalogIds = new Set(), cursors = new Set();
-  let catalogCursor, catalogFailed = false, catalogComplete = false;
+  const admittedCatalog = new Map(), ambiguousIds = new Set(), catalogIds = new Set(), cursors = new Set();
+  let catalogCursor, catalogFailed = false, catalogComplete = false, catalogPages = 0;
   // Examine the entire bounded direct-child catalog even when recent events
   // contain no members. Unexamined identity cannot prove an exact zero.
   try {
     for (let page = 0; page < 4; page++) {
       const result = await listPage(catalogCursor);
       if (!result || !Array.isArray(result.data) || result.data.length > 50) throw new Error('Invalid child page');
-      pages.push(result);
+      catalogPages++;
       for (const child of result.data) {
         if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) { snapshot.complete = false; continue; }
-        if (catalogIds.has(child.id)) { snapshot.complete = false; continue; }
+        if (catalogIds.has(child.id)) { snapshot.complete = false; ambiguousIds.add(child.id); admittedCatalog.delete(child.id); continue; }
         catalogIds.add(child.id);
         const spawn = child.source?.subAgent?.thread_spawn;
         const spawnParent = spawn?.parent_thread_id;
         if (!spawn || typeof spawn !== 'object' || Array.isArray(spawn) || !validId(spawnParent)) { snapshot.complete = false; continue; }
         const declaredParent = child.parentThreadId;
         if (declaredParent != null && (!validId(declaredParent) || declaredParent !== spawnParent)) { snapshot.complete = false; continue; }
-        if (spawnParent !== parentThreadId) continue; // A positively identified foreign parent is outside scope.
+        if (spawnParent !== parentThreadId) { if (members.has(child.id)) snapshot.complete = false; continue; }
         if (!validCwd(child.cwd)) { snapshot.complete = false; continue; }
-        try { if (await realpath(child.cwd) !== canonicalCwd) continue; }
+        try { if (await realpath(child.cwd) !== canonicalCwd) { if (members.has(child.id)) snapshot.complete = false; continue; } }
         catch { snapshot.complete = false; continue; }
-        if (members.has(child.id)) continue;
-        if (candidates.length >= 100) { snapshot.complete = false; snapshot.truncated = true; continue; }
-        candidates.push(child);
+        // Only records admitted here can later create state, progress or counts.
+        admittedCatalog.set(child.id, child);
       }
       if (result.nextCursor === null) { catalogComplete = true; break; }
       if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) { snapshot.complete = false; break; }
@@ -152,6 +151,12 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       if (page === 3) { snapshot.complete = false; snapshot.truncated = true; }
     }
     if (!catalogComplete) snapshot.complete = false;
+    const candidates = [];
+    for (const [id, child] of admittedCatalog) {
+      if (members.has(id)) continue;
+      if (candidates.length >= 100) { snapshot.complete = false; snapshot.truncated = true; continue; }
+      candidates.push(child);
+    }
     if (candidates.length && (typeof verifyAgent !== 'function' || !rootTurnId || !snapshot.rootTurnStartedAt)) snapshot.complete = false;
     if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
       let next = 0;
@@ -171,25 +176,28 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       }));
     }
   } catch { catalogFailed = true; snapshot.complete = false; }
-  let replay = 0;
-  const effectiveListPage = async () => pages[replay++] ?? { data: [], nextCursor: null };
+  // A proof lookup can yield while workspace paths change. Recheck the admitted
+  // map before any entry, state, progress or count is derived from it.
+  for (const [id, child] of admittedCatalog) {
+    try {
+      if (!validCwd(child.cwd) || await realpath(child.cwd) !== canonicalCwd) {
+        admittedCatalog.delete(id); snapshot.complete = false;
+      }
+    } catch { admittedCatalog.delete(id); snapshot.complete = false; }
+  }
+  for (const id of members) if (!admittedCatalog.has(id) || ambiguousIds.has(id)) snapshot.complete = false;
   if (!members.size) {
-    if (!snapshot.complete) snapshot.status = catalogFailed && !pages.length ? 'unavailable' : 'partial';
+    if (!snapshot.complete) snapshot.status = catalogFailed && !catalogPages ? 'unavailable' : 'partial';
     finalizeRunningCount(); return snapshot;
   }
-  let cursor;
   const seen = new Set();
   const observationQueue = [];
   const store = new TaskStore(storageRoot, { schemas });
   try {
-    for (let page = 0; page < 4; page++) {
-      const result = await effectiveListPage(cursor);
-      if (!result || !Array.isArray(result.data) || result.data.length > 50) throw new Error('Invalid child page');
-      for (const child of result.data) {
-        if (!child || typeof child.id !== 'string' || !members.has(child.id) || seen.has(child.id)) continue;
-        const spawn = child.source?.subAgent?.thread_spawn;
-        if (!spawn || spawn.parent_thread_id !== parentThreadId || (child.parentThreadId != null && child.parentThreadId !== parentThreadId)) { snapshot.complete = false; continue; }
-        seen.add(child.id);
+      for (const [id, child] of admittedCatalog) {
+        if (!members.has(id)) continue;
+        const spawn = child.source.subAgent.thread_spawn;
+        seen.add(id);
         if (snapshot.agents.length >= 100) { snapshot.complete = false; snapshot.truncated = true; break; }
         const catalogPath = validAgentPath(spawn.agent_path) ? spawn.agent_path : undefined;
         const activityPath = activityPaths.get(child.id);
@@ -210,7 +218,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         else if (validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
         snapshot.agents.push(entry);
         try {
-          if (!validCwd(child.cwd) || await realpath(child.cwd) !== canonicalCwd) { snapshot.complete = false; continue; }
           entry.assignmentEligible = true;
           if (typeof observeAgent === 'function' && !validRuntime)
             observationQueue.push(async () => {
@@ -235,12 +242,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           }
         } catch { snapshot.complete = false; }
       }
-      if ((snapshot.truncated && snapshot.agents.length >= 100) || seen.size === members.size) break;
-      if (result.nextCursor == null) break;
-      if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor === cursor) { snapshot.complete = false; break; }
-      cursor = result.nextCursor;
-      if (page === 3) { snapshot.complete = false; snapshot.truncated = true; }
-    }
   } catch { snapshot.complete = false; snapshot.status = snapshot.agents.length ? 'partial' : 'unavailable'; }
   let nextObservation = 0;
   await Promise.all(Array.from({ length: Math.min(2, observationQueue.length) }, async () => {
@@ -248,7 +249,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   }));
   if (seen.size !== members.size) snapshot.complete = false;
   if (!runtimeStatusesComplete && snapshot.agents.some(agent => !['runtime', 'codex-rollout'].includes(agent.stateBasis))) snapshot.complete = false;
-  if (catalogFailed && !pages.length && !snapshot.agents.length) snapshot.status = 'unavailable';
+  if (catalogFailed && !catalogPages && !snapshot.agents.length) snapshot.status = 'unavailable';
   if (!snapshot.complete && snapshot.status === 'ready') snapshot.status = 'partial';
   finalizeRunningCount();
   return snapshot;

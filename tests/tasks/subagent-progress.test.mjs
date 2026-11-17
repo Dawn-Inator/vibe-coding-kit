@@ -28,10 +28,9 @@ test('direct child checklist is read without writes; other parents and cwd canno
       { id: 'foreign', parentThreadId: 'parent', cwd: '/' },
     ], nextCursor: null }) });
     assert.equal(result.status, 'partial');
-    assert.deepEqual(result.agents.map(x => x.id), ['child', 'foreign']);
+    assert.deepEqual(result.agents.map(x => x.id), ['child']);
     assert.equal(result.agents[0].state, 'unknown');
     assert.equal(result.agents[0].progressBasis, 'registered-checklist');
-    assert.equal(result.agents[1].progress, null);
     assert.equal(result.runningCount, null);
     assert.deepEqual(await Promise.all([readFile(paths.history), readFile(paths.heartbeat)]), before);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -254,7 +253,7 @@ test('different older root stops bounded turn pagination and does not mix agents
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('repeated child catalog cursors stay partial after current members are found', async () => {
+test('repeated catalog cursors and duplicate identities exclude ambiguous members', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-found-'));
   try {
     let pages = 0;
@@ -262,7 +261,7 @@ test('repeated child catalog cursors stay partial after current members are foun
       listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'live', kind: 'started' }] }], nextCursor: null }),
       listPage: async () => { pages++; return { data: [{ id: 'live', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'notLoaded' } }], nextCursor: 'historic' }; },
     });
-    assert.equal(pages, 2); assert.equal(result.complete, false); assert.equal(result.status, 'partial'); assert.equal(result.runningCount, null); assert.equal(result.agents[0].state, 'unknown');
+    assert.equal(pages, 2); assert.equal(result.complete, false); assert.equal(result.status, 'partial'); assert.equal(result.runningCount, null); assert.equal(result.observedRunningCount, null); assert.deepEqual(result.agents, []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -632,4 +631,42 @@ test('only stable exact-turn rollout proof can retain recorded work across a lat
    assert.equal(result.agents[0].state,'unknown'); assert.equal(result.runningCount,null);
   }
  } finally {await rm(root,{recursive:true,force:true});}
+});
+
+
+test('causal membership never promotes rejected or ambiguous catalog rows into state, progress or counts', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-causal-admission-'));
+ try {
+  const canonical = await (await import('node:fs/promises')).realpath(root);
+  const started = Date.parse(cycleStartedAt);
+  const valid = (status={type:'active',activeFlags:[]}) => ({id:'candidate',cwd:canonical,status,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}});
+  const options = {parentThreadId:'p',cwd:canonical,storageRoot:canonical,schemas,taskSourcePath:join(canonical,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'candidate',kind:'started',startedAtMs:started}]}],nextCursor:null})};
+  for (const status of [{type:'active',activeFlags:[]},{type:'notLoaded'}]) {
+   const row=valid(status);
+   const cases=[
+    [{...row,cwd:undefined}],
+    [{...row,cwd:join(canonical,'missing')}],
+    [{...row,cwd:'/'}],
+    [{...row,source:null}],
+    [{...row,source:{subAgent:{thread_spawn:{parent_thread_id:'other'}}}}],
+    [{...row,parentThreadId:'other'}],
+    [row,{...row}],
+    [row,{...row,source:null}],
+   ];
+   for (const entries of cases) {
+    let observed=0;
+    const result=await collectScoped({...options,listPage:async()=>({data:entries,nextCursor:null}),
+     observeAgent:async()=>{observed++;return {state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'turn',rootTurnId:'r',complete:true,readStable:true};}});
+    assert.equal(result.status,'partial'); assert.equal(result.complete,false);
+    assert.deepEqual(result.agents,[]); assert.equal(result.runningCount,null);
+    assert.equal(result.observedRunningCount,null); assert.equal(observed,0);
+   }
+  }
+  const validResult=await collectScoped({...options,listPage:async()=>({data:[valid()],nextCursor:null})});
+  assert.equal(validResult.status,'ready'); assert.equal(validResult.runningCount,1);
+  assert.deepEqual(validResult.agents.map(a=>a.id),['candidate']);
+  const empty=await collectScoped({...options,listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[]}],nextCursor:null}),listPage:async()=>({data:[],nextCursor:null})});
+  assert.equal(empty.status,'ready'); assert.equal(empty.runningCount,0);
+ } finally { await rm(root,{recursive:true,force:true}); }
 });
