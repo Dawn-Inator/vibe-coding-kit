@@ -5054,7 +5054,7 @@ test("parent activity IDs use direct identity lookup during an incomplete catalo
   }
 });
 
-test("another chat's writes and disabled polls do not invalidate a pending agent snapshot", async () => {
+test("another chat's writes and disabled polls preserve a warm agent snapshot during refresh", async () => {
   const rootA = await mkdtemp("/tmp/ctph-scope-a-");
   const rootB = await mkdtemp("/tmp/ctph-scope-b-");
   await Promise.all([
@@ -5069,10 +5069,14 @@ test("another chat's writes and disabled polls do not invalidate a pending agent
     release = done;
   });
   let aCollections = 0;
+  let holdA = false;
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
   mocked.listDirectSubagents = async (parent) => {
     if (parent === "chat-A") {
       aCollections++;
-      await gate;
+      if (holdA) await gate;
     }
     return {
       data: [
@@ -5134,7 +5138,10 @@ test("another chat's writes and disabled polls do not invalidate a pending agent
         },
       },
     });
-  type View = { enabled?: boolean; subagents?: { agents: { id: string }[] } };
+  type View = {
+    enabled?: boolean;
+    subagents?: { status?: string; complete?: boolean; agents: { id: string }[] };
+  };
   const native = async (threadId: string) =>
     (
       await client.request({
@@ -5151,27 +5158,53 @@ test("another chat's writes and disabled polls do not invalidate a pending agent
       title: "B",
       objectives: [{ id: "b", title: "B" }],
     });
-    for (let i = 0; i < 100 && aCollections === 0; i++) {
-      await native("chat-A");
+    let warmed: View = {};
+    for (let i = 0; i < 100; i++) {
+      warmed = await native("chat-A");
+      if (
+        warmed.subagents?.status === "ready" &&
+        warmed.subagents.complete &&
+        warmed.subagents.agents.some((entry) => entry.id === "chat-A-child")
+      )
+        break;
       await new Promise((r) => setTimeout(r, 10));
     }
-    assert.equal(aCollections, 1);
+    assert.deepEqual(
+      warmed.subagents?.agents.map((entry) => entry.id),
+      ["chat-A-child"],
+    );
+    assert.equal(warmed.subagents?.complete, true);
+    holdA = true;
+    now += 5_001;
+    const warmCalls = aCollections;
+    assert.deepEqual(
+      (await native("chat-A")).subagents?.agents.map((entry) => entry.id),
+      ["chat-A-child"],
+    );
+    for (let i = 0; i < 100 && aCollections === warmCalls; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.ok(aCollections > warmCalls);
     await model("update", {
       requestId: "update",
       expectedRevision: 1,
       reason: "start work",
       changes: [{ targetId: "b", status: "active" }],
     });
+    assert.deepEqual(
+      (await native("chat-A")).subagents?.agents.map((entry) => entry.id),
+      ["chat-A-child"],
+    );
     await writeFile(
       join(rootB, ".vibe-coding", "project.config.json"),
       JSON.stringify({ optional: { "task-progress": false } }),
     );
     for (let i = 0; i < 3; i++) {
       assert.equal((await native("chat-B")).enabled, false);
-      await native("chat-A");
-      await new Promise((r) => setTimeout(r, 10));
+      assert.deepEqual(
+        (await native("chat-A")).subagents?.agents.map((entry) => entry.id),
+        ["chat-A-child"],
+      );
     }
-    assert.equal(aCollections, 1);
     release();
     let a: View = {};
     for (let i = 0; i < 100; i++) {
@@ -5185,6 +5218,7 @@ test("another chat's writes and disabled polls do not invalidate a pending agent
     );
   } finally {
     release();
+    Date.now = realNow;
     await helper.stop();
     await Promise.all([
       rm(rootA, { recursive: true, force: true }),
