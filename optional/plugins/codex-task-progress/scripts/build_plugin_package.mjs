@@ -1,11 +1,11 @@
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "./lib/main-module.mjs";
 import { build } from "esbuild";
 import { buildNativePanel } from "./build_native_panel.mjs";
 import { kitRevision, kitRoot } from "./kit_root.mjs";
 import { bundleKitTaskGuidance } from "./kit_task_guidance.mjs";
+import { isMainModule } from "./lib/main-module.mjs";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOutputRoot = resolve(defaultSourceRoot, "plugins/codex-task-progress");

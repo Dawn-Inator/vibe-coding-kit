@@ -4,6 +4,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { isMainModule } from "../../../scripts/lib/main-module.mjs";
 import {
   GOAL_NATIVE_OBJECTIVE_MAX_LENGTH,
   GOAL_PROGRESS_RELEASE_VERSION,
@@ -51,7 +52,6 @@ import {
   type TrustedToolAuthorization,
 } from "./runtime-identity.js";
 import { scheduleSourceUninstall } from "./uninstall.js";
-import { isMainModule } from "../../../scripts/lib/main-module.mjs";
 
 export const GOAL_PROGRESS_INITIALIZE_TOOL_NAME = "goal_progress_initialize";
 export const GOAL_PROGRESS_ACTIVATE_TOOL_NAME = "goal_progress_activate";

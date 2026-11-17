@@ -137,6 +137,7 @@ export type {
   ResolveCurrentThread,
   TrustedNativeGoal,
 } from "./helper-session-coordinator.js";
+
 import { isMainModule } from "../../../scripts/lib/main-module.mjs";
 
 type TaskDiagnosticStage =
