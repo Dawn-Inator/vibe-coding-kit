@@ -30,12 +30,12 @@ export function projectAgentTaskProgress({ task, agents }) {
 				// Only canonical assignment metadata inherits. Heartbeat row owners
 				// belong to each source leaf and must not roll down from a parent.
 				const agent = item.agent !== undefined ? item.agent : objective.agent;
-				leaves.set(item.id, { item, agent });
+				leaves.set(item.id, { item, agent, objective });
 			}
 		}
 	}
 	const owned = new Map();
-	for (const [id, { item, agent }] of leaves) {
+	for (const [id, { item, agent, objective }] of leaves) {
 		const source = agent === undefined ? task.source?.itemOwners?.[id] : undefined;
 		const identity = agent?.threadId ?? source?.agentThreadId;
 		const path = agent?.path ?? source?.owner;
@@ -54,16 +54,24 @@ export function projectAgentTaskProgress({ task, agents }) {
 			member = candidates[0];
 		} else continue;
 		const entries = owned.get(member.threadId) ?? [];
-		entries.push(item);
+		entries.push({ item, objective });
 		owned.set(member.threadId, entries);
 	}
 	return agents.map((agent) => {
 		const entries = byId.get(agent.threadId).length === 1 ? owned.get(agent.threadId) : undefined;
+		const commonObjective = entries?.length > 1 && entries.every((entry) => entry.objective.id === entries[0].objective.id);
+		const rawTitle = entries?.length === 1 ? entries[0].item.title : commonObjective ? entries[0].objective.title : null;
+		// Reject path-like labels rather than exposing source or filesystem locations in cards.
+		const title = typeof rawTitle === "string" && !/(?:^|[\s(])(?:\/|~\/|[A-Za-z]:\\|file:\/\/)[^\s]+|^\S+\.(?:md|json|jsonl|ya?ml|tsx?|jsx?|py|mjs)$/i.test(rawTitle.trim())
+			? rawTitle.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 400).trim() || null
+			: null;
 		return {
 			threadId: agent.threadId,
-			progress: entries?.length ? calculateTaskProgress(entries.map((item) => ({ ...item, required: true, items: [] }))) : null,
+			progress: entries?.length ? calculateTaskProgress(entries.map(({ item }) => ({ ...item, required: true, items: [] }))) : null,
 			basis: entries?.length ? "assigned-canonical-leaves" : null,
-			assignedTaskIds: entries?.map((item) => item.id) ?? [],
+			assignedTaskIds: entries?.map(({ item }) => item.id) ?? [],
+			assignmentTitle: title,
+			granularity: !entries?.length ? "none" : entries.length === 1 ? "single-item" : "checklist",
 		};
 	});
 }

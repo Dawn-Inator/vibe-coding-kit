@@ -322,6 +322,8 @@ export class CodexAppServerClient implements ThreadCatalog {
     turnId: string;
     rootTurnId: string;
     turnStartedAt: string;
+    turnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
+    turnCompletedAt?: string;
   } | null> {
     const rawThread = await this.#request("thread/read", { threadId, includeTurns: false });
     const response = z
@@ -331,6 +333,7 @@ export class CodexAppServerClient implements ThreadCatalog {
             id: z.string().min(1).max(256),
             path: z.string().min(1).max(4096).nullish(),
             cwd: z.string().min(1).max(4096),
+            parentThreadId: z.unknown().optional(),
             source: z.unknown(),
           })
           .passthrough(),
@@ -346,6 +349,16 @@ export class CodexAppServerClient implements ThreadCatalog {
     if (
       thread.id !== threadId ||
       spawn?.parent_thread_id !== parentThreadId ||
+      (thread.parentThreadId != null &&
+        (typeof thread.parentThreadId !== "string" ||
+          thread.parentThreadId !== parentThreadId ||
+          !thread.parentThreadId ||
+          thread.parentThreadId.length > 256 ||
+          thread.parentThreadId.trim() !== thread.parentThreadId ||
+          [...thread.parentThreadId].some((character) => {
+            const code = character.charCodeAt(0);
+            return code < 32 || (code >= 127 && code <= 159);
+          }))) ||
       (thread.path != null && (!isAbsolute(thread.path) || thread.path.includes("\0"))) ||
       !isAbsolute(thread.cwd) ||
       thread.cwd.includes("\0")
@@ -365,6 +378,8 @@ export class CodexAppServerClient implements ThreadCatalog {
               id: z.string().min(1).max(256),
               rootTurnId: z.string().min(1).max(256),
               startedAt: z.number().finite(),
+              status: z.enum(["completed", "interrupted", "failed", "inProgress"]).optional(),
+              completedAt: z.number().finite().nullish(),
             }),
           )
           .max(1),
@@ -380,6 +395,11 @@ export class CodexAppServerClient implements ThreadCatalog {
       turnId: latest.id,
       rootTurnId: latest.rootTurnId,
       turnStartedAt: startedAt.toISOString(),
+      ...(latest.status ? { turnStatus: latest.status } : {}),
+      ...(latest.completedAt != null &&
+      Number.isFinite(new Date(latest.completedAt * 1000).getTime())
+        ? { turnCompletedAt: new Date(latest.completedAt * 1000).toISOString() }
+        : {}),
     };
   }
 
@@ -422,6 +442,9 @@ export class CodexAppServerClient implements ThreadCatalog {
       parentThreadId,
       cursor: cursor ?? null,
       limit: 50,
+      sortKey: "created_at",
+      sortDirection: "desc",
+      useStateDbOnly: true,
       sourceKinds: ["subAgentThreadSpawn"],
     });
     return z

@@ -132,6 +132,15 @@ export const taskPanelStyles = css`
   .subagents { min-width: 0; }
   .agent-counts { margin: 0 0 12px; }
   .agent-row { cursor: default; padding-block: 9px; }
+  .agent-row .module-content { display: block; }
+  .agent-row .module-title-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .agent-row .name { display: -webkit-box; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+  .agent-secondary { display: block; overflow: hidden; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-row .module-meta { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); }
+  .agent-row .module-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-counts .allocation-metric { gap: 12px; padding-block: 4px; }
+  .agent-counts .allocation-label, .agent-counts .allocation-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .total-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 14px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
   .total-line strong { color: var(--ctp-text, #343a40); font-weight: 550; }
   .total-line .execution { margin-inline-start: auto; color: var(--ctp-panel-ink); }

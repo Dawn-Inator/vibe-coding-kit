@@ -6,6 +6,8 @@ export interface AgentTaskProgress {
 	progress: TaskProgress | null;
 	basis: "assigned-canonical-leaves" | null;
 	assignedTaskIds: string[];
+	assignmentTitle: string | null;
+	granularity: "none" | "single-item" | "checklist";
 }
 /** Caller verifies current membership and source path/hash freshness. */
 export function projectAgentTaskProgress(options: {

@@ -1,6 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { TaskStore } from './task-store.mjs';
+import { readIncrementalAgentCatalog } from './agent-catalog-cache.mjs';
 
 export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, observeAgent, verifyAgent, taskCycleId, cycleStartedAt, taskSourcePath, now = () => new Date() }) {
   const observedAt = now().toISOString();
@@ -27,6 +28,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const turnCursors = new Set();
   let boundary = false;
   let rootCount = 0;
+  let parentWindowIncomplete = false;
   try {
     for (let page = 0; page < 8; page++) {
       const result = await listTurnsPage(turnCursor);
@@ -52,7 +54,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           snapshot.rootTurnStartedAt = new Date(startMs).toISOString();
         }
         if (Number.isFinite(turn.completedAt) && turn.completedAt * 1000 < cycleMs) { boundary = true; continue; }
-        if (turn.itemsView !== 'full') snapshot.complete = false;
+        if (turn.itemsView !== 'full') parentWindowIncomplete = true;
         turns.push(turn);
       }
       if (boundary || result.nextCursor === null) break;
@@ -103,79 +105,95 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   } catch { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; }
   let runtimeStatusesComplete = true;
   const finalizeRunningCount = () => {
-    const working = snapshot.agents.filter(agent => agent.state === 'working' && ['runtime', 'codex-rollout'].includes(agent.stateBasis));
+    const working = snapshot.agents.filter(agent => agent.state === 'working' && ['runtime', 'recorded-runtime', 'codex-rollout'].includes(agent.stateBasis));
     // A runtime idle/completed status proves not running even if the displayed
     // completed label is sourced from an earlier parent activity event.
     const runtimeExact = snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && runtimeStatusesComplete;
-    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && snapshot.agents.every(agent => ['runtime', 'codex-rollout'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed'].includes(agent.state)));
-    const recorded = snapshot.agents.some(agent => agent.stateBasis === 'codex-rollout');
-    const live = snapshot.agents.some(agent => agent.stateBasis === 'runtime');
+    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && snapshot.agents.every(agent => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed', 'failed'].includes(agent.state)));
+    const bases = new Set(snapshot.agents.map(agent => agent.stateBasis).filter(basis => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(basis)));
     snapshot.observedRunningCount = working.length || (allObserved ? 0 : null);
     snapshot.observedRunningComplete = allObserved;
-    snapshot.observedRunningBasis = recorded ? (live ? 'mixed' : 'codex-rollout') : live || allObserved ? 'runtime' : 'unknown';
+    snapshot.observedRunningBasis = bases.size > 1 ? 'mixed' : bases.size ? [...bases][0] : allObserved ? 'runtime' : 'unknown';
     if (runtimeExact) {
       snapshot.runningCount = snapshot.agents.filter(agent => agent.state === 'working' && agent.stateBasis === 'runtime').length;
       snapshot.runningBasis = 'runtime';
     }
   };
   const canonicalCwd = await realpath(cwd);
-  const admittedCatalog = new Map(), ambiguousIds = new Set(), catalogIds = new Set(), cursors = new Set();
-  let catalogCursor, catalogFailed = false, catalogComplete = false, catalogPages = 0;
-  // Examine the entire bounded direct-child catalog even when recent events
-  // contain no members. Unexamined identity cannot prove an exact zero.
+  const admittedCatalog = new Map(), ambiguousIds = new Set(), catalogIds = new Set(), catalogTimes = new Map(), catalogGenerations = new Map();
+  let catalogFailed = false, catalogPages = 0, parentScopeResolved = !parentWindowIncomplete, catalog;
   try {
-    for (let page = 0; page < 4; page++) {
-      const result = await listPage(catalogCursor);
-      if (!result || !Array.isArray(result.data) || result.data.length > 50) throw new Error('Invalid child page');
-      catalogPages++;
-      for (const child of result.data) {
-        if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) { snapshot.complete = false; continue; }
-        if (catalogIds.has(child.id)) { snapshot.complete = false; ambiguousIds.add(child.id); admittedCatalog.delete(child.id); continue; }
-        catalogIds.add(child.id);
-        const spawn = child.source?.subAgent?.thread_spawn;
-        const spawnParent = spawn?.parent_thread_id;
-        if (!spawn || typeof spawn !== 'object' || Array.isArray(spawn) || !validId(spawnParent)) { snapshot.complete = false; continue; }
-        const declaredParent = child.parentThreadId;
-        if (declaredParent != null && (!validId(declaredParent) || declaredParent !== spawnParent)) { snapshot.complete = false; continue; }
-        if (spawnParent !== parentThreadId) { if (members.has(child.id)) snapshot.complete = false; continue; }
-        if (!validCwd(child.cwd)) { snapshot.complete = false; continue; }
-        try { if (await realpath(child.cwd) !== canonicalCwd) { if (members.has(child.id)) snapshot.complete = false; continue; } }
-        catch { snapshot.complete = false; continue; }
-        // Only records admitted here can later create state, progress or counts.
-        admittedCatalog.set(child.id, child);
-      }
-      if (result.nextCursor === null) { catalogComplete = true; break; }
-      if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) { snapshot.complete = false; break; }
-      cursors.add(result.nextCursor);
-      catalogCursor = result.nextCursor;
-      if (page === 3) { snapshot.complete = false; snapshot.truncated = true; }
+    const key = JSON.stringify([parentThreadId, canonicalCwd, rootTurnId, taskSourcePath ?? null, taskCycleId ?? null, cycleStartedAt ?? null, resolve(storageRoot)]);
+    catalog = await readIncrementalAgentCatalog({ key, listPage, now });
+    catalogPages = catalog.rows.length || (catalog.complete ? 1 : 0);
+    if (!catalog.complete) snapshot.complete = false;
+    if (catalog.truncated) snapshot.truncated = true;
+    for (const row of catalog.rows) {
+      const child = row.child;
+      if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) { snapshot.complete = false; continue; }
+      if (catalogIds.has(child.id)) { snapshot.complete = false; ambiguousIds.add(child.id); admittedCatalog.delete(child.id); continue; }
+      catalogIds.add(child.id);
+      const spawn = child.source?.subAgent?.thread_spawn;
+      const spawnParent = spawn?.parent_thread_id;
+      if (!spawn || typeof spawn !== 'object' || Array.isArray(spawn) || !validId(spawnParent)) { snapshot.complete = false; continue; }
+      const declaredParent = child.parentThreadId;
+      if (declaredParent != null && (!validId(declaredParent) || declaredParent !== spawnParent)) { snapshot.complete = false; continue; }
+      if (spawnParent !== parentThreadId) { if (members.has(child.id)) snapshot.complete = false; continue; }
+      if (!validCwd(child.cwd)) { snapshot.complete = false; continue; }
+      try { if (await realpath(child.cwd) !== canonicalCwd) { if (members.has(child.id)) snapshot.complete = false; continue; } }
+      catch { snapshot.complete = false; continue; }
+      admittedCatalog.set(child.id, child);
+      catalogTimes.set(child.id, row.observedAt);
+      catalogGenerations.set(child.id, row.generation);
     }
-    if (!catalogComplete) snapshot.complete = false;
-    const candidates = [];
-    for (const [id, child] of admittedCatalog) {
-      if (members.has(id)) continue;
-      if (candidates.length >= 100) { snapshot.complete = false; snapshot.truncated = true; continue; }
-      candidates.push(child);
-    }
+    const candidates = [...admittedCatalog.values()].filter(child => parentWindowIncomplete || !members.has(child.id));
+    if (parentWindowIncomplete && catalog.complete && candidates.length === 0) parentScopeResolved = true;
     if (candidates.length && (typeof verifyAgent !== 'function' || !rootTurnId || !snapshot.rootTurnStartedAt)) snapshot.complete = false;
     if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
+      const cache = catalog.proofs;
+      const proofVersion = child => {
+        const changedByParent = invalidations.has(child.id);
+        const parentTimestamp = invalidations.get(child.id);
+        if (changedByParent && !Number.isFinite(parentTimestamp)) return null;
+        return JSON.stringify([child.updatedAt ?? catalogTimes.get(child.id), changedByParent ? parentTimestamp : null]);
+      };
+      const unresolved = candidates.filter(child => {
+        const cached = cache.get(child.id);
+        return proofVersion(child) !== null && (!cached || cached.updatedAt !== proofVersion(child));
+      });
+      const offset = unresolved.length ? (catalog.state?.proofOffset ?? 0) % unresolved.length : 0;
+      const work = [...unresolved.slice(offset), ...unresolved.slice(0, offset)].slice(0, 100);
+      if (catalog.state && unresolved.length) catalog.state.proofOffset = (offset + work.length) % unresolved.length;
       let next = 0;
-      await Promise.all(Array.from({ length: Math.min(2, candidates.length) }, async () => {
-        while (next < candidates.length) {
-          const child = candidates[next++];
+      await Promise.all(Array.from({ length: Math.min(2, work.length) }, async () => {
+        while (next < work.length) {
+          const child = work[next++];
           try {
             const proof = await verifyAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
-            if (!proof || proof.parentThreadId !== parentThreadId || proof.rootTurnId !== rootTurnId ||
-                !validCwd(proof.cwd) || await realpath(proof.cwd) !== canonicalCwd ||
-                typeof proof.turnStartedAt !== 'string' || !Number.isFinite(Date.parse(proof.turnStartedAt)) ||
-                Date.parse(proof.turnStartedAt) < cycleMs) { snapshot.complete = false; continue; }
-            members.add(child.id);
-            invalidations.set(child.id, Date.parse(proof.turnStartedAt));
-          } catch { snapshot.complete = false; }
+            if (!proof || proof.verdict === 'unknown' || proof.parentThreadId !== parentThreadId || !validId(proof.rootTurnId) || !validCwd(proof.cwd) || await realpath(proof.cwd) !== canonicalCwd || typeof proof.turnStartedAt !== 'string' || !Number.isFinite(Date.parse(proof.turnStartedAt))) continue;
+            if (proof.verdict === 'out-of-scope' && proof.rootTurnId !== rootTurnId) cache.set(child.id, { proof, updatedAt: proofVersion(child) });
+            else if ((proof.verdict === undefined || proof.verdict === 'in-scope') && proof.rootTurnId === rootTurnId && Date.parse(proof.turnStartedAt) >= cycleMs) cache.set(child.id, { proof, updatedAt: proofVersion(child) });
+          } catch { /* Retry unknown identity in a later bounded pass. */ }
         }
       }));
+      let allResolved = true;
+      for (const child of candidates) {
+        const cached = cache.get(child.id);
+        if (proofVersion(child) === null) { members.delete(child.id); allResolved = false; continue; }
+        if (!cached || cached.updatedAt !== proofVersion(child)) { allResolved = false; continue; }
+        const proof = cached.proof;
+        if (proof.verdict === 'out-of-scope') {
+          if (members.has(child.id)) { members.delete(child.id); allResolved = false; }
+        } else {
+          members.add(child.id);
+          if (!invalidations.has(child.id)) invalidations.set(child.id, Date.parse(proof.turnStartedAt));
+        }
+      }
+      if (!allResolved) snapshot.complete = false;
+      if (parentWindowIncomplete && allResolved && catalog.complete) parentScopeResolved = true;
     }
   } catch { catalogFailed = true; snapshot.complete = false; }
+  if (!parentScopeResolved) snapshot.complete = false;
   // A proof lookup can yield while workspace paths change. Recheck the admitted
   // map before any entry, state, progress or count is derived from it.
   for (const [id, child] of admittedCatalog) {
@@ -202,20 +220,22 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         const catalogPath = validAgentPath(spawn.agent_path) ? spawn.agent_path : undefined;
         const activityPath = activityPaths.get(child.id);
         const path = activityPath === null || (catalogPath && activityPath && catalogPath !== activityPath) ? undefined : catalogPath ?? activityPath;
+        const catalogTime = catalogTimes.get(id);
+        const freshRuntime = catalogGenerations.get(id) === catalog.generation;
         const entry = { id: child.id, name: String(child.name || spawn.agent_nickname || spawn.agent_role || child.id).slice(0, 200), state: 'unknown', stateBasis: 'unknown', observedAt: null, progress: null, progressBasis: null, ...(path ? { agentPath: path } : {}) };
         const statusType = child.status?.type;
         const flags = child.status?.activeFlags;
         const validActive = statusType === 'active' && Array.isArray(flags) && flags.length <= 16 && flags.every(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput');
         const validNonActive = ['idle', 'completed'].includes(statusType) && (flags === undefined || (Array.isArray(flags) && flags.length === 0));
         const validRuntime = validActive || validNonActive;
-        if (!validRuntime) runtimeStatusesComplete = false;
+        if (!validRuntime || !freshRuntime) runtimeStatusesComplete = false;
         const activity = recorded.get(child.id);
         if (activity?.kind === 'completed') { entry.state = 'completed'; entry.stateBasis = 'recorded-activity'; entry.observedAt = new Date(activity.timestamp).toISOString(); }
         if (validActive) {
           entry.state = child.status.activeFlags.some(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput') ? 'waiting' : 'working';
-          entry.observedAt = observedAt; entry.stateBasis = 'runtime';
-        } else if (validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
-        else if (validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
+          entry.observedAt = catalogTime ?? null; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime';
+        } else if (validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
+        else if (validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
         snapshot.agents.push(entry);
         try {
           entry.assignmentEligible = true;
@@ -223,12 +243,12 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
             observationQueue.push(async () => {
               try {
                 const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
-                const proof = result?.basis === 'codex-rollout' && result.readStable === true && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
+                const proof = (result?.basis === 'codex-rollout' ? result.readStable === true : result?.basis === 'codex-turn' && result.latestTurnVerified === true) && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
                 const timestamp = typeof result?.observedAt === 'string' ? Date.parse(result.observedAt) : NaN;
-                const currentWorkingTurn = proof && result.state === 'working';
-                const afterInteraction = Number.isFinite(invalidations.get(child.id)) && timestamp >= invalidations.get(child.id);
-                if (proof && ['working', 'completed', 'idle'].includes(result.state) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (entry.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(entry.observedAt))) {
-                  entry.state = result.state; entry.stateBasis = 'codex-rollout'; entry.observedAt = result.observedAt;
+                const currentWorkingTurn = proof && result.basis === 'codex-rollout' && result.state === 'working';
+                const afterInteraction = Number.isFinite(invalidations.get(child.id)) ? timestamp >= invalidations.get(child.id) : result.basis === 'codex-turn' && !invalidations.has(child.id);
+                if (proof && (result.basis === 'codex-turn' ? ['completed', 'idle', 'failed'].includes(result.state) : ['working', 'completed', 'idle'].includes(result.state)) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (result.basis === 'codex-turn' || entry.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(entry.observedAt))) {
+                  entry.state = result.state; entry.stateBasis = result.basis; entry.observedAt = result.observedAt;
                 }
               } catch { /* Unknown stays unknown; observation never creates membership. */ }
             });
@@ -248,9 +268,11 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     while (nextObservation < observationQueue.length) await observationQueue[nextObservation++]();
   }));
   if (seen.size !== members.size) snapshot.complete = false;
-  if (!runtimeStatusesComplete && snapshot.agents.some(agent => !['runtime', 'codex-rollout'].includes(agent.stateBasis))) snapshot.complete = false;
+  if (!runtimeStatusesComplete && snapshot.agents.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;
   if (catalogFailed && !catalogPages && !snapshot.agents.length) snapshot.status = 'unavailable';
   if (!snapshot.complete && snapshot.status === 'ready') snapshot.status = 'partial';
+  const observationTimes = snapshot.agents.map(agent => Date.parse(agent.observedAt ?? '')).filter(Number.isFinite);
+  if (observationTimes.length) snapshot.observedAt = new Date(Math.min(...observationTimes)).toISOString();
   finalizeRunningCount();
   return snapshot;
 }

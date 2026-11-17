@@ -40,7 +40,7 @@ test('pagination and failures never claim completeness or an authoritative zero'
   try {
     let pages = 0;
     const result = await collectSubagentProgress({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, listPage: async () => ({ data: [], nextCursor: String(++pages) }) });
-    assert.equal(pages, 4); assert.equal(result.truncated, true); assert.equal(result.complete, false); assert.equal(result.runningCount, null);
+    assert.equal(pages, 4); assert.equal(result.truncated, false); assert.equal(result.complete, false); assert.equal(result.runningCount, null);
     const failed = await collectSubagentProgress({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, listPage: async () => { throw new Error('offline'); } });
     assert.equal(failed.status, 'unavailable'); assert.equal(failed.runningCount, null);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -669,4 +669,126 @@ test('causal membership never promotes rejected or ambiguous catalog rows into s
   const empty=await collectScoped({...options,listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[]}],nextCursor:null}),listPage:async()=>({data:[],nextCursor:null})});
   assert.equal(empty.status,'ready'); assert.equal(empty.runningCount,0);
  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('incremental catalog exhausts history and distinguishes verified older roots from unknown scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-catalog-sweep-'));
+  try {
+    const started = Date.parse(cycleStartedAt) + 1000;
+    const children = Array.from({ length: 251 }, (_, index) => ({
+      id: `child-${index}`, cwd: root, updatedAt: 1,
+      source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } },
+      status: { type: index === 250 ? 'active' : 'idle', activeFlags: [] },
+    }));
+    let nowMs = started + 10_000;
+    let calls = 0;
+    const base = {
+      parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      now: () => new Date(nowMs),
+      listTurnsPage: async () => ({ data: [{ id: 'r', rootTurnId: 'r', startedAt: started / 1000, itemsView: 'partial', items: [] }], nextCursor: null }),
+      listPage: async cursor => { calls++; const offset = cursor ? Number(cursor) : 0; return { data: children.slice(offset, offset + 50), nextCursor: offset + 50 < children.length ? String(offset + 50) : null }; },
+      verifyAgent: async id => ({ verdict: ['child-50','child-250'].includes(id) ? 'in-scope' : 'out-of-scope', parentThreadId: 'p', cwd: root, rootTurnId: ['child-50','child-250'].includes(id) ? 'r' : 'old', turnStartedAt: new Date(started + 1000).toISOString() }),
+    };
+    const first = await collectScoped(base);
+    assert.equal(calls, 4); assert.equal(first.complete, false); assert.equal(first.runningCount, null);
+    let result;
+    for (let attempt = 0; attempt < 5; attempt++) { nowMs += 1000; result = await collectScoped(base); if (result.observedRunningComplete) break; }
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.agents.map(agent => agent.id), ['child-50', 'child-250']);
+    assert.equal(Date.parse(result.observedAt), Math.min(...result.agents.map(agent => Date.parse(agent.observedAt))));
+    assert.equal(result.observedRunningCount, 1);
+    assert.equal(result.observedRunningComplete, true);
+    assert.ok(['runtime', 'recorded-runtime', 'mixed'].includes(result.observedRunningBasis));
+    assert.ok(calls < 20, 'resume pages rather than restart the full catalog on each poll');
+    children[250].updatedAt = 2;
+    children[250].status = { type: 'idle', activeFlags: [] };
+    for (let attempt = 0; attempt < 8; attempt++) { nowMs += 1000; result = await collectScoped(base); if (result.observedRunningComplete && result.observedRunningCount === 0) break; }
+    assert.equal(result.observedRunningCount, 0);
+    assert.equal(result.observedRunningComplete, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('an unresolved root proof and changed scope cannot reuse an exact observed count', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-catalog-unknown-'));
+  try {
+    const started = Date.parse(cycleStartedAt) + 1000;
+    const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      listTurnsPage: async () => ({ data: [{ id: 'r', rootTurnId: 'r', startedAt: started / 1000, itemsView: 'partial', items: [] }], nextCursor: null }),
+      listPage: async () => ({ data: [{ id: 'child', cwd: root, updatedAt: 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }),
+      verifyAgent: async () => ({ verdict: 'unknown' }),
+    };
+    const result = await collectScoped(base);
+    assert.equal(result.complete, false); assert.equal(result.runningCount, null);
+    assert.equal(result.observedRunningCount, null); assert.equal(result.observedRunningComplete, false);
+    assert.deepEqual(result.agents, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('catalog completion rechecks the head and rejects a concurrent arrival', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-final-head-'));
+  try {
+    const started = Date.parse(cycleStartedAt) + 1000;
+    const child = { id: 'new', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'active', activeFlags: [] } };
+    let reads = 0;
+    const result = await collectScoped({ parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskCycleId: 'c', cycleStartedAt,
+      listTurnsPage: async () => ({ data: [{ id: 'r', rootTurnId: 'r', startedAt: started / 1000, itemsView: 'full', items: [] }], nextCursor: null }),
+      listPage: async () => ({ data: ++reads === 1 ? [] : [child], nextCursor: null }),
+    });
+    assert.equal(reads, 2);
+    assert.equal(result.complete, false); assert.equal(result.runningCount, null);
+    assert.equal(result.observedRunningCount, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('verified latest child terminal turn counts only after the latest parent interaction', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-terminal-turn-'));
+ try {
+  const started = Date.parse(cycleStartedAt);
+  const options = { parentThreadId:'p', cwd:root, storageRoot:root, schemas, taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a'],tool:'spawnAgent',status:'completed',startedAtMs:started+1000},{type:'subAgentActivity',agentThreadId:'a',kind:'interacted',startedAtMs:started+3000}]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}) };
+  const proof = {basis:'codex-turn',state:'completed',observedAt:new Date(started+4000).toISOString(),eventTurnId:'latest',rootTurnId:'r',complete:true,latestTurnVerified:true};
+  for (const state of ['completed','failed','idle']) {
+   const result=await collectScoped({...options,observeAgent:async()=>({...proof,state})});
+   assert.equal(result.agents[0].state,state); assert.equal(result.agents[0].stateBasis,'codex-turn');
+   assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,0); assert.equal(result.observedRunningComplete,true); assert.equal(result.observedRunningBasis,'codex-turn');
+  }
+  for (const invalid of [{...proof,observedAt:new Date(started+2000).toISOString()},{...proof,observedAt:null},{...proof,eventTurnId:null},{...proof,rootTurnId:'old'},{...proof,complete:false},{...proof,latestTurnVerified:false},{...proof,state:'working'}]) {
+   const result=await collectScoped({...options,observeAgent:async()=>invalid});
+   assert.equal(result.agents[0].state,'unknown'); assert.equal(result.observedRunningComplete,false); assert.equal(result.runningCount,null);
+  }
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('catalog sweep expires after inactivity rather than while actively refreshed', async () => {
+ const { readIncrementalAgentCatalog } = await import('../../src/tasks/agent-catalog-cache.mjs');
+ let time = Date.parse(cycleStartedAt), calls = [];
+ const rows = Array.from({length:251}, (_,i)=>({id:`row-${i}`}));
+ const listPage = async cursor => { calls.push(cursor ?? 'head'); const offset = cursor ? Number(cursor) : 0; return {data:rows.slice(offset,offset+50),nextCursor:offset+50<rows.length?String(offset+50):null}; };
+ const read = () => readIncrementalAgentCatalog({key:`ttl-${cycleStartedAt}`,listPage,now:()=>new Date(time)});
+ let result;
+ for (let n=0;n<5;n++) { result=await read(); time+=60_000; }
+ assert.equal(result.complete,true);
+ calls=[]; result=await read(); assert.equal(result.complete,true);
+ assert.ok(calls.length <= 2, 'active cache should refresh a page, not restart the sweep');
+ time+=181_000; calls=[]; result=await read();
+ assert.equal(result.complete,false); assert.equal(calls.length,4);
+});
+
+test('later parent activity invalidates old-root scope proof even before the child page refreshes', async () => {
+ const root = await mkdtemp(join(tmpdir(),'subagent-proof-invalidate-'));
+ try {
+  const started=Date.parse(cycleStartedAt), child={id:'child',cwd:root,updatedAt:1,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}},status:{type:'active',activeFlags:[]}};
+  let items=[], proofReads=0, newRoot=false;
+  const options={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'partial',items}],nextCursor:null}),
+   listPage:async()=>({data:[child],nextCursor:null}),
+   verifyAgent:async()=>{proofReads++;return {verdict:newRoot?'in-scope':'out-of-scope',parentThreadId:'p',cwd:root,rootTurnId:newRoot?'r':'old',turnStartedAt:new Date(started+1000).toISOString()};}};
+  const old=await collectScoped(options); assert.equal(old.complete,true); assert.deepEqual(old.agents,[]); assert.equal(proofReads,1);
+  newRoot=true; items=[{type:'subAgentActivity',agentThreadId:'child',kind:'interacted',startedAtMs:started+2000}];
+  const current=await collectScoped(options); assert.equal(proofReads,2); assert.equal(current.agents[0]?.id,'child'); assert.equal(current.agents[0]?.state,'working');
+  items=[{type:'subAgentActivity',agentThreadId:'child',kind:'interacted'}];
+  const uncertain=await collectScoped(options); assert.equal(uncertain.complete,false); assert.deepEqual(uncertain.agents,[]); assert.equal(uncertain.runningCount,null);
+ } finally {await rm(root,{recursive:true,force:true});}
 });

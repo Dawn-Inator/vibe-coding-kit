@@ -5,13 +5,17 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { projectAgentAllocation } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
-import { projectAgentTaskProgress } from "vibe-coding-kit/src/tasks/agent-task-associations.mjs";
+import {
+  type AgentTaskProgress,
+  projectAgentTaskProgress,
+} from "vibe-coding-kit/src/tasks/agent-task-associations.mjs";
 import {
   ReadOnlySnapshotCache,
   taskPresentationScope,
 } from "vibe-coding-kit/src/tasks/presentation-cache.mjs";
 import {
   collectSubagentProgress,
+  type SubagentProgressEntry,
   type SubagentProgressSnapshot,
 } from "vibe-coding-kit/src/tasks/subagent-progress.mjs";
 import type {
@@ -156,6 +160,29 @@ const TASK_DIAGNOSTIC_STAGES: readonly TaskDiagnosticStage[] = [
   "history",
 ];
 const TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS = 500;
+
+/** Select only already-verified child checklist data; the collector owns its dispatch fence. */
+export function overlayAgentAssignment(
+  agent: SubagentProgressEntry,
+  assignment: AgentTaskProgress | undefined,
+): SubagentProgressEntry & {
+  assignmentTitle?: string | null;
+  progressGranularity?: "none" | "single-item" | "checklist";
+} {
+  if (!assignment?.progress) return agent;
+  const childFiner =
+    assignment.progress.total === 1 &&
+    agent.progress &&
+    agent.progress.total > 1 &&
+    (agent.progressBasis === "registered-checklist" || agent.progressBasis === "task-lifecycle");
+  return {
+    ...agent,
+    progress: childFiner ? agent.progress : assignment.progress,
+    progressBasis: childFiner ? agent.progressBasis : ("module-delivery" as const),
+    assignmentTitle: assignment.assignmentTitle,
+    progressGranularity: childFiner ? ("checklist" as const) : assignment.granularity,
+  };
+}
 
 export interface GoalProgressHelperOptions {
   readonly paths?: GoalProgressPaths;
@@ -1929,13 +1956,7 @@ export class GoalProgressHelper {
               ...subagents,
               agents: subagents.agents.map((agent) => {
                 const assignment = assignments.get(agent.id);
-                return assignment?.progress
-                  ? {
-                      ...agent,
-                      progress: assignment.progress,
-                      progressBasis: "module-delivery" as const,
-                    }
-                  : agent;
+                return overlayAgentAssignment(agent, assignment);
               }),
             };
           }

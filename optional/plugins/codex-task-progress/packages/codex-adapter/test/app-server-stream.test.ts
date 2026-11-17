@@ -270,7 +270,7 @@ test("direct subagent listing requests only spawn children with parent and bound
       const request = JSON.parse(line);
       if (request.method === "thread/list") {
         const p = request.params;
-        const valid = p.parentThreadId === "parent" && p.cursor === "next" && p.limit === 50 &&
+        const valid = p.parentThreadId === "parent" && p.cursor === "next" && p.limit === 50 && p.useStateDbOnly === true && p.sortKey === "created_at" && p.sortDirection === "desc" &&
           JSON.stringify(p.sourceKinds) === JSON.stringify(["subAgentThreadSpawn"]);
         process.stdout.write(JSON.stringify({ id: request.id, result: { data: valid ? [{ id: "child" }] : [], nextCursor: null } }) + "\\n");
       }
@@ -396,7 +396,7 @@ test("child observation metadata uses only public thread identity and latest tur
       const q=JSON.parse(line);
       if(q.method === "thread/read") {
         if(q.params.includeTurns !== false) process.exit(2);
-        process.stdout.write(JSON.stringify({id:q.id,result:{thread:{id:q.params.threadId,path:"/codex/sessions/child.jsonl",cwd:"/workspace",source:{subAgent:{thread_spawn:{parent_thread_id:q.params.threadId === "wrong" ? "other" : "parent"}}},privateText:"must not escape"}}})+"\\n");
+        process.stdout.write(JSON.stringify({id:q.id,result:{thread:{id:q.params.threadId,path:"/codex/sessions/child.jsonl",cwd:"/workspace",...(q.params.threadId === "mismatch" ? {parentThreadId:"other"} : q.params.threadId === "malformed" ? {parentThreadId:42} : q.params.threadId === "padded" ? {parentThreadId:" parent "} : {parentThreadId:"parent"}),source:{subAgent:{thread_spawn:{parent_thread_id:q.params.threadId === "wrong" ? "other" : "parent"}}},privateText:"must not escape"}}})+"\\n");
       } else if(q.method === "thread/turns/list") {
         if(q.params.threadId !== "child" || q.params.limit !== 1 || q.params.itemsView !== "summary" || q.params.sortDirection !== "desc") process.exit(3);
         process.stdout.write(JSON.stringify({id:q.id,result:{data:[{id:"turn",rootTurnId:"root",startedAt:1794830400,items:[{privateText:"must not escape"}]}],nextCursor:null}})+"\\n");
@@ -415,6 +415,8 @@ test("child observation metadata uses only public thread identity and latest tur
     });
     assert.equal(JSON.stringify(result).includes("private"), false);
     assert.equal(await client.readSubagentObservationMetadata("wrong", "parent"), null);
+    for (const id of ["mismatch", "malformed", "padded"])
+      assert.equal(await client.readSubagentObservationMetadata(id, "parent"), null);
   } finally {
     await client.close();
   }
@@ -470,6 +472,7 @@ test("runtime wraps verified child metadata and records exact current-turn rollo
   };
   try {
     assert.deepEqual(await runtime.verifyDirectSubagent?.("child", context), {
+      verdict: "in-scope",
       parentThreadId: "parent",
       cwd: project,
       rootTurnId: "parent-root",
@@ -484,8 +487,9 @@ test("runtime wraps verified child metadata and records exact current-turn rollo
     ]);
     assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "completed");
     assert.equal(
-      await runtime.verifyDirectSubagent?.("child", { ...context, rootTurnId: "older-root" }),
-      null,
+      (await runtime.verifyDirectSubagent?.("child", { ...context, rootTurnId: "older-root" }))
+        ?.verdict,
+      "out-of-scope",
     );
     assert.equal(
       (await runtime.observeDirectSubagent?.("child", { ...context, parentThreadId: "wrong" }))
@@ -550,13 +554,74 @@ test("production runtime observes a verified rollout through public app-server t
   };
   try {
     const proof = await runtime.verifyDirectSubagent?.("child", context);
-    assert.equal(proof?.rootTurnId, "parent-root");
+    assert.equal(proof?.verdict, "in-scope");
+    assert.equal(proof && "rootTurnId" in proof ? proof.rootTurnId : null, "parent-root");
     const observation = await runtime.observeDirectSubagent?.("child", context);
     assert.equal(observation?.state, "working");
     assert.equal(observation?.basis, "codex-rollout");
     assert.equal(observation?.observedAt, "2026-11-16T12:00:01.000Z");
     assert.equal(
       (await runtime.observeDirectSubagent?.("child", { ...context, rootTurnId: "older-root" }))
+        ?.state,
+      "unknown",
+    );
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("public latest terminal turn is recorded without implying a live status", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agent-public-terminal-")));
+  const start = "2026-11-16T12:00:00.000Z";
+  let metadata = {
+    path: null as string | null,
+    cwd: root,
+    turnId: "latest",
+    rootTurnId: "root",
+    turnStartedAt: start,
+    turnStatus: "completed",
+    turnCompletedAt: "2026-11-16T12:00:02.000Z",
+  };
+  const session = {
+    closed: new Promise<void>(() => {}),
+    requestMethods: [],
+    readSubagentObservationMetadata: async (id: string, parent: string) =>
+      id === "child" && parent === "parent" ? metadata : null,
+    close: async () => {},
+  } as unknown as CodexAppServerSession;
+  const runtime = createCodexAppServerRuntime({ connect: async () => session });
+  const context = {
+    parentThreadId: "parent",
+    cwd: root,
+    rootTurnId: "root",
+    rootTurnStartedAt: start,
+  };
+  try {
+    for (const [status, state] of [
+      ["completed", "completed"],
+      ["failed", "failed"],
+      ["interrupted", "idle"],
+    ] as const) {
+      metadata = { ...metadata, turnStatus: status };
+      const result = await runtime.observeDirectSubagent?.("child", context);
+      assert.equal(result?.state, state);
+      assert.equal(result?.basis, "codex-turn");
+      assert.equal(result?.eventTurnId, "latest");
+      assert.equal(result?.observedAt, metadata.turnCompletedAt);
+    }
+    for (const invalid of [
+      { ...metadata, turnId: "" },
+      { ...metadata, rootTurnId: "old" },
+      { ...metadata, cwd: "/" },
+      { ...metadata, turnStatus: "inProgress" },
+      { ...metadata, turnCompletedAt: "" },
+    ]) {
+      metadata = invalid;
+      assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "unknown");
+    }
+    assert.equal(
+      (await runtime.observeDirectSubagent?.("child", { ...context, parentThreadId: "other" }))
         ?.state,
       "unknown",
     );

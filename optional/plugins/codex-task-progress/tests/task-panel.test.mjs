@@ -288,7 +288,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await ring.locator(".allocation-fill").getAttribute("stroke-dashoffset"),
           "50",
         );
-        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 3/);
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent/);
         assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /99|实时/);
         assert.equal(await panel.locator(".agent-counts .allocation-ring").count(), 1);
         assert.equal(
@@ -356,6 +356,57 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.ok(
           (await rows.nth(1).boundingBox()).height < (await rows.nth(0).boundingBox()).height + 4,
         );
+        // A single assigned leaf is a status, not fine-grained development progress.
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents.agents[2], {
+            assignmentTitle:
+              "A long assigned responsibility that needs to remain readable without expanding the row indefinitely ".repeat(
+                3,
+              ),
+            progress: { completed: 0, total: 1, percent: 0 },
+            progressGranularity: "single-item",
+            state: "completed",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const single = panel.locator('[data-agent="working"]');
+        assert.match(await single.innerText(), /1 项已分配/);
+        assert.match(await single.innerText(), /已返回/);
+        assert.match(await single.innerText(), /Working agent/);
+        assert.equal(await single.locator(".module-track, .module-percent").count(), 0);
+        assert.doesNotMatch(await single.innerText(), /0%|0\/1/);
+        for (const width of [320, 400, 600]) {
+          await page.setViewportSize({ width, height: 740 });
+          assert.equal(
+            await panel.locator(".scroll").evaluate((el) => el.scrollWidth <= el.clientWidth),
+            true,
+          );
+          assert.ok((await single.boundingBox()).height < 115);
+          await panel
+            .locator(".body")
+            .screenshot({ path: `${metricsEvidenceDir}/agent-compact-${width}.png` });
+        }
+        await page.setViewportSize(viewport);
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents.agents[2], {
+            assignmentTitle: undefined,
+            progress: { completed: 2, total: 3, percent: 66.7 },
+            progressGranularity: "checklist",
+            state: "working",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await single.locator(".module-track").count(), 1);
+        assert.match(await single.innerText(), /2\/3/);
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents.agents[2], {
+            progress: { completed: 1, total: 1, percent: 100 },
+            progressGranularity: "single-item",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await single.innerText(), /1 项已完成/);
+        assert.equal(await single.locator(".module-track").count(), 0);
         for (const sample of [
           { runningCount: 0, ratio: 0, offset: "100" },
           { runningCount: 10, ratio: 0.5, offset: "50" },
@@ -398,8 +449,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await ring.getAttribute("role"), "img");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
-        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 100/);
-        assert.equal(await ring.locator("strong").innerText(), "—");
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /100/);
+        assert.equal(await ring.locator("strong").innerText(), "");
         // Known counts survive a missing plan; incomplete observations remain lower bounds.
         await page.evaluate(() => {
           Object.assign(window.fixture.subagents, {
@@ -409,8 +460,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await ring.locator("strong").innerText(), "≥2/—");
-        assert.match(await panel.locator(".agent-counts").innerText(), /已记录工作中数量（至少）/);
+        assert.equal(await ring.locator("strong").innerText(), "2");
+        assert.match(await panel.locator(".agent-counts").innerText(), /已确认工作中/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /其余记录采集中/);
+        assert.match(await ring.getAttribute("aria-label"), /至少 2/);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await page.evaluate(() => {
           Object.assign(window.fixture.subagents, {
@@ -420,7 +473,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await ring.locator("strong").innerText(), "0/—");
+        assert.equal(await ring.locator("strong").innerText(), "0");
         await page.evaluate(() => {
           Object.assign(window.fixture.subagents, {
             runningCount: null,
@@ -469,7 +522,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await ring.locator("strong").innerText(), "—");
+        assert.equal(await ring.locator("strong").innerText(), "");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await context.close();
@@ -564,7 +617,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           .evaluateAll((rows) => rows.map((row) => row.dataset.agent)),
         ["current-0", "current-1", "current-2", "current-3"],
       );
-      assert.match(await panel.locator(".panel-foot").innerText(), /范围内已记录 Agent 4/);
+      assert.match(await panel.locator(".panel-foot").innerText(), /Agent 活动/);
+      assert.doesNotMatch(await panel.locator(".panel-foot").innerText(), /4/);
       assert.equal(
         await panel.locator(".agent-counts .allocation-ring").getAttribute("aria-valuenow"),
         "50",
@@ -625,7 +679,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await ring.getAttribute("role"), "img");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
-        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 1/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /尚未记录/);
         assert.doesNotMatch(await ring.innerText(), /0\/0|1\/1|100%/);
         await page.evaluate(() => {
           window.fixture.task.phase = "completed";

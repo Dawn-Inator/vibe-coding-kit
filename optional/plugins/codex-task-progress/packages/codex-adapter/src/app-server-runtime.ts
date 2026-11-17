@@ -55,13 +55,36 @@ export interface DirectSubagentMetadata {
   turnId: string;
   rootTurnId: string;
   turnStartedAt: string;
+  turnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
+  turnCompletedAt?: string;
 }
-export interface DirectSubagentProof {
-  parentThreadId: string;
-  cwd: string;
-  rootTurnId: string;
-  turnStartedAt: string;
-}
+export type DirectSubagentObservation =
+  | CodexAgentObservation
+  | {
+      state: "completed" | "idle" | "failed";
+      basis: "codex-turn";
+      observedAt: string;
+      eventTurnId: string;
+      rootTurnId: string;
+      complete: true;
+      latestTurnVerified: true;
+    };
+export type DirectSubagentProof =
+  | {
+      verdict: "in-scope";
+      parentThreadId: string;
+      cwd: string;
+      rootTurnId: string;
+      turnStartedAt: string;
+    }
+  | {
+      verdict: "out-of-scope";
+      parentThreadId: string;
+      cwd: string;
+      rootTurnId: string;
+      turnStartedAt: string;
+    }
+  | { verdict: "unknown" };
 
 export interface CodexAppServerSession {
   readonly closed: Promise<void>;
@@ -90,11 +113,11 @@ export interface CodexAppServerRuntime {
   verifyDirectSubagent?(
     threadId: string,
     context: DirectSubagentContext,
-  ): Promise<DirectSubagentProof | null>;
+  ): Promise<DirectSubagentProof>;
   observeDirectSubagent?(
     threadId: string,
     context: DirectSubagentContext,
-  ): Promise<CodexAgentObservation>;
+  ): Promise<DirectSubagentObservation>;
   listSubagentTurns?(
     threadId: string,
     cursor?: string,
@@ -337,10 +360,21 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
         context.parentThreadId,
       );
       if (
-        !metadata ||
-        metadata.rootTurnId !== context.rootTurnId ||
-        !Number.isFinite(Date.parse(metadata.turnStartedAt)) ||
-        Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt)
+        !metadata?.turnId ||
+        metadata.turnId.trim() !== metadata.turnId ||
+        metadata.turnId.length > 256 ||
+        [...metadata.turnId].some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 32 || (code >= 127 && code <= 159);
+        }) ||
+        !metadata.rootTurnId ||
+        metadata.rootTurnId.trim() !== metadata.rootTurnId ||
+        metadata.rootTurnId.length > 256 ||
+        [...metadata.rootTurnId].some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 32 || (code >= 127 && code <= 159);
+        }) ||
+        !Number.isFinite(Date.parse(metadata.turnStartedAt))
       )
         return null;
       const [project, childCwd] = await Promise.all([
@@ -357,10 +391,21 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
   async verifyDirectSubagent(
     threadId: string,
     context: DirectSubagentContext,
-  ): Promise<DirectSubagentProof | null> {
+  ): Promise<DirectSubagentProof> {
     const metadata = await this.#verifiedAgentMetadata(threadId, context);
-    if (!metadata) return null;
+    if (!metadata) return { verdict: "unknown" };
+    if (metadata.rootTurnId !== context.rootTurnId)
+      return {
+        verdict: "out-of-scope",
+        parentThreadId: context.parentThreadId,
+        cwd: metadata.cwd,
+        rootTurnId: metadata.rootTurnId,
+        turnStartedAt: metadata.turnStartedAt,
+      };
+    if (Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt ?? ""))
+      return { verdict: "unknown" };
     return {
+      verdict: "in-scope",
       parentThreadId: context.parentThreadId,
       cwd: metadata.cwd,
       rootTurnId: metadata.rootTurnId,
@@ -371,7 +416,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
   async observeDirectSubagent(
     threadId: string,
     context: DirectSubagentContext,
-  ): Promise<CodexAgentObservation> {
+  ): Promise<DirectSubagentObservation> {
     const unknown = (): CodexAgentObservation => ({
       state: "unknown",
       basis: "codex-rollout",
@@ -383,7 +428,34 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
       reason: "unverified-metadata",
     });
     const metadata = await this.#verifiedAgentMetadata(threadId, context);
-    if (!metadata?.path) return unknown();
+    if (
+      !metadata ||
+      metadata.rootTurnId !== context.rootTurnId ||
+      Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt ?? "")
+    )
+      return unknown();
+    if (
+      ["completed", "interrupted", "failed"].includes(metadata.turnStatus ?? "") &&
+      metadata.turnCompletedAt &&
+      Number.isFinite(Date.parse(metadata.turnCompletedAt)) &&
+      Date.parse(metadata.turnCompletedAt) >= Date.parse(metadata.turnStartedAt)
+    ) {
+      return {
+        state:
+          metadata.turnStatus === "failed"
+            ? "failed"
+            : metadata.turnStatus === "interrupted"
+              ? "idle"
+              : "completed",
+        basis: "codex-turn",
+        observedAt: metadata.turnCompletedAt,
+        eventTurnId: metadata.turnId,
+        rootTurnId: metadata.rootTurnId,
+        complete: true,
+        latestTurnVerified: true,
+      };
+    }
+    if (!metadata.path) return unknown();
     try {
       const env = this.#options.env ?? process.env;
       const configuredHome = env.CODEX_HOME;

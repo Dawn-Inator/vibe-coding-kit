@@ -36,7 +36,7 @@ import {
   TaskStore,
 } from "../../tasks/src/index.js";
 import { GoalProgressSessionCoordinator } from "../src/helper-session-coordinator.js";
-import { GoalProgressHelper } from "../src/index.js";
+import { GoalProgressHelper, overlayAgentAssignment } from "../src/index.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
   const root = await mkdtemp("/tmp/ctph-optional-");
@@ -4430,4 +4430,46 @@ test("native and authenticated GET use full verified heartbeat assignments acros
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("assignment overlay prefers only collector-fenced finer child checklists", () => {
+  const assignment = {
+    threadId: "child",
+    progress: { completed: 0, total: 1, percent: 0 },
+    basis: "assigned-canonical-leaves" as const,
+    assignedTaskIds: ["module"],
+    assignmentTitle: "API/UI 修复",
+    granularity: "single-item" as const,
+  };
+  const base = {
+    id: "child",
+    name: "Display name",
+    state: "working" as const,
+    observedAt: null,
+    progress: null,
+    progressBasis: null,
+  };
+  const coarse = overlayAgentAssignment(base, assignment);
+  assert.equal(coarse.progressGranularity, "single-item");
+  assert.equal(coarse.assignmentTitle, "API/UI 修复");
+  assert.equal(coarse.progressBasis, "module-delivery");
+  const fine = overlayAgentAssignment(
+    {
+      ...base,
+      progress: { completed: 2, total: 3, percent: 66.67 },
+      progressBasis: "registered-checklist",
+    },
+    assignment,
+  );
+  assert.deepEqual(fine.progress, { completed: 2, total: 3, percent: 66.67 });
+  assert.equal(fine.progressBasis, "registered-checklist");
+  assert.equal(fine.progressGranularity, "checklist");
+  assert.equal(fine.assignmentTitle, "API/UI 修复");
+  const unverified = overlayAgentAssignment(
+    { ...base, progress: { completed: 2, total: 3, percent: 66.67 }, progressBasis: null },
+    assignment,
+  );
+  assert.deepEqual(unverified.progress, assignment.progress);
+  assert.equal(unverified.progressGranularity, "single-item");
+  assert.equal(overlayAgentAssignment(base, undefined), base);
 });

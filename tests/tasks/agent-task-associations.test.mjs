@@ -26,8 +26,8 @@ test("source owners and IDs select current members and retain canonical leaf sem
 	assert.deepEqual(task.source.itemOwners.A, { owner: "/root/one", agentThreadId: "one" });
 	assert.deepEqual(task.progress, { completed: 1, total: 2, percent: 50 });
 	assert.deepEqual(progress(task), [
-		{ threadId: "one", progress: { completed: 1, total: 1, percent: 100 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["A"] },
-		{ threadId: "two", progress: { completed: 0, total: 1, percent: 0 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["B"] },
+		{ threadId: "one", progress: { completed: 1, total: 1, percent: 100 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["A"], assignmentTitle: "A", granularity: "single-item" },
+		{ threadId: "two", progress: { completed: 0, total: 1, percent: 0 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["B"], assignmentTitle: "B", granularity: "single-item" },
 	]);
 });
 
@@ -104,8 +104,8 @@ test("canonical parent assignment applies to children unless overridden or clear
 		leaf("A", "pending"), leaf("B", "completed", { threadId: "two" }), leaf("C", "pending", null),
 	] }] };
 	assert.deepEqual(progress(task), [
-		{ threadId: "one", progress: { completed: 0, total: 1, percent: 0 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["A"] },
-		{ threadId: "two", progress: { completed: 1, total: 1, percent: 100 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["B"] },
+		{ threadId: "one", progress: { completed: 0, total: 1, percent: 0 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["A"], assignmentTitle: "A", granularity: "single-item" },
+		{ threadId: "two", progress: { completed: 1, total: 1, percent: 100 }, basis: "assigned-canonical-leaves", assignedTaskIds: ["B"], assignmentTitle: "B", granularity: "single-item" },
 	]);
 });
 
@@ -113,4 +113,34 @@ test("heartbeat parent source owner does not flow down to unowned children", () 
 	const task = project([row("P", "tracking", "/root/one", "one", '["A","B"]'), row("A", "done"), row("B", "done", "/root/two")]);
 	assert.equal(progress(task)[0].progress, null);
 	assert.deepEqual(progress(task)[1].assignedTaskIds, ["B"]);
+});
+
+
+test("granularity and titles come from owned canonical tasks, never agent names", () => {
+	const make = (id, status, agent) => ({ id, title: `Canonical ${id}`, status, evidence: [], ...(agent ? { agent } : {}) });
+	const task = { objectives: [{ ...make("module", "active", { threadId: "one" }), required: true, items: [make("A", "completed"), make("B", "completed"), make("C", "active")] }] };
+	const [one, two] = progress(task, [{ ...agents[0], name: "Random nickname" }, agents[1]]);
+	assert.deepEqual(one.progress, { completed: 2, total: 3, percent: 66.67 });
+	assert.equal(one.assignmentTitle, "Canonical module");
+	assert.equal(one.granularity, "checklist");
+	assert.equal(two.assignmentTitle, null);
+	assert.equal(two.granularity, "none");
+	const single = progress(project([row("A", "dispatched", "/root/one")]))[0];
+	assert.equal(single.progress.percent, 0);
+	assert.equal(single.granularity, "single-item");
+	assert.equal(single.assignmentTitle, "A");
+});
+
+test("unsafe titles and foreign assignments never expose a path or label", () => {
+	const task = project([{ ...row("A", "done", "/root/one"), item: "/private/secret" }, { ...row("B", "done", "/root/two", "foreign"), item: "Forbidden" }]);
+	const [one, two] = progress(task);
+	assert.equal(one.assignmentTitle, null);
+	assert.equal(two.assignmentTitle, null);
+	assert.equal(two.granularity, "none");
+});
+
+
+test("ordinary slash in a task label remains visible", () => {
+	const task = project([{ ...row("A", "dispatched", "/root/one"), item: "API/UI 修复" }]);
+	assert.equal(progress(task)[0].assignmentTitle, "API/UI 修复");
 });

@@ -1,3 +1,7 @@
+# Task Progress 0.11.0
+
+- Version 0.11.0 adds bounded incremental catalog coverage and tri-state root exclusion for agent observations. Compact observed counts do not invent a denominator when none is known. A single assigned item retains its honest progress state, and finer-grained child progress is reused only from fresh canonical child data. These are recorded observations and canonical projections, not guarantees of live process state. A public latest child turn can provide a `codex-turn` basis for a recorded completed, failed or interrupted state only when identity, root, working directory and parent match and the terminal time is not earlier than the latest parent interaction. An in-progress turn is not proof of a live process. Counts describe timestamped recorded coverage; incomplete coverage remains unknown. A single-item assignment shows its responsibility and state, not a fabricated fine-grained development percentage.
+
 # Task Progress 0.10.0
 
 - Version 0.10.0 can associate existing canonical task leaves with an agent using an explicit assignment, and derives module progress from those leaves. Runtime activity is a recorded observation, not a guarantee of a live process; partial member coverage yields a lower bound, while unknown remains unknown. A ratio requires an exact current plan denominator. Assignment and agent progress do not complete the parent task. Existing source records remain authoritative; no copied checklist or new store is created.
