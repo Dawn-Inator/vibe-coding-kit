@@ -144,13 +144,17 @@ export function validateTaskEventStructure(e) {
 				"title",
 				"status",
 				"evidence",
+				"agent",
 				...(objective ? ["required", "items"] : []),
 			]) ||
 			!str(v.id, 128) ||
 			!str(v.title, 1000) ||
 			ids.has(v.id) ||
 			(v.status !== undefined && !statuses.includes(v.status)) ||
-			(v.evidence !== undefined && (!Array.isArray(v.evidence) || v.evidence.length > 100))
+			(v.evidence !== undefined && (!Array.isArray(v.evidence) || v.evidence.length > 100)) ||
+			(v.agent !== undefined && v.agent !== null &&
+				(!object(v.agent, ["threadId", "path"]) || !str(v.agent.threadId, 512) ||
+					(v.agent.path !== undefined && !str(v.agent.path, 1024))))
 		)
 			return false;
 		ids.add(v.id);
@@ -761,15 +765,17 @@ export class TaskStore {
 			if (!previous) throw new TaskStoreError("TASK_NOT_INITIALIZED", "Initialize the task first");
 			let objectives = structuredClone(input.objectives);
 			if (isTaskLifecycleComplete(previous)) {
+				// Assignment changes alone do not create work in a new lifecycle.
+				const withoutAgent = ({ agent, ...entry }) => entry;
 				objectives = objectives.flatMap((objective) => {
 					const old = previous.objectives.find((entry) => entry.id === objective.id);
 					if (!old) return [objective];
 					const sameFields =
-						canonical({ ...objective, items: [] }) === canonical({ ...old, items: [] });
+						canonical({ ...withoutAgent(objective), items: [] }) === canonical({ ...withoutAgent(old), items: [] });
 					const items = objective.items.filter(
 						(item) =>
 							!old.items.some(
-								(prior) => prior.id === item.id && canonical(prior) === canonical(item),
+								(prior) => prior.id === item.id && canonical(withoutAgent(prior)) === canonical(withoutAgent(item)),
 							),
 					);
 					if (sameFields && items.length === 0) return [];
@@ -792,15 +798,30 @@ export class TaskStore {
 					objectives: this.schemas.TaskObjectivesSchema.parse(objectives),
 				};
 			}
+			// Retained IDs preserve their assignment even when moved to another parent.
+			const previousById = new Map(previous.objectives.flatMap((objective) =>
+				[objective, ...objective.items].map((entry) => [entry.id, entry])));
+			const retainedIds = new Set();
+			for (const entry of objectives.flatMap((objective) => [objective, ...objective.items])) {
+				retainedIds.add(entry.id);
+				const old = previousById.get(entry.id);
+				if (entry.agent === undefined && old?.agent !== undefined)
+					entry.agent = structuredClone(old.agent);
+			}
 			// Scope removal is represented by cancellation, never disappearance from the current registry.
 			for (const old of previous.objectives) {
 				const retained = objectives.find((objective) => objective.id === old.id);
-				if (!retained) objectives.push({ ...old, status: "cancelled" });
-				else
+				if (!retained && !retainedIds.has(old.id)) {
+					objectives.push({ ...old, status: "cancelled", items: old.items.filter((item) => !retainedIds.has(item.id)) });
+				} else {
+					// An objective can itself move under another objective. Keep its
+					// removed children as cancelled siblings without duplicating IDs.
+					const destination = retained ?? objectives.find((objective) =>
+						objective.items.some((item) => item.id === old.id));
 					for (const item of old.items) {
-						if (!retained.items.some((entry) => entry.id === item.id))
-							retained.items.push({ ...item, status: "cancelled" });
+						if (!retainedIds.has(item.id)) destination.items.push({ ...item, status: "cancelled" });
 					}
+				}
 			}
 			return {
 				title: input.title ?? previous.title,

@@ -6,11 +6,16 @@ export interface TaskEvidence {
 	kind?: string;
 	reference?: string;
 }
+export interface TaskAgent {
+	threadId: string;
+	path?: string;
+}
 export interface TaskItem {
 	id: string;
 	title: string;
 	status: TaskStatus;
 	evidence: TaskEvidence[];
+	agent?: TaskAgent | null;
 }
 export interface TaskObjective extends TaskItem {
 	required: boolean;
@@ -27,6 +32,7 @@ export interface TaskSource {
 	readOnly: true;
 	contentHash: string;
 	itemStatuses: Record<string, string>;
+	itemOwners?: Record<string, { owner?: string; agentThreadId?: string }>;
 }
 export interface TaskStateFields {
 	kind: "task";

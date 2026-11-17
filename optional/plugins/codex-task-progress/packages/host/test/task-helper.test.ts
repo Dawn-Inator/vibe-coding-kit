@@ -7,6 +7,7 @@ import {
   migrateHeartbeatLedgerPair,
   readHeartbeatLedgerPair,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-files.mjs";
+import { projectAgentTaskProgress } from "vibe-coding-kit/src/tasks/agent-task-associations.mjs";
 import {
   HeartbeatDiscoveryIndex,
   HeartbeatDiscoveryInvalidatedError,
@@ -1905,7 +1906,7 @@ test("automatic heartbeat authority stays latched through association loss and r
       num: 1,
       category: "task",
       state: "done",
-      line: original.split("\n").findIndex((line) => line === "| 1 | task | done |") + 1,
+      line: original.split("\n").indexOf("| 1 | task | done |") + 1,
       sourcePath: canonicalSourcePath,
     });
     assert.equal(firstAuditPage.history.source.path, canonicalSourcePath);
@@ -3638,6 +3639,8 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
   let sourceStatus: "ready" | "pending" | "pending-selection" | "error" | "stale" = "ready";
   let childId = "source-chat-child";
   let canonicalTitle = "Bound task";
+  let sourceRevision = 1;
+  let leafDone = true;
   let projectionReads = 0;
   const originalNow = Date.now;
   let now = originalNow();
@@ -3688,6 +3691,14 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
     };
   };
   const originalProjection = HeartbeatService.prototype.taskProjection;
+  const originalAssignments = HeartbeatService.prototype.agentTaskProgress;
+  const fullTasks = new Map<string, Parameters<typeof projectAgentTaskProgress>[0]["task"]>();
+  HeartbeatService.prototype.agentTaskProgress = (options) => {
+    const task = fullTasks.get(
+      JSON.stringify([options.threadId, options.sourcePath, options.contentHash]),
+    );
+    return task ? projectAgentTaskProgress({ task, agents: options.agents }) : null;
+  };
   HeartbeatService.prototype.taskProjection = async (threadId) => {
     projectionReads++;
     if (threadId === "source-chat-no-scope")
@@ -3700,31 +3711,47 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       revision: 0,
       createdAt: "2026-11-16T12:00:00Z",
       updatedAt: "2026-11-16T12:00:00Z",
-      objectives: [],
-      progress: { completed: 0, total: 0, percent: null },
+      objectives: [
+        {
+          id: "assigned",
+          title: "Assigned work",
+          status: leafDone ? ("completed" as const) : ("pending" as const),
+          evidence: [],
+          required: true,
+          items: [],
+          agent: { threadId: childId },
+        },
+      ],
+      progress: { completed: leafDone ? 1 : 0, total: 1, percent: leafDone ? 100 : 0 },
       phase: "active" as const,
       source: {
         kind: "kit-heartbeat" as const,
         path: sourcePath,
         readOnly: true as const,
-        contentHash: threadId === "source-chat-mismatch" ? "mismatched-hash" : `hash:${sourcePath}`,
+        contentHash:
+          threadId === "source-chat-mismatch"
+            ? "mismatched-hash"
+            : `hash:${sourcePath}:${sourceRevision}`,
         itemStatuses: {},
         linkRisks: [],
         presentation: {
           truncated: false,
-          sourceItemCount: 0,
-          displayedItemCount: 0,
+          sourceItemCount: 1,
+          displayedItemCount: 1,
           itemStatusesTruncated: false,
           linkRisksTruncated: false,
         },
-        itemStatusCount: 0,
+        itemStatusCount: 1,
         linkRiskCount: 0,
       },
     };
+    const contentHash = `hash:${sourcePath}:${sourceRevision}`;
+    if (sourceStatus === "ready")
+      fullTasks.set(JSON.stringify([threadId, sourcePath, contentHash]), task);
     return {
       status: sourceStatus,
       sourcePath,
-      contentHash: `hash:${sourcePath}`,
+      contentHash,
       task: sourceStatus === "ready" ? task : null,
     };
   };
@@ -3751,7 +3778,11 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
         taskCycleId?: string | null;
         taskSourcePath?: string | null;
         rootTurnId?: string;
-        agents: { id: string }[];
+        agents: {
+          id: string;
+          progress?: { completed: number; total: number; percent: number | null } | null;
+          progressBasis?: string | null;
+        }[];
       };
     };
   let modelCall = 0;
@@ -3819,7 +3850,7 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       status: "ready",
       path: sourcePath,
       readOnly: true,
-      contentHash: `hash:${sourcePath}`,
+      contentHash: `hash:${sourcePath}:${sourceRevision}`,
     });
     assert.equal(result.subagents.status, "ready");
     assert.equal(result.subagents.taskCycleId, null);
@@ -3850,6 +3881,21 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       [childId],
     );
     assert.equal(model.presentation?.pending, false);
+    assert.deepEqual(model.subagents.agents[0]?.progress, { completed: 1, total: 1, percent: 100 });
+    assert.equal(model.subagents.agents[0]?.progressBasis, "module-delivery");
+    // A revision of the same source reuses membership but recomputes assigned work.
+    const membershipBeforeRevision = turnCollections.filter(
+      (thread) => thread === "source-chat",
+    ).length;
+    leafDone = false;
+    sourceRevision++;
+    const revised = await modelGet();
+    assert.deepEqual(revised.subagents.agents[0]?.progress, { completed: 0, total: 1, percent: 0 });
+    assert.equal(revised.subagents.agents[0]?.progressBasis, "module-delivery");
+    assert.equal(
+      turnCollections.filter((thread) => thread === "source-chat").length,
+      membershipBeforeRevision,
+    );
 
     const firstScopeCalls = turnCollections.filter((thread) => thread === "source-chat").length;
     assert.ok(firstScopeCalls > 0);
@@ -3939,6 +3985,7 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
   } finally {
     Date.now = originalNow;
     HeartbeatService.prototype.taskProjection = originalProjection;
+    HeartbeatService.prototype.agentTaskProgress = originalAssignments;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -4230,6 +4277,154 @@ test("large canonical orchestration history fits each real IPC response and pres
     assert.deepEqual(
       seen,
       Array.from({ length: 12 }, (_, i) => start + (11 - i) * 60_000),
+    );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native and authenticated GET use full verified heartbeat assignments across source revisions", async () => {
+  const root = await realpath(await mkdtemp("/tmp/ctph-full-agent-task-"));
+  await mkdir(join(root, ".git"));
+  const childId = "verified-child";
+  const ids = Array.from({ length: 300 }, (_, i) => `L${i}`);
+  const source = (done: number) =>
+    [
+      "# Supervision",
+      "thread: source-chat",
+      "task_root: ROOT",
+      "## Items",
+      "| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children | agent_thread_id |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      `| ROOT | report:root | Root | tracking | coordinated | agent:lead | repo-a | worktrees/lead | read-only | [] | - | ${JSON.stringify(ids)} | - |`,
+      ...ids.map(
+        (id, i) =>
+          `| ${id} | report:${id} | ${id} | ${i < done ? "done" : `blocked <- resource-${i}`} | receipt | ${childId} | - | - | - | - | - | - | ${childId} |`,
+      ),
+      "",
+    ].join("\n");
+  await writeFile(join(root, "heartbeat.md"), source(150));
+  const testRuntime = runtime(root);
+  testRuntime.listDirectSubagents = async () => ({
+    data: [
+      {
+        id: childId,
+        cwd: root,
+        status: { type: "active", activeFlags: [] },
+        source: { subAgent: { thread_spawn: { parent_thread_id: "source-chat" } } },
+      },
+    ],
+    nextCursor: null,
+  });
+  testRuntime.listSubagentTurns = async () => ({
+    data: [
+      {
+        id: "root-turn",
+        rootTurnId: "root-turn",
+        startedAt: 1794830400,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: "source-chat",
+            receiverThreadIds: [childId],
+            tool: "spawnAgent",
+            status: "completed",
+            startedAtMs: 1794830400000,
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const get = async (native: boolean) =>
+    (
+      await client.request(
+        native
+          ? {
+              method: "task.native-read",
+              params: { action: "get", threadId: "source-chat", input: {} },
+            }
+          : {
+              method: "task.request",
+              params: {
+                action: "get",
+                auth: {
+                  kind: "codex-request",
+                  toolName: "task_progress_get",
+                  identity: {
+                    threadId: "source-chat",
+                    sessionId: "source-chat",
+                    turnId: "turn-1",
+                    callId: `assignment-${++call}`,
+                    model: "test",
+                    threadSource: "user",
+                    cwd: root,
+                  },
+                },
+                input: {},
+              },
+            },
+      )
+    ).result as {
+      task: { source?: Record<string, unknown> } | null;
+      taskSource?: { status: string; contentHash?: string };
+      subagents: {
+        status: string;
+        agents: {
+          id: string;
+          progress: { completed: number; total: number; percent: number } | null;
+          progressBasis: string | null;
+        }[];
+      };
+    };
+  const until = async (native: boolean, completed: number) => {
+    let result = await get(native);
+    for (let i = 0; i < 100; i++) {
+      if (result.subagents?.agents[0]?.progress?.completed === completed) return result;
+      await new Promise((resume) => setTimeout(resume, 10));
+      result = await get(native);
+    }
+    assert.fail(`assignment did not converge for ${native ? "native" : "model"}`);
+  };
+  try {
+    await helper.start();
+    const first = await until(false, 150);
+    assert.equal(first.taskSource?.status, "ready");
+    assert.equal(first.subagents.agents[0]?.progressBasis, "module-delivery");
+    assert.deepEqual(first.subagents.agents[0]?.progress, {
+      completed: 150,
+      total: 300,
+      percent: 50,
+    });
+    assert.equal(Object.hasOwn(first.task?.source ?? {}, "itemOwners"), false);
+    const nativeFirst = await until(true, 150);
+    assert.deepEqual(
+      nativeFirst.subagents.agents[0]?.progress,
+      first.subagents.agents[0]?.progress,
+    );
+    await writeFile(join(root, "heartbeat.md"), source(200));
+    const second = await until(false, 200);
+    assert.notEqual(second.taskSource?.contentHash, first.taskSource?.contentHash);
+    assert.deepEqual(second.subagents.agents[0]?.progress, {
+      completed: 200,
+      total: 300,
+      percent: 66.67,
+    });
+    const nativeSecond = await until(true, 200);
+    assert.equal(nativeSecond.taskSource?.contentHash, second.taskSource?.contentHash);
+    assert.deepEqual(
+      nativeSecond.subagents.agents[0]?.progress,
+      second.subagents.agents[0]?.progress,
     );
   } finally {
     await helper.stop();

@@ -13,6 +13,11 @@ import {
   inspectHeartbeatLedger as bundledHeartbeatInspector,
   projectHeartbeatOrchestration,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import {
+  type AgentTaskProgress,
+  type CurrentAgent,
+  projectAgentTaskProgress,
+} from "vibe-coding-kit/src/tasks/agent-task-associations.mjs";
 import type {
   HeartbeatLedgerDiscoveryReport,
   HeartbeatTaskState,
@@ -172,12 +177,14 @@ function compactProjectedTask(sourceTask: HeartbeatTaskState): ProjectedHeartbea
     (total, objective) => total + 1 + objective.items.length,
     0,
   );
+  // Owner identities remain private to the full verified in-memory task.
+  const { itemOwners: _itemOwners, ...publicSource } = sourceTask.source;
   const task = {
     ...sourceTask,
     title: shortened(sourceTask.title, 500),
     objectives,
     source: {
-      ...sourceTask.source,
+      ...publicSource,
       itemStatuses: Object.fromEntries(
         itemStatusEntries
           .filter(([id]) => id.length <= 512)
@@ -512,6 +519,7 @@ export class HeartbeatService {
   readonly #legacyHeartbeatRoots: string[];
   readonly #options: HeartbeatOptions;
   readonly #cache = new Map<string, CacheEntry>();
+  readonly #canonicalTasks = new Map<string, HeartbeatTaskState>();
   readonly #projectViewCache: HeartbeatProjectViewCache;
   readonly #ownsProjectViewCache: boolean;
   readonly #last = new Map<string, HeartbeatView>();
@@ -1495,6 +1503,17 @@ export class HeartbeatService {
         modifiedAt: pair.modifiedAt,
         ...(taskRootId === undefined ? {} : { taskRootId }),
       });
+      const canonicalKey = JSON.stringify([threadId, view.sourcePath, contentHash]);
+      for (const key of this.#canonicalTasks.keys()) {
+        const [cachedThread, cachedPath] = JSON.parse(key) as string[];
+        if (cachedThread === threadId && cachedPath === view.sourcePath)
+          this.#canonicalTasks.delete(key);
+      }
+      this.#canonicalTasks.set(canonicalKey, canonicalTask);
+      if (this.#canonicalTasks.size > 16) {
+        const oldest = this.#canonicalTasks.keys().next().value;
+        if (oldest !== undefined) this.#canonicalTasks.delete(oldest);
+      }
       const task = compactProjectedTask(canonicalTask);
       return {
         status: "ready",
@@ -1515,6 +1534,24 @@ export class HeartbeatService {
         error: shortened(String(error), 2_000),
       };
     }
+  }
+
+  /** Full-scope assignment is private and usable only with the exact verified source version. */
+  agentTaskProgress(options: {
+    threadId: string;
+    sourcePath: string;
+    contentHash: string;
+    agents: readonly CurrentAgent[];
+  }): AgentTaskProgress[] | null {
+    const key = JSON.stringify([options.threadId, options.sourcePath, options.contentHash]);
+    const task = this.#canonicalTasks.get(key);
+    if (!task) return null;
+    this.#canonicalTasks.delete(key);
+    this.#canonicalTasks.set(key, task);
+    return projectAgentTaskProgress({
+      task: task as Parameters<typeof projectAgentTaskProgress>[0]["task"],
+      agents: options.agents,
+    });
   }
 
   async bind(threadId: string, path: string | null, cwd: string): Promise<HeartbeatView | null> {
@@ -1541,6 +1578,9 @@ export class HeartbeatService {
       this.#watchers.delete(threadId);
     }
     this.#cache.delete(threadId);
+    for (const key of this.#canonicalTasks.keys()) {
+      if (JSON.parse(key)[0] === threadId) this.#canonicalTasks.delete(key);
+    }
     return this.view(threadId, cwd);
   }
 
@@ -1548,6 +1588,7 @@ export class HeartbeatService {
     for (const watcher of this.#watchers.values()) watcher.close();
     this.#watchers.clear();
     this.#cache.clear();
+    this.#canonicalTasks.clear();
     if (this.#ownsProjectViewCache) this.#projectViewCache.close();
   }
 }

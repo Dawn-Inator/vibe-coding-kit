@@ -1718,7 +1718,7 @@ test("large canonical reports stay below IPC budget and all wakes are paged with
     assert.equal(seen.size, 80);
     await appendFile(f.source, "\nchanged\n");
     const stale = await service.history("chat-A", f.project, {
-      cursor: first.nextCursor!,
+      cursor: first.nextCursor,
       limit: 5,
     });
     assert.equal(stale.retryable, true);
@@ -2048,7 +2048,8 @@ test("large verified pair supports project and bound displays, projection, bindi
     const backupPath = `${path}.legacy`;
     const marker = `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(historyPath)} -->\n`;
     const head = `${marker}# Supervision\nthread: large-chat\ntask_root: ROOT\n## Items\n| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| ROOT | report:tracker | root | tracking | tracking plan | agent:tracker | repo-a | worktrees/tracker | read-only | [] | - | ["A"] |\n| A | report:leaf | task | done | verified | agent:leaf | repo-a | worktrees/leaf | read-only | [] | - | [] |\n`;
-    const body = `${("x".repeat(4095) + "\n").repeat(8193)}${Array.from({ length: 7 }, (_, i) => `## 2026-11-11T0${i}:00:00Z wake (10-row ledger)\nrow: ${i}\n`).join("")}`;
+    const fillerLine = `${"x".repeat(4095)}\n`;
+    const body = `${fillerLine.repeat(8193)}${Array.from({ length: 7 }, (_, i) => `## 2026-11-11T0${i}:00:00Z wake (10-row ledger)\nrow: ${i}\n`).join("")}`;
     const backup = "immutable legacy\n";
     const digest = (v: string) => createHash("sha256").update(v).digest("hex");
     const header = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${digest(body)} base=${digest(head)} bytes=${Buffer.byteLength(head)} backup=${digest(backup)} previous=${digest(backup)} planned=${Buffer.from(head).toString("base64")} -->\n`;
@@ -2074,7 +2075,7 @@ test("large verified pair supports project and bound displays, projection, bindi
     assert.ok(first.nextCursor);
     const second = await service.history("large-chat", root, {
       limit: 1,
-      cursor: first.nextCursor!,
+      cursor: first.nextCursor,
     });
     assert.notEqual(first.wakes[0]?.heading, second.wakes[0]?.heading);
     const projectPage = await service.projectHistory(root, { limit: 1 });
@@ -2083,7 +2084,7 @@ test("large verified pair supports project and bound displays, projection, bindi
     await appendFile(path, "\nchanged\n");
     const stalePage = await service.history("large-chat", root, {
       limit: 1,
-      cursor: first.nextCursor!,
+      cursor: first.nextCursor,
     });
     assert.equal(stalePage.retryable, true);
   } finally {
@@ -2246,6 +2247,58 @@ test("project and bound cadence use full wake evidence, with explicit next wake 
     assert.equal((await service.view("chat-A", f.project))?.nextWakeAt, "2026-11-11T11:00:00.000Z");
   } finally {
     service.close();
+    await f.close();
+  }
+});
+
+test("private full-source assignments include leaves beyond the panel window and reject old hashes", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      f.kitPath,
+      `export function inspectHeartbeatLedger(text,{mode}) {
+      const ids = Array.from({length:300},(_,i)=>"L"+i);
+      const done = text.includes("revision-two") ? 200 : 150;
+      return {mode,certifiesCurrent:false,passed:true,wakes:[],findings:[],items:[
+        {id:"ROOT",item:"Business",status:"tracking",children:JSON.stringify(ids)},
+        ...ids.map((id,i)=>({id,item:id,status:i<done?"done":"blocked",children:"[]",owner:"child",agent_thread_id:"child"}))
+      ]};
+    }`,
+    );
+    const source = `task_root: ROOT\n${ledger("chat-A")}`;
+    await writeFile(f.source, source);
+    const first = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(first.status, "ready", first.error);
+    assert.ok(first.contentHash);
+    assert.ok(first.sourcePath);
+    assert.equal(first.task?.source.presentation.sourceItemCount, 301);
+    assert.ok((first.task?.source.presentation.displayedItemCount ?? 0) <= 200);
+    assert.equal(Object.hasOwn(first.task?.source ?? {}, "itemOwners"), false);
+    assert.ok(Buffer.byteLength(JSON.stringify(first)) < 192 * 1024);
+    const query = {
+      threadId: "chat-A",
+      sourcePath: first.sourcePath,
+      contentHash: first.contentHash,
+      agents: [{ threadId: "child" }],
+    };
+    const assignment = f.service.agentTaskProgress(query);
+    assert.deepEqual(assignment?.[0]?.progress, { completed: 150, total: 300, percent: 50 });
+    assert.equal(assignment?.[0]?.assignedTaskIds.length, 300);
+    assert.equal(f.service.agentTaskProgress({ ...query, threadId: "different-chat" }), null);
+    assert.equal(
+      f.service.agentTaskProgress({ ...query, sourcePath: `${query.sourcePath}.other` }),
+      null,
+    );
+    await writeFile(f.source, `${source}\nrevision-two\n`);
+    const second = await f.service.taskProjection("chat-A", f.project);
+    assert.equal(second.status, "ready", second.error);
+    assert.ok(second.contentHash && second.contentHash !== first.contentHash);
+    assert.equal(f.service.agentTaskProgress(query), null);
+    assert.deepEqual(
+      f.service.agentTaskProgress({ ...query, contentHash: second.contentHash })?.[0]?.progress,
+      { completed: 200, total: 300, percent: 66.67 },
+    );
+  } finally {
     await f.close();
   }
 });

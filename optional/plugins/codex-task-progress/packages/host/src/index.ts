@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { projectAgentAllocation } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
+import { projectAgentTaskProgress } from "vibe-coding-kit/src/tasks/agent-task-associations.mjs";
 import {
   ReadOnlySnapshotCache,
   taskPresentationScope,
@@ -13,6 +14,10 @@ import {
   collectSubagentProgress,
   type SubagentProgressSnapshot,
 } from "vibe-coding-kit/src/tasks/subagent-progress.mjs";
+import type {
+  TaskSource as KitTaskSource,
+  TaskState as KitTaskState,
+} from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { createTaskProgressSchemas } from "vibe-coding-kit/src/tasks/task-contract.mjs";
 import { z } from "zod";
 import { inspectCodexMacosApp } from "../../../platform/macos/src/app-discovery.js";
@@ -72,6 +77,7 @@ import {
   resolveGoalProgressSessionPaths,
   writeGoalProgressTrackingOverlay,
 } from "../../store/src/index.js";
+import type { HeartbeatService } from "../../tasks/src/heartbeat.js";
 import {
   getTaskArchiveCount,
   TaskArchiveInputSchema,
@@ -284,6 +290,7 @@ export class GoalProgressHelper {
   }>({ now: () => Date.now() });
   #taskPresentationEpoch = 0;
   readonly #subagentPresentation = new ReadOnlySnapshotCache<SubagentProgressSnapshot>();
+  readonly #heartbeatServices = new Map<string, HeartbeatService>();
   #stopping = false;
   readonly #presentationLoads = new Set<Promise<unknown>>();
   readonly #runtime: CodexAppServerRuntime;
@@ -1416,6 +1423,7 @@ export class GoalProgressHelper {
       this.#taskPresentationEpoch++;
       this.#taskPresentation.delete(scope);
       this.#subagentPresentation.clear();
+      this.#heartbeatServices.clear();
       if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
@@ -1434,6 +1442,12 @@ export class GoalProgressHelper {
         this.#workspaceStorage.forThread(threadId, cwd),
       );
       const { taskStore, heartbeat: heartbeatService } = workspace;
+      this.#heartbeatServices.delete(scope);
+      this.#heartbeatServices.set(scope, heartbeatService);
+      if (this.#heartbeatServices.size > 16) {
+        const oldest = this.#heartbeatServices.keys().next().value;
+        if (oldest !== undefined) this.#heartbeatServices.delete(oldest);
+      }
       const execution = projectTaskExecution(nativeStatus);
       let result: unknown;
       let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
@@ -1816,9 +1830,9 @@ export class GoalProgressHelper {
         task.source.readOnly === true
           ? boundSource.path
           : undefined;
-      const sourceIdentity = sourcePath
-        ? JSON.stringify([sourcePath, boundSource?.contentHash ?? null])
-        : null;
+      // Membership is scoped by source path; source revisions only affect the
+      // assignment overlay recomputed from the current task on each GET.
+      const sourceIdentity = sourcePath ?? null;
       const hasSubagentScope = validLifecycle || sourcePath !== undefined;
       const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
       let subagents: SubagentProgressSnapshot = {
@@ -1853,6 +1867,8 @@ export class GoalProgressHelper {
           previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
         const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
         const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
+        const observer = this.#runtime.observeDirectSubagent?.bind(this.#runtime);
+        const verifier = this.#runtime.verifyDirectSubagent?.bind(this.#runtime);
         const children = recent
           ? previous
           : this.#subagentPresentation.read(subagentKey, async () => {
@@ -1865,6 +1881,8 @@ export class GoalProgressHelper {
                   schemas: createTaskProgressSchemas(z),
                   listPage: (cursor) => listDirectSubagents(threadId, cursor),
                   listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
+                  ...(observer ? { observeAgent: observer } : {}),
+                  ...(verifier ? { verifyAgent: verifier } : {}),
                   ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
                   ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
                   ...(sourcePath === undefined
@@ -1882,6 +1900,48 @@ export class GoalProgressHelper {
             });
         if (children.value) subagents = children.value;
         else if (children.error) subagents = { ...subagents, status: "unavailable" };
+      }
+      // Canonical heartbeat tasks stay private in their source service; never
+      // calculate assigned progress from a truncated panel projection.
+      const currentTask = value?.result.task as
+        | (KitTaskState & { source?: KitTaskSource })
+        | null
+        | undefined;
+      if (sourceReady && hasSubagentScope && currentTask && Array.isArray(currentTask.objectives)) {
+        try {
+          const eligible = subagents.agents.filter((agent) => agent.assignmentEligible === true);
+          const agents = eligible.map((agent) => ({
+            threadId: agent.id,
+            ...(agent.agentPath ? { path: agent.agentPath } : {}),
+          }));
+          const projected =
+            sourcePath && typeof boundSource?.contentHash === "string"
+              ? this.#heartbeatServices.get(scope)?.agentTaskProgress({
+                  threadId,
+                  sourcePath,
+                  contentHash: boundSource.contentHash,
+                  agents,
+                })
+              : projectAgentTaskProgress({ task: currentTask, agents });
+          if (projected) {
+            const assignments = new Map(projected.map((item) => [item.threadId, item]));
+            subagents = {
+              ...subagents,
+              agents: subagents.agents.map((agent) => {
+                const assignment = assignments.get(agent.id);
+                return assignment?.progress
+                  ? {
+                      ...agent,
+                      progress: assignment.progress,
+                      progressBasis: "module-delivery" as const,
+                    }
+                  : agent;
+              }),
+            };
+          }
+        } catch {
+          /* Invalid or missing private assignment data stays unknown. */
+        }
       }
       // Allocation is projected from the current presentation each time, never retained in the
       // child-list cache. A changed source, cycle, or plan therefore cannot reuse an old ratio.
@@ -1951,8 +2011,7 @@ export class GoalProgressHelper {
                 "status" in previousSource &&
                 previousSource.status === "error";
               if (
-                previous &&
-                previous.result.task &&
+                previous?.result.task &&
                 loaded.result.taskSourcePending === true &&
                 !sourceError &&
                 !previousSourceError
@@ -1962,8 +2021,7 @@ export class GoalProgressHelper {
                 loaded.revision = previous.revision;
               }
               if (
-                previous &&
-                previous.result.heartbeat &&
+                previous?.result.heartbeat &&
                 loaded.result.heartbeatPending === true &&
                 loaded.result.heartbeat == null
               ) {
@@ -2169,6 +2227,7 @@ export class GoalProgressHelper {
     await Promise.allSettled([...this.#presentationLoads]);
     this.#taskPresentation.clear();
     this.#subagentPresentation.clear();
+    this.#heartbeatServices.clear();
     this.#workspaceStorage.close();
     await this.#runtime.close();
     await this.#log({

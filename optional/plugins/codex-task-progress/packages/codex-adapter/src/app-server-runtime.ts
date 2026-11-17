@@ -1,3 +1,10 @@
+import { lstat, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  type CodexAgentObservation,
+  readCodexAgentObservation,
+} from "vibe-coding-kit/src/tasks/codex-agent-runtime.mjs";
 import type {
   NativeGoalTokenUsage,
   RuntimeIdentity,
@@ -36,6 +43,26 @@ export interface GoalUsageSnapshot {
   readonly unavailable: boolean;
 }
 
+export interface DirectSubagentContext {
+  parentThreadId: string;
+  cwd: string;
+  rootTurnId?: string;
+  rootTurnStartedAt?: string;
+}
+export interface DirectSubagentMetadata {
+  path: string | null;
+  cwd: string;
+  turnId: string;
+  rootTurnId: string;
+  turnStartedAt: string;
+}
+export interface DirectSubagentProof {
+  parentThreadId: string;
+  cwd: string;
+  rootTurnId: string;
+  turnStartedAt: string;
+}
+
 export interface CodexAppServerSession {
   readonly closed: Promise<void>;
   readonly requestMethods: readonly string[];
@@ -52,10 +79,22 @@ export interface CodexAppServerSession {
     parentThreadId: string,
     cursor?: string,
   ): Promise<{ data: unknown[]; nextCursor: string | null }>;
+  readSubagentObservationMetadata?(
+    threadId: string,
+    parentThreadId: string,
+  ): Promise<DirectSubagentMetadata | null>;
   close(): Promise<void>;
 }
 
 export interface CodexAppServerRuntime {
+  verifyDirectSubagent?(
+    threadId: string,
+    context: DirectSubagentContext,
+  ): Promise<DirectSubagentProof | null>;
+  observeDirectSubagent?(
+    threadId: string,
+    context: DirectSubagentContext,
+  ): Promise<CodexAgentObservation>;
   listSubagentTurns?(
     threadId: string,
     cursor?: string,
@@ -240,6 +279,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     { readonly inputTokens: number; readonly outputTokens: number }
   >();
   #lastFingerprintByThread = new Map<string, string>();
+  readonly #agentObservations = new Map<string, CodexAgentObservation>();
 
   constructor(options: CodexAppServerRuntimeOptions) {
     this.#options = options;
@@ -277,6 +317,153 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     const client = await this.#enqueue(() => this.#ensureClient());
     if (!client.listDirectSubagents) throw new Error("Subagent listing unavailable");
     return client.listDirectSubagents(parentThreadId, cursor);
+  }
+
+  async #verifiedAgentMetadata(
+    threadId: string,
+    context: DirectSubagentContext,
+  ): Promise<DirectSubagentMetadata | null> {
+    try {
+      if (
+        !context.rootTurnId ||
+        !context.rootTurnStartedAt ||
+        !Number.isFinite(Date.parse(context.rootTurnStartedAt))
+      )
+        return null;
+      const client = await this.#enqueue(() => this.#ensureClient());
+      if (!client.readSubagentObservationMetadata) return null;
+      const metadata = await client.readSubagentObservationMetadata(
+        threadId,
+        context.parentThreadId,
+      );
+      if (
+        !metadata ||
+        metadata.rootTurnId !== context.rootTurnId ||
+        !Number.isFinite(Date.parse(metadata.turnStartedAt)) ||
+        Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt)
+      )
+        return null;
+      const [project, childCwd] = await Promise.all([
+        realpath(context.cwd),
+        realpath(metadata.cwd),
+      ]);
+      if (project !== childCwd) return null;
+      return { ...metadata, cwd: childCwd };
+    } catch {
+      return null;
+    }
+  }
+
+  async verifyDirectSubagent(
+    threadId: string,
+    context: DirectSubagentContext,
+  ): Promise<DirectSubagentProof | null> {
+    const metadata = await this.#verifiedAgentMetadata(threadId, context);
+    if (!metadata) return null;
+    return {
+      parentThreadId: context.parentThreadId,
+      cwd: metadata.cwd,
+      rootTurnId: metadata.rootTurnId,
+      turnStartedAt: metadata.turnStartedAt,
+    };
+  }
+
+  async observeDirectSubagent(
+    threadId: string,
+    context: DirectSubagentContext,
+  ): Promise<CodexAgentObservation> {
+    const unknown = (): CodexAgentObservation => ({
+      state: "unknown",
+      basis: "codex-rollout",
+      observedAt: null,
+      eventTurnId: null,
+      eventType: null,
+      complete: false,
+      readStable: false,
+      reason: "unverified-metadata",
+    });
+    const metadata = await this.#verifiedAgentMetadata(threadId, context);
+    if (!metadata?.path) return unknown();
+    try {
+      const env = this.#options.env ?? process.env;
+      const configuredHome = env.CODEX_HOME;
+      const home =
+        configuredHome ||
+        (env.HOME && isAbsolute(env.HOME)
+          ? resolve(env.HOME, ".codex")
+          : resolve(homedir(), ".codex"));
+      if (!isAbsolute(home)) return unknown();
+      const [trustedRoot, target] = await Promise.all([
+        realpath(resolve(home, "sessions")),
+        realpath(metadata.path),
+      ]);
+      const rel = relative(trustedRoot, target);
+      if (
+        target !== resolve(metadata.path) ||
+        !rel ||
+        rel === ".." ||
+        rel.startsWith(`..${sep}`) ||
+        isAbsolute(rel)
+      )
+        return unknown();
+      const before = await lstat(metadata.path, { bigint: true });
+      if (!before.isFile() || before.isSymbolicLink()) return unknown();
+      const fingerprint = [before.dev, before.ino, before.size, before.mtimeNs, before.ctimeNs]
+        .map(String)
+        .join(":");
+      const key = JSON.stringify([
+        threadId,
+        context.parentThreadId,
+        metadata.cwd,
+        metadata.path,
+        metadata.turnId,
+        metadata.rootTurnId,
+        metadata.turnStartedAt,
+        fingerprint,
+      ]);
+      const cached = this.#agentObservations.get(key);
+      if (cached) {
+        const current = await lstat(metadata.path, { bigint: true });
+        const currentFingerprint = [
+          current.dev,
+          current.ino,
+          current.size,
+          current.mtimeNs,
+          current.ctimeNs,
+        ]
+          .map(String)
+          .join(":");
+        if (current.isFile() && !current.isSymbolicLink() && currentFingerprint === fingerprint)
+          return cached;
+        return unknown();
+      }
+      const observed = await readCodexAgentObservation({
+        path: metadata.path,
+        trustedRoot,
+        threadId,
+        cwd: metadata.cwd,
+        parentThreadId: context.parentThreadId,
+        turnId: metadata.turnId,
+        rootTurnId: metadata.rootTurnId,
+        turnStartedAt: metadata.turnStartedAt,
+      });
+      const after = await lstat(metadata.path, { bigint: true });
+      const afterFingerprint = [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs]
+        .map(String)
+        .join(":");
+      if (!after.isFile() || after.isSymbolicLink() || afterFingerprint !== fingerprint)
+        return unknown();
+      if (observed.readStable && observed.complete) {
+        this.#agentObservations.set(key, observed);
+        if (this.#agentObservations.size > 100) {
+          const oldest = this.#agentObservations.keys().next().value;
+          if (oldest !== undefined) this.#agentObservations.delete(oldest);
+        }
+      }
+      return observed;
+    } catch {
+      return unknown();
+    }
   }
 
   async getGoal(threadId: string): Promise<ThreadGoal | null> {
@@ -334,6 +521,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
   async close(): Promise<void> {
     this.#closing = true;
     this.#clearPoll();
+    this.#agentObservations.clear();
     this.#listenersByThread.clear();
     this.#requestedModeByThread.clear();
     this.#nextPollAtByThread.clear();

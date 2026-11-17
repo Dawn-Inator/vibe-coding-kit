@@ -1,3 +1,7 @@
+# Task Progress 0.10.0
+
+- Version 0.10.0 can associate existing canonical task leaves with an agent using an explicit assignment, and derives module progress from those leaves. Runtime activity is a recorded observation, not a guarantee of a live process; partial member coverage yields a lower bound, while unknown remains unknown. A ratio requires an exact current plan denominator. Assignment and agent progress do not complete the parent task. Existing source records remain authoritative; no copied checklist or new store is created.
+
 # Task Progress 0.9.8
 
 - Version 0.9.8 aligns current-agent observation across both authenticated GET paths using the same scope-gated background observer. The full-authorization model GET continues to read canonical task data with its existing security checks. No new authorization flag or state store is introduced. The previous 0.9.7 user reload still showed agents as not ready despite the updated UI; 0.9.8 native acceptance remains to be verified.

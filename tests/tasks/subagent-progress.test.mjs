@@ -463,3 +463,85 @@ test('source scope stops cleanly at an older root only after seeing the current 
     assert.deepEqual(unseen.agents, []); assert.equal(unseen.runningCount, null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('verified current children preserve exact agent paths and recorded state provenance', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-assignment-'));
+ try {
+  const started = Date.parse(cycleStartedAt);
+  let active = 0, peak = 0;
+  const result = await collectScoped({parentThreadId:'p', cwd:root, storageRoot:root, schemas, taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[
+    {type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a','b','c'],tool:'spawnAgent',status:'completed',startedAtMs:started},
+    {type:'subAgentActivity',agentThreadId:'a',agentPath:'/root/a',kind:'started',startedAtMs:started},
+    {type:'subAgentActivity',agentThreadId:'c',agentPath:'/root/conflict',kind:'started',startedAtMs:started},
+   ]}],nextCursor:null}),
+   listPage:async()=>({data:['a','b','c'].map(id=>({id,cwd:root,status:{type:id==='b'?'active':'notLoaded',...(id==='b'?{activeFlags:[]}:{})},source:{subAgent:{thread_spawn:{parent_thread_id:'p',agent_path:`/root/${id}`}}}})),nextCursor:null}),
+   observeAgent:async id=>{ active++; peak=Math.max(peak,active); await Promise.resolve(); active--; return {state:id==='a'?'working':'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString()}; },
+  });
+  assert.ok(peak<=2);
+  assert.equal(result.status,'ready');
+  assert.equal(result.runningCount,null, 'persisted observations never become a live exact count');
+  assert.equal(result.observedRunningCount,2);
+  assert.equal(result.observedRunningComplete,true);
+  assert.equal(result.observedRunningBasis,'mixed');
+  assert.deepEqual(result.agents.map(a=>[a.id,a.state,a.stateBasis,a.agentPath??null]), [['a','working','codex-rollout','/root/a'],['b','working','runtime','/root/b'],['c','completed','codex-rollout',null]]);
+  assert.ok(result.agents.every(a=>a.assignmentEligible));
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('incomplete membership reports a recorded lower bound without inventing live zero', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-observed-partial-'));
+ try {
+  const started = Date.parse(cycleStartedAt);
+  const options = {parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'partial',items:[{type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a','missing'],tool:'spawnAgent',status:'completed',startedAtMs:started}]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null})};
+  const observed = await collectScoped({...options,observeAgent:async()=>({state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString()})});
+  assert.equal(observed.status,'partial'); assert.equal(observed.runningCount,null);
+  assert.equal(observed.observedRunningCount,1); assert.equal(observed.observedRunningComplete,false); assert.equal(observed.observedRunningBasis,'codex-rollout');
+  const unknown = await collectScoped(options);
+  assert.equal(unknown.runningCount,null); assert.equal(unknown.observedRunningCount,null);
+  assert.equal(unknown.observedRunningBasis,'unknown'); assert.equal(unknown.observedRunningComplete,false);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+
+test('older rollout state cannot survive a later followup or parent interaction', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-rollout-stale-'));
+ try {
+  const started=Date.parse(cycleStartedAt);
+  for (const newer of [
+   {type:'subAgentActivity',agentThreadId:'a',kind:'interacted',startedAtMs:started+3000},
+   {type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a'],tool:'followupTask',status:'completed',startedAtMs:started+3000},
+   {type:'subAgentActivity',agentThreadId:'a',kind:'interacted'},
+  ]) {
+   const result = await collectScoped({parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+    listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[
+     {type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a'],tool:'spawnAgent',status:'completed',startedAtMs:started+1000},
+     {type:'subAgentActivity',agentThreadId:'a',kind:'completed',startedAtMs:started+2000},newer
+    ]}],nextCursor:null}),
+    listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}),
+    observeAgent:async()=>({state:'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString()})
+   });
+   assert.equal(result.agents[0].state,'unknown');
+   assert.equal(result.agents[0].stateBasis,'unknown');
+   assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,null);
+  }
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('catalog candidates require same parent, project and exact current root before joining a partial run', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-root-proof-'));
+ try {
+  const started=Date.parse(cycleStartedAt); let active=0, peak=0;
+  const child=(id,parent='p',cwd=root)=>({id,cwd,status:{type:'active',activeFlags:[]},source:{subAgent:{thread_spawn:{parent_thread_id:parent}}}});
+  const result = await collectScoped({parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'root-now',rootTurnId:'root-now',startedAt:started/1000,itemsView:'partial',items:[]}],nextCursor:null}),
+   listPage:async()=>({data:[child('current'),child('old'),child('foreign','other'),child('outside','p','/')],nextCursor:null}),
+   verifyAgent:async id=>{active++;peak=Math.max(peak,active);await Promise.resolve();active--;return {parentThreadId:'p',cwd:root,rootTurnId:id==='old'?'root-old':'root-now',turnStartedAt:new Date(started+1000).toISOString()};}
+  });
+  assert.ok(peak<=2); assert.equal(result.status,'partial'); assert.equal(result.complete,false);
+  assert.deepEqual(result.agents.map(a=>a.id),['current']);
+  assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,1); assert.equal(result.observedRunningComplete,false);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});

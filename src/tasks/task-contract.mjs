@@ -15,11 +15,16 @@ export function createTaskProgressSchemas(z) {
 			reference: z.string().trim().min(1).max(4_096).optional(),
 		})
 		.strict();
+	const TaskAgentSchema = z.object({
+		threadId: z.string().trim().min(1).max(512),
+		path: z.string().trim().min(1).max(1024).optional(),
+	}).strict();
 	const ItemFields = {
 		id: z.string().trim().min(1).max(128),
 		title: z.string().trim().min(1).max(1_000),
 		status: TaskStatusSchema.default("pending"),
 		evidence: z.array(TaskEvidenceSchema).max(100).default([]),
+		agent: TaskAgentSchema.nullable().optional(),
 	};
 	const TaskItemSchema = z.object(ItemFields).strict();
 	const TaskObjectiveSchema = z

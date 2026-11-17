@@ -44,6 +44,8 @@ export interface HeartbeatItemRow {
 	evidence?: string;
 	line?: number;
 	children?: unknown;
+	owner?: string;
+	agent_thread_id?: string;
 	[field: string]: unknown;
 }
 

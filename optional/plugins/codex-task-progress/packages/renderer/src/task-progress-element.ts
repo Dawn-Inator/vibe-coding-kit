@@ -1673,6 +1673,62 @@ export class TaskProgressElement extends LitElement {
     return snapshot;
   }
 
+  private subagentMeter(snapshot: SubagentProgressSnapshot | null) {
+    // Runtime counts and recorded observations are distinct from the number of rows.
+    const observation = snapshot;
+    const valid = (value: unknown): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    const exactRuntime = snapshot?.runningBasis === "runtime" && valid(snapshot.runningCount);
+    const recorded = valid(observation?.observedRunningCount)
+      ? observation.observedRunningCount
+      : null;
+    const count = exactRuntime ? (snapshot?.runningCount ?? null) : recorded;
+    const complete = exactRuntime || observation?.observedRunningComplete === true;
+    const allocation = snapshot?.allocation;
+    const plan = allocation?.plannedCount;
+    const sameObservation =
+      !!snapshot?.observedAt &&
+      snapshot.observedAt === allocation?.observedAt &&
+      Number.isFinite(Date.parse(snapshot.observedAt));
+    const planValid =
+      allocation?.basis === "heartbeat" && valid(plan) && plan > 0 && sameObservation;
+    const ratio =
+      count !== null &&
+      planValid &&
+      complete &&
+      allocation?.runningCount === count &&
+      allocation.status === "ready" &&
+      count <= plan &&
+      typeof allocation.ratio === "number" &&
+      Number.isFinite(allocation.ratio) &&
+      Math.abs(allocation.ratio - count / plan) < 0.000001
+        ? allocation.ratio
+        : null;
+    const value = count === null ? "—" : `${complete ? "" : "≥"}${count}/${planValid ? plan : "—"}`;
+    const label = this.t("Working agents / planned", "工作中 Agent / 计划派发");
+    const status =
+      count === null
+        ? this.t("Count not recorded", "数量未记录")
+        : exactRuntime
+          ? this.t("Runtime observation", "运行时观测")
+          : complete
+            ? this.t("Recorded working count", "已记录工作中数量")
+            : this.t("Recorded working count (at least)", "已记录工作中数量（至少）");
+    const observed =
+      snapshot?.observedAt && Number.isFinite(Date.parse(snapshot.observedAt))
+        ? this.date(snapshot.observedAt)
+        : null;
+    const detail = snapshot
+      ? `${this.t("Recorded agents in scope", "范围内已记录 Agent")} ${snapshot.agents.length}`
+      : null;
+    const accessible = `${label}: ${value} · ${status}${observed ? ` · ${observed}` : ""}`;
+    return html`<div class="allocation-metric">
+      <div class="allocation-ring" role=${ratio !== null ? "meter" : "img"} aria-label=${accessible} aria-valuemin=${ratio !== null ? "0" : nothing} aria-valuemax=${ratio !== null ? "100" : nothing} aria-valuenow=${ratio !== null ? Math.round(ratio * 1000) / 10 : nothing} aria-valuetext=${ratio !== null ? value : nothing}>
+        <svg viewBox="0 0 72 72" aria-hidden="true"><circle class="allocation-track" cx="36" cy="36" r="32" pathLength="100"></circle>${ratio !== null ? svg`<circle class="allocation-fill" cx="36" cy="36" r="32" pathLength="100" stroke-dasharray="100" stroke-dashoffset=${100 - ratio * 100}></circle>` : nothing}</svg><strong>${value}</strong>
+      </div><div class="allocation-copy"><span class="allocation-label">${label}</span><span class="allocation-status">${status}</span>${observed ? html`<span class="allocation-meta">${this.t("Observed", "观测于")} ${observed}</span>` : nothing}${detail ? html`<span class="allocation-meta">${detail}</span>` : nothing}</div>
+    </div>`;
+  }
+
   private renderSubagents() {
     const snapshot = this.currentRunSubagents();
     const agents = snapshot?.agents ?? [];
@@ -1681,10 +1737,6 @@ export class TaskProgressElement extends LitElement {
         state === "working" ? 0 : state === "completed" ? 2 : 1;
       return rank(a.state) - rank(b.state);
     });
-    const listed =
-      snapshot && (snapshot.status === "ready" || snapshot.status === "partial")
-        ? String(agents.length)
-        : "—";
     const labels: Record<SubagentProgressEntry["state"], string> = {
       working: this.t("Working", "正在执行"),
       waiting: this.t("Waiting", "等待中"),
@@ -1694,19 +1746,32 @@ export class TaskProgressElement extends LitElement {
       unknown: this.t("Unknown", "未知"),
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
-      <div class="agent-counts">${this.allocationMeter(snapshot?.allocation, this.t("Working agents / planned", "工作中 Agent / 计划派发"), snapshot ? `${this.t("This run's agents", "本轮 Agent")} ${listed}` : undefined)}</div>
+      <div class="agent-counts">${this.subagentMeter(snapshot)}</div>
       ${
         ranked.length
           ? ranked.map((agent) => {
               const progress = agent.progress;
               const percent = progress?.percent;
-              const known = typeof percent === "number" && Number.isFinite(percent);
+              const known =
+                ["module-delivery", "registered-checklist", "task-lifecycle"].includes(
+                  agent.progressBasis ?? "",
+                ) &&
+                !!progress &&
+                Number.isSafeInteger(progress.completed) &&
+                Number.isSafeInteger(progress.total) &&
+                progress.total > 0 &&
+                progress.completed >= 0 &&
+                progress.completed <= progress.total &&
+                typeof percent === "number" &&
+                Number.isFinite(percent) &&
+                percent >= 0 &&
+                percent <= 100;
               const bounded = known ? Math.max(0, Math.min(100, percent)) : null;
               return html`<article class="row agent-row" data-agent=${agent.id}>
           <span class="module-icon" data-status=${agent.state === "working" ? "active" : agent.state}>${agent.state === "completed" ? this.icon("check") : "·"}</span>
           <span class="module-content"><span class="module-title-line"><span class="name">${agent.name}</span>${known ? html`<span class="module-percent">${percent}%</span>` : nothing}</span>
           ${known ? html`<span class="module-track" role="meter" aria-label=${agent.name} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${bounded as number} aria-valuetext=${`${progress?.completed}/${progress?.total}`}><span class="module-fill" style=${`transform:scaleX(${(bounded as number) / 100})`}></span></span>` : nothing}
-          <span class="module-meta">${known && progress ? html`<span>${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}<span class="status">${labels[agent.state]}</span></span></span>
+          <span class="module-meta">${known && progress ? html`<span>${agent.progressBasis === "module-delivery" ? this.t("Assigned work", "已分配任务") : agent.progressBasis === "registered-checklist" ? this.t("Recorded checklist", "已登记清单") : this.t("Recorded task progress", "已登记任务进度")} ${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}<span class="status">${agent.state === "unknown" || !agent.stateBasis || agent.stateBasis === "unknown" || agent.stateBasis === "runtime" ? labels[agent.state] : `${this.t("Recorded", "记录为")} ${labels[agent.state]}${agent.observedAt ? ` · ${this.time(agent.observedAt)}` : ""}`}</span></span></span>
         </article>`;
             })
           : html`<p class="empty">${!snapshot ? this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`
@@ -1834,7 +1899,7 @@ export class TaskProgressElement extends LitElement {
                     }${this.renderArchive()}${this.renderTaskSource()}`
           }
         </div>
-        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? (this.currentRunSubagents() ? `${this.t("This run's agents", "本轮 Agent")} ${this.currentRunSubagents()?.agents.length}` : this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。")) : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
+        <footer class="panel-foot">${this.icon(this.tab === "tasks" ? "layers" : this.tab)}<span>${this.tab === "tasks" ? (this.taskMode === "subagents" ? (this.currentRunSubagents() ? `${this.t("Recorded agents in scope", "范围内已记录 Agent")} ${this.currentRunSubagents()?.agents.length}` : this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。")) : `${task?.objectives.length ?? 0} ${this.t("subtasks · expand to inspect nodes", "个子任务 · 展开查看节点")}`) : this.tab === "history" ? this.t("Recorded history", "已记录历史") : this.t("Read only · separate from execution", "只读展示 · 与执行状态独立")}</span></footer>
       </div>
     </section>`;
   }

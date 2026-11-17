@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { mock } from "node:test";
-import { CodexAppServerClient } from "../src/index.js";
+import {
+  CodexAppServerClient,
+  type CodexAppServerSession,
+  createCodexAppServerRuntime,
+} from "../src/index.js";
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
@@ -293,7 +300,7 @@ test("parent turn summaries hydrate bounded deferred item pages in chronological
       } else if (request.method === "thread/items/list") {
         if (p.threadId !== "p" || p.turnId !== "continuation" || p.limit !== 30 || p.sortDirection !== "desc" || !p.deferOutput.commandExecution || !p.deferOutput.mcpToolCall) process.exit(3);
         const newer = [
-          {turnId:"continuation", startedAtMs:3000, item:{id:"b",type:"subAgentActivity",agentThreadId:"c",kind:"completed",agentPath:"private"}},
+          {turnId:"continuation", startedAtMs:3000, item:{id:"b",type:"subAgentActivity",agentThreadId:"c",kind:"completed",agentPath:"/root/c"}},
           {turnId:"continuation", startedAtMs:2500, item:{id:"huge",type:"commandExecution",aggregatedOutput:"private".repeat(500000)}}
         ];
         const older = [{turnId:"continuation",startedAtMs:2000,item:{id:"a",type:"collabAgentToolCall",senderThreadId:"p",receiverThreadIds:["c"],tool:"spawnAgent",status:"completed",prompt:"private"}}];
@@ -322,6 +329,7 @@ test("parent turn summaries hydrate bounded deferred item pages in chronological
         ["subAgentActivity", 3000],
       ],
     );
+    assert.equal(current.items[1]?.agentPath, "/root/c");
     const firstItem = current.items[0];
     assert.ok(firstItem);
     assert.deepEqual(firstItem.receiverThreadIds, ["c"]);
@@ -340,7 +348,7 @@ test("item page budget returns a partial view without pretending older items wer
       if(q.method === "thread/turns/list") process.stdout.write(JSON.stringify({id:q.id,result:{data:[{id:"t",rootTurnId:"t",startedAt:1}],nextCursor:null}})+"\\n");
       if(q.method === "thread/items/list") {
         const n=q.params.cursor ? Number(q.params.cursor) : 0;
-        if(n>=4) process.exit(2);
+        if(n>=16) process.exit(2);
         process.stdout.write(JSON.stringify({id:q.id,result:{data:[{turnId:"t",startedAtMs:100-n,item:{id:"i"+n,type:"subAgentActivity",agentThreadId:"c",kind:"interacted"}}],nextCursor:String(n+1)}})+"\\n");
       }
     });
@@ -352,7 +360,7 @@ test("item page budget returns a partial view without pretending older items wer
     assert.equal(turn.itemsView, "partial");
     assert.deepEqual(
       turn.items.map((item) => item.startedAtMs),
-      [97, 98, 99, 100],
+      Array.from({ length: 16 }, (_, i) => 85 + i),
     );
   } finally {
     await client.close();
@@ -379,5 +387,181 @@ test("item identity, cursor loops and unsupported methods fail closed", async ()
     } finally {
       await client.close();
     }
+  }
+});
+
+test("child observation metadata uses only public thread identity and latest turn summary", async () => {
+  const script = responderScript(`
+    input.on("line", line => {
+      const q=JSON.parse(line);
+      if(q.method === "thread/read") {
+        if(q.params.includeTurns !== false) process.exit(2);
+        process.stdout.write(JSON.stringify({id:q.id,result:{thread:{id:q.params.threadId,path:"/codex/sessions/child.jsonl",cwd:"/workspace",source:{subAgent:{thread_spawn:{parent_thread_id:q.params.threadId === "wrong" ? "other" : "parent"}}},privateText:"must not escape"}}})+"\\n");
+      } else if(q.method === "thread/turns/list") {
+        if(q.params.threadId !== "child" || q.params.limit !== 1 || q.params.itemsView !== "summary" || q.params.sortDirection !== "desc") process.exit(3);
+        process.stdout.write(JSON.stringify({id:q.id,result:{data:[{id:"turn",rootTurnId:"root",startedAt:1794830400,items:[{privateText:"must not escape"}]}],nextCursor:null}})+"\\n");
+      } else process.exit(4);
+    });
+  `);
+  const client = await clientFor(script);
+  try {
+    const result = await client.readSubagentObservationMetadata("child", "parent");
+    assert.deepEqual(result, {
+      path: "/codex/sessions/child.jsonl",
+      cwd: "/workspace",
+      turnId: "turn",
+      rootTurnId: "root",
+      turnStartedAt: new Date(1794830400000).toISOString(),
+    });
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.equal(await client.readSubagentObservationMetadata("wrong", "parent"), null);
+  } finally {
+    await client.close();
+  }
+});
+
+test("runtime wraps verified child metadata and records exact current-turn rollout events", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agent-runtime-wrapper-")));
+  const project = join(root, "project");
+  const sessions = join(root, "sessions");
+  await mkdir(project);
+  await mkdir(sessions);
+  const path = join(sessions, "child.jsonl");
+  const timestamp = "2026-11-16T12:00:00.000Z";
+  const metadata = {
+    path,
+    cwd: project,
+    turnId: "child-turn",
+    rootTurnId: "parent-root",
+    turnStartedAt: timestamp,
+  };
+  const header = {
+    type: "session_meta",
+    payload: {
+      id: "child",
+      cwd: project,
+      source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } },
+    },
+  };
+  const event = (type: string, at: string) => ({
+    type: "event_msg",
+    timestamp: at,
+    payload: { type, turn_id: "child-turn", root_turn_id: "parent-root" },
+  });
+  const write = async (events: unknown[]) =>
+    writeFile(path, `${[header, ...events].map((item) => JSON.stringify(item)).join("\n")}\n`);
+  await write([event("task_started", "2026-11-16T12:00:01.000Z")]);
+  const session = {
+    closed: new Promise<void>(() => {}),
+    requestMethods: [],
+    readSubagentObservationMetadata: async (id: string, parent: string) =>
+      id === "child" && parent === "parent" ? metadata : null,
+    close: async () => {},
+  } as unknown as CodexAppServerSession;
+  const runtime = createCodexAppServerRuntime({
+    env: { CODEX_HOME: root },
+    connect: async () => session,
+  });
+  const context = {
+    parentThreadId: "parent",
+    cwd: project,
+    rootTurnId: "parent-root",
+    rootTurnStartedAt: timestamp,
+  };
+  try {
+    assert.deepEqual(await runtime.verifyDirectSubagent?.("child", context), {
+      parentThreadId: "parent",
+      cwd: project,
+      rootTurnId: "parent-root",
+      turnStartedAt: timestamp,
+    });
+    const working = await runtime.observeDirectSubagent?.("child", context);
+    assert.equal(working?.state, "working");
+    assert.equal(working?.basis, "codex-rollout");
+    await write([
+      event("task_started", "2026-11-16T12:00:01.000Z"),
+      event("task_complete", "2026-11-16T12:00:02.000Z"),
+    ]);
+    assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "completed");
+    assert.equal(
+      await runtime.verifyDirectSubagent?.("child", { ...context, rootTurnId: "older-root" }),
+      null,
+    );
+    assert.equal(
+      (await runtime.observeDirectSubagent?.("child", { ...context, parentThreadId: "wrong" }))
+        ?.state,
+      "unknown",
+    );
+    const outside = join(root, "outside.jsonl");
+    await writeFile(outside, "{}");
+    metadata.path = outside;
+    assert.ok(await runtime.verifyDirectSubagent?.("child", context));
+    assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "unknown");
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production runtime observes a verified rollout through public app-server transport", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agent-public-runtime-")));
+  const cwd = join(root, "project");
+  const sessions = join(root, "sessions");
+  await mkdir(cwd);
+  await mkdir(sessions);
+  const path = join(sessions, "child.jsonl");
+  const start = "2026-11-16T12:00:00.000Z";
+  const header = {
+    type: "session_meta",
+    payload: {
+      id: "child",
+      cwd,
+      source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } },
+    },
+  };
+  const event = {
+    type: "event_msg",
+    timestamp: "2026-11-16T12:00:01.000Z",
+    payload: { type: "task_started", turn_id: "child-turn", root_turn_id: "parent-root" },
+  };
+  await writeFile(path, `${JSON.stringify(header)}\n${JSON.stringify(event)}\n`);
+  const script = responderScript(`
+    input.on("line", (line) => {
+      const q = JSON.parse(line);
+      if (q.method === "thread/read") {
+        if (q.params.threadId !== "child" || q.params.includeTurns !== false) process.exit(2);
+        process.stdout.write(JSON.stringify({ id:q.id, result:{ thread:{ id:"child", path:${JSON.stringify(path)}, cwd:${JSON.stringify(cwd)}, source:{subAgent:{thread_spawn:{parent_thread_id:"parent"}}} } } }) + "\\n");
+      } else if (q.method === "thread/turns/list") {
+        if (q.params.threadId !== "child" || q.params.limit !== 1 || q.params.itemsView !== "summary") process.exit(3);
+        process.stdout.write(JSON.stringify({ id:q.id, result:{ data:[{id:"child-turn",rootTurnId:"parent-root",startedAt:1794830400}], nextCursor:null } }) + "\\n");
+      } else process.exit(4);
+    });
+  `);
+  const runtime = createCodexAppServerRuntime({
+    command: process.execPath,
+    args: ["-e", script],
+    env: { ...process.env, CODEX_HOME: root },
+  });
+  const context = {
+    parentThreadId: "parent",
+    cwd,
+    rootTurnId: "parent-root",
+    rootTurnStartedAt: start,
+  };
+  try {
+    const proof = await runtime.verifyDirectSubagent?.("child", context);
+    assert.equal(proof?.rootTurnId, "parent-root");
+    const observation = await runtime.observeDirectSubagent?.("child", context);
+    assert.equal(observation?.state, "working");
+    assert.equal(observation?.basis, "codex-rollout");
+    assert.equal(observation?.observedAt, "2026-11-16T12:00:01.000Z");
+    assert.equal(
+      (await runtime.observeDirectSubagent?.("child", { ...context, rootTurnId: "older-root" }))
+        ?.state,
+      "unknown",
+    );
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

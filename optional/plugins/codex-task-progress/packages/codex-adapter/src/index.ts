@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import {
   GOAL_PROGRESS_RELEASE_VERSION,
@@ -311,6 +312,77 @@ export class CodexAppServerClient implements ThreadCatalog {
     return ThreadReadResponseSchema.parse(result).thread;
   }
 
+  /** Public metadata only: callers must verify path containment before reading it. */
+  async readSubagentObservationMetadata(
+    threadId: string,
+    parentThreadId: string,
+  ): Promise<{
+    path: string | null;
+    cwd: string;
+    turnId: string;
+    rootTurnId: string;
+    turnStartedAt: string;
+  } | null> {
+    const rawThread = await this.#request("thread/read", { threadId, includeTurns: false });
+    const response = z
+      .object({
+        thread: z
+          .object({
+            id: z.string().min(1).max(256),
+            path: z.string().min(1).max(4096).nullish(),
+            cwd: z.string().min(1).max(4096),
+            source: z.unknown(),
+          })
+          .passthrough(),
+      })
+      .safeParse(rawThread);
+    if (!response.success) return null;
+    const thread = response.data.thread;
+    const source = thread.source as {
+      subAgent?: { thread_spawn?: { parent_thread_id?: unknown } };
+      subagent?: { thread_spawn?: { parent_thread_id?: unknown } };
+    } | null;
+    const spawn = source?.subAgent?.thread_spawn ?? source?.subagent?.thread_spawn;
+    if (
+      thread.id !== threadId ||
+      spawn?.parent_thread_id !== parentThreadId ||
+      (thread.path != null && (!isAbsolute(thread.path) || thread.path.includes("\0"))) ||
+      !isAbsolute(thread.cwd) ||
+      thread.cwd.includes("\0")
+    )
+      return null;
+    const rawTurns = await this.#request("thread/turns/list", {
+      threadId,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "summary",
+    });
+    const turns = z
+      .object({
+        data: z
+          .array(
+            z.object({
+              id: z.string().min(1).max(256),
+              rootTurnId: z.string().min(1).max(256),
+              startedAt: z.number().finite(),
+            }),
+          )
+          .max(1),
+      })
+      .safeParse(rawTurns);
+    const latest = turns.success ? turns.data.data[0] : undefined;
+    if (!latest) return null;
+    const startedAt = new Date(latest.startedAt * 1000);
+    if (!Number.isFinite(startedAt.getTime())) return null;
+    return {
+      path: thread.path ?? null,
+      cwd: thread.cwd,
+      turnId: latest.id,
+      rootTurnId: latest.rootTurnId,
+      turnStartedAt: startedAt.toISOString(),
+    };
+  }
+
   async listTurnIds(threadId: string): Promise<readonly string[]> {
     const result = await this.#request("thread/turns/list", {
       threadId,
@@ -397,8 +469,8 @@ export class CodexAppServerClient implements ThreadCatalog {
         const ids = new Set<string>();
         let metadataBytes = 0;
         let capped = false;
-        // At most 120 recent entries per turn, with a separate metadata budget.
-        for (let page = 0; page < 4; page++) {
+        // At most 480 recent entries per turn, with a separate metadata budget.
+        for (let page = 0; page < 16; page++) {
           const result = z
             .object({ data: z.array(z.unknown()).max(30), nextCursor: z.string().nullable() })
             .parse(
@@ -463,6 +535,10 @@ export class CodexAppServerClient implements ThreadCatalog {
                 agentThreadId:
                   typeof item.agentThreadId === "string" && item.agentThreadId.length <= 256
                     ? item.agentThreadId
+                    : null,
+                agentPath:
+                  typeof item.agentPath === "string" && item.agentPath.length <= 512
+                    ? item.agentPath
                     : null,
                 kind: typeof item.kind === "string" && item.kind.length <= 40 ? item.kind : null,
                 startedAtMs:

@@ -73,6 +73,8 @@
   "supervision/heartbeat-ledger-types.test.mjs",
   "supervision/heartbeat-ledger-files.test.mjs",
   "tasks/task-contract.test.mjs",
+  "tasks/agent-task-associations.test.mjs",
+  "tasks/codex-agent-runtime.test.mjs",
   "tasks/markdown-records.test.mjs",
   "tasks/task-store.test.mjs",
   "tasks/subagent-progress.test.mjs",

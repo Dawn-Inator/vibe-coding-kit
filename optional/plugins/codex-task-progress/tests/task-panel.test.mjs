@@ -235,8 +235,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             parentThreadId: "thread-a",
             observedAt: "2026-11-15T12:00:00Z",
             status: "ready",
-            runningCount: 99,
-            runningBasis: "heartbeat",
+            runningCount: 10,
+            runningBasis: "runtime",
             complete: false,
             truncated: true,
             allocation: {
@@ -256,7 +256,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 state: "completed",
                 observedAt: null,
                 progress: { completed: 2, total: 2, percent: 100 },
-                progressBasis: "registered-checklist",
+                progressBasis: "module-delivery",
               },
               {
                 id: "unknown",
@@ -270,9 +270,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 id: "working",
                 name: "Working agent",
                 state: "working",
+                stateBasis: "codex-rollout",
                 observedAt: null,
                 progress: { completed: 0, total: 4, percent: 0 },
-                progressBasis: "task-lifecycle",
+                progressBasis: "module-delivery",
               },
             ],
           };
@@ -287,7 +288,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           await ring.locator(".allocation-fill").getAttribute("stroke-dashoffset"),
           "50",
         );
-        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 3/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 3/);
         assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /99|实时/);
         assert.equal(await panel.locator(".agent-counts .allocation-ring").count(), 1);
         assert.equal(
@@ -332,6 +333,26 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.match(await rows.nth(1).innerText(), /进度未登记/);
         assert.doesNotMatch(await rows.nth(1).innerText(), /—|0\/0/);
         assert.equal(await rows.nth(1).locator(".module-percent, .module-track").count(), 0);
+        assert.match(await rows.nth(0).innerText(), /已分配任务 0\/4/);
+        assert.match(await rows.nth(0).innerText(), /记录为 正在执行/);
+        assert.match(await rows.nth(2).innerText(), /已分配任务 2\/2/);
+        await page.evaluate(() => {
+          window.fixture.subagents.agents[0].progressBasis = "task-lifecycle";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator('[data-agent="done"] .module-track').count(), 1);
+        assert.match(await panel.locator('[data-agent="done"]').innerText(), /已登记任务进度 2\/2/);
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents.agents[0], {
+            progressBasis: "registered-checklist",
+            state: "unknown",
+            stateBasis: "unknown",
+            observedAt: "2026-11-15T12:00:00Z",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.match(await panel.locator('[data-agent="done"]').innerText(), /已登记清单 2\/2/);
+        assert.doesNotMatch(await panel.locator('[data-agent="done"]').innerText(), /记录为 未知/);
         assert.ok(
           (await rows.nth(1).boundingBox()).height < (await rows.nth(0).boundingBox()).height + 4,
         );
@@ -341,6 +362,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           { runningCount: 20, ratio: 1, offset: "0" },
         ]) {
           await page.evaluate((sample) => {
+            window.fixture.subagents.runningCount = sample.runningCount;
             Object.assign(window.fixture.subagents.allocation, {
               runningCount: sample.runningCount,
               ratio: sample.ratio,
@@ -369,14 +391,42 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             observedAt: null,
           }));
           window.fixture.subagents.allocation = null;
+          window.fixture.subagents.runningCount = null;
+          window.fixture.subagents.runningBasis = "unknown";
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.equal(await ring.getAttribute("role"), "img");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
-        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 100/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 100/);
         assert.equal(await ring.locator("strong").innerText(), "—");
+        // Known counts survive a missing plan; incomplete observations remain lower bounds.
         await page.evaluate(() => {
+          Object.assign(window.fixture.subagents, {
+            observedRunningCount: 2,
+            observedRunningComplete: false,
+            observedRunningBasis: "codex-rollout",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await ring.locator("strong").innerText(), "≥2/—");
+        assert.match(await panel.locator(".agent-counts").innerText(), /已记录工作中数量（至少）/);
+        assert.equal(await ring.locator(".allocation-fill").count(), 0);
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents, {
+            runningCount: 0,
+            runningBasis: "runtime",
+            observedRunningCount: 2,
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await ring.locator("strong").innerText(), "0/—");
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents, {
+            runningCount: null,
+            runningBasis: "unknown",
+            observedRunningCount: null,
+          });
           window.fixture.subagents.allocation = {
             status: "ready",
             planId: "p",
@@ -419,8 +469,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.equal(await ring.locator("strong").innerText(), "40/30");
-        assert.match(await panel.locator(".agent-counts").innerText(), /超出计划/);
+        assert.equal(await ring.locator("strong").innerText(), "—");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
         await context.close();
@@ -447,8 +496,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           scopeBasis: "parent-root-turn",
           status: "ready",
           observedAt: "2026-11-15T12:00:00Z",
-          runningCount: null,
-          runningBasis: "unknown",
+          runningCount: 5,
+          runningBasis: "runtime",
           complete: true,
           truncated: false,
           allocation: {
@@ -515,7 +564,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           .evaluateAll((rows) => rows.map((row) => row.dataset.agent)),
         ["current-0", "current-1", "current-2", "current-3"],
       );
-      assert.match(await panel.locator(".panel-foot").innerText(), /本轮 Agent 4/);
+      assert.match(await panel.locator(".panel-foot").innerText(), /范围内已记录 Agent 4/);
       assert.equal(
         await panel.locator(".agent-counts .allocation-ring").getAttribute("aria-valuenow"),
         "50",
@@ -576,8 +625,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await ring.getAttribute("role"), "img");
         assert.equal(await ring.getAttribute("aria-valuenow"), null);
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
-        assert.match(await panel.locator(".agent-counts").innerText(), /本轮 Agent 1/);
-        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /0\/0|1\/1|100%/);
+        assert.match(await panel.locator(".agent-counts").innerText(), /范围内已记录 Agent 1/);
+        assert.doesNotMatch(await ring.innerText(), /0\/0|1\/1|100%/);
         await page.evaluate(() => {
           window.fixture.task.phase = "completed";
           return window.__CODEX_TASK_PROGRESS__.refresh();

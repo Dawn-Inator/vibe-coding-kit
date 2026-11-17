@@ -796,6 +796,276 @@ thread: ${threadId}
   }
 });
 
+test("real MCP preserves canonical assignments and projects their progress to the native panel", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "m-"));
+  const root = await realpath(directory);
+  const threadId = "assignment-parent";
+  const childId = "assignment-child";
+  const agent = { threadId: childId, path: "/root/worker" };
+  await mkdir(join(root, ".git"));
+  const startedAt = Math.floor(Date.now() / 1000) + 2;
+  const runtime: CodexAppServerRuntime = {
+    async getGoal() {
+      return null;
+    },
+    async readThreadIdentity(id) {
+      return {
+        id,
+        sessionId: id,
+        cwd: root,
+        threadSource: "user",
+        agentRole: null,
+        ephemeral: false,
+        status: { type: "idle" },
+      };
+    },
+    async resolveCurrentThread(input) {
+      return {
+        threadId: input.sessionTreeId,
+        sessionTreeId: input.sessionTreeId,
+        turnId: input.turnId,
+        cwd: root,
+        model: "test",
+      };
+    },
+    async refreshGoalUsage() {
+      throw new Error("Unexpected goal usage");
+    },
+    watchGoalUsage() {},
+    unwatchGoalUsage() {},
+    setPollingMode() {},
+    async close() {},
+    async listSubagentTurns(parent) {
+      return {
+        data: [
+          {
+            id: "root-turn",
+            rootTurnId: "root-turn",
+            startedAt,
+            itemsView: "full",
+            items: [
+              {
+                type: "collabAgentToolCall",
+                senderThreadId: parent,
+                receiverThreadIds: [childId],
+                tool: "spawnAgent",
+                status: "completed",
+                startedAtMs: (startedAt + 1) * 1000,
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      };
+    },
+    async listDirectSubagents() {
+      return {
+        data: [
+          {
+            id: childId,
+            cwd: root,
+            parentThreadId: threadId,
+            source: {
+              subAgent: { thread_spawn: { parent_thread_id: threadId, agent_path: agent.path } },
+            },
+            status: { type: "active", activeFlags: [] },
+          },
+        ],
+        nextCursor: null,
+      };
+    },
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "h") });
+  const helper = new GoalProgressHelper({ paths, runtime, resolveNativeGoal: async () => null });
+  const server = createGoalProgressMcpServer({
+    ipcClient: new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" }),
+  });
+  const client = new Client({ name: "assignment-integration", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  let number = 0;
+  const fullMeta = () => ({
+    threadId,
+    callId: `assignment-call-${++number}`,
+    "x-codex-turn-metadata": {
+      session_id: threadId,
+      thread_id: threadId,
+      turn_id: "root-turn",
+      model: "test",
+      thread_source: "user",
+      cwd: root,
+    },
+  });
+  const nativeMeta = { threadId, thread_id: threadId };
+  type Item = { id: string; status: string; agent?: { threadId: string; path?: string } | null };
+  type Snapshot = {
+    task: {
+      revision: number;
+      objectives: Array<{
+        id: string;
+        agent?: { threadId: string; path?: string } | null;
+        items: Item[];
+      }>;
+    } | null;
+    history?: { events: Array<{ revision: number; type: string }> };
+    subagents?: {
+      status: string;
+      scopeBasis: string;
+      parentThreadId: string;
+      rootTurnId?: string;
+      agents: Array<{
+        id: string;
+        state: string;
+        progress: { completed: number; total: number; percent: number | null } | null;
+        progressBasis: string | null;
+      }>;
+    };
+  };
+  async function invoke(
+    name: string,
+    args: Record<string, unknown>,
+    metadata: ReturnType<typeof fullMeta> | typeof nativeMeta,
+  ): Promise<Snapshot> {
+    const response = await client.callTool({ name, arguments: args, _meta: metadata });
+    assert.notEqual(
+      response.isError,
+      true,
+      JSON.stringify(response.structuredContent ?? response.content),
+    );
+    assert.ok(Array.isArray(response.content));
+    const block = response.content.find(
+      (value) => value && typeof value === "object" && value.type === "text",
+    );
+    assert.ok(block && block.type === "text" && typeof block.text === "string");
+    const envelope = JSON.parse(block.text) as { ok: boolean; result: Snapshot };
+    assert.equal(envelope.ok, true);
+    return envelope.result;
+  }
+  const evidence = [
+    { summary: "Verified in fixture", verification: "verified", reference: "test:assignment" },
+  ];
+  const initialObjectives = [
+    {
+      id: "A",
+      title: "Assigned objective",
+      agent,
+      items: [
+        { id: "A1", title: "First", agent },
+        { id: "A2", title: "Second" },
+        { id: "A3", title: "Third" },
+      ],
+    },
+  ];
+  try {
+    await helper.start();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    await invoke(
+      "task_progress_initialize",
+      {
+        requestId: "assignment-init",
+        expectedRevision: 0,
+        title: "Assignments",
+        reason: "Start fixture",
+        objectives: initialObjectives,
+      },
+      fullMeta(),
+    );
+    const initialized = await invoke("task_progress_get", {}, fullMeta());
+    assert.equal(initialized.task?.revision, 1);
+    assert.deepEqual(initialized.task?.objectives[0]?.agent, agent);
+    assert.deepEqual(initialized.task?.objectives[0]?.items[0]?.agent, agent);
+    await invoke(
+      "task_progress_update",
+      {
+        requestId: "assignment-update",
+        expectedRevision: 1,
+        reason: "Finish two",
+        changes: [
+          { targetId: "A1", status: "completed", evidence },
+          { targetId: "A2", status: "completed", evidence },
+        ],
+      },
+      fullMeta(),
+    );
+    const priorHistory = await invoke("task_progress_history", { limit: 20 }, fullMeta());
+    assert.ok(priorHistory.history);
+    assert.deepEqual(
+      priorHistory.history.events.map((event) => event.revision),
+      [2, 1],
+    );
+    await invoke(
+      "task_progress_rescope",
+      {
+        requestId: "assignment-rescope",
+        expectedRevision: 2,
+        reason: "Associate the second item",
+        objectives: [
+          {
+            id: "A",
+            title: "Assigned objective",
+            agent,
+            items: [
+              { id: "A1", title: "First", status: "completed", evidence },
+              { id: "A2", title: "Second", status: "completed", evidence, agent },
+              { id: "A3", title: "Third", status: "pending" },
+            ],
+          },
+        ],
+      },
+      fullMeta(),
+    );
+    const full = await invoke("task_progress_get", {}, fullMeta());
+    assert.equal(full.task?.revision, 3);
+    assert.deepEqual(full.task?.objectives[0]?.agent, agent);
+    assert.deepEqual(full.task?.objectives[0]?.items[0]?.agent, agent);
+    assert.deepEqual(full.task?.objectives[0]?.items[1]?.agent, agent);
+    assert.deepEqual(
+      full.task?.objectives[0]?.items.map((item) => [item.id, item.status]),
+      [
+        ["A1", "completed"],
+        ["A2", "completed"],
+        ["A3", "pending"],
+      ],
+    );
+    const afterHistory = await invoke("task_progress_history", { limit: 20 }, fullMeta());
+    assert.ok(afterHistory.history);
+    assert.deepEqual(
+      afterHistory.history.events.map((event) => event.revision),
+      [3, 2, 1],
+    );
+    assert.deepEqual(afterHistory.history.events.slice(1), priorHistory.history.events);
+    let native: Snapshot | undefined;
+    for (let i = 0; i < 150; i++) {
+      native = await invoke("task_progress_get", {}, nativeMeta);
+      if (native.subagents?.agents[0]?.progress?.total === 3) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(native?.task?.revision, 3);
+    assert.equal(native?.subagents?.parentThreadId, threadId);
+    assert.equal(native?.subagents?.scopeBasis, "parent-root-turn");
+    assert.equal(native?.subagents?.rootTurnId, "root-turn");
+    assert.equal(native?.subagents?.agents.length, 1);
+    const member = native?.subagents?.agents[0];
+    assert.ok(member);
+    assert.equal(member.id, childId);
+    assert.equal(member.state, "working");
+    assert.deepEqual(member.progress, { completed: 2, total: 3, percent: 66.67 });
+    assert.equal(member.progressBasis, "module-delivery");
+    let fullWithProgress: Snapshot | undefined;
+    for (let i = 0; i < 150; i++) {
+      fullWithProgress = await invoke("task_progress_get", {}, fullMeta());
+      if (fullWithProgress.subagents?.agents[0]?.progress?.total === 3) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.deepEqual(fullWithProgress?.subagents?.agents[0]?.progress, member.progress);
+  } finally {
+    await client.close();
+    await server.close();
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("stable native panel identity survives releases and each transport serves its own asset", async () => {
   const oldServer = createGoalProgressMcpServer({
     nativePanelReleaseVersion: "0.9.4",

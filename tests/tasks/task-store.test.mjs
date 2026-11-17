@@ -813,3 +813,48 @@ test("managed archive and source bindings survive import and repeated import wit
 	assert.equal(await readFile(sourcePaths.history, "utf8"), historyBefore);
 	assert.equal(await readFile(sourcePaths.heartbeat, "utf8"), heartbeatBefore);
 });
+
+test("assignment metadata survives replay, follows IDs across rescope, and supports clear and reassignment", async () => {
+	const { root, store } = await setup();
+	const one = { threadId: "one", path: "/root/one" };
+	const two = { threadId: "two", path: "/root/two" };
+	await store.initialize("assign", { requestId: "init", expectedRevision: 0, reason: "start", title: "Assignments", objectives: [
+		{ id: "p", title: "P", agent: one, items: [{ id: "a", title: "A", agent: one }, { id: "removed", title: "Removed", agent: one }] },
+		{ id: "q", title: "Q", items: [{ id: "b", title: "B" }] },
+	] });
+	await store.update("assign", { requestId: "update", expectedRevision: 1, reason: "start", changes: [{ targetId: "a", status: "active" }] });
+	const moved = await store.rescope("assign", { requestId: "move", expectedRevision: 2, reason: "move", objectives: [
+		{ id: "p", title: "P" }, { id: "q", title: "Q", items: [{ id: "a", title: "A", status: "active" }, { id: "b", title: "B", agent: two }] },
+	] });
+	assert.deepEqual(moved.state.objectives[0].agent, one);
+	assert.deepEqual(moved.state.objectives[1].items[0].agent, one);
+	assert.deepEqual(moved.state.objectives[1].items[1].agent, two);
+	assert.equal(moved.state.objectives[0].items[0].status, "cancelled");
+	assert.deepEqual(moved.state.objectives[0].items[0].agent, one);
+	const next = structuredClone(moved.state.objectives);
+	next[0].agent = null;
+	next[1].items[0].agent = two;
+	await store.rescope("assign", { requestId: "change", expectedRevision: 3, reason: "change", objectives: next });
+	const reread = await new TaskStore(root, { schemas }).get("assign");
+	assert.equal(reread.objectives[0].agent, null);
+	assert.deepEqual(reread.objectives[1].items[0].agent, two);
+	assert.deepEqual(reread.objectives[1].items[1].agent, two);
+	assert.equal(reread.progress.total, 2);
+	assert.ok((await store.history("assign")).events.every(validateTaskEventStructure));
+});
+
+test("new lifecycle does not carry assignments or treat assignment-only edits as work", async () => {
+	const { root, store } = await setup();
+	const proof = [{ summary: "Delivered", verification: "verified", reference: "test:proof" }];
+	const check = { status: "done", evidence: proof };
+	const closeout = { branch: check, merge: check, push: check, remainingWork: 0, ownerActions: 0, auditEvidence: proof };
+	await store.initialize("cycle", { requestId: "init", expectedRevision: 0, reason: "start", title: "First", lifecycle: true, objectives: [{ id: "a", title: "A", status: "completed", evidence: proof, agent: { threadId: "one" } }] });
+	await store.complete("cycle", { requestId: "close", expectedRevision: 1, reason: "done", closeout });
+	const omitted = [{ id: "a", title: "A", status: "completed", evidence: proof }];
+	await assert.rejects(store.rescope("cycle", { requestId: "same", expectedRevision: 2, reason: "same", objectives: omitted }), hasCode("TASK_NO_NEW_WORK"));
+	await assert.rejects(store.rescope("cycle", { requestId: "metadata", expectedRevision: 2, reason: "change owner", objectives: [{ ...omitted[0], agent: { threadId: "two" } }] }), hasCode("TASK_NO_NEW_WORK"));
+	await store.rescope("cycle", { requestId: "new", expectedRevision: 2, reason: "new work", objectives: [{ id: "a", title: "New A" }] });
+	const reread = await new TaskStore(root, { schemas }).get("cycle");
+	assert.equal(reread.lifecycle.sequence, 2);
+	assert.equal(reread.objectives[0].agent, undefined);
+});

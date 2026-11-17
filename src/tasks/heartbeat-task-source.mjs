@@ -911,6 +911,12 @@ export function projectHeartbeatTask({
 			itemStatuses: Object.fromEntries(
 				[...byId].map(([id, row]) => [id, String(row.status ?? "")]),
 			),
+			itemOwners: Object.fromEntries(
+				[...byId].map(([id, row]) => [id, {
+					...(typeof row.owner === "string" && row.owner.trim() && !/^[-—]$/.test(row.owner.trim()) ? { owner: row.owner.trim() } : {}),
+					...(typeof row.agent_thread_id === "string" && row.agent_thread_id.trim() && !/^[-—]$/.test(row.agent_thread_id.trim()) ? { agentThreadId: row.agent_thread_id.trim() } : {}),
+				}]),
+			),
 			...(linkRisks.length ? { linkRisks } : {}),
 		},
 	};
