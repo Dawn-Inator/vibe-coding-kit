@@ -708,6 +708,8 @@ test("native panel MCP Apps integration", async (t) => {
               observedAt,
               runningCount: null,
               runningBasis: "unknown",
+              observedRunningCount: 12,
+              observedRunningComplete: false,
               agents: [
                 {
                   id: "current-root-member",
@@ -781,14 +783,41 @@ test("native panel MCP Apps integration", async (t) => {
             assert.equal(data.subagents.taskSourcePath, sourcePath);
             assert.equal(data.subagents.rootTurnStartedAt, rootTurnStartedAt);
             assert.equal(data.subagents.observedAt, observedAt);
-            const allocation = frame.locator(".agent-counts .allocation-ring");
-            assert.equal(await allocation.getAttribute("role"), "img");
-            assert.equal(await allocation.getAttribute("aria-valuenow"), null);
-            assert.equal(await allocation.locator(".allocation-fill").count(), 0);
-            assert.equal(await allocation.locator("strong").innerText(), "");
-            assert.match(await allocation.getAttribute("aria-label"), /Unknown.*Not recorded yet/);
-            assert.doesNotMatch(await allocation.innerText(), /\d+%|\d+\/\d+|0/);
+            assert.equal(data.subagents.observedRunningCount, 12);
+            assert.equal(data.subagents.observedRunningComplete, false);
+            await subagentRegion
+              .getByText("Live agent count unavailable", { exact: true })
+              .waitFor();
+            const aggregate = subagentRegion.locator(".agent-counts");
+            assert.equal(await aggregate.locator(".allocation-ring").count(), 0);
+            assert.equal(await aggregate.locator('[role="meter"]').count(), 0);
+            assert.equal(await aggregate.locator("[aria-valuenow]").count(), 0);
+            assert.doesNotMatch(await aggregate.innerText(), /\d+%|\d+\/\d+|\b\d+\b/);
+            assert.equal(
+              await subagentRegion.locator(".agent-row .module-percent").innerText(),
+              "100%",
+            );
           };
+          await verifyCurrentData();
+
+          for (const runningCount of [27, 0]) {
+            await page.evaluate((count) => {
+              window.currentResponse = {
+                ...window.currentResponse,
+                subagents: {
+                  ...window.currentResponse.subagents,
+                  runningCount: count,
+                  runningBasis: "runtime",
+                },
+              };
+              window.deliverToolResult(window.currentThreadId, window.currentResponse);
+            }, runningCount);
+            await verifyCurrentData();
+          }
+          await page.evaluate((value) => {
+            window.currentResponse = value;
+            window.deliverToolResult(window.currentThreadId, value);
+          }, response);
           await verifyCurrentData();
 
           // A source failure must not erase verified parent-thread activity.
@@ -814,6 +843,12 @@ test("native panel MCP Apps integration", async (t) => {
           }, response);
           await frame.getByText("Agent 0", { exact: true }).waitFor();
           assert.equal(await frame.locator(".agent-row").count(), 27);
+          await subagentRegion.getByText("Live agent count unavailable", { exact: true }).waitFor();
+          const staleAggregate = subagentRegion.locator(".agent-counts");
+          assert.equal(await staleAggregate.innerText(), "Live agent count unavailable");
+          assert.equal(await staleAggregate.locator(".allocation-ring").count(), 0);
+          assert.equal(await staleAggregate.locator('[role="meter"]').count(), 0);
+          assert.equal(await staleAggregate.locator("[aria-valuenow]").count(), 0);
           const unbound = await panel.evaluate((element) => element.currentRunSubagents());
           assert.ok(
             unbound.agents.every(

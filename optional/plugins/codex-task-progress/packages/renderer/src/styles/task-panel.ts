@@ -130,7 +130,7 @@ export const taskPanelStyles = css`
   .task-mode button { flex: 1; min-width: 0; font-size: 11px; }
   .task-mode button[aria-pressed="true"] { background: var(--ctp-surface, #fff); box-shadow: 0 1px 4px #00000012; }
   .subagents { min-width: 0; }
-  .agent-counts { margin: 0 0 12px; }
+  .agent-counts { margin: 0 0 12px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; }
   .agent-row { height: 56px; cursor: default; gap: 7px; padding: 8px 10px; overflow: hidden; }
   .agent-row .module-icon { width: 28px; height: 28px; }
   .agent-row .module-content { display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
@@ -141,8 +141,6 @@ export const taskPanelStyles = css`
   .agent-row .module-percent { flex: none; margin: 0; }
   .agent-row .module-track { flex: none; width: 100%; margin: 0; }
   .agent-row .status { flex: none; margin: 0; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; white-space: nowrap; }
-  .agent-counts .allocation-metric { gap: 12px; padding-block: 4px; }
-  .agent-counts .allocation-label, .agent-counts .allocation-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .total-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 14px; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.5; }
   .total-line strong { color: var(--ctp-text, #343a40); font-weight: 550; }

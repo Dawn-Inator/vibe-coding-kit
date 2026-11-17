@@ -1,3 +1,7 @@
+# Task Progress 0.12.4
+
+- Version 0.12.4 replaces the unofficial headline aggregate with a compact notice that the live count is unavailable. Desktop builds its own current-chat roster and counts eligible non-done entries, which can include waiting agents; the MCP Apps interface does not provide that roster or count. Native count parity therefore cannot be established through this interface. Agent details and trustworthy assigned progress remain available, and Heartbeat is explicitly historical.
+
 # Task Progress 0.12.3
 
 - The 0.12.3 candidate scopes presentation generations and disabled-context cleanup to the affected trusted context. Activity or disabled polling in another chat should not invalidate that context’s retained subagent presentation; revocation still clears the affected scope. Actual native acceptance remains to be verified.

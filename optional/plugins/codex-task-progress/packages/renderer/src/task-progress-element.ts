@@ -1707,69 +1707,6 @@ export class TaskProgressElement extends LitElement {
     return snapshot;
   }
 
-  private subagentMeter(snapshot: SubagentProgressSnapshot | null) {
-    // Runtime counts and recorded observations are distinct from the number of rows.
-    const observation = snapshot;
-    const valid = (value: unknown): value is number =>
-      typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-    const exactRuntime = snapshot?.runningBasis === "runtime" && valid(snapshot.runningCount);
-    const recorded = valid(observation?.observedRunningCount)
-      ? observation.observedRunningCount
-      : null;
-    const count = exactRuntime ? (snapshot?.runningCount ?? null) : recorded;
-    const complete = exactRuntime || observation?.observedRunningComplete === true;
-    const allocation = snapshot?.allocation;
-    const plan = allocation?.plannedCount;
-    const sameObservation =
-      !!snapshot?.observedAt &&
-      snapshot.observedAt === allocation?.observedAt &&
-      Number.isFinite(Date.parse(snapshot.observedAt));
-    const planValid =
-      allocation?.basis === "heartbeat" && valid(plan) && plan > 0 && sameObservation;
-    const ratio =
-      count !== null &&
-      planValid &&
-      complete &&
-      allocation?.runningCount === count &&
-      allocation.status === "ready" &&
-      count <= plan &&
-      typeof allocation.ratio === "number" &&
-      Number.isFinite(allocation.ratio) &&
-      Math.abs(allocation.ratio - count / plan) < 0.000001
-        ? allocation.ratio
-        : null;
-    const value = count === null ? "" : `${count}${complete && planValid ? `/${plan}` : ""}`;
-    const label = planValid
-      ? this.t("Working / planned", "工作中 / 计划")
-      : this.t("Working agents", "工作中 Agent");
-    const status =
-      count === null
-        ? this.t("Not recorded yet", "尚未记录")
-        : exactRuntime
-          ? this.t("Runtime observation", "运行时观测")
-          : complete
-            ? this.t("Recorded observation", "记录观测")
-            : this.t("Confirmed working", "已确认工作中");
-    const observed =
-      snapshot?.observedAt && Number.isFinite(Date.parse(snapshot.observedAt))
-        ? this.time(snapshot.observedAt)
-        : null;
-    const remaining =
-      count !== null && !complete ? this.t("Collecting remaining records", "其余记录采集中") : null;
-    const accessibleCount =
-      count === null
-        ? this.t("Unknown", "未知")
-        : complete
-          ? value
-          : `${this.t("At least", "至少")} ${count}`;
-    const accessible = `${label}: ${accessibleCount} · ${status}${remaining ? ` · ${remaining}` : ""}${observed ? ` · ${observed}` : ""}`;
-    return html`<div class="allocation-metric">
-      <div class="allocation-ring" role=${ratio !== null ? "meter" : "img"} aria-label=${accessible} aria-valuemin=${ratio !== null ? "0" : nothing} aria-valuemax=${ratio !== null ? "100" : nothing} aria-valuenow=${ratio !== null ? Math.round(ratio * 1000) / 10 : nothing} aria-valuetext=${ratio !== null ? value : nothing}>
-        <svg viewBox="0 0 72 72" aria-hidden="true"><circle class="allocation-track" cx="36" cy="36" r="32" pathLength="100"></circle>${ratio !== null ? svg`<circle class="allocation-fill" cx="36" cy="36" r="32" pathLength="100" stroke-dasharray="100" stroke-dashoffset=${100 - ratio * 100}></circle>` : nothing}</svg><strong>${value}</strong>
-      </div><div class="allocation-copy"><span class="allocation-label">${label}</span><span class="allocation-status">${status}</span>${remaining ? html`<span class="allocation-meta">${remaining}</span>` : nothing}${observed ? html`<span class="allocation-meta">${this.t("Observed", "观测于")} ${observed}</span>` : nothing}</div>
-    </div>`;
-  }
-
   private renderSubagents() {
     const snapshot = this.currentRunSubagents();
     const agents = snapshot?.agents ?? [];
@@ -1787,7 +1724,7 @@ export class TaskProgressElement extends LitElement {
       unknown: this.t("Unknown", "未知"),
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
-      <div class="agent-counts">${this.subagentMeter(snapshot)}</div>
+      <p class="agent-counts">${this.t("Live agent count unavailable", "实时 Agent 数量不可用")}</p>
       ${
         ranked.length
           ? ranked.map((agent) => {
