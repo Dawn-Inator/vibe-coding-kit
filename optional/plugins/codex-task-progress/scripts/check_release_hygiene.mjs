@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/main-module.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -171,8 +172,7 @@ export async function assertReleaseHygiene(root = repoRoot) {
   await assertMacosReleaseTree(resolve(root, "dist/release/macos-arm64"));
 }
 
-const entryPath = process.argv[1];
-if (entryPath && import.meta.url === pathToFileURL(resolve(entryPath)).href) {
+if (isMainModule(import.meta.url)) {
   try {
     await assertReleaseHygiene();
     console.log("Release hygiene passed");

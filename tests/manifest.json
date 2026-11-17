@@ -89,6 +89,8 @@
   "optional/task-progress-release.test.mjs",
   "optional/task-progress-native-panel.test.mjs",
   "optional/task-progress-native-runtime.test.mjs",
+  "optional/task-progress-main-module.test.mjs",
+  "optional/task-progress-main-module.symlink.posix.test.mjs",
   "install/optional.test.mjs",
   "worktrees/process-provenance.win32.test.mjs",
   "worktrees/windows-git-job.win32.test.mjs",
