@@ -1,3 +1,7 @@
+# Task Progress 0.12.3
+
+- The 0.12.3 candidate scopes presentation generations and disabled-context cleanup to the affected trusted context. Activity or disabled polling in another chat should not invalidate that context’s retained subagent presentation; revocation still clears the affected scope. Actual native acceptance remains to be verified.
+
 # Task Progress 0.12.2
 
 - Version 0.12.2 presents each agent in a 56 px capsule with a single text line and a 2–3 px full-width progress strip. Known progress, including zero, is displayed; absent assignments are Unlinked, while linked assignments without progress are Unknown. Both remain neutral without a fabricated percentage. Progress continues to require trustworthy canonical assignment; a path-only match does not backfill it. Refreshing data cannot reload an older embedded view: closing and reopening the view or refreshing the chat catalog may be necessary. Do not restart Codex.

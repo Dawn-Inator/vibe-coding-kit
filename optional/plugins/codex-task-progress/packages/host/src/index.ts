@@ -333,7 +333,27 @@ export class GoalProgressHelper {
     revision: number | null;
     result: Record<string, unknown>;
   }>({ now: () => Date.now() });
-  #taskPresentationEpoch = 0;
+  #taskPresentationSequence = 0;
+  readonly #taskPresentationEpochs = new Map<string, number>();
+  #scopeEpoch(scope: string): number {
+    const epoch = this.#taskPresentationEpochs.get(scope) ?? ++this.#taskPresentationSequence;
+    this.#taskPresentationEpochs.delete(scope);
+    this.#taskPresentationEpochs.set(scope, epoch);
+    if (this.#taskPresentationEpochs.size > 128) {
+      const oldest = this.#taskPresentationEpochs.keys().next().value;
+      if (oldest !== undefined) this.#taskPresentationEpochs.delete(oldest);
+    }
+    return epoch;
+  }
+  #advanceScopeEpoch(scope: string): number {
+    this.#taskPresentationEpochs.delete(scope);
+    this.#taskPresentationEpochs.set(scope, ++this.#taskPresentationSequence);
+    if (this.#taskPresentationEpochs.size > 128) {
+      const oldest = this.#taskPresentationEpochs.keys().next().value;
+      if (oldest !== undefined) this.#taskPresentationEpochs.delete(oldest);
+    }
+    return this.#taskPresentationSequence;
+  }
   readonly #subagentPresentation = new ReadOnlySnapshotCache<SubagentProgressSnapshot>();
   readonly #heartbeatServices = new Map<string, HeartbeatService>();
   #stopping = false;
@@ -1465,10 +1485,11 @@ export class GoalProgressHelper {
     const canonicalCwd = await realpath(cwd);
     const scope = taskPresentationScope({ threadId, cwd: canonicalCwd, projectRoot: project.root });
     if (!project.enabled) {
-      this.#taskPresentationEpoch++;
+      this.#advanceScopeEpoch(scope);
       this.#taskPresentation.delete(scope);
-      this.#subagentPresentation.clear();
-      this.#heartbeatServices.clear();
+      // WorkspaceTaskStorage owns the service lifetime and may reuse it for
+      // this chat after re-enablement; remove only this host-side reference.
+      this.#heartbeatServices.delete(scope);
       if (!["get", "history", "heartbeat-history", "archive"].includes(action))
         throw new GoalProgressIpcHandlerError(
           "TASK_PROGRESS_DISABLED",
@@ -1477,6 +1498,7 @@ export class GoalProgressHelper {
       logSlowTask(threadId);
       return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
     }
+    const requestEpoch = this.#scopeEpoch(scope);
     const canonicalRead = async (
       backgroundStartedAt?: number,
     ): Promise<{
@@ -1487,11 +1509,13 @@ export class GoalProgressHelper {
         this.#workspaceStorage.forThread(threadId, cwd),
       );
       const { taskStore, heartbeat: heartbeatService } = workspace;
-      this.#heartbeatServices.delete(scope);
-      this.#heartbeatServices.set(scope, heartbeatService);
-      if (this.#heartbeatServices.size > 16) {
-        const oldest = this.#heartbeatServices.keys().next().value;
-        if (oldest !== undefined) this.#heartbeatServices.delete(oldest);
+      if (requestEpoch === this.#scopeEpoch(scope)) {
+        this.#heartbeatServices.delete(scope);
+        this.#heartbeatServices.set(scope, heartbeatService);
+        if (this.#heartbeatServices.size > 16) {
+          const oldest = this.#heartbeatServices.keys().next().value;
+          if (oldest !== undefined) this.#heartbeatServices.delete(oldest);
+        }
       }
       const execution = projectTaskExecution(nativeStatus);
       let result: unknown;
@@ -1880,7 +1904,7 @@ export class GoalProgressHelper {
       // assignment overlay recomputed from the current task on each GET.
       const sourceIdentity = sourcePath ?? null;
       const hasSubagentScope = cycleId !== undefined || sourcePath !== undefined;
-      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
+      const subagentKey = `${scope}:${this.#scopeEpoch(scope)}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
       let subagents: SubagentProgressSnapshot = {
         schemaVersion: 1,
         parentThreadId: threadId,
@@ -2134,24 +2158,24 @@ export class GoalProgressHelper {
         },
       };
     }
-    const readEpoch = this.#taskPresentationEpoch;
+    const readEpoch = requestEpoch;
     const beforeRead = this.#taskPresentation.peek(scope).value;
     const canonical = await canonicalRead();
     if (
-      readEpoch !== this.#taskPresentationEpoch &&
+      readEpoch !== this.#scopeEpoch(scope) &&
       ["get", "history", "heartbeat-history", "archive"].includes(action) &&
       readOptionalGroupPreference(project.root, "task-progress") === false
     ) {
-      this.#taskPresentationEpoch++;
+      this.#advanceScopeEpoch(scope);
       this.#taskPresentation.delete(scope);
       return { revision: null, result: { enabled: false, task: null, heartbeat: null } };
     }
     if (action === "get") {
-      if (readEpoch === this.#taskPresentationEpoch) this.#taskPresentation.set(scope, canonical);
+      if (readEpoch === this.#scopeEpoch(scope)) this.#taskPresentation.set(scope, canonical);
     } else if (["initialize", "update", "rescope", "complete"].includes(action)) {
       // A successful mutation invalidates any older in-flight presentation read.
       // Only a previously verified display snapshot may supply the other fields.
-      this.#taskPresentationEpoch++;
+      this.#advanceScopeEpoch(scope);
       const previous = this.#taskPresentation.peek(scope).value;
       const state = canonical.result.state;
       const stateRevision =
@@ -2183,7 +2207,7 @@ export class GoalProgressHelper {
         });
       } else this.#taskPresentation.delete(scope);
     } else if (action === "bind-heartbeat") {
-      this.#taskPresentationEpoch++;
+      this.#advanceScopeEpoch(scope);
       this.#taskPresentation.delete(scope);
     } else if (
       action === "history" &&
@@ -2196,7 +2220,7 @@ export class GoalProgressHelper {
     ) {
       const previous = this.#taskPresentation.peek(scope).value;
       if (
-        readEpoch === this.#taskPresentationEpoch &&
+        readEpoch === this.#scopeEpoch(scope) &&
         beforeRead &&
         previous &&
         previous.revision === beforeRead.revision &&
@@ -2219,7 +2243,7 @@ export class GoalProgressHelper {
       ...canonical,
       result: {
         ...canonical.result,
-        ...(action === "get" && readEpoch === this.#taskPresentationEpoch
+        ...(action === "get" && readEpoch === this.#scopeEpoch(scope)
           ? { subagents: projectSubagents(canonical) }
           : {}),
         presentation: { scope, pending: false, cached: false, updatedAt: snapshot.updatedAt },
@@ -2278,6 +2302,7 @@ export class GoalProgressHelper {
     await server?.stop();
     await Promise.allSettled([...this.#presentationLoads]);
     this.#taskPresentation.clear();
+    this.#taskPresentationEpochs.clear();
     this.#subagentPresentation.clear();
     this.#heartbeatServices.clear();
     this.#workspaceStorage.close();

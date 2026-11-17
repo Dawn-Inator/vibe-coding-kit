@@ -5053,3 +5053,219 @@ test("parent activity IDs use direct identity lookup during an incomplete catalo
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("another chat's writes and disabled polls do not invalidate a pending agent snapshot", async () => {
+  const rootA = await mkdtemp("/tmp/ctph-scope-a-");
+  const rootB = await mkdtemp("/tmp/ctph-scope-b-");
+  await Promise.all([
+    mkdir(join(rootA, ".git")),
+    mkdir(join(rootB, ".git")),
+    mkdir(join(rootB, ".vibe-coding")),
+  ]);
+  const mocked = runtime(rootA);
+  mocked.readThreadIdentity = async (id) => identity(id, id === "chat-B" ? rootB : rootA);
+  let release!: () => void;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  let aCollections = 0;
+  mocked.listDirectSubagents = async (parent) => {
+    if (parent === "chat-A") {
+      aCollections++;
+      await gate;
+    }
+    return {
+      data: [
+        {
+          id: `${parent}-child`,
+          cwd: parent === "chat-A" ? rootA : rootB,
+          source: { subAgent: { thread_spawn: { parent_thread_id: parent } } },
+          status: { type: "active", activeFlags: [] },
+        },
+      ],
+      nextCursor: null,
+    };
+  };
+  mocked.listSubagentTurns = async (parent) => ({
+    data: [
+      {
+        id: "turn",
+        rootTurnId: "turn",
+        startedAt: 1794830401,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: parent,
+            receiverThreadIds: [`${parent}-child`],
+            tool: "spawnAgent",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  const helper = new GoalProgressHelper({
+    paths: resolveGoalProgressPaths({ root: join(rootA, "data") }),
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(helper.paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const model = async (action: "initialize" | "update", input: unknown) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: "chat-B",
+            sessionId: "chat-B",
+            turnId: "turn",
+            callId: `b-${++call}`,
+            model: "test",
+            threadSource: "user",
+            cwd: rootB,
+          },
+        },
+      },
+    });
+  type View = { enabled?: boolean; subagents?: { agents: { id: string }[] } };
+  const native = async (threadId: string) =>
+    (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId, input: {} },
+      })
+    ).result as View;
+  try {
+    await helper.start();
+    await model("initialize", {
+      requestId: "init",
+      expectedRevision: 0,
+      reason: "start",
+      title: "B",
+      objectives: [{ id: "b", title: "B" }],
+    });
+    for (let i = 0; i < 100 && aCollections === 0; i++) {
+      await native("chat-A");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(aCollections, 1);
+    await model("update", {
+      requestId: "update",
+      expectedRevision: 1,
+      reason: "start work",
+      changes: [{ targetId: "b", status: "active" }],
+    });
+    await writeFile(
+      join(rootB, ".vibe-coding", "project.config.json"),
+      JSON.stringify({ optional: { "task-progress": false } }),
+    );
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await native("chat-B")).enabled, false);
+      await native("chat-A");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(aCollections, 1);
+    release();
+    let a: View = {};
+    for (let i = 0; i < 100; i++) {
+      a = await native("chat-A");
+      if (a.subagents?.agents.some((entry) => entry.id === "chat-A-child")) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.deepEqual(
+      a.subagents?.agents.map((entry) => entry.id),
+      ["chat-A-child"],
+    );
+  } finally {
+    release();
+    await helper.stop();
+    await Promise.all([
+      rm(rootA, { recursive: true, force: true }),
+      rm(rootB, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("disabling the same chat fences its older in-flight agent result", async () => {
+  const root = await mkdtemp("/tmp/ctph-scope-own-");
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".vibe-coding"));
+  const mocked = runtime(root);
+  let release!: () => void;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  let calls = 0;
+  mocked.listDirectSubagents = async (parent) => {
+    const first = calls++ === 0;
+    if (first) await gate;
+    return {
+      data: [
+        {
+          id: first ? "stale-child" : "fresh-child",
+          cwd: root,
+          source: { subAgent: { thread_spawn: { parent_thread_id: parent } } },
+          status: { type: "active", activeFlags: [] },
+        },
+      ],
+      nextCursor: null,
+    };
+  };
+  mocked.listSubagentTurns = async () => ({
+    data: [{ id: "turn", rootTurnId: "turn", startedAt: 1794830401, itemsView: "full", items: [] }],
+    nextCursor: null,
+  });
+  const helper = new GoalProgressHelper({
+    paths: resolveGoalProgressPaths({ root: join(root, "data") }),
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(helper.paths.helperSocketPath, { clientKind: "mcp" });
+  type View = { enabled?: boolean; subagents?: { agents: { id: string }[] } };
+  const native = async () =>
+    (
+      await client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId: "chat", input: {} },
+      })
+    ).result as View;
+  try {
+    await helper.start();
+    for (let i = 0; i < 100 && calls === 0; i++) {
+      await native();
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(calls, 1);
+    await writeFile(
+      join(root, ".vibe-coding", "project.config.json"),
+      JSON.stringify({ optional: { "task-progress": false } }),
+    );
+    assert.equal((await native()).enabled, false);
+    await writeFile(
+      join(root, ".vibe-coding", "project.config.json"),
+      JSON.stringify({ optional: { "task-progress": true } }),
+    );
+    release();
+    let result: View = {};
+    for (let i = 0; i < 100; i++) {
+      result = await native();
+      if (result.subagents?.agents.some((entry) => entry.id === "fresh-child")) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.deepEqual(
+      result.subagents?.agents.map((entry) => entry.id),
+      ["fresh-child"],
+    );
+  } finally {
+    release();
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
