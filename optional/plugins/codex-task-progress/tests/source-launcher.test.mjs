@@ -21,9 +21,18 @@ test("source launcher builds and refreshes the native MCP resource without prebu
   ];
   // Required dev dependencies: fail closed with install instructions instead of skipping.
   const missing = requiredPackages.filter((packageName) => {
-    try { import.meta.resolve(packageName); return false; } catch { return true; }
+    try {
+      import.meta.resolve(packageName);
+      return false;
+    } catch {
+      return true;
+    }
   });
-  assert.deepEqual(missing, [], `source-runtime dependencies are not installed; run \`pnpm install --frozen-lockfile\` in optional/plugins/codex-task-progress`);
+  assert.deepEqual(
+    missing,
+    [],
+    `source-runtime dependencies are not installed; run \`pnpm install --frozen-lockfile\` in optional/plugins/codex-task-progress`,
+  );
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
   const scratch = await mkdtemp(join(tmpdir(), "task-source-panel-"));
