@@ -213,7 +213,7 @@ test('cycle membership uses accepted parent dispatch and fails closed when evide
     const dispatch = (id, tool, status = 'completed', senderThreadId = 'p') => ({ type: 'collabAgentToolCall', senderThreadId, receiverThreadIds: [id], tool, status });
     const result = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [dispatch('old', 'followupTask'), dispatch('new', 'spawnAgent'), dispatch('new', 'sendInput'), dispatch('failed', 'spawnAgent', 'failed'), dispatch('wrong', 'spawnAgent', 'completed', 'other')] }], nextCursor: null }) });
     assert.deepEqual(result.agents.map(x => x.id), ['old', 'new']);
-    assert.equal(result.complete, true); assert.equal(result.scopeBasis, 'parent-root-turn'); assert.equal(result.runningCount, null);
+    assert.equal(result.complete, false); assert.equal(result.scopeBasis, 'parent-root-turn'); assert.equal(result.runningCount, null);
     const summary = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'summary', items: [] }], nextCursor: null }) });
     assert.equal(summary.complete, false); assert.deepEqual(summary.agents, []);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -245,7 +245,7 @@ test('different older root stops bounded turn pagination and does not mix agents
         { id: 'new', rootTurnId: 'new', startedAt: Date.parse(cycleStartedAt) / 1000 + 2, itemsView: 'full', items: [] },
         { id: 'old', rootTurnId: 'old', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'old-child', kind: 'started' }] },
       ], nextCursor: 'older' }; },
-      listPage: async () => { throw new Error('should not list historical children'); },
+      listPage: async () => ({ data: [], nextCursor: null }),
     });
     // The current root was fully observed before the older root: this is a
     // successful scope boundary, while older members remain excluded.
@@ -254,7 +254,7 @@ test('different older root stops bounded turn pagination and does not mix agents
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('child inventory stops once all current members have been resolved', async () => {
+test('repeated child catalog cursors stay partial after current members are found', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-found-'));
   try {
     let pages = 0;
@@ -262,7 +262,7 @@ test('child inventory stops once all current members have been resolved', async 
       listTurnsPage: async () => ({ data: [{ id: 'turn', rootTurnId: 'turn', startedAt: Date.parse(cycleStartedAt) / 1000 + 1, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'live', kind: 'started' }] }], nextCursor: null }),
       listPage: async () => { pages++; return { data: [{ id: 'live', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } }, status: { type: 'notLoaded' } }], nextCursor: 'historic' }; },
     });
-    assert.equal(pages, 1); assert.equal(result.complete, true); assert.equal(result.truncated, false); assert.equal(result.agents[0].state, 'unknown');
+    assert.equal(pages, 2); assert.equal(result.complete, false); assert.equal(result.status, 'partial'); assert.equal(result.runningCount, null); assert.equal(result.agents[0].state, 'unknown');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -434,7 +434,7 @@ test('running count is exact only for complete verified roots with known runtime
     const empty = await collect([], []);
     assert.equal(empty.complete, true); assert.equal(empty.runningCount, 0); assert.equal(empty.runningBasis, 'runtime');
     const unknown = await collect(items, [child('active', { type: 'notLoaded' }), ...children.slice(1)]);
-    assert.equal(unknown.complete, true); assert.equal(unknown.runningCount, null); assert.equal(unknown.runningBasis, 'unknown');
+    assert.equal(unknown.complete, false); assert.equal(unknown.status, 'partial'); assert.equal(unknown.runningCount, null); assert.equal(unknown.runningBasis, 'unknown');
     const unloadedDone = await collect(items, [...children.slice(0, 3), child('done', { type: 'notLoaded' })]);
     assert.equal(unloadedDone.runningCount, null);
     const partial = await collect(items, children, 'summary');
@@ -454,7 +454,7 @@ test('source scope stops cleanly at an older root only after seeing the current 
     const source = join(await realpath(root), 'heartbeat.md'), start = Date.parse(cycleStartedAt) / 1000;
     const previous = { id: 'previous', rootTurnId: 'previous', startedAt: start, itemsView: 'full', items: [{ type: 'subAgentActivity', agentThreadId: 'historic', kind: 'started' }] };
     const base = { parentThreadId: 'p', cwd: root, storageRoot: root, schemas, taskSourcePath: source,
-      listPage: async () => { throw new Error('historical child must not be listed'); } };
+      listPage: async () => ({ data: [], nextCursor: null }) };
     const complete = await collectScoped({ ...base, listTurnsPage: async () => ({ data: [{ id: 'current', rootTurnId: 'current', startedAt: start + 1, itemsView: 'full', items: [] }, previous], nextCursor: 'older' }) });
     assert.equal(complete.complete, true); assert.equal(complete.status, 'ready');
     assert.deepEqual(complete.agents, []); assert.equal(complete.runningCount, 0);
@@ -476,7 +476,7 @@ test('verified current children preserve exact agent paths and recorded state pr
     {type:'subAgentActivity',agentThreadId:'c',agentPath:'/root/conflict',kind:'started',startedAtMs:started},
    ]}],nextCursor:null}),
    listPage:async()=>({data:['a','b','c'].map(id=>({id,cwd:root,status:{type:id==='b'?'active':'notLoaded',...(id==='b'?{activeFlags:[]}:{})},source:{subAgent:{thread_spawn:{parent_thread_id:'p',agent_path:`/root/${id}`}}}})),nextCursor:null}),
-   observeAgent:async id=>{ active++; peak=Math.max(peak,active); await Promise.resolve(); active--; return {state:id==='a'?'working':'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString()}; },
+   observeAgent:async id=>{ active++; peak=Math.max(peak,active); await Promise.resolve(); active--; return {state:id==='a'?'working':'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString(),eventTurnId:'child-turn',rootTurnId:'r',complete:true,readStable:true}; },
   });
   assert.ok(peak<=2);
   assert.equal(result.status,'ready');
@@ -496,7 +496,7 @@ test('incomplete membership reports a recorded lower bound without inventing liv
   const options = {parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
    listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'partial',items:[{type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a','missing'],tool:'spawnAgent',status:'completed',startedAtMs:started}]}],nextCursor:null}),
    listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null})};
-  const observed = await collectScoped({...options,observeAgent:async()=>({state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString()})});
+  const observed = await collectScoped({...options,observeAgent:async()=>({state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'child-turn',rootTurnId:'r',complete:true,readStable:true})});
   assert.equal(observed.status,'partial'); assert.equal(observed.runningCount,null);
   assert.equal(observed.observedRunningCount,1); assert.equal(observed.observedRunningComplete,false); assert.equal(observed.observedRunningBasis,'codex-rollout');
   const unknown = await collectScoped(options);
@@ -521,7 +521,7 @@ test('older rollout state cannot survive a later followup or parent interaction'
      {type:'subAgentActivity',agentThreadId:'a',kind:'completed',startedAtMs:started+2000},newer
     ]}],nextCursor:null}),
     listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}),
-    observeAgent:async()=>({state:'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString()})
+    observeAgent:async()=>({state:'completed',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString(),eventTurnId:'child-turn',rootTurnId:'r',complete:true,readStable:true})
    });
    assert.equal(result.agents[0].state,'unknown');
    assert.equal(result.agents[0].stateBasis,'unknown');
@@ -563,4 +563,73 @@ test('unverified direct candidates prevent an authoritative empty running count'
   assert.equal(empty.status,'ready'); assert.equal(empty.complete,true);
   assert.equal(empty.runningCount,0); assert.equal(empty.runningBasis,'runtime');
  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('complete running counts require an examined catalog with resolved direct-child identities', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-catalog-matrix-'));
+ try {
+  const canonical = await (await import('node:fs/promises')).realpath(root);
+  const started = Date.parse(cycleStartedAt);
+  const child = (extra={}) => ({id:'candidate',cwd:canonical,status:{type:'active',activeFlags:[]},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}},...extra});
+  const base = {parentThreadId:'p',cwd:canonical,storageRoot:canonical,schemas,taskSourcePath:join(canonical,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[]}],nextCursor:null})};
+  const goodProof = async()=>({parentThreadId:'p',cwd:canonical,rootTurnId:'r',turnStartedAt:new Date(started+1000).toISOString()});
+  const invalidRows = [null, 1, [], {}, child({id:''}), child({id:' '}), child({id:'x'.repeat(257)}), child({source:null}), child({source:{subAgent:{}}}), child({source:{subAgent:{thread_spawn:{}}}}), child({source:{subAgent:{thread_spawn:'wrong'}}}), child({parentThreadId:'foreign'}),
+   ...[' foreign', 'foreign ', 'foreign\nother', `other${String.fromCharCode(127)}`, 'x'.repeat(257)].flatMap(parent => [
+    child({source:{subAgent:{thread_spawn:{parent_thread_id:parent}}}}),
+    child({parentThreadId:parent,source:{subAgent:{thread_spawn:{parent_thread_id:parent}}}}),
+   ]),
+   child({cwd:undefined}), child({cwd:'relative/path'}), child({cwd:join(canonical,'missing')})];
+  for (const row of invalidRows) for (const verifier of [undefined,goodProof]) {
+   const result=await collectScoped({...base,listPage:async()=>({data:[row],nextCursor:null}),...(verifier ? {verifyAgent:verifier} : {})});
+   assert.equal(result.complete,false,JSON.stringify(row)); assert.notEqual(result.status,'ready');
+   assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,null);
+  }
+  for (const verifyAgent of [undefined,async()=>null,async()=>{throw new Error('unavailable');},async()=>({parentThreadId:'p',cwd:canonical,rootTurnId:'old',turnStartedAt:cycleStartedAt})]) {
+   const result=await collectScoped({...base,listPage:async()=>({data:[child()],nextCursor:null}),...(verifyAgent ? {verifyAgent} : {})});
+   assert.equal(result.complete,false); assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,null);
+  }
+  for (const mode of ['repeat','truncated','malformed-cursor']) for (const verifier of [undefined,goodProof]) {
+   let pages=0;
+   const result=await collectScoped({...base,listPage:async()=>({data:[],nextCursor:mode==='malformed-cursor'?undefined:mode==='repeat'?'same':String(++pages)}),...(verifier ? {verifyAgent:verifier} : {})});
+   assert.equal(result.complete,false,mode); assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,null);
+  }
+  const empty=await collectScoped({...base,listPage:async()=>({data:[],nextCursor:null})});
+  assert.equal(empty.complete,true); assert.equal(empty.runningCount,0);
+  const foreign=child({parentThreadId:'other',source:{subAgent:{thread_spawn:{parent_thread_id:'other'}}}});
+  assert.equal((await collectScoped({...base,listPage:async()=>({data:[foreign],nextCursor:null})})).runningCount,0);
+  const verified=await collectScoped({...base,listPage:async()=>({data:[child()],nextCursor:null}),verifyAgent:goodProof});
+  assert.equal(verified.complete,true); assert.equal(verified.runningCount,1);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('unknown or contradictory runtime states cannot certify an exact count', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-unknown-states-'));
+ try {
+  const started=Date.parse(cycleStartedAt);
+  const options={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'a',kind:'started',startedAtMs:started}]}],nextCursor:null})};
+  for (const status of [undefined,{type:'notLoaded'},{type:'future'},{type:'active',activeFlags:['futureFlag']},{type:'active',activeFlags:'wrong'},{type:'idle',activeFlags:['waitingOnUserInput']}]) {
+   const result=await collectScoped({...options,listPage:async()=>({data:[{id:'a',cwd:root,status,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null})});
+   assert.equal(result.status,'partial'); assert.equal(result.complete,false); assert.equal(result.runningCount,null);
+  }
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('only stable exact-turn rollout proof can retain recorded work across a later interaction', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-rollout-proof-'));
+ try {
+  const started=Date.parse(cycleStartedAt);
+  const options={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'collabAgentToolCall',senderThreadId:'p',receiverThreadIds:['a'],tool:'spawnAgent',status:'completed',startedAtMs:started+1000},{type:'subAgentActivity',agentThreadId:'a',kind:'interacted',startedAtMs:started+3000}]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'a',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null})};
+  const proof={state:'working',basis:'codex-rollout',observedAt:new Date(started+2000).toISOString(),eventTurnId:'child-turn',rootTurnId:'r',complete:true,readStable:true};
+  const working=await collectScoped({...options,observeAgent:async()=>proof});
+  assert.equal(working.agents[0].state,'working'); assert.equal(working.agents[0].stateBasis,'codex-rollout');
+  assert.equal(working.agents[0].progress,null); assert.equal(working.runningCount,null);
+  for (const invalid of [{...proof,readStable:false},{...proof,complete:false},{...proof,eventTurnId:null},{...proof,rootTurnId:'other'}, {...proof,state:'completed'}, {...proof,state:'idle'}]) {
+   const result=await collectScoped({...options,observeAgent:async()=>invalid});
+   assert.equal(result.agents[0].state,'unknown'); assert.equal(result.runningCount,null);
+  }
+ } finally {await rm(root,{recursive:true,force:true});}
 });

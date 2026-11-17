@@ -16,12 +16,15 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const members = new Set();
   const recorded = new Map();
   const activityPaths = new Map();
+  const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value && !/[\x00-\x1f\x7f-\x9f]/.test(value);
+  const validCwd = value => typeof value === 'string' && value.trim().length > 0 && isAbsolute(value) && resolve(value) === value && !/[\x00-\x1f\x7f-\x9f]/.test(value);
   const validAgentPath = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x1f]/.test(value) && value.trim() === value;
   const dispatches = new Map();
   const invalidations = new Map();
   const turns = [];
   let rootTurnId;
   let turnCursor;
+  const turnCursors = new Set();
   let boundary = false;
   let rootCount = 0;
   try {
@@ -52,8 +55,9 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         if (turn.itemsView !== 'full') snapshot.complete = false;
         turns.push(turn);
       }
-      if (boundary || result.nextCursor == null) break;
-      if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor === turnCursor) { snapshot.complete = false; break; }
+      if (boundary || result.nextCursor === null) break;
+      if (typeof result.nextCursor !== 'string' || !result.nextCursor || turnCursors.has(result.nextCursor)) { snapshot.complete = false; break; }
+      turnCursors.add(result.nextCursor);
       turnCursor = result.nextCursor;
       if (page === 7) { snapshot.complete = false; snapshot.truncated = true; }
     }
@@ -71,18 +75,19 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     for (const turn of turns.reverse()) {
       const startMs = turn.startedAt * 1000;
       for (const item of turn.items) {
-        if (!item) continue;
+        if (!item || typeof item !== 'object' || Array.isArray(item)) { snapshot.complete = false; continue; }
         const itemMs = Number.isFinite(item.startedAtMs) ? item.startedAtMs : null;
         if (itemMs !== null ? itemMs < cycleMs : startMs < cycleMs) { if (itemMs === null && startMs < cycleMs) snapshot.complete = false; continue; }
-        if (item.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed' && Array.isArray(item.receiverThreadIds)) {
-          for (const id of item.receiverThreadIds) if (typeof id === 'string' && id && id.length <= 256) {
+        if (item.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed') {
+          if (!Array.isArray(item.receiverThreadIds)) { snapshot.complete = false; continue; }
+          for (const id of item.receiverThreadIds) if (validId(id)) {
             members.add(id);
             recorded.delete(id);
             // Only an item timestamp can bind a child cycle to this particular dispatch.
             dispatches.set(id, itemMs);
             invalidations.set(id, itemMs);
-          }
-        } else if (item.type === 'subAgentActivity' && typeof item.agentThreadId === 'string' && item.agentThreadId && item.agentThreadId.length <= 256 && ['started', 'interacted', 'completed', 'interrupted'].includes(item.kind)) {
+          } else snapshot.complete = false;
+        } else if (item.type === 'subAgentActivity' && validId(item.agentThreadId) && ['started', 'interacted', 'completed', 'interrupted'].includes(item.kind)) {
           members.add(item.agentThreadId);
           if (validAgentPath(item.agentPath)) {
             const prior = activityPaths.get(item.agentThreadId);
@@ -91,7 +96,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           if (item.kind === 'interacted' || item.kind === 'started') invalidations.set(item.agentThreadId, itemMs);
           if (item.kind === 'interacted') dispatches.delete(item.agentThreadId);
           recorded.set(item.agentThreadId, { kind: item.kind, timestamp: itemMs ?? startMs });
-        }
+        } else if (item.type === 'subAgentActivity') snapshot.complete = false;
       }
     }
     if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
@@ -114,52 +119,64 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     }
   };
   const canonicalCwd = await realpath(cwd);
-  let effectiveListPage = listPage;
-  // A direct child absent from the recent parent-item window is admitted only
-  // after its own latest public turn proves the exact current parent root.
-  if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
-    const pages = [], candidates = [], candidateIds = new Set();
-    let catalogCursor;
-    try {
-      for (let page = 0; page < 4; page++) {
-        const result = await listPage(catalogCursor);
-        if (!result || !Array.isArray(result.data) || result.data.length > 50) throw new Error('Invalid child page');
-        pages.push(result);
-        for (const child of result.data) {
-          if (!child || typeof child.id !== 'string' || !child.id || child.id.length > 256 || members.has(child.id) || candidateIds.has(child.id)) continue;
-          const spawn = child.source?.subAgent?.thread_spawn;
-          if (!spawn || spawn.parent_thread_id !== parentThreadId || (child.parentThreadId != null && child.parentThreadId !== parentThreadId)) continue;
-          candidateIds.add(child.id);
-          if (candidates.length >= 100) { snapshot.complete = false; snapshot.truncated = true; continue; }
-          candidates.push(child);
-        }
-        if (result.nextCursor == null) break;
-        if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor === catalogCursor) { snapshot.complete = false; break; }
-        catalogCursor = result.nextCursor;
-        if (page === 3) { snapshot.complete = false; snapshot.truncated = true; }
+  const pages = [], candidates = [], catalogIds = new Set(), cursors = new Set();
+  let catalogCursor, catalogFailed = false, catalogComplete = false;
+  // Examine the entire bounded direct-child catalog even when recent events
+  // contain no members. Unexamined identity cannot prove an exact zero.
+  try {
+    for (let page = 0; page < 4; page++) {
+      const result = await listPage(catalogCursor);
+      if (!result || !Array.isArray(result.data) || result.data.length > 50) throw new Error('Invalid child page');
+      pages.push(result);
+      for (const child of result.data) {
+        if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) { snapshot.complete = false; continue; }
+        if (catalogIds.has(child.id)) { snapshot.complete = false; continue; }
+        catalogIds.add(child.id);
+        const spawn = child.source?.subAgent?.thread_spawn;
+        const spawnParent = spawn?.parent_thread_id;
+        if (!spawn || typeof spawn !== 'object' || Array.isArray(spawn) || !validId(spawnParent)) { snapshot.complete = false; continue; }
+        const declaredParent = child.parentThreadId;
+        if (declaredParent != null && (!validId(declaredParent) || declaredParent !== spawnParent)) { snapshot.complete = false; continue; }
+        if (spawnParent !== parentThreadId) continue; // A positively identified foreign parent is outside scope.
+        if (!validCwd(child.cwd)) { snapshot.complete = false; continue; }
+        try { if (await realpath(child.cwd) !== canonicalCwd) continue; }
+        catch { snapshot.complete = false; continue; }
+        if (members.has(child.id)) continue;
+        if (candidates.length >= 100) { snapshot.complete = false; snapshot.truncated = true; continue; }
+        candidates.push(child);
       }
+      if (result.nextCursor === null) { catalogComplete = true; break; }
+      if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) { snapshot.complete = false; break; }
+      cursors.add(result.nextCursor);
+      catalogCursor = result.nextCursor;
+      if (page === 3) { snapshot.complete = false; snapshot.truncated = true; }
+    }
+    if (!catalogComplete) snapshot.complete = false;
+    if (candidates.length && (typeof verifyAgent !== 'function' || !rootTurnId || !snapshot.rootTurnStartedAt)) snapshot.complete = false;
+    if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
       let next = 0;
       await Promise.all(Array.from({ length: Math.min(2, candidates.length) }, async () => {
         while (next < candidates.length) {
           const child = candidates[next++];
           try {
-            if (typeof child.cwd !== 'string') { snapshot.complete = false; continue; }
-            if (await realpath(child.cwd) !== canonicalCwd) continue;
             const proof = await verifyAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
             if (!proof || proof.parentThreadId !== parentThreadId || proof.rootTurnId !== rootTurnId ||
-                typeof proof.cwd !== 'string' || await realpath(proof.cwd) !== canonicalCwd ||
+                !validCwd(proof.cwd) || await realpath(proof.cwd) !== canonicalCwd ||
                 typeof proof.turnStartedAt !== 'string' || !Number.isFinite(Date.parse(proof.turnStartedAt)) ||
                 Date.parse(proof.turnStartedAt) < cycleMs) { snapshot.complete = false; continue; }
             members.add(child.id);
             invalidations.set(child.id, Date.parse(proof.turnStartedAt));
-          } catch { snapshot.complete = false; /* Unknown proof cannot establish complete membership. */ }
+          } catch { snapshot.complete = false; }
         }
       }));
-      let replay = 0;
-      effectiveListPage = async () => pages[replay++] ?? { data: [], nextCursor: null };
-    } catch { snapshot.complete = false; effectiveListPage = async () => ({ data: [], nextCursor: null }); }
+    }
+  } catch { catalogFailed = true; snapshot.complete = false; }
+  let replay = 0;
+  const effectiveListPage = async () => pages[replay++] ?? { data: [], nextCursor: null };
+  if (!members.size) {
+    if (!snapshot.complete) snapshot.status = catalogFailed && !pages.length ? 'unavailable' : 'partial';
+    finalizeRunningCount(); return snapshot;
   }
-  if (!members.size) { if (!snapshot.complete) snapshot.status = 'partial'; finalizeRunningCount(); return snapshot; }
   let cursor;
   const seen = new Set();
   const observationQueue = [];
@@ -179,23 +196,31 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         const path = activityPath === null || (catalogPath && activityPath && catalogPath !== activityPath) ? undefined : catalogPath ?? activityPath;
         const entry = { id: child.id, name: String(child.name || spawn.agent_nickname || spawn.agent_role || child.id).slice(0, 200), state: 'unknown', stateBasis: 'unknown', observedAt: null, progress: null, progressBasis: null, ...(path ? { agentPath: path } : {}) };
         const statusType = child.status?.type;
-        if (!((statusType === 'active' && Array.isArray(child.status.activeFlags)) || statusType === 'idle' || statusType === 'completed')) runtimeStatusesComplete = false;
+        const flags = child.status?.activeFlags;
+        const validActive = statusType === 'active' && Array.isArray(flags) && flags.length <= 16 && flags.every(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput');
+        const validNonActive = ['idle', 'completed'].includes(statusType) && (flags === undefined || (Array.isArray(flags) && flags.length === 0));
+        const validRuntime = validActive || validNonActive;
+        if (!validRuntime) runtimeStatusesComplete = false;
         const activity = recorded.get(child.id);
         if (activity?.kind === 'completed') { entry.state = 'completed'; entry.stateBasis = 'recorded-activity'; entry.observedAt = new Date(activity.timestamp).toISOString(); }
-        if (child.status?.type === 'active' && Array.isArray(child.status.activeFlags)) {
+        if (validActive) {
           entry.state = child.status.activeFlags.some(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput') ? 'waiting' : 'working';
           entry.observedAt = observedAt; entry.stateBasis = 'runtime';
-        } else if (child.status?.type === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
-        else if (child.status?.type === 'completed') { entry.state = 'completed'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
+        } else if (validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
+        else if (validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = 'runtime'; entry.observedAt = observedAt; }
         snapshot.agents.push(entry);
         try {
-          if (typeof child.cwd !== 'string' || await realpath(child.cwd) !== canonicalCwd) { snapshot.complete = false; continue; }
+          if (!validCwd(child.cwd) || await realpath(child.cwd) !== canonicalCwd) { snapshot.complete = false; continue; }
           entry.assignmentEligible = true;
-          if (typeof observeAgent === 'function' && !['active', 'idle', 'completed'].includes(statusType))
+          if (typeof observeAgent === 'function' && !validRuntime)
             observationQueue.push(async () => {
               try {
                 const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
-                if (result?.basis === 'codex-rollout' && ['working', 'completed', 'idle'].includes(result.state) && typeof result.observedAt === 'string' && Number.isFinite(Date.parse(result.observedAt)) && Date.parse(result.observedAt) >= cycleMs && Number.isFinite(invalidations.get(child.id)) && Date.parse(result.observedAt) >= invalidations.get(child.id) && (entry.stateBasis !== 'recorded-activity' || Date.parse(result.observedAt) >= Date.parse(entry.observedAt))) {
+                const proof = result?.basis === 'codex-rollout' && result.readStable === true && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
+                const timestamp = typeof result?.observedAt === 'string' ? Date.parse(result.observedAt) : NaN;
+                const currentWorkingTurn = proof && result.state === 'working';
+                const afterInteraction = Number.isFinite(invalidations.get(child.id)) && timestamp >= invalidations.get(child.id);
+                if (proof && ['working', 'completed', 'idle'].includes(result.state) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (entry.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(entry.observedAt))) {
                   entry.state = result.state; entry.stateBasis = 'codex-rollout'; entry.observedAt = result.observedAt;
                 }
               } catch { /* Unknown stays unknown; observation never creates membership. */ }
@@ -222,6 +247,8 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     while (nextObservation < observationQueue.length) await observationQueue[nextObservation++]();
   }));
   if (seen.size !== members.size) snapshot.complete = false;
+  if (!runtimeStatusesComplete && snapshot.agents.some(agent => !['runtime', 'codex-rollout'].includes(agent.stateBasis))) snapshot.complete = false;
+  if (catalogFailed && !pages.length && !snapshot.agents.length) snapshot.status = 'unavailable';
   if (!snapshot.complete && snapshot.status === 'ready') snapshot.status = 'partial';
   finalizeRunningCount();
   return snapshot;
