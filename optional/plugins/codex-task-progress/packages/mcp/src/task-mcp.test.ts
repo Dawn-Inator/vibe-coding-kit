@@ -807,6 +807,8 @@ test("real MCP preserves canonical assignments and projects their progress to th
   const root = await realpath(directory);
   const threadId = "assignment-parent";
   const childId = "assignment-child";
+  const oldChildId = "assignment-old-child";
+  const oldPath = "/root/persistent-worker";
   const agent = { threadId: childId, path: "/root/worker" };
   await mkdir(join(root, ".git"));
   const startedAt = Math.floor(Date.now() / 1000) + 2;
@@ -873,6 +875,26 @@ test("real MCP preserves canonical assignments and projects their progress to th
             parentThreadId: threadId,
             source: {
               subAgent: { thread_spawn: { parent_thread_id: threadId, agent_path: agent.path } },
+            },
+            status: { type: "active", activeFlags: [] },
+          },
+          {
+            id: oldChildId,
+            cwd: root,
+            parentThreadId: threadId,
+            source: {
+              subAgent: { thread_spawn: { parent_thread_id: threadId, agent_path: oldPath } },
+            },
+            status: { type: "active", activeFlags: [] },
+          },
+          {
+            id: "foreign-child",
+            cwd: root,
+            parentThreadId: "foreign-parent",
+            source: {
+              subAgent: {
+                thread_spawn: { parent_thread_id: "foreign-parent", agent_path: agent.path },
+              },
             },
             status: { type: "active", activeFlags: [] },
           },
@@ -1043,15 +1065,26 @@ test("real MCP preserves canonical assignments and projects their progress to th
     let native: Snapshot | undefined;
     for (let i = 0; i < 150; i++) {
       native = await invoke("task_progress_get", {}, nativeMeta);
-      if (native.subagents?.agents[0]?.progress?.total === 3) break;
+      if (
+        native.subagents?.agents.find((agent) => agent.id === childId)?.progress?.total === 3 &&
+        native.subagents.agents.some((agent) => agent.id === oldChildId)
+      )
+        break;
       await new Promise((r) => setTimeout(r, 20));
     }
     assert.equal(native?.task?.revision, 3);
     assert.equal(native?.subagents?.parentThreadId, threadId);
     assert.equal(native?.subagents?.scopeBasis, "parent-thread");
     assert.equal(native?.subagents?.rootTurnId, "root-turn");
-    assert.equal(native?.subagents?.agents.length, 1);
-    const member = native?.subagents?.agents[0];
+    assert.equal(native?.subagents?.agents.length, 2);
+    const oldMember = native?.subagents?.agents.find((agent) => agent.id === oldChildId);
+    assert.ok(oldMember);
+    assert.equal(oldMember.progress, null);
+    assert.equal(
+      native?.subagents?.agents.some((agent) => agent.id === "foreign-child"),
+      false,
+    );
+    const member = native?.subagents?.agents.find((agent) => agent.id === childId);
     assert.ok(member);
     assert.equal(member.id, childId);
     assert.equal(member.state, "working");
@@ -1060,10 +1093,66 @@ test("real MCP preserves canonical assignments and projects their progress to th
     let fullWithProgress: Snapshot | undefined;
     for (let i = 0; i < 150; i++) {
       fullWithProgress = await invoke("task_progress_get", {}, fullMeta());
-      if (fullWithProgress.subagents?.agents[0]?.progress?.total === 3) break;
+      if (
+        fullWithProgress.subagents?.agents.find((agent) => agent.id === childId)?.progress
+          ?.total === 3
+      )
+        break;
       await new Promise((r) => setTimeout(r, 20));
     }
-    assert.deepEqual(fullWithProgress?.subagents?.agents[0]?.progress, member.progress);
+    assert.deepEqual(
+      fullWithProgress?.subagents?.agents.find((agent) => agent.id === childId)?.progress,
+      member.progress,
+    );
+    assert.equal(
+      fullWithProgress?.subagents?.agents.find((agent) => agent.id === oldChildId)?.progress,
+      null,
+    );
+    await invoke(
+      "task_progress_rescope",
+      {
+        requestId: "persistent-id-rescope",
+        expectedRevision: 3,
+        reason: "Assign persistent worker by ID",
+        objectives: [
+          {
+            id: "A",
+            title: "Assigned objective",
+            agent,
+            items: [
+              { id: "A1", title: "First", status: "completed", evidence },
+              { id: "A2", title: "Second", status: "completed", evidence, agent },
+              {
+                id: "A3",
+                title: "Third",
+                status: "pending",
+                agent: { threadId: oldChildId, path: oldPath },
+              },
+            ],
+          },
+        ],
+      },
+      fullMeta(),
+    );
+    let idProjection: Snapshot | undefined;
+    for (let i = 0; i < 150; i++) {
+      idProjection = await invoke("task_progress_get", {}, nativeMeta);
+      if (
+        idProjection.task?.revision === 4 &&
+        idProjection.subagents?.agents.find((value) => value.id === oldChildId)?.progress?.total ===
+          1
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.deepEqual(
+      idProjection?.subagents?.agents.find((value) => value.id === oldChildId)?.progress,
+      { completed: 0, total: 1, percent: 0 },
+    );
+    assert.deepEqual(
+      idProjection?.subagents?.agents.find((value) => value.id === childId)?.progress,
+      { completed: 2, total: 2, percent: 100 },
+    );
   } finally {
     await client.close();
     await server.close();

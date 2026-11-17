@@ -36,7 +36,11 @@ import {
   TaskStore,
 } from "../../tasks/src/index.js";
 import { GoalProgressSessionCoordinator } from "../src/helper-session-coordinator.js";
-import { GoalProgressHelper, overlayAgentAssignment } from "../src/index.js";
+import {
+  assignmentProjectionAgents,
+  GoalProgressHelper,
+  overlayAgentAssignment,
+} from "../src/index.js";
 
 test("disabled project task progress returns inert reads and rejects writes before workspace storage opens", async () => {
   const root = await mkdtemp("/tmp/ctph-optional-");
@@ -3734,6 +3738,8 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
   let sourceRevision = 1;
   let leafDone = true;
   let projectionReads = 0;
+  let pathOnly = false;
+  let currentRoot = "root-turn-current";
   const originalNow = Date.now;
   let now = originalNow();
   Date.now = () => now;
@@ -3746,7 +3752,11 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
         id: childId,
         parentThreadId,
         cwd: root,
-        source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+        source: {
+          subAgent: {
+            thread_spawn: { parent_thread_id: parentThreadId, agent_path: "/root/current" },
+          },
+        },
         status: { type: "active", activeFlags: [] },
       },
       {
@@ -3764,8 +3774,8 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
     return {
       data: [
         {
-          id: "root-turn-current",
-          rootTurnId: "root-turn-current",
+          id: currentRoot,
+          rootTurnId: currentRoot,
           startedAt: 1794830400,
           itemsView: "full",
           items: [
@@ -3789,7 +3799,14 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
     const task = fullTasks.get(
       JSON.stringify([options.threadId, options.sourcePath, options.contentHash]),
     );
-    return task ? projectAgentTaskProgress({ task, agents: options.agents }) : null;
+    if (!task) return null;
+    if (!pathOnly) return projectAgentTaskProgress({ task, agents: options.agents });
+    const pathTask = {
+      ...task,
+      objectives: task.objectives.map(({ agent: _agent, ...objective }) => objective),
+      source: { ...task.source, itemOwners: { assigned: { owner: "/root/current" } } },
+    };
+    return projectAgentTaskProgress({ task: pathTask as never, agents: options.agents });
   };
   HeartbeatService.prototype.taskProjection = async (threadId) => {
     projectionReads++;
@@ -3988,6 +4005,20 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       turnCollections.filter((thread) => thread === "source-chat").length,
       membershipBeforeRevision,
     );
+
+    // A new root may arrive inside the same source/cycle cache lease. No
+    // parent-thread path-only assignment may inherit the cached eligibility.
+    pathOnly = true;
+    currentRoot = "next-root";
+    const beforeRootChange = turnCollections.filter((thread) => thread === "source-chat").length;
+    const nextRootModel = await modelGet();
+    assert.equal(
+      turnCollections.filter((thread) => thread === "source-chat").length,
+      beforeRootChange,
+    );
+    assert.equal(nextRootModel.subagents.agents[0]?.progress, null);
+    pathOnly = false;
+    currentRoot = "root-turn-current";
 
     const firstScopeCalls = turnCollections.filter((thread) => thread === "source-chat").length;
     assert.ok(firstScopeCalls > 0);
@@ -4583,6 +4614,96 @@ test("native and authenticated GET use full verified heartbeat assignments acros
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("parent-thread projection requires IDs and verifies paths across root changes", () => {
+  const entry = {
+    name: "worker",
+    state: "working" as const,
+    observedAt: null,
+    progress: null,
+    progressBasis: null,
+  };
+  const members = [
+    { ...entry, id: "old", assignmentEligible: false, agentPath: "/root/old" },
+    { ...entry, id: "current", assignmentEligible: true, agentPath: "/root/current" },
+    { ...entry, id: "unverified", agentPath: "/root/unknown" },
+  ];
+  const agents = assignmentProjectionAgents(members, "parent-thread");
+  assert.deepEqual(agents, [
+    { threadId: "old", path: "/root/old", allowPathOnlyAssignment: false },
+    { threadId: "current", path: "/root/current", allowPathOnlyAssignment: false },
+  ]);
+  const task = {
+    objectives: [
+      {
+        id: "root",
+        title: "Assigned",
+        required: true,
+        status: "active",
+        items: [
+          { id: "path", title: "Path only", status: "completed", agent: { path: "/root/current" } },
+          {
+            id: "old",
+            title: "Persistent owner",
+            status: "pending",
+            agent: { threadId: "old", path: "/root/old" },
+          },
+          {
+            id: "conflict",
+            title: "Conflicting path",
+            status: "completed",
+            agent: { threadId: "current", path: "/root/old" },
+          },
+          {
+            id: "foreign",
+            title: "Foreign owner",
+            status: "completed",
+            agent: { threadId: "foreign" },
+          },
+        ],
+      },
+    ],
+  };
+  const projected = projectAgentTaskProgress({ task: task as never, agents });
+  assert.deepEqual(projected.find((agent) => agent.threadId === "old")?.assignedTaskIds, ["old"]);
+  assert.equal(projected.find((agent) => agent.threadId === "current")?.progress, null);
+  // Cached membership may survive a new root: path-only remains disabled even
+  // for the member that was eligible in the prior root.
+  const afterRootChange = assignmentProjectionAgents(members, "parent-thread");
+  assert.deepEqual(afterRootChange, agents);
+  assert.equal(
+    projectAgentTaskProgress({ task: task as never, agents: afterRootChange }).find(
+      (agent) => agent.threadId === "current",
+    )?.progress,
+    null,
+  );
+  const strictAgents = assignmentProjectionAgents(members, "parent-root-turn");
+  assert.deepEqual(strictAgents, [{ threadId: "current", path: "/root/current" }]);
+  assert.deepEqual(
+    projectAgentTaskProgress({ task: task as never, agents: strictAgents }).find(
+      (agent) => agent.threadId === "current",
+    )?.assignedTaskIds,
+    ["path"],
+  );
+  // Even with two active members advertising the same path, neither receives
+  // a path-only assignment in a parent-thread snapshot.
+  const shared = assignmentProjectionAgents(
+    members.slice(0, 2).map((member) => ({ ...member, agentPath: "/root/current" })),
+    "parent-thread",
+  );
+  const objective = task.objectives[0];
+  assert.ok(objective);
+  const pathItem = objective.items[0];
+  assert.ok(pathItem);
+  assert.ok(
+    projectAgentTaskProgress({
+      task: {
+        objectives: [{ ...objective, items: [pathItem] }],
+      } as never,
+      agents: shared,
+    }).every((agent) => agent.progress === null),
+  );
 });
 
 test("assignment overlay prefers only collector-fenced finer child checklists", () => {

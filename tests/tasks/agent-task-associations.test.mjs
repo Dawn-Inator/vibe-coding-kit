@@ -144,3 +144,20 @@ test("ordinary slash in a task label remains visible", () => {
 	const task = project([{ ...row("A", "dispatched", "/root/one"), item: "API/UI 修复" }]);
 	assert.equal(progress(task)[0].assignmentTitle, "API/UI 修复");
 });
+
+test("path-only assignment can be disabled while explicit IDs retain strict path checks", () => {
+	const restricted = [{ threadId: "one", path: "/root/one", allowPathOnlyAssignment: false }, { threadId: "two", path: "/root/two" }];
+	const pathOnly = project([row("A", "done", "/root/one")]);
+	assert.equal(progress(pathOnly, restricted)[0].progress, null);
+	assert.deepEqual(progress(pathOnly, agents)[0].assignedTaskIds, ["A"], "the default still permits unique path-only assignment");
+	assert.deepEqual(progress(project([row("A", "done", "/root/one", "one")]), restricted)[0].assignedTaskIds, ["A"]);
+	assert.deepEqual(progress(project([row("A", "done", undefined, "one")]), restricted)[0].assignedTaskIds, ["A"]);
+	assert.equal(progress(project([row("A", "done", "/root/two", "one")]), restricted)[0].progress, null);
+	const duplicated = [...restricted, { threadId: "three", path: "/root/one" }];
+	assert.equal(progress(project([row("A", "done", "/root/one", "one")]), duplicated)[0].progress, null);
+});
+
+test("explicit canonical path is checked even when it equals the agent thread ID", () => {
+	const task = { objectives: [{ id: "A", title: "A", status: "active", required: true, evidence: [], items: [], agent: { threadId: "one", path: "one" } }] };
+	assert.equal(progress(task, [{ threadId: "one", path: "/root/one", allowPathOnlyAssignment: false }])[0].progress, null);
+});

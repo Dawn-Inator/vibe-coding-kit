@@ -1,6 +1,6 @@
 import type { TaskProgress, TaskState, TaskSource } from "./task-contract.mjs";
 
-export interface CurrentAgent { threadId: string; path?: string }
+export interface CurrentAgent { threadId: string; path?: string; allowPathOnlyAssignment?: boolean }
 export interface AgentTaskProgress {
 	threadId: string;
 	progress: TaskProgress | null;

@@ -271,7 +271,13 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         countEntries.push(entry);
         if (displayed && !parentMode) snapshot.agents.push(entry);
         try {
-          entry.assignmentEligible = true;
+          // Parent-thread membership proves activity ownership, not a current
+          // task assignment. Only a precise dispatch in the current root and
+          // task/source window can authorize host path-based assignment.
+          const rootStartMs = Date.parse(snapshot.rootTurnStartedAt ?? '');
+          const assignmentStart = validCycle ? Math.max(cycleMs, rootStartMs) : sourceScope ? rootStartMs : NaN;
+          const dispatchedAt = dispatches.get(child.id);
+          entry.assignmentEligible = !parentMode || (validId(rootTurnId) && rootCount === 1 && Number.isFinite(assignmentStart) && Number.isFinite(dispatchedAt) && dispatchedAt >= assignmentStart);
           if (typeof observeAgent === 'function' && !runtimeUsable) {
             const parentStamp = invalidations.has(child.id) ? invalidations.get(child.id) : null;
             const version = invalidations.has(child.id) && !Number.isFinite(parentStamp) ? null : JSON.stringify([child.updatedAt ?? catalogTime, parentStamp, terminalEvent ? [terminalEvent.kind, terminalEvent.timestamp, terminalEvent.reliable] : null]);
@@ -353,7 +359,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     snapshot.agents = active.slice(0, 100);
     if (active.length > 100) snapshot.truncated = true;
     for (const entry of snapshot.agents) {
-      if (!dispatches.has(entry.id)) continue;
+      if (!entry.assignmentEligible || !dispatches.has(entry.id)) continue;
       try { await readProgress(entry); } catch { snapshot.complete = false; }
     }
   }

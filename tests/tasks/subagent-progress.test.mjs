@@ -1072,3 +1072,34 @@ test('parent-thread reports runtime count only with fresh complete catalog cover
     } finally { await rm(incompleteRoot, { recursive: true, force: true }); }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('parent-thread activity only grants path assignment to a precise current-scope dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-parent-assignment-'));
+  try {
+    const ids = ['old-root', 'current', 'untimed'];
+    const rows = ids.map(id => ({ id, parentThreadId: 'parent', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/same-module' } } }, status: { type: 'active', activeFlags: [] } }));
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', taskSourcePath: join(root, 'heartbeat.md'),
+      listTurnsPage: async () => ({ data: [{ id: 'current-root', rootTurnId: 'current-root', startedAt: 100, itemsView: 'full', items: [
+        { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['current'], tool: 'spawnAgent', status: 'completed', startedAtMs: 101000 },
+        { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['untimed'], tool: 'spawnAgent', status: 'completed' },
+      ] }], nextCursor: null }),
+      listPage: async () => ({ data: rows, nextCursor: null }) });
+    assert.equal(result.observedRunningCount, 3);
+    assert.deepEqual(result.agents.map(agent => [agent.id, agent.agentPath, agent.assignmentEligible]), [
+      ['old-root', '/same-module', false], ['current', '/same-module', true], ['untimed', '/same-module', false],
+    ]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('parent-thread task cycle does not grant assignment for a dispatch before its start', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-parent-cycle-assignment-'));
+  try {
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', taskCycleId: 'cycle', cycleStartedAt: '2026-01-01T00:00:05Z',
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: Date.parse('2026-01-01T00:00:01Z') / 1000, itemsView: 'full', items: [
+        { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['old'], tool: 'spawnAgent', status: 'completed', startedAtMs: Date.parse('2026-01-01T00:00:02Z') },
+        { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['new'], tool: 'spawnAgent', status: 'completed', startedAtMs: Date.parse('2026-01-01T00:00:06Z') },
+      ] }], nextCursor: null }),
+      listPage: async () => ({ data: ['old', 'new'].map(id => ({ id, parentThreadId: 'parent', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/same-module' } } }, status: { type: 'active', activeFlags: [] } })), nextCursor: null }) });
+    assert.deepEqual(result.agents.map(agent => [agent.id, agent.assignmentEligible]), [['old', false], ['new', true]]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

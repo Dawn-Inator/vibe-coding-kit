@@ -161,6 +161,24 @@ const TASK_DIAGNOSTIC_STAGES: readonly TaskDiagnosticStage[] = [
 ];
 const TASK_SLOW_DIAGNOSTIC_THRESHOLD_MS = 500;
 
+/** Parent-thread membership needs an explicit ID; paths only validate it. */
+export function assignmentProjectionAgents(
+  agents: SubagentProgressEntry[],
+  scopeBasis: SubagentProgressSnapshot["scopeBasis"],
+) {
+  return agents
+    .filter((agent) =>
+      scopeBasis === "parent-thread"
+        ? typeof agent.assignmentEligible === "boolean"
+        : agent.assignmentEligible === true,
+    )
+    .map((agent) => ({
+      threadId: agent.id,
+      ...(agent.agentPath ? { path: agent.agentPath } : {}),
+      ...(scopeBasis === "parent-thread" ? { allowPathOnlyAssignment: false } : {}),
+    }));
+}
+
 /** Select only already-verified child checklist data; the collector owns its dispatch fence. */
 export function overlayAgentAssignment(
   agent: SubagentProgressEntry,
@@ -1945,11 +1963,7 @@ export class GoalProgressHelper {
         | undefined;
       if (sourceReady && hasSubagentScope && currentTask && Array.isArray(currentTask.objectives)) {
         try {
-          const eligible = subagents.agents.filter((agent) => agent.assignmentEligible === true);
-          const agents = eligible.map((agent) => ({
-            threadId: agent.id,
-            ...(agent.agentPath ? { path: agent.agentPath } : {}),
-          }));
+          const agents = assignmentProjectionAgents(subagents.agents, subagents.scopeBasis);
           const projected =
             sourcePath && typeof boundSource?.contentHash === "string"
               ? this.#heartbeatServices.get(scope)?.agentTaskProgress({
