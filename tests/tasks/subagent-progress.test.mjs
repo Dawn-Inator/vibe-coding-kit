@@ -117,14 +117,31 @@ test('bounded reads reject a symlinked record and an escaping child directory', 
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
-test('bounded read rejects a FIFO without waiting for a writer', { skip: process.platform === 'win32' }, async () => {
+test('bounded read rejects a non-regular file without waiting for a writer', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-fifo-'));
   try {
-    const { execFileSync } = await import('node:child_process');
+    const { constants } = await import('node:fs');
+    const { open, writeFile } = await import('node:fs/promises');
     const { readBoundedText } = await import('../../src/tasks/markdown-records.mjs');
     const path = join(root, 'pipe');
-    execFileSync('mkfifo', [path]);
-    await assert.rejects(readBoundedText(path, 100), /not a regular file/);
+    await writeFile(path, 'placeholder');
+    // A FIFO is simulated through the injected open: the handle reports a non-regular file, so the rejection and
+    // the non-blocking, no-follow open flags are asserted identically on every host.
+    let flags;
+    const openAsFifo = async (target, openFlags) => {
+      flags = openFlags;
+      const handle = await open(target, openFlags);
+      return new Proxy(handle, {
+        get: (object, name) => name === 'stat'
+          ? async () => ({ isFile: () => false })
+          : (typeof object[name] === 'function' ? object[name].bind(object) : object[name]),
+      });
+    };
+    await assert.rejects(readBoundedText(path, 100, { open: openAsFifo }), /not a regular file/);
+    const nonBlocking = constants.O_NONBLOCK ?? 0;
+    const noFollow = constants.O_NOFOLLOW ?? 0;
+    assert.equal(flags & nonBlocking, nonBlocking, 'opens without waiting for a writer');
+    assert.equal(flags & noFollow, noFollow, 'refuses to follow links');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

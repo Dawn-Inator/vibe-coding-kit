@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { inspectOptionalComponent, installOptionalComponent } from '../../src/optional/runtime.mjs';
+
+// Simulated symlinks: the listed paths report isSymbolicLink() without touching the filesystem, so the
+// fail-closed branches run identically on hosts where creating a symlink needs privileges.
+function lstatWithLinks(...links) {
+  const linked = new Set(links);
+  return (path) => linked.has(path)
+    ? { isSymbolicLink: () => true, isFile: () => false, isDirectory: () => false }
+    : lstatSync(path);
+}
 
 function fixture(t, id = 'lark') {
   const root = mkdtempSync(join(tmpdir(), 'kit-optional-runtime-'));
@@ -110,7 +119,7 @@ test('broken fixed helper fails closed without invoking a valid legacy helper', 
   assert.equal(calls, 0);
 });
 
-test('fixed helper symlink fails closed instead of falling back to the legacy helper', { skip: process.platform === 'win32' }, async (t) => {
+test('fixed helper symlink fails closed instead of falling back to the legacy helper', async (t) => {
   const f = fixture(t, 'codex-task-progress');
   const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
   const fixed = join(installRoot, 'bin', 'goal-progress');
@@ -118,12 +127,9 @@ test('fixed helper symlink fails closed instead of falling back to the legacy he
   mkdirSync(join(fixed, '..'), { recursive: true });
   mkdirSync(join(legacy, '..'), { recursive: true });
   writeFileSync(legacy, 'legacy helper');
-  const target = join(installRoot, 'target-helper');
-  writeFileSync(target, 'target helper');
-  symlinkSync(target, fixed);
   let calls = 0;
   const result = await inspectOptionalComponent({
-    ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
+    ...f, lstat: lstatWithLinks(fixed), env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
     runner: async () => { calls += 1; return response(0, JSON.stringify({ ok: true })); },
   });
   assert.equal(result.status, 'error');
@@ -131,7 +137,7 @@ test('fixed helper symlink fails closed instead of falling back to the legacy he
   assert.equal(calls, 0);
 });
 
-test('fixed bin parent symlink fails closed with or without a target before legacy fallback', { skip: process.platform === 'win32' }, async (t) => {
+test('fixed bin parent symlink fails closed with or without a target before legacy fallback', async (t) => {
   for (const dangling of [false, true]) {
     const f = fixture(t, 'codex-task-progress');
     const installRoot = join(f.home, 'Library', 'Application Support', 'CodexTaskProgress', 'install');
@@ -142,10 +148,10 @@ test('fixed bin parent symlink fails closed with or without a target before lega
     mkdirSync(join(legacy, '..'), { recursive: true });
     writeFileSync(join(targetBin, 'goal-progress'), 'fixed helper');
     writeFileSync(legacy, 'legacy helper');
-    symlinkSync(dangling ? join(installRoot, 'missing-bin-target') : targetBin, fixedBin, 'dir');
+    if (dangling) rmSync(targetBin, { recursive: true, force: true });
     let calls = 0;
     const result = await inspectOptionalComponent({
-      ...f, env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
+      ...f, lstat: lstatWithLinks(fixedBin), env: { HOME: f.home }, platform: 'darwin', arch: 'arm64',
       runner: async () => { calls += 1; return response(0, JSON.stringify({ ok: true })); },
     });
     assert.equal(result.status, 'error');
