@@ -157,7 +157,16 @@ test("path-only assignment can be disabled while explicit IDs retain strict path
 	assert.equal(progress(project([row("A", "done", "/root/one", "one")]), duplicated)[0].progress, null);
 });
 
-test("explicit canonical path is checked even when it equals the agent thread ID", () => {
+test("explicit canonical ID alias remains compatible with restricted path-only assignment", () => {
 	const task = { objectives: [{ id: "A", title: "A", status: "active", required: true, evidence: [], items: [], agent: { threadId: "one", path: "one" } }] };
-	assert.equal(progress(task, [{ threadId: "one", path: "/root/one", allowPathOnlyAssignment: false }])[0].progress, null);
+	assert.deepEqual(progress(task, [{ threadId: "one", path: "/root/one", allowPathOnlyAssignment: false }])[0].assignedTaskIds, ["A"]);
+});
+
+
+test("restricted member keeps explicit owner ID alias without an agent path", () => {
+	const members = [{ threadId: "verified-child", allowPathOnlyAssignment: false }];
+	const direct = project([row("A", "done", "verified-child", "verified-child")]);
+	assert.deepEqual(progress(direct, members)[0].assignedTaskIds, ["A"]);
+	assert.equal(progress(project([row("A", "done", "/wrong/path", "verified-child")]), members)[0].progress, null);
+	assert.equal(progress(project([row("A", "done", "verified-child")]), members)[0].progress, null);
 });

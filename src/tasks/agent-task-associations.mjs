@@ -46,7 +46,7 @@ export function projectAgentTaskProgress({ task, agents }) {
 			member = candidates[0];
 			// An explicit ID is authoritative, but a contradictory path/owner
 			// invalidates the association instead of falling back to another agent.
-			if (path && (member.allowPathOnlyAssignment === false || path !== member.threadId) &&
+			if (path && path !== member.threadId &&
 				(path !== member.path || byPath.get(path)?.length !== 1)) continue;
 		} else if (path) {
 			const candidates = byPath.get(path);
