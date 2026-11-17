@@ -120,7 +120,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   // The parent scan supplies dispatch and invalidation hints only. Its root or
   // pagination completeness does not determine parent-thread catalog coverage.
   const recentMembers = new Set(members);
-  if (parentMode) { snapshot.complete = !parentDiscoveryIncomplete; snapshot.truncated = false; }
+  if (parentMode) { snapshot.complete = true; snapshot.truncated = false; }
   let runtimeStatusesComplete = true;
   const countEntries = [];
   const finalizeRunningCount = () => {
@@ -149,6 +149,9 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     catalogPages = catalog.rows.length || (catalog.complete ? 1 : 0);
     if (parentMode && catalog.state) activityHints = (catalog.state.activityHints ??= new Set());
     if (!catalog.complete) snapshot.complete = false;
+    // Complete catalog coverage is independently authoritative even when the
+    // optional older-turn discovery pass is unavailable.
+    if (parentDiscoveryIncomplete && !catalog.complete) snapshot.complete = false;
     if (catalog.truncated) snapshot.truncated = true;
     const admit = async (child, row) => {
       if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) return false;
@@ -313,8 +316,13 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         if (runtimeUsable && validActive) {
           entry.state = child.status.activeFlags.some(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput') ? 'waiting' : 'working';
           entry.observedAt = catalogTime ?? null; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime';
+          if (parentMode && freshRuntime) {
+            if (!activityHints.has(child.id) && activityHints.size >= 2000) activityHints.delete(activityHints.values().next().value);
+            activityHints.add(child.id);
+          }
         } else if (runtimeUsable && validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
         else if (runtimeUsable && validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
+        if (parentMode && freshRuntime && runtimeUsable && validNonActive) activityHints.delete(child.id);
         countEntries.push(entry);
         if (displayed && !parentMode) snapshot.agents.push(entry);
         try {

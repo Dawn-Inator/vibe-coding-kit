@@ -1216,8 +1216,8 @@ test('parent catalog cannot certify zero when a local child has invalid cwd', as
 test('verified prior-root activity survives catalog churn only through fresh lookup and observation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-prior-root-hint-'));
   try {
-    let poll = 1, lookups = 0;
-    const row = id => ({ id, cwd: root, parentThreadId: 'parent', updatedAt: id === 'old-active' ? 99999 : 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'notLoaded' } });
+    let poll = 1, lookups = 0, oldObservations = 0;
+    const row = id => ({ id, cwd: root, parentThreadId: 'parent', updatedAt: id === 'old-active' ? 99999 : 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: id === 'old-active' && poll < 3 ? { type: 'active', activeFlags: [] } : { type: 'notLoaded' } });
     const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
       listTurnsPage: async () => ({ data: [{ id: 'new-root', rootTurnId: 'new-root', startedAt: 100, itemsView: 'full', items: [] }], nextCursor: null }),
       listPage: async cursor => {
@@ -1228,15 +1228,17 @@ test('verified prior-root activity survives catalog churn only through fresh loo
         return { data: ids.slice(offset, offset + 50).map(row), nextCursor: offset + 50 < ids.length ? String(offset + 50) : null };
       },
       lookupAgent: async id => { lookups++; return row(id); },
-      observeAgent: async id => id === 'old-active' && poll < 4
+      observeAgent: async id => { if (id === 'old-active') oldObservations++; return id === 'old-active' && poll < 4
         ? { state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'old-root', complete: true, readStable: true }
-        : { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old-root', complete: true, latestTurnVerified: true } };
+        : { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old-root', complete: true, latestTurnVerified: true }; } };
     const first = await collectScoped(options);
     assert.equal(first.observedRunningCount, 1);
+    assert.equal(oldObservations, 0, 'fresh runtime active created the hint without an observer');
     poll = 2; await collectScoped(options);
     poll = 3;
     const resumed = await collectScoped(options);
     assert.ok(lookups > 0);
+    assert.ok(oldObservations > 0, 'retained hint requires fresh observation');
     assert.deepEqual(resumed.agents.map(agent => agent.id), ['old-active']);
     assert.equal(resumed.observedRunningCount, 1);
     assert.equal(resumed.runningCount, null);
@@ -1264,7 +1266,7 @@ test('older root hints discover still-active children without authorizing old as
           ...older.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'completed' }))] }], nextCursor: null }),
       listPage: async cursor => { const offset = cursor ? Number(cursor) : 0; return { data: ids.slice(offset, offset + 50).map(id => row(id)), nextCursor: offset + 50 < ids.length ? String(offset + 50) : null }; },
       lookupAgent: async id => row(id, id === 'foreign' ? 'other' : 'parent'),
-      observeAgent: async id => { observed.push(id); return older.slice(7).includes(id)
+      observeAgent: async id => { observed.push(id); return (!current.includes(id) && !older.slice(0, 7).includes(id))
         ? { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old', complete: true, latestTurnVerified: true }
         : { state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old', complete: true, readStable: true }; } });
     assert.equal(result.observedRunningCount, 18);
@@ -1282,7 +1284,7 @@ test('an unavailable older parent turn page leaves coverage partial', async () =
   try {
     const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
       listTurnsPage: async cursor => { if (cursor) throw new Error('offline'); return { data: [{ id: 'new', rootTurnId: 'new', startedAt: 200, itemsView: 'full', items: [] }], nextCursor: 'older' }; },
-      listPage: async () => ({ data: [], nextCursor: null }) });
+      listPage: async cursor => ({ data: [], nextCursor: String(Number(cursor ?? 0) + 1) }) });
     assert.equal(result.complete, false);
     assert.equal(result.runningCount, null);
   } finally { await rm(root, { recursive: true, force: true }); }
