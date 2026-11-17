@@ -676,8 +676,9 @@ test("native panel MCP Apps integration", async (t) => {
             assert.equal(await allocation.getAttribute("role"), "img");
             assert.equal(await allocation.getAttribute("aria-valuenow"), null);
             assert.equal(await allocation.locator(".allocation-fill").count(), 0);
-            assert.equal(await allocation.locator("strong").innerText(), "—");
-            assert.doesNotMatch(await allocation.innerText(), /\d+%|\d+\/\d+/);
+            assert.equal(await allocation.locator("strong").innerText(), "");
+            assert.match(await allocation.getAttribute("aria-label"), /Unknown.*Not recorded yet/);
+            assert.doesNotMatch(await allocation.innerText(), /\d+%|\d+\/\d+|0/);
           };
           await verifyCurrentData();
 
