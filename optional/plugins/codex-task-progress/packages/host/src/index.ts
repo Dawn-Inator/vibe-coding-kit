@@ -1955,6 +1955,19 @@ export class GoalProgressHelper {
         if (children.value) subagents = children.value;
         else if (children.error) subagents = { ...subagents, status: "unavailable" };
       }
+      // Parent-thread activity spans dispatches, so an independent child
+      // checklist cannot establish progress for the current parent assignment.
+      // Current canonical parent leaves are projected below instead.
+      if (subagents.scopeBasis === "parent-thread") {
+        subagents = {
+          ...subagents,
+          agents: subagents.agents.map((agent) => ({
+            ...agent,
+            progress: null,
+            progressBasis: null,
+          })),
+        };
+      }
       // Canonical heartbeat tasks stay private in their source service; never
       // calculate assigned progress from a truncated panel projection.
       const currentTask = value?.result.task as

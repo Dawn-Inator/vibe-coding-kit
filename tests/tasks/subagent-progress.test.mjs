@@ -1103,3 +1103,24 @@ test('parent-thread task cycle does not grant assignment for a dispatch before i
     assert.deepEqual(result.agents.map(agent => [agent.id, agent.assignmentEligible]), [['old', false], ['new', true]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('parent-thread activity does not attribute a child checklist to the current parent assignment', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-parent-child-checklist-'));
+  try {
+    const store = new TaskStore(root, { schemas });
+    const dispatchAt = Date.now() - 5000;
+    await store.initialize('child', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Child checklist', objectives: [{ id: 'P', title: 'Parent', items: [{ id: 'A', title: 'A' }, { id: 'B', title: 'B' }, { id: 'C', title: 'C' }] }] });
+    await store.update('child', { requestId: 'two-done', expectedRevision: 1, reason: 'done', changes: [{ targetId: 'A', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }, { targetId: 'B', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }] });
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, taskSourcePath: join(root, 'heartbeat.md'),
+      listTurnsPage: async () => ({ data: [{ id: 'current-root', rootTurnId: 'current-root', startedAt: (dispatchAt - 1000) / 1000, itemsView: 'full', items: [{ type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['child'], tool: 'spawnAgent', status: 'completed', startedAtMs: dispatchAt }] }], nextCursor: null }),
+      listPage: async () => ({ data: [{ id: 'child', parentThreadId: 'parent', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/same-module' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }) };
+    const parent = await collectScoped({ ...options, activityScope: 'parent-thread' });
+    assert.equal(parent.agents[0].assignmentEligible, true);
+    assert.equal(parent.agents[0].state, 'working');
+    assert.equal(parent.agents[0].progress, null);
+    assert.equal(parent.agents[0].progressBasis, null);
+    const strict = await collectScoped(options);
+    assert.deepEqual(strict.agents[0].progress, { completed: 2, total: 3, percent: 66.67 });
+    assert.equal(strict.agents[0].progressBasis, 'registered-checklist');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

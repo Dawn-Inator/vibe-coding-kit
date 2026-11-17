@@ -710,8 +710,8 @@ test("native panel MCP Apps integration", async (t) => {
                   name: "Current root member",
                   state: "working",
                   observedAt,
-                  progress: null,
-                  progressBasis: null,
+                  progress: { completed: 2, total: 2, percent: 100 },
+                  progressBasis: "registered-checklist",
                 },
               ],
               complete: true,
@@ -767,6 +767,12 @@ test("native panel MCP Apps integration", async (t) => {
               readOnly: true,
               contentHash: sourceHash,
             });
+            assert.deepEqual(data.subagents.agents[0].progress, {
+              completed: 2,
+              total: 2,
+              percent: 100,
+            });
+            assert.equal(data.subagents.agents[0].progressBasis, "registered-checklist");
             assert.equal(data.subagents.taskCycleId, null);
             assert.equal(data.subagents.taskSourcePath, sourcePath);
             assert.equal(data.subagents.rootTurnStartedAt, rootTurnStartedAt);
@@ -795,6 +801,14 @@ test("native panel MCP Apps integration", async (t) => {
             callsBeforeLegacy,
           );
           assert.equal(await panel.evaluate((element) => element.data.task.revision), 5);
+          assert.equal(
+            await panel.evaluate((element) => element.data.subagents.agents[0].progress),
+            null,
+          );
+          assert.equal(
+            await panel.evaluate((element) => element.data.subagents.agents[0].progressBasis),
+            null,
+          );
           await frame.getByText("Current root member", { exact: true }).waitFor();
           await page.evaluate(() => {
             window.holdGet = false;

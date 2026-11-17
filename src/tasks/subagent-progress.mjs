@@ -358,10 +358,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     const active = countEntries.filter(entry => ['working', 'waiting'].includes(entry.state));
     snapshot.agents = active.slice(0, 100);
     if (active.length > 100) snapshot.truncated = true;
-    for (const entry of snapshot.agents) {
-      if (!entry.assignmentEligible || !dispatches.has(entry.id)) continue;
-      try { await readProgress(entry); } catch { snapshot.complete = false; }
-    }
   }
   if (seen.size !== members.size) snapshot.complete = false;
   if (!runtimeStatusesComplete && countEntries.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;

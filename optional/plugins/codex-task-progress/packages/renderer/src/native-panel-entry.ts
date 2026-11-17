@@ -403,9 +403,9 @@ function retainMissingAgents(
   const agents = current.subagents.agents.map((agent) => ({
     ...agent,
     assignmentTitle: null,
-    ...(agent.progressBasis === "module-delivery"
-      ? { progress: null, progressBasis: null, progressGranularity: "none" as const }
-      : {}),
+    progress: null,
+    progressBasis: null,
+    progressGranularity: "none" as const,
   }));
   const { allocation: _allocation, ...membership } = current.subagents;
   return { ...response, subagents: { ...membership, agents } };

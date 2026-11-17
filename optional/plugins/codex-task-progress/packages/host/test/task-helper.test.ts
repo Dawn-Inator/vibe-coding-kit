@@ -4616,6 +4616,190 @@ test("native and authenticated GET use full verified heartbeat assignments acros
   }
 });
 
+test("parent-thread activity uses canonical parent assignments, never an independent child checklist", async () => {
+  const root = await realpath(await mkdtemp("/tmp/ctph-child-revision-"));
+  await mkdir(join(root, ".git"));
+  const threadId = "parent";
+  const childId = "child";
+  const testRuntime = runtime(root);
+  let collections = 0;
+  testRuntime.listDirectSubagents = async () => {
+    collections++;
+    return {
+      data: [
+        {
+          id: childId,
+          cwd: root,
+          parentThreadId: threadId,
+          source: { subAgent: { thread_spawn: { parent_thread_id: threadId } } },
+          status: { type: "active", activeFlags: [] },
+        },
+      ],
+      nextCursor: null,
+    };
+  };
+  testRuntime.listSubagentTurns = async () => ({
+    data: [
+      {
+        id: "turn",
+        rootTurnId: "turn",
+        startedAt: 1794830400,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: threadId,
+            receiverThreadIds: [childId],
+            tool: "spawnAgent",
+            status: "completed",
+            startedAtMs: 1794830401000,
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  const originalGet = KitTaskStore.prototype.get;
+  const originalRead = KitTaskStore.prototype.getReadOnly;
+  let revision = 1;
+  let assignmentId = "old";
+  KitTaskStore.prototype.get = async (id) => ({
+    schemaVersion: 4,
+    kind: "task",
+    threadId: id,
+    title: "Parent",
+    revision,
+    createdAt: "2026-11-16T12:00:00Z",
+    updatedAt: "2026-11-16T12:00:00Z",
+    objectives: [
+      {
+        id: assignmentId,
+        title: "Assigned",
+        required: true,
+        status: "active",
+        evidence: [],
+        items: Array.from({ length: 3 }, (_, index) => ({
+          id: `${assignmentId}-${index}`,
+          title: `Leaf ${index}`,
+          status: revision === 1 && index < 2 ? ("completed" as const) : ("pending" as const),
+          evidence: [],
+        })),
+        agent: { threadId: childId },
+      },
+    ],
+    progress: { completed: 0, total: 1, percent: 0 },
+    phase: "active",
+    lifecycle: { id: "cycle", sequence: 1, startedAt: "2026-11-16T12:00:00Z", completion: null },
+  });
+  let childReadCount = 0;
+  KitTaskStore.prototype.getReadOnly = async (id) => {
+    if (id === childId) childReadCount++;
+    return {
+      sourceBound: false,
+      uncertain: false,
+      state:
+        id === childId
+          ? ({
+              schemaVersion: 4,
+              kind: "task",
+              threadId: id,
+              title: "Prior child",
+              revision: 1,
+              createdAt: "2026-11-16T12:00:02Z",
+              updatedAt: "2026-11-16T12:00:02Z",
+              objectives: [],
+              progress: { completed: 2, total: 2, percent: 100 },
+              phase: "completed",
+              lifecycle: {
+                id: "child-cycle",
+                sequence: 1,
+                startedAt: "2026-11-16T12:00:02Z",
+                completion: null,
+              },
+            } as never)
+          : null,
+    };
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let call = 0;
+  const get = async () =>
+    (
+      await client.request({
+        method: "task.request",
+        params: {
+          action: "get",
+          auth: {
+            kind: "codex-request",
+            toolName: "task_progress_get",
+            identity: {
+              threadId,
+              sessionId: threadId,
+              turnId: "turn",
+              callId: `call-${++call}`,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input: {},
+        },
+      })
+    ).result as {
+      subagents: {
+        agents: {
+          id: string;
+          progress: { completed: number; total: number; percent: number | null } | null;
+          progressBasis: string | null;
+        }[];
+      };
+    };
+  try {
+    await helper.start();
+    let before = await get();
+    for (let i = 0; i < 100 && before.subagents.agents[0]?.progress?.total !== 3; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      before = await get();
+    }
+    assert.deepEqual(before.subagents.agents[0]?.progress, {
+      completed: 2,
+      total: 3,
+      percent: 66.67,
+    });
+    assert.equal(before.subagents.agents[0]?.progressBasis, "module-delivery");
+    assert.equal(childReadCount, 0);
+    const collected = collections;
+    const same = await get();
+    assert.deepEqual(same.subagents.agents[0]?.progress, before.subagents.agents[0]?.progress);
+    assert.equal(collections, collected);
+    revision = 2;
+    assignmentId = "new";
+    const changed = await get();
+    assert.equal(collections, collected);
+    assert.equal(changed.subagents.agents[0]?.id, childId);
+    assert.deepEqual(changed.subagents.agents[0]?.progress, { completed: 0, total: 3, percent: 0 });
+    assert.equal(changed.subagents.agents[0]?.progressBasis, "module-delivery");
+    assignmentId = "newer";
+    const sameRevisionChangedAssignment = await get();
+    assert.deepEqual(sameRevisionChangedAssignment.subagents.agents[0]?.progress, {
+      completed: 0,
+      total: 3,
+      percent: 0,
+    });
+    assert.equal(childReadCount, 0);
+  } finally {
+    KitTaskStore.prototype.get = originalGet;
+    KitTaskStore.prototype.getReadOnly = originalRead;
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("parent-thread projection requires IDs and verifies paths across root changes", () => {
   const entry = {
     name: "worker",
