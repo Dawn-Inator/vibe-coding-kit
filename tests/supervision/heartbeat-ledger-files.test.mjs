@@ -873,7 +873,7 @@ test("bounded paired reads enforce combined size, including grown companion befo
 });
 
 test("bounded reads reject non-regular companions without waiting for a writer", () => {
-	const dir = root(),
+	const dir = realpathSync(root()),
 		path = join(dir, "heartbeat.md");
 	writeFileSync(path, wake("2026-01-01T10:00Z"));
 	const companion = heartbeatLedgerPairPaths(path).historyPath;
