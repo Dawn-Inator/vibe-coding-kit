@@ -1,3 +1,7 @@
+# Task Progress 0.9.8
+
+- Version 0.9.8 aligns current-agent observation across both authenticated GET paths using the same scope-gated background observer. The full-authorization model GET continues to read canonical task data with its existing security checks. No new authorization flag or state store is introduced. The previous 0.9.7 user reload still showed agents as not ready despite the updated UI; 0.9.8 native acceptance remains to be verified.
+
 # Task Progress 0.9.7
 
 - Version 0.9.7 supports current-turn agent views for read-only Kit-bound sources without a managed task lifecycle by fencing the canonical source path and verified latest root start. Ordinary managed task cycle rules remain unchanged. The adapter uses official summary turns and deferred paginated `thread/items/list` metadata with wrapper timestamps, without falling back to the parent’s full historical child inventory. A `notLoaded` child is not evidence of live activity; missing orchestration or an agent plan leaves the planned allocation unknown. The registered-task projection treats `-` on a non-tracking row as empty and accepts valid shared-child DAGs while retaining genuine invalid-link risks. The bounded metadata window is not shown as a Subagents list. Native host acceptance remains separate.

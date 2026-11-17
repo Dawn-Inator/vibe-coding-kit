@@ -3637,6 +3637,8 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
   let sourcePath = join(root, "heartbeat.md");
   let sourceStatus: "ready" | "pending" | "pending-selection" | "error" | "stale" = "ready";
   let childId = "source-chat-child";
+  let canonicalTitle = "Bound task";
+  let projectionReads = 0;
   const originalNow = Date.now;
   let now = originalNow();
   Date.now = () => now;
@@ -3687,13 +3689,14 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
   };
   const originalProjection = HeartbeatService.prototype.taskProjection;
   HeartbeatService.prototype.taskProjection = async (threadId) => {
+    projectionReads++;
     if (threadId === "source-chat-no-scope")
       return { status: "none", sourcePath: null, task: null };
     const task = {
       schemaVersion: 3 as const,
       kind: "task" as const,
       threadId,
-      title: "Bound task",
+      title: canonicalTitle,
       revision: 0,
       createdAt: "2026-11-16T12:00:00Z",
       updatedAt: "2026-11-16T12:00:00Z",
@@ -3751,6 +3754,30 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
         agents: { id: string }[];
       };
     };
+  let modelCall = 0;
+  const modelGet = async (threadId = "source-chat") =>
+    (
+      await client.request({
+        method: "task.request",
+        params: {
+          action: "get",
+          auth: {
+            kind: "codex-request",
+            toolName: "task_progress_get",
+            identity: {
+              threadId,
+              sessionId: threadId,
+              turnId: "turn-1",
+              callId: `model-${++modelCall}`,
+              model: "test",
+              threadSource: "user",
+              cwd: root,
+            },
+          },
+          input: {},
+        },
+      })
+    ).result as Awaited<ReturnType<typeof native>> & { task: { title: string } | null };
   const waitForProjection = async (
     threadId: string,
     expectedStatus: string,
@@ -3802,6 +3829,28 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       result.subagents.agents.map((agent) => agent.id),
       ["source-chat-child"],
     );
+    // Full-auth GET keeps task authority canonical while sharing the scoped observation.
+    canonicalTitle = "Canonical model title";
+    const readsBeforeModel = projectionReads;
+    let model = await modelGet();
+    assert.ok(projectionReads > readsBeforeModel);
+    assert.equal(model.task?.title, canonicalTitle);
+    for (let i = 0; i < 100 && model.subagents.status !== "ready"; i++) {
+      await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
+      model = await modelGet();
+    }
+    assert.equal(model.taskSource?.path, sourcePath);
+    assert.equal(model.subagents.parentThreadId, "source-chat");
+    assert.equal(model.subagents.taskSourcePath, sourcePath);
+    assert.equal(model.subagents.taskCycleId, null);
+    assert.equal(model.subagents.rootTurnId, "root-turn-current");
+    assert.equal(model.subagents.status, "ready");
+    assert.deepEqual(
+      model.subagents.agents.map((agent) => agent.id),
+      [childId],
+    );
+    assert.equal(model.presentation?.pending, false);
+
     const firstScopeCalls = turnCollections.filter((thread) => thread === "source-chat").length;
     assert.ok(firstScopeCalls > 0);
 
@@ -3849,6 +3898,11 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
         0,
         `${status} source must not trigger collection for its chat`,
       );
+      const model = await modelGet(threadId);
+      assert.equal(model.taskSource?.status, status);
+      assert.notEqual(model.subagents.status, "ready");
+      assert.deepEqual(model.subagents.agents, []);
+      assert.equal(turnCollections.filter((thread) => thread === threadId).length, 0);
     }
 
     sourceStatus = "ready";
@@ -3861,6 +3915,10 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
     );
     assert.deepEqual(result.subagents.agents, []);
     assert.equal(turnCollections.filter((thread) => thread === "source-chat-mismatch").length, 0);
+    const mismatchedModel = await modelGet("source-chat-mismatch");
+    assert.equal(mismatchedModel.subagents.status, "unavailable");
+    assert.deepEqual(mismatchedModel.subagents.agents, []);
+    assert.equal(turnCollections.filter((thread) => thread === "source-chat-mismatch").length, 0);
 
     now += 5_001;
     let noScope = await native("source-chat-no-scope");
@@ -3872,6 +3930,11 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
     assert.equal(noScope.subagents.parentThreadId, "source-chat-no-scope");
     assert.equal(noScope.subagents.status, "unavailable");
     assert.deepEqual(noScope.subagents.agents, []);
+    assert.equal(turnCollections.filter((thread) => thread === "source-chat-no-scope").length, 0);
+    const unscopedModel = await modelGet("source-chat-no-scope");
+    assert.equal(unscopedModel.taskSource, null);
+    assert.equal(unscopedModel.subagents.status, "unavailable");
+    assert.deepEqual(unscopedModel.subagents.agents, []);
     assert.equal(turnCollections.filter((thread) => thread === "source-chat-no-scope").length, 0);
   } finally {
     Date.now = originalNow;

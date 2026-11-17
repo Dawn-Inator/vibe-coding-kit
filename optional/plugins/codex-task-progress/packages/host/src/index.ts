@@ -1754,6 +1754,163 @@ export class GoalProgressHelper {
         },
       };
     };
+    // Both GET paths derive observation from their own verified task/source result.
+    // The native path may supply its display snapshot; full-auth GET supplies its
+    // canonical read and never substitutes cached task authority.
+    const projectSubagents = (
+      value: { result: Record<string, unknown> } | null,
+    ): SubagentProgressSnapshot => {
+      const source = value?.result.taskSource;
+      const storage = value?.result.storage as { root?: unknown } | undefined;
+      const sourceReady =
+        value &&
+        value.result.taskSourcePending !== true &&
+        !(
+          source &&
+          typeof source === "object" &&
+          "status" in source &&
+          ["pending", "error", "stale", "pending-selection"].includes(String(source.status))
+        );
+      const task = value?.result.task as
+        | {
+            lifecycle?: { id?: unknown; startedAt?: unknown };
+            source?: {
+              kind?: unknown;
+              readOnly?: unknown;
+              path?: unknown;
+              contentHash?: unknown;
+            };
+          }
+        | null
+        | undefined;
+      const lifecycleId = task?.lifecycle?.id;
+      const lifecycleStartedAt = task?.lifecycle?.startedAt;
+      const validLifecycle =
+        typeof lifecycleId === "string" &&
+        lifecycleId.trim().length > 0 &&
+        typeof lifecycleStartedAt === "string" &&
+        Number.isFinite(Date.parse(lifecycleStartedAt));
+      const cycleId = validLifecycle ? lifecycleId : undefined;
+      const cycleStartedAt = validLifecycle ? lifecycleStartedAt : undefined;
+      const boundSource =
+        source && typeof source === "object"
+          ? (source as {
+              status?: unknown;
+              kind?: unknown;
+              readOnly?: unknown;
+              path?: unknown;
+              contentHash?: unknown;
+            })
+          : undefined;
+      const sourcePath =
+        !validLifecycle &&
+        boundSource?.status === "ready" &&
+        boundSource.kind === "kit-heartbeat" &&
+        boundSource.readOnly === true &&
+        typeof boundSource.path === "string" &&
+        boundSource.path.trim().length > 0 &&
+        task?.source?.path === boundSource.path &&
+        typeof boundSource.contentHash === "string" &&
+        task?.source?.contentHash === boundSource.contentHash &&
+        task?.source?.kind === "kit-heartbeat" &&
+        task.source.readOnly === true
+          ? boundSource.path
+          : undefined;
+      const sourceIdentity = sourcePath
+        ? JSON.stringify([sourcePath, boundSource?.contentHash ?? null])
+        : null;
+      const hasSubagentScope = validLifecycle || sourcePath !== undefined;
+      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
+      let subagents: SubagentProgressSnapshot = {
+        schemaVersion: 1,
+        parentThreadId: threadId,
+        observedAt: null,
+        status: "pending",
+        runningCount: null,
+        runningBasis: "unknown",
+        agents: [],
+        complete: false,
+        truncated: false,
+      };
+      if (sourceReady && !hasSubagentScope) subagents = { ...subagents, status: "unavailable" };
+      if (
+        sourceReady &&
+        hasSubagentScope &&
+        (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns)
+      )
+        subagents = { ...subagents, status: "unavailable" };
+      if (value && boundSource?.status === "stale")
+        subagents = { ...subagents, status: "unavailable" };
+      if (
+        sourceReady &&
+        hasSubagentScope &&
+        typeof storage?.root === "string" &&
+        this.#runtime.listDirectSubagents &&
+        this.#runtime.listSubagentTurns
+      ) {
+        const previous = this.#subagentPresentation.peek(subagentKey);
+        const recent =
+          previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
+        const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
+        const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
+        const children = recent
+          ? previous
+          : this.#subagentPresentation.read(subagentKey, async () => {
+              if (this.#stopping) throw new Error("Helper is stopping");
+              const load = (async () => {
+                const result = await collectSubagentProgress({
+                  parentThreadId: threadId,
+                  cwd: canonicalCwd,
+                  storageRoot: storage.root as string,
+                  schemas: createTaskProgressSchemas(z),
+                  listPage: (cursor) => listDirectSubagents(threadId, cursor),
+                  listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
+                  ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
+                  ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
+                  ...(sourcePath === undefined
+                    ? {}
+                    : { taskCycleId: null, cycleStartedAt: null, taskSourcePath: sourcePath }),
+                });
+                return result;
+              })();
+              this.#presentationLoads.add(load);
+              try {
+                return await load;
+              } finally {
+                this.#presentationLoads.delete(load);
+              }
+            });
+        if (children.value) subagents = children.value;
+        else if (children.error) subagents = { ...subagents, status: "unavailable" };
+      }
+      // Allocation is projected from the current presentation each time, never retained in the
+      // child-list cache. A changed source, cycle, or plan therefore cannot reuse an old ratio.
+      const projectHeartbeat = value?.result.heartbeat as
+        | { status?: unknown; wakes?: unknown[] }
+        | null
+        | undefined;
+      const latestWake = projectHeartbeat?.wakes?.at(-1) as
+        | { orchestration?: { after?: { observedAt?: unknown } } }
+        | undefined;
+      const allocationObservedAt = latestWake?.orchestration?.after?.observedAt;
+      const scopeStartedAt = subagents.rootTurnStartedAt;
+      const allocationInScope =
+        subagents.scopeBasis === "parent-root-turn" &&
+        typeof scopeStartedAt === "string" &&
+        typeof allocationObservedAt === "string" &&
+        Number.isFinite(Date.parse(scopeStartedAt)) &&
+        Number.isFinite(Date.parse(allocationObservedAt)) &&
+        Date.parse(allocationObservedAt) >= Date.parse(scopeStartedAt);
+      const allocation =
+        sourceReady && allocationInScope && projectHeartbeat?.status === "ready"
+          ? projectAgentAllocation(latestWake?.orchestration, {
+              parentThreadId: threadId,
+              ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
+            })
+          : projectAgentAllocation(null);
+      subagents = { ...subagents, allocation };
+      return subagents;
+    };
     if (nativeRead && action === "get") {
       const existing = this.#taskPresentation.peek(scope);
       const cachedSource = existing.value?.result.taskSource;
@@ -1847,155 +2004,7 @@ export class GoalProgressHelper {
           threadKey: hashGoalProgressIdentity(threadId),
         });
       }
-      const source = snapshot.value?.result.taskSource;
-      const storage = snapshot.value?.result.storage as { root?: unknown } | undefined;
-      const sourceReady =
-        snapshot.value &&
-        snapshot.value.result.taskSourcePending !== true &&
-        !(
-          source &&
-          typeof source === "object" &&
-          "status" in source &&
-          ["pending", "error", "stale", "pending-selection"].includes(String(source.status))
-        );
-      const task = snapshot.value?.result.task as
-        | {
-            lifecycle?: { id?: unknown; startedAt?: unknown };
-            source?: {
-              kind?: unknown;
-              readOnly?: unknown;
-              path?: unknown;
-              contentHash?: unknown;
-            };
-          }
-        | null
-        | undefined;
-      const lifecycleId = task?.lifecycle?.id;
-      const lifecycleStartedAt = task?.lifecycle?.startedAt;
-      const validLifecycle =
-        typeof lifecycleId === "string" &&
-        lifecycleId.trim().length > 0 &&
-        typeof lifecycleStartedAt === "string" &&
-        Number.isFinite(Date.parse(lifecycleStartedAt));
-      const cycleId = validLifecycle ? lifecycleId : undefined;
-      const cycleStartedAt = validLifecycle ? lifecycleStartedAt : undefined;
-      const boundSource =
-        source && typeof source === "object"
-          ? (source as {
-              status?: unknown;
-              kind?: unknown;
-              readOnly?: unknown;
-              path?: unknown;
-              contentHash?: unknown;
-            })
-          : undefined;
-      const sourcePath =
-        !validLifecycle &&
-        boundSource?.status === "ready" &&
-        boundSource.kind === "kit-heartbeat" &&
-        boundSource.readOnly === true &&
-        typeof boundSource.path === "string" &&
-        boundSource.path.trim().length > 0 &&
-        task?.source?.path === boundSource.path &&
-        typeof boundSource.contentHash === "string" &&
-        task?.source?.contentHash === boundSource.contentHash &&
-        task?.source?.kind === "kit-heartbeat" &&
-        task.source.readOnly === true
-          ? boundSource.path
-          : undefined;
-      const sourceIdentity = sourcePath
-        ? JSON.stringify([sourcePath, boundSource?.contentHash ?? null])
-        : null;
-      const hasSubagentScope = validLifecycle || sourcePath !== undefined;
-      const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
-      let subagents: SubagentProgressSnapshot = {
-        schemaVersion: 1,
-        parentThreadId: threadId,
-        observedAt: null,
-        status: "pending",
-        runningCount: null,
-        runningBasis: "unknown",
-        agents: [],
-        complete: false,
-        truncated: false,
-      };
-      if (sourceReady && !hasSubagentScope) subagents = { ...subagents, status: "unavailable" };
-      if (
-        sourceReady &&
-        hasSubagentScope &&
-        (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns)
-      )
-        subagents = { ...subagents, status: "unavailable" };
-      if (snapshot.value && boundSource?.status === "stale")
-        subagents = { ...subagents, status: "unavailable" };
-      if (
-        sourceReady &&
-        hasSubagentScope &&
-        typeof storage?.root === "string" &&
-        this.#runtime.listDirectSubagents &&
-        this.#runtime.listSubagentTurns
-      ) {
-        const previous = this.#subagentPresentation.peek(subagentKey);
-        const recent =
-          previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
-        const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
-        const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
-        const children = recent
-          ? previous
-          : this.#subagentPresentation.read(subagentKey, async () => {
-              if (this.#stopping) throw new Error("Helper is stopping");
-              const load = (async () => {
-                const result = await collectSubagentProgress({
-                  parentThreadId: threadId,
-                  cwd: canonicalCwd,
-                  storageRoot: storage.root as string,
-                  schemas: createTaskProgressSchemas(z),
-                  listPage: (cursor) => listDirectSubagents(threadId, cursor),
-                  listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
-                  ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
-                  ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
-                  ...(sourcePath === undefined
-                    ? {}
-                    : { taskCycleId: null, cycleStartedAt: null, taskSourcePath: sourcePath }),
-                });
-                return result;
-              })();
-              this.#presentationLoads.add(load);
-              try {
-                return await load;
-              } finally {
-                this.#presentationLoads.delete(load);
-              }
-            });
-        if (children.value) subagents = children.value;
-        else if (children.error) subagents = { ...subagents, status: "unavailable" };
-      }
-      // Allocation is projected from the current presentation each time, never retained in the
-      // child-list cache. A changed source, cycle, or plan therefore cannot reuse an old ratio.
-      const projectHeartbeat = snapshot.value?.result.heartbeat as
-        | { status?: unknown; wakes?: unknown[] }
-        | null
-        | undefined;
-      const latestWake = projectHeartbeat?.wakes?.at(-1) as
-        | { orchestration?: { after?: { observedAt?: unknown } } }
-        | undefined;
-      const allocationObservedAt = latestWake?.orchestration?.after?.observedAt;
-      const scopeStartedAt = subagents.rootTurnStartedAt;
-      const allocationInScope =
-        subagents.scopeBasis === "parent-root-turn" &&
-        typeof scopeStartedAt === "string" &&
-        typeof allocationObservedAt === "string" &&
-        Number.isFinite(Date.parse(scopeStartedAt)) &&
-        Number.isFinite(Date.parse(allocationObservedAt)) &&
-        Date.parse(allocationObservedAt) >= Date.parse(scopeStartedAt);
-      const allocation =
-        sourceReady && allocationInScope && projectHeartbeat?.status === "ready"
-          ? projectAgentAllocation(latestWake?.orchestration, {
-              parentThreadId: threadId,
-              ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
-            })
-          : projectAgentAllocation(null);
-      subagents = { ...subagents, allocation };
+      const subagents = projectSubagents(snapshot.value);
       return {
         revision: snapshot.value?.revision ?? null,
         result: {
@@ -2100,6 +2109,9 @@ export class GoalProgressHelper {
       ...canonical,
       result: {
         ...canonical.result,
+        ...(action === "get" && readEpoch === this.#taskPresentationEpoch
+          ? { subagents: projectSubagents(canonical) }
+          : {}),
         presentation: { scope, pending: false, cached: false, updatedAt: snapshot.updatedAt },
       },
     };

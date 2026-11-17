@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,12 +7,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import type { CodexAppServerRuntime } from "../../codex-adapter/src/index.js";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
+import { GoalProgressHelper } from "../../host/src/index.js";
 import {
   GoalProgressIpcClient,
   type GoalProgressIpcRequest,
   GoalProgressIpcServer,
 } from "../../ipc/src/index.js";
+import { resolveGoalProgressPaths } from "../../store/src/index.js";
 import { createGoalProgressMcpServer } from "./index.js";
 import {
   createTaskProgressPanelResourceUri,
@@ -527,6 +530,269 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
     await server.close();
     await helper.stop();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("real MCP and helper expose bound-source subagents to both authenticated read paths", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "m-"));
+  const root = await realpath(directory);
+  const threadId = "integration-parent";
+  const ledgerPath = join(root, "heartbeat.md");
+  const ledger = `# Supervision
+thread: ${threadId}
+## Items
+| id | source | item | status | evidence |
+| --- | --- | --- | --- | --- |
+| H1 | report:test | Bound source task | done | receipt |
+`;
+  await mkdir(join(root, ".git"));
+  await writeFile(ledgerPath, ledger);
+  const startedAt = Math.floor(Date.now() / 1000) - 10;
+  const child = (id: string) => ({
+    id,
+    cwd: root,
+    parentThreadId: threadId,
+    source: { subAgent: { thread_spawn: { parent_thread_id: threadId } } },
+    status: { type: "active", activeFlags: [] },
+  });
+  const testRuntime: CodexAppServerRuntime = {
+    async getGoal() {
+      return null;
+    },
+    async readThreadIdentity(id) {
+      return {
+        id,
+        sessionId: id,
+        cwd: root,
+        threadSource: "user",
+        agentRole: null,
+        ephemeral: false,
+        status: { type: "idle" },
+      };
+    },
+    async resolveCurrentThread(input) {
+      return {
+        threadId: input.sessionTreeId,
+        sessionTreeId: input.sessionTreeId,
+        turnId: input.turnId,
+        cwd: root,
+        model: "test",
+      };
+    },
+    async refreshGoalUsage() {
+      throw new Error("Unexpected goal usage");
+    },
+    watchGoalUsage() {},
+    unwatchGoalUsage() {},
+    setPollingMode() {},
+    async close() {},
+    async listSubagentTurns(parent) {
+      return {
+        data: [
+          {
+            id: "root-turn",
+            rootTurnId: "root-turn",
+            startedAt,
+            itemsView: "full",
+            items: [
+              {
+                type: "collabAgentToolCall",
+                senderThreadId: parent,
+                receiverThreadIds: ["current-child", "foreign-child"],
+                tool: "spawnAgent",
+                status: "completed",
+                startedAtMs: (startedAt + 1) * 1000,
+              },
+            ],
+          },
+          {
+            id: "old-turn",
+            rootTurnId: "old-turn",
+            startedAt: startedAt - 100,
+            itemsView: "full",
+            items: [
+              {
+                type: "collabAgentToolCall",
+                senderThreadId: parent,
+                receiverThreadIds: ["old-child"],
+                tool: "spawnAgent",
+                status: "completed",
+                startedAtMs: (startedAt - 99) * 1000,
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      };
+    },
+    async listDirectSubagents() {
+      return {
+        data: [
+          child("current-child"),
+          child("old-child"),
+          {
+            ...child("foreign-child"),
+            source: { subAgent: { thread_spawn: { parent_thread_id: "foreign-parent" } } },
+          },
+        ],
+        nextCursor: null,
+      };
+    },
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "h") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const server = createGoalProgressMcpServer({
+    ipcClient: new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" }),
+    nativePanelHtmlLoader: async () => "<!doctype html><title>Task Progress Panel</title>",
+  });
+  const client = new Client({ name: "source-subagents-integration", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  let call = 0;
+  const fullMeta = () => ({
+    threadId,
+    callId: `call-${++call}`,
+    "x-codex-turn-metadata": {
+      session_id: threadId,
+      thread_id: threadId,
+      turn_id: "root-turn",
+      model: "test",
+      thread_source: "user",
+      cwd: root,
+    },
+  });
+  const nativeMeta = { threadId, thread_id: threadId };
+  type Snapshot = {
+    task: {
+      source?: { kind?: string; path?: string; readOnly?: boolean };
+      lifecycle?: unknown;
+    } | null;
+    taskSource?: { status?: string; path?: string; readOnly?: boolean; error?: string };
+    subagents?: {
+      status: string;
+      parentThreadId: string;
+      scopeBasis: string;
+      rootTurnId?: string;
+      taskSourcePath?: string;
+      agents: Array<{ id: string }>;
+    };
+  };
+  async function callRead(
+    name: "task_progress_dashboard" | "task_progress_get",
+    metadata: ReturnType<typeof fullMeta> | typeof nativeMeta,
+  ): Promise<Snapshot> {
+    const response = await client.callTool({ name, arguments: {}, _meta: metadata });
+    assert.notEqual(response.isError, true);
+    assert.equal(response._meta?.["codex-task-progress/threadId"], threadId);
+    assert.ok(Array.isArray(response.content));
+    const block = response.content.find(
+      (value) => value && typeof value === "object" && value.type === "text",
+    );
+    assert.ok(block && block.type === "text" && typeof block.text === "string");
+    const envelope = JSON.parse(block.text) as { ok: boolean; result: Snapshot };
+    assert.equal(envelope.ok, true);
+    return envelope.result;
+  }
+  async function ready(
+    name: "task_progress_dashboard" | "task_progress_get",
+    metadata: () => ReturnType<typeof fullMeta> | typeof nativeMeta,
+  ) {
+    let snapshot: Snapshot | undefined;
+    for (let i = 0; i < 150; i++) {
+      snapshot = await callRead(name, metadata());
+      assert.ok(
+        !["error", "stale", "pending-selection"].includes(snapshot.taskSource?.status ?? ""),
+        `Terminal source failure: ${JSON.stringify(snapshot.taskSource)}`,
+      );
+      if (
+        snapshot.taskSource?.status === "ready" &&
+        ["ready", "partial"].includes(snapshot.subagents?.status ?? "")
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(snapshot?.task);
+    assert.equal(snapshot.task.source?.kind, "kit-heartbeat");
+    assert.equal(snapshot.task.source?.path, ledgerPath);
+    assert.equal(snapshot.task.source?.readOnly, true);
+    assert.equal(snapshot.task.lifecycle, undefined);
+    assert.equal(snapshot.taskSource?.status, "ready");
+    assert.equal(snapshot.taskSource?.path, ledgerPath);
+    assert.equal(snapshot.taskSource?.readOnly, true);
+    assert.ok(snapshot.subagents);
+    assert.ok(["ready", "partial"].includes(snapshot.subagents.status));
+    assert.equal(snapshot.subagents.parentThreadId, threadId);
+    assert.equal(snapshot.subagents.scopeBasis, "parent-root-turn");
+    assert.equal(snapshot.subagents.rootTurnId, "root-turn");
+    assert.equal(snapshot.subagents.taskSourcePath, ledgerPath);
+    assert.deepEqual(
+      snapshot.subagents.agents.map((agent) => agent.id),
+      ["current-child"],
+    );
+    return snapshot;
+  }
+  try {
+    await helper.start();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const bind = await client.callTool({
+      name: "task_progress_bind_heartbeat",
+      arguments: { path: ledgerPath },
+      _meta: fullMeta(),
+    });
+    assert.notEqual(bind.isError, true);
+    const dashboard = await ready("task_progress_dashboard", fullMeta);
+    const native = await ready("task_progress_get", () => nativeMeta);
+    const fullGet = await ready("task_progress_get", fullMeta);
+    assert.deepEqual(
+      fullGet.subagents?.agents.map((agent) => agent.id),
+      dashboard.subagents?.agents.map((agent) => agent.id),
+    );
+    assert.deepEqual(
+      native.subagents?.agents.map((agent) => agent.id),
+      dashboard.subagents?.agents.map((agent) => agent.id),
+    );
+    const write = await client.callTool({
+      name: "task_progress_update",
+      arguments: {
+        requestId: "blocked-update",
+        expectedRevision: 1,
+        reason: "Protect canonical source",
+        changes: [{ targetId: "H1", status: "active" }],
+      },
+      _meta: fullMeta(),
+    });
+    assert.equal(write.isError, true);
+    assert.equal(
+      (write.structuredContent as { code?: string } | undefined)?.code,
+      "TASK_SOURCE_READ_ONLY",
+    );
+    const nativeWrite = await client.callTool({
+      name: "task_progress_update",
+      arguments: {
+        requestId: "untrusted-update",
+        expectedRevision: 1,
+        reason: "Reject native write",
+        changes: [{ targetId: "H1", status: "active" }],
+      },
+      _meta: nativeMeta,
+    });
+    assert.equal(nativeWrite.isError, true);
+    const mismatch = await client.callTool({
+      name: "task_progress_get",
+      arguments: {},
+      _meta: { ...fullMeta(), threadId: "foreign-parent" },
+    });
+    assert.equal(mismatch.isError, true);
+    assert.equal(await readFile(ledgerPath, "utf8"), ledger);
+  } finally {
+    await client.close();
+    await server.close();
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

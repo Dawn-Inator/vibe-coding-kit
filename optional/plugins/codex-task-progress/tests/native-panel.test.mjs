@@ -562,6 +562,173 @@ test("native panel MCP Apps integration", async (t) => {
     );
 
     await t.test(
+      "native host bridge preserves source-scoped subagents from authenticated GET through rendering",
+      () =>
+        scenario(async (page, frame) => {
+          const sourcePath = "/workspace/heartbeat.md";
+          const sourceHash = "sha256:heartbeat-current";
+          const rootTurnStartedAt = "2026-11-16T12:00:00.000Z";
+          const observedAt = "2026-11-16T12:05:00.000Z";
+          const response = {
+            task: {
+              threadId: "conversation-verified-by-tool",
+              title: "Completed read-only heartbeat task",
+              revision: 4,
+              updatedAt: observedAt,
+              objectives: [],
+              progress: { completed: 1, total: 1, percent: 100 },
+              phase: "completed",
+              source: {
+                kind: "kit-heartbeat",
+                path: sourcePath,
+                readOnly: true,
+                contentHash: sourceHash,
+              },
+            },
+            heartbeat,
+            taskSource: {
+              kind: "kit-heartbeat",
+              status: "ready",
+              path: sourcePath,
+              readOnly: true,
+              contentHash: sourceHash,
+            },
+            subagents: {
+              schemaVersion: 1,
+              parentThreadId: "conversation-verified-by-tool",
+              taskCycleId: null,
+              taskSourcePath: sourcePath,
+              rootTurnId: "root-turn-current",
+              rootTurnStartedAt,
+              scopeBasis: "parent-root-turn",
+              status: "ready",
+              observedAt,
+              runningCount: null,
+              runningBasis: "unknown",
+              agents: [
+                {
+                  id: "current-root-member",
+                  name: "Current root member",
+                  state: "working",
+                  observedAt,
+                  progress: null,
+                  progressBasis: null,
+                },
+              ],
+              complete: true,
+              truncated: false,
+            },
+            execution: { state: "unknown", observedAt, source: "codex-app-server" },
+            presentation: {
+              scope: "source-project",
+              pending: false,
+              cached: false,
+              updatedAt: Date.parse(observedAt),
+            },
+          };
+          const panel = frame.locator("codex-task-panel");
+          const main = frame.locator(".summary .main");
+          await main.waitFor();
+          await waitForPanelThread(page, "conversation-verified-by-tool");
+          await page.evaluate((value) => {
+            window.currentResponse = value;
+            window.deliverToolResult(window.currentThreadId, value);
+          }, response);
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel")?.data.task?.title ===
+              "Completed read-only heartbeat task",
+          );
+          if ((await main.getAttribute("aria-expanded")) !== "true") await main.click();
+          await frame.getByRole("button", { name: "Subagents", exact: true }).click();
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          const subagentRegion = frame.getByRole("region", { name: "Subagents", exact: true });
+          assert.equal(
+            await subagentRegion.getByText("This run's agent records are not ready yet.").count(),
+            0,
+          );
+          const verifyCurrentData = async () => {
+            const data = await panel.evaluate((element) => ({
+              taskSource: element.data.taskSource,
+              source: element.data.task?.source,
+              subagents: element.data.subagents,
+            }));
+            assert.deepEqual(data.taskSource, {
+              kind: "kit-heartbeat",
+              status: "ready",
+              path: sourcePath,
+              readOnly: true,
+              contentHash: sourceHash,
+            });
+            assert.deepEqual(data.source, {
+              kind: "kit-heartbeat",
+              path: sourcePath,
+              readOnly: true,
+              contentHash: sourceHash,
+            });
+            assert.equal(data.subagents.taskCycleId, null);
+            assert.equal(data.subagents.taskSourcePath, sourcePath);
+            assert.equal(data.subagents.rootTurnStartedAt, rootTurnStartedAt);
+            assert.equal(data.subagents.observedAt, observedAt);
+            const allocation = frame.locator(".agent-counts .allocation-ring");
+            assert.equal(await allocation.getAttribute("role"), "img");
+            assert.equal(await allocation.getAttribute("aria-valuenow"), null);
+            assert.equal(await allocation.locator(".allocation-fill").count(), 0);
+            assert.equal(await allocation.locator("strong").innerText(), "—");
+            assert.doesNotMatch(await frame.locator(".agent-counts").innerText(), /\d+%|\d+\/\d+/);
+          };
+          await verifyCurrentData();
+
+          for (const invalidSnapshot of [
+            { taskSourcePath: "/workspace/other-heartbeat.md" },
+            { rootTurnStartedAt: "2026-11-16T12:06:00.000Z" },
+          ]) {
+            await page.evaluate((patch) => {
+              window.currentResponse = {
+                ...window.currentResponse,
+                subagents: { ...window.currentResponse.subagents, ...patch },
+              };
+              window.deliverToolResult(window.currentThreadId, window.currentResponse);
+            }, invalidSnapshot);
+            await subagentRegion.getByText("This run's agent records are not ready yet.").waitFor();
+            assert.equal(await frame.locator(".agent-row").count(), 0);
+          }
+
+          await page.evaluate(() => {
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents: {
+                ...window.currentResponse.subagents,
+                parentThreadId: "conversation-other",
+              },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await frame
+            .getByRole("alert")
+            .getByText(/Trusted conversation identity/)
+            .waitFor();
+
+          await page.evaluate((value) => {
+            window.currentResponse = value;
+          }, response);
+          const getCount = await page.evaluate(
+            () => window.hostCalls.filter((call) => call.name === "task_progress_get").length,
+          );
+          await panel.evaluate((element) => element.refreshTask());
+          await page.waitForFunction(
+            (count) =>
+              window.hostCalls.filter((call) => call.name === "task_progress_get").length > count,
+            getCount,
+          );
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          await verifyCurrentData();
+        }),
+    );
+
+    await t.test(
       "presentation errors keep valid data visible; disabled and untrusted responses invalidate it",
       () =>
         scenario(async (page, frame) => {
