@@ -677,7 +677,7 @@ test("native panel MCP Apps integration", async (t) => {
             assert.equal(await allocation.getAttribute("aria-valuenow"), null);
             assert.equal(await allocation.locator(".allocation-fill").count(), 0);
             assert.equal(await allocation.locator("strong").innerText(), "—");
-            assert.doesNotMatch(await frame.locator(".agent-counts").innerText(), /\d+%|\d+\/\d+/);
+            assert.doesNotMatch(await allocation.innerText(), /\d+%|\d+\/\d+/);
           };
           await verifyCurrentData();
 

@@ -143,15 +143,16 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         while (next < candidates.length) {
           const child = candidates[next++];
           try {
-            if (typeof child.cwd !== 'string' || await realpath(child.cwd) !== canonicalCwd) continue;
+            if (typeof child.cwd !== 'string') { snapshot.complete = false; continue; }
+            if (await realpath(child.cwd) !== canonicalCwd) continue;
             const proof = await verifyAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
             if (!proof || proof.parentThreadId !== parentThreadId || proof.rootTurnId !== rootTurnId ||
                 typeof proof.cwd !== 'string' || await realpath(proof.cwd) !== canonicalCwd ||
                 typeof proof.turnStartedAt !== 'string' || !Number.isFinite(Date.parse(proof.turnStartedAt)) ||
-                Date.parse(proof.turnStartedAt) < cycleMs) continue;
+                Date.parse(proof.turnStartedAt) < cycleMs) { snapshot.complete = false; continue; }
             members.add(child.id);
             invalidations.set(child.id, Date.parse(proof.turnStartedAt));
-          } catch { /* Unverified history never enters the current run. */ }
+          } catch { snapshot.complete = false; /* Unknown proof cannot establish complete membership. */ }
         }
       }));
       let replay = 0;

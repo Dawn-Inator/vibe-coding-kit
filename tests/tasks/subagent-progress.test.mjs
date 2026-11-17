@@ -545,3 +545,22 @@ test('catalog candidates require same parent, project and exact current root bef
   assert.equal(result.runningCount,null); assert.equal(result.observedRunningCount,1); assert.equal(result.observedRunningComplete,false);
  } finally { await rm(root,{recursive:true,force:true}); }
 });
+
+test('unverified direct candidates prevent an authoritative empty running count', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'subagent-unverified-catalog-'));
+ try {
+  const started = Date.parse(cycleStartedAt);
+  const base = { parentThreadId:'p', cwd:root, storageRoot:root, schemas, taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'candidate',cwd:root,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}) };
+  for (const verifyAgent of [async()=>null, async()=>{throw new Error('offline');}, async()=>({parentThreadId:'p',cwd:root,rootTurnId:'old-root',turnStartedAt:cycleStartedAt}), async()=>({parentThreadId:'p',cwd:root,rootTurnId:'r',turnStartedAt:'invalid'})]) {
+   const result = await collectScoped({...base,verifyAgent});
+   assert.equal(result.status,'partial'); assert.equal(result.complete,false);
+   assert.deepEqual(result.agents,[]); assert.equal(result.runningCount,null);
+   assert.equal(result.observedRunningCount,null); assert.equal(result.observedRunningComplete,false);
+  }
+  const empty = await collectScoped({...base,listPage:async()=>({data:[],nextCursor:null}),verifyAgent:async()=>null});
+  assert.equal(empty.status,'ready'); assert.equal(empty.complete,true);
+  assert.equal(empty.runningCount,0); assert.equal(empty.runningBasis,'runtime');
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
