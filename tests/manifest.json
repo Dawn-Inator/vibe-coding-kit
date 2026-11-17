@@ -52,6 +52,7 @@
   "worktrees/forbid-auto-resolve-strategy.test.mjs",
   "worktrees/git-environment-boundary.test.mjs",
   "worktrees/git-identity.test.mjs",
+  "worktrees/hook-bypass-guard.test.mjs",
   "worktrees/hooks.test.mjs",
   "worktrees/kit-baseline.test.mjs",
   "worktrees/merge-topology.test.mjs",

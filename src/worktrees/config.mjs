@@ -130,6 +130,26 @@ export const DEFAULT_CONFIG = {
     allowPrefixes: ['.workspace/'],
   },
 
+  // Hook-bypass guard (PreToolUse hook for the Bash tool, hook-bypass-guard.mjs).
+  // Denies `--no-verify`, `git commit -n`, core.hooksPath rewrites, HUSKY=0 / SKIP=
+  // style skip variables and `git stash` in agent shells.
+  //   disabledRules: rule ids to switch off (`no-verify`, `hooks-path`,
+  //     `husky-skip`, `git-stash`), e.g. a project that allows `git stash`.
+  //   skipSensitivePrograms: programs before which a bare `SKIP=...` counts as a
+  //     pre-commit skip list (replaces the built-in list when set).
+  //   extraBypassEnvNames: extra variable names that disable the project's own hooks
+  //     when assigned (denied under the `husky-skip` rule).
+  //   hints: per-rule remediation text appended to the deny message, keyed by rule id
+  //     (put project commands and doc links here, not in the kit).
+  // Note: loadConfig replaces a top-level key as a whole; omitted keys fall back to
+  // these defaults inside readHookBypassSettings().
+  hookBypassGuard: {
+    disabledRules: [],
+    skipSensitivePrograms: ['git', 'pnpm', 'npm', 'npx', 'yarn', 'node', 'make', 'pre-commit', 'husky'],
+    extraBypassEnvNames: [],
+    hints: {},
+  },
+
   // Refs whose commits are already published. `finish` must never rewrite a
   // commit reachable from any of these (rebase / re-author would change its
   // hash and desynchronise everyone who already has it). Full ref names.

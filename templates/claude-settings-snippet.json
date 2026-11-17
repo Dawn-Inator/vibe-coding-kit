@@ -11,6 +11,17 @@
             "statusMessage": "Checking primary-checkout write guard..."
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.vibe-coding/kit/src/worktrees/hook-bypass-guard-hook.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking git hook-bypass guard..."
+          }
+        ]
       }
     ]
   }
