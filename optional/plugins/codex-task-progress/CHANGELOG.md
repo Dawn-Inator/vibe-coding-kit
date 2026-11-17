@@ -1,3 +1,7 @@
+# Task Progress 0.12.2
+
+- Version 0.12.2 presents each agent in a 56 px capsule with a single text line and a 2–3 px full-width progress strip. Known progress, including zero, is displayed; absent assignments are Unlinked, while linked assignments without progress are Unknown. Both remain neutral without a fabricated percentage. Progress continues to require trustworthy canonical assignment; a path-only match does not backfill it. Refreshing data cannot reload an older embedded view: closing and reopening the view or refreshing the chat catalog may be necessary. Do not restart Codex.
+
 # Task Progress 0.12.1
 
 - The 0.12.1 candidate separates parent-chat activity observation from task-source availability, so a stale source does not hide verified agent activity. Task percentages still require a valid canonical source. Bounded streaming support for large ledger heads is intended to make them discoverable and readable without loading the whole head at once; real-data compatibility and native display require verification.

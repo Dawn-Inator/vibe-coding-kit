@@ -1795,8 +1795,7 @@ export class TaskProgressElement extends LitElement {
                 assignmentTitle?: string;
                 progressGranularity?: "checklist" | "single-item" | "none";
               };
-              const title = assigned.assignmentTitle?.trim() || agent.name;
-              const secondary = title !== agent.name ? agent.name : null;
+              const assignmentTitle = assigned.assignmentTitle?.trim();
               const progress = agent.progress;
               const percent = progress?.percent;
               const known =
@@ -1815,14 +1814,37 @@ export class TaskProgressElement extends LitElement {
                 percent <= 100;
               const single =
                 known && (assigned.progressGranularity === "single-item" || progress?.total === 1);
-              const fine = known && !single && assigned.progressGranularity !== "none";
-              const bounded = fine ? Math.max(0, Math.min(100, percent)) : null;
+              const showProgress = known && assigned.progressGranularity !== "none";
+              const basis = single
+                ? this.t("Completed assigned item", "已完成的分配项")
+                : agent.progressBasis === "module-delivery"
+                  ? this.t("Assigned work", "已分配任务")
+                  : agent.progressBasis === "registered-checklist"
+                    ? this.t("Recorded checklist", "已登记清单")
+                    : this.t("Recorded task progress", "已登记任务进度");
+              const unlinked = !assignmentTitle && !agent.progressBasis;
+              const progressLabel =
+                showProgress && progress
+                  ? `${basis}: ${progress.completed}/${progress.total} (${percent}%)`
+                  : unlinked
+                    ? this.t(
+                        "Progress unavailable: no task linked to this agent",
+                        "进度不可用：此 Agent 尚未关联任务",
+                      )
+                    : this.t("Progress not recorded", "进度未登记");
+              const accessibleProgress = `${progressLabel} · ${agent.name}${assignmentTitle ? ` · ${assignmentTitle}` : ""}`;
+              const stateLabel =
+                agent.state === "unknown" ||
+                !agent.stateBasis ||
+                agent.stateBasis === "unknown" ||
+                agent.stateBasis === "runtime"
+                  ? labels[agent.state]
+                  : `${this.t("Recorded", "记录为")} ${labels[agent.state]}${agent.observedAt ? ` · ${this.time(agent.observedAt)}` : ""}`;
               return html`<article class="row agent-row" data-agent=${agent.id}>
           <span class="module-icon" data-status=${agent.state === "working" ? "active" : agent.state}>·</span>
-          <span class="module-content"><span class="module-title-line"><span class="name">${title}</span>${secondary ? html`<span class="agent-secondary">${secondary}</span>` : nothing}</span>
-          ${fine ? html`<span class="module-percent">${percent}%</span>` : nothing}
-          ${fine ? html`<span class="module-track" role="meter" aria-label=${title} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${bounded as number} aria-valuetext=${`${progress?.completed}/${progress?.total}`}><span class="module-fill" style=${`transform:scaleX(${(bounded as number) / 100})`}></span></span>` : nothing}
-          <span class="module-meta">${single && progress ? html`<span>${progress.completed === 1 ? this.t("1 assigned item completed", "1 项已完成") : this.t("1 assigned item", "1 项已分配")}</span>` : fine && progress ? html`<span>${agent.progressBasis === "module-delivery" ? this.t("Assigned work", "已分配任务") : agent.progressBasis === "registered-checklist" ? this.t("Recorded checklist", "已登记清单") : this.t("Recorded task progress", "已登记任务进度")} ${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}</span><span class="status">${agent.state === "unknown" || !agent.stateBasis || agent.stateBasis === "unknown" || agent.stateBasis === "runtime" ? labels[agent.state] : `${this.t("Recorded", "记录为")} ${labels[agent.state]}`}${agent.state !== "unknown" && agent.stateBasis && agent.stateBasis !== "unknown" && agent.stateBasis !== "runtime" && agent.observedAt ? html`<span class="agent-observed"> · ${this.time(agent.observedAt)}</span>` : nothing}</span></span>
+          <span class="module-content"><span class="agent-text-line"><span class="module-title-line"><span class="name">${agent.name}</span></span>
+          <span class="status" aria-label=${stateLabel}>${labels[agent.state]}</span><span class="module-percent" aria-label=${accessibleProgress}>${showProgress ? `${percent}%` : unlinked ? this.t("Unlinked", "未关联") : this.t("Unknown", "未登记")}</span></span>
+          <span class="module-track" role=${showProgress ? "meter" : "img"} aria-label=${accessibleProgress} aria-valuemin=${showProgress ? "0" : nothing} aria-valuemax=${showProgress ? "100" : nothing} aria-valuenow=${showProgress ? percent : nothing} aria-valuetext=${showProgress && progress ? `${progress.completed}/${progress.total}` : nothing}>${showProgress ? html`<span class="module-fill" style=${`transform:scaleX(${(percent as number) / 100})`}></span>` : nothing}</span></span>
         </article>`;
             })
           : html`<p class="empty">${!snapshot ? this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`

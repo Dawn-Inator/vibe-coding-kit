@@ -131,18 +131,16 @@ export const taskPanelStyles = css`
   .task-mode button[aria-pressed="true"] { background: var(--ctp-surface, #fff); box-shadow: 0 1px 4px #00000012; }
   .subagents { min-width: 0; }
   .agent-counts { margin: 0 0 12px; }
-  .agent-row { height: 54px; cursor: default; gap: 7px; padding: 8px 10px; overflow: hidden; }
+  .agent-row { height: 56px; cursor: default; gap: 7px; padding: 8px 10px; overflow: hidden; }
   .agent-row .module-icon { width: 28px; height: 28px; }
-  .agent-row .module-content { display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; }
+  .agent-row .module-content { display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+  .agent-row .agent-text-line { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; white-space: nowrap; }
   .agent-row .module-title-line { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .agent-row .name { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap; }
   .agent-secondary { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--ctp-muted, #697078); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-  .agent-row .module-percent { margin: 0; }
-  .agent-row .module-track { flex: 0 0 20px; width: 20px; margin: 0; }
-  .agent-row .module-meta { flex: 0 100 45%; min-width: 0; margin: 0; gap: 6px; }
-  .agent-row .module-meta > span:first-child { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-row .module-percent { flex: none; margin: 0; }
+  .agent-row .module-track { flex: none; width: 100%; margin: 0; }
   .agent-row .status { flex: none; margin: 0; color: var(--ctp-muted, #697078); font-size: 10px; line-height: 1.4; white-space: nowrap; }
-  .agent-row .agent-observed { display: none; }
   .agent-counts .allocation-metric { gap: 12px; padding-block: 4px; }
   .agent-counts .allocation-label, .agent-counts .allocation-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

@@ -1,4 +1,4 @@
-# Install Task Progress 0.12.1
+# Install Task Progress 0.12.2
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
@@ -42,7 +42,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.12.1`. Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; The user confirmed that 0.9.4 restored the native page; actual current host visibility and data remain separate verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.12.2`. Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; The user confirmed that 0.9.4 restored the native page; actual current host visibility and data remain separate verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
 
 ## Signing and protected folders
 
@@ -71,6 +71,8 @@ Version 0.9.0 shows a frameless allocation ring for the recorded running-agent c
 Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. Archive data and logic are unchanged. Verify this UI in the native host; release and build checks do not establish host acceptance.
 
 The 0.12.1 candidate separates parent-chat activity observation from task-source availability, so a stale source does not hide verified agent activity. Task percentages still require a valid canonical source. Bounded streaming support for large ledger heads is intended to make them discoverable and readable without loading the whole head at once; real-data compatibility and native display require verification.
+
+Version 0.12.2 presents each agent in a 56 px capsule with a single text line and a 2–3 px full-width progress strip. Known progress, including zero, is displayed; absent assignments are Unlinked, while linked assignments without progress are Unknown. Both remain neutral without a fabricated percentage. Progress continues to require trustworthy canonical assignment; a path-only match does not backfill it. Refreshing data cannot reload an older embedded view: closing and reopening the view or refreshing the chat catalog may be necessary. Do not restart Codex.
 
 ## Storage compatibility
 

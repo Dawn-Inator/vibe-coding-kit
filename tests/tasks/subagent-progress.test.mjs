@@ -1124,3 +1124,166 @@ test('parent-thread activity does not attribute a child checklist to the current
     assert.equal(strict.agents[0].progressBasis, 'registered-checklist');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('recent parent members are independently resolved during a churning 1700-child sweep', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-recent-lookup-'));
+  try {
+    const ids = Array.from({ length: 1700 }, (_, i) => `child-${i}`);
+    const mentioned = [...ids.slice(0, 11), ...Array.from({ length: 10 }, (_, i) => ids[200 + i * 149])];
+    const live = mentioned.slice(0, 18);
+    const row = id => ({ id, cwd: root, parentThreadId: 'parent', updatedAt: 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'notLoaded' } });
+    let poll = 0, active = 0, peak = 0;
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: 100, itemsView: 'full', items: mentioned.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'interacted' })) }], nextCursor: null }),
+      listPage: async cursor => { const offset = cursor ? Number(cursor) : 0; const page = ids.slice(offset, offset + 50).map(row); if (!cursor) page[49] = row(`changing-${poll}`); return { data: page, nextCursor: offset + 50 < ids.length ? String(offset + 50) : null }; },
+      lookupAgent: async id => { active++; peak = Math.max(peak, active); await Promise.resolve(); active--; return row(id); },
+      observeAgent: async id => live.includes(id) ? { state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'r', complete: true, readStable: true } : { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'r', complete: true, latestTurnVerified: true } };
+    for (poll = 1; poll <= 3; poll++) {
+      const result = await collectScoped(options);
+      assert.deepEqual(new Set(result.agents.map(agent => agent.id)), new Set(live));
+      assert.equal(result.observedRunningCount, 18);
+      assert.equal(result.observedRunningComplete, false);
+      assert.equal(result.runningCount, null);
+      assert.equal(result.runningBasis, 'unknown');
+      assert.equal(result.complete, false);
+    }
+    assert.ok(peak <= 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('direct parent member lookup rejects conflicting or unverifiable identity', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-lookup-invalid-'));
+  try {
+    const ids = ['good', 'wrong-id', 'wrong-parent', 'wrong-cwd', 'missing', 'throws', 'conflicting'];
+    const row = id => ({ id, cwd: root, parentThreadId: 'parent', source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'notLoaded' } });
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: 100, itemsView: 'full', items: ids.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'started' })) }], nextCursor: null }),
+      listPage: async cursor => ({ data: cursor ? [] : [row('conflicting'), { ...row('conflicting'), cwd: '/' }], nextCursor: 'next' }),
+      lookupAgent: async id => { if (id === 'throws') throw new Error('offline'); if (id === 'missing') return null; if (id === 'wrong-id') return row('other'); if (id === 'wrong-parent') return { ...row(id), parentThreadId: 'other' }; if (id === 'wrong-cwd') return { ...row(id), cwd: '/' }; return row(id); },
+      observeAgent: async () => ({ state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'r', complete: true, readStable: true }) });
+    assert.deepEqual(result.agents.map(agent => agent.id), ['good']);
+    assert.equal(result.runningCount, null);
+    assert.equal(result.complete, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('churning catalog head advances partial frontier without certifying a mixed sweep', async () => {
+  const { readIncrementalAgentCatalog } = await import('../../src/tasks/agent-catalog-cache.mjs');
+  const rows = Array.from({ length: 500 }, (_, i) => ({ id: `id-${i}`, cwd: '/tmp', source: { subAgent: { thread_spawn: { parent_thread_id: 'p' } } } }));
+  let poll = 0;
+  const listPage = async cursor => { const offset = cursor ? Number(cursor) : 0; const data = rows.slice(offset, offset + 50); if (!cursor) data[0] = { ...data[0], id: `head-${poll}` }; return { data, nextCursor: offset + 50 < rows.length ? String(offset + 50) : null }; };
+  let result;
+  for (poll = 0; poll < 3; poll++) { result = await readIncrementalAgentCatalog({ key: 'churn-frontier-guard', listPage }); assert.equal(result.complete, false); }
+  assert.ok(result.rows.some(row => row.child.id === 'id-449'));
+});
+
+test('parent recorded observations retain timestamps without becoming an exact runtime count', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-recorded-live-'));
+  try {
+    const ids = Array.from({ length: 101 }, (_, i) => `child-${i}`);
+    let poll = 0;
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      now: () => new Date(`2026-01-01T00:00:0${poll + 4}.000Z`),
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: 100, itemsView: 'full', items: ids.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'interacted', startedAtMs: 100000 })) }], nextCursor: null }),
+      listPage: async cursor => { const offset = cursor ? Number(cursor) : 0; return { data: ids.slice(offset, offset + 50).map(id => ({ id, cwd: root, updatedAt: 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'notLoaded' } })), nextCursor: offset + 50 < ids.length ? String(offset + 50) : null }; },
+      observeAgent: async id => ({ state: poll && id === 'child-100' ? 'completed' : 'working', basis: 'codex-rollout', observedAt: poll ? '2026-01-01T00:00:05.000Z' : '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'r', complete: true, readStable: true }) };
+    await collectScoped(options);
+    poll = 1;
+    const second = await collectScoped(options);
+    assert.equal(second.observedRunningCount, 100);
+    assert.equal(second.observedRunningComplete, true);
+    assert.equal(second.observedAt, '2026-01-01T00:00:03.000Z');
+    assert.equal(second.runningCount, null);
+    assert.equal(second.runningBasis, 'unknown');
+    assert.ok(!second.agents.some(agent => agent.id === 'child-100'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('parent catalog cannot certify zero when a local child has invalid cwd', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-local-invalid-'));
+  try {
+    for (const cwd of [undefined, 'relative', join(root, 'missing'), '/']) {
+      const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+        listTurnsPage: async () => ({ data: [], nextCursor: null }),
+        listPage: async () => ({ data: [{ id: 'bad', cwd, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'completed' } }], nextCursor: null }) });
+      assert.equal(result.complete, false);
+      assert.equal(result.runningCount, null);
+      assert.equal(result.observedRunningComplete, false);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('verified prior-root activity survives catalog churn only through fresh lookup and observation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-prior-root-hint-'));
+  try {
+    let poll = 1, lookups = 0;
+    const row = id => ({ id, cwd: root, parentThreadId: 'parent', updatedAt: id === 'old-active' ? 99999 : 1, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'notLoaded' } });
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      listTurnsPage: async () => ({ data: [{ id: 'new-root', rootTurnId: 'new-root', startedAt: 100, itemsView: 'full', items: [] }], nextCursor: null }),
+      listPage: async cursor => {
+        const ids = Array.from({ length: poll < 3 ? 199 : 399 }, (_, i) => `history-${i}`);
+        ids.push('old-active');
+        ids[0] = `head-${poll === 1 ? 1 : 2}`;
+        const offset = cursor ? Number(cursor) : 0;
+        return { data: ids.slice(offset, offset + 50).map(row), nextCursor: offset + 50 < ids.length ? String(offset + 50) : null };
+      },
+      lookupAgent: async id => { lookups++; return row(id); },
+      observeAgent: async id => id === 'old-active' && poll < 4
+        ? { state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:03.000Z', eventTurnId: 't', rootTurnId: 'old-root', complete: true, readStable: true }
+        : { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old-root', complete: true, latestTurnVerified: true } };
+    const first = await collectScoped(options);
+    assert.equal(first.observedRunningCount, 1);
+    poll = 2; await collectScoped(options);
+    poll = 3;
+    const resumed = await collectScoped(options);
+    assert.ok(lookups > 0);
+    assert.deepEqual(resumed.agents.map(agent => agent.id), ['old-active']);
+    assert.equal(resumed.observedRunningCount, 1);
+    assert.equal(resumed.runningCount, null);
+    poll = 4;
+    const ended = await collectScoped(options);
+    assert.deepEqual(ended.agents, []);
+    assert.equal(ended.observedRunningCount, null);
+    assert.equal(ended.runningCount, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('older root hints discover still-active children without authorizing old assignments', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-older-root-hints-'));
+  try {
+    const current = Array.from({ length: 11 }, (_, i) => `current-${i}`);
+    const older = Array.from({ length: 10 }, (_, i) => `older-${i}`);
+    const row = (id, parent = 'parent') => ({ id, cwd: root, parentThreadId: parent, updatedAt: 1, source: { subAgent: { thread_spawn: { parent_thread_id: parent, agent_path: '/old-assignment' } } }, status: { type: 'notLoaded' } });
+    const ids = [...current, ...Array.from({ length: 1689 }, (_, i) => `history-${i}`)];
+    const observed = [];
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', taskSourcePath: join(root, 'heartbeat.md'),
+      listTurnsPage: async () => ({ data: [
+        { id: 'new', rootTurnId: 'new', startedAt: 200, itemsView: 'full', items: current.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'started' })) },
+        { id: 'old', rootTurnId: 'old', startedAt: 100, itemsView: 'full', items: [
+          { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: [...older, 'foreign'], tool: 'spawnAgent', status: 'completed', startedAtMs: 100000 },
+          ...older.map(agentThreadId => ({ type: 'subAgentActivity', agentThreadId, kind: 'completed' }))] }], nextCursor: null }),
+      listPage: async cursor => { const offset = cursor ? Number(cursor) : 0; return { data: ids.slice(offset, offset + 50).map(id => row(id)), nextCursor: offset + 50 < ids.length ? String(offset + 50) : null }; },
+      lookupAgent: async id => row(id, id === 'foreign' ? 'other' : 'parent'),
+      observeAgent: async id => { observed.push(id); return older.slice(7).includes(id)
+        ? { state: 'completed', basis: 'codex-turn', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old', complete: true, latestTurnVerified: true }
+        : { state: 'working', basis: 'codex-rollout', observedAt: '2026-01-01T00:00:04.000Z', eventTurnId: 't', rootTurnId: 'old', complete: true, readStable: true }; } });
+    assert.equal(result.observedRunningCount, 18);
+    assert.equal(result.observedRunningComplete, false);
+    assert.equal(result.runningCount, null);
+    assert.deepEqual(new Set(result.agents.map(agent => agent.id)), new Set([...current, ...older.slice(0, 7)]));
+    assert.ok(older.every(id => observed.includes(id)));
+    assert.ok(!observed.includes('foreign'));
+    assert.ok(result.agents.filter(agent => older.includes(agent.id)).every(agent => agent.assignmentEligible === false));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('an unavailable older parent turn page leaves coverage partial', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-older-page-fail-'));
+  try {
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      listTurnsPage: async cursor => { if (cursor) throw new Error('offline'); return { data: [{ id: 'new', rootTurnId: 'new', startedAt: 200, itemsView: 'full', items: [] }], nextCursor: 'older' }; },
+      listPage: async () => ({ data: [], nextCursor: null }) });
+    assert.equal(result.complete, false);
+    assert.equal(result.runningCount, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

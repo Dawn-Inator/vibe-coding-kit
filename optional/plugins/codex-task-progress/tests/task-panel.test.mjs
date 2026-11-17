@@ -251,12 +251,31 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 progressBasis: null,
               },
               {
+                id: "linked-unknown-layout",
+                name: "Linked Agent",
+                assignmentTitle: "Assigned task",
+                state: "working",
+                stateBasis: "runtime",
+                progress: null,
+                progressBasis: null,
+              },
+              {
+                id: "none-layout",
+                name: "No progress granularity",
+                state: "working",
+                stateBasis: "runtime",
+                progress: { completed: 1, total: 1, percent: 100 },
+                progressBasis: "module-delivery",
+                progressGranularity: "none",
+              },
+              {
                 id: "fine-layout",
                 name: "Very long assigned Agent name ".repeat(8),
+                assignmentTitle: "A long assigned task ".repeat(10),
                 state: "working",
                 stateBasis: "codex-rollout",
                 observedAt: "2026-11-15T12:00:00Z",
-                progress: { completed: 2, total: 3, percent: 66.7 },
+                progress: { completed: 1, total: 2, percent: 50 },
                 progressBasis: "registered-checklist",
                 progressGranularity: "checklist",
               },
@@ -294,7 +313,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                 const status = el.querySelector(".status").getBoundingClientRect();
                 const percent = el.querySelector(".module-percent")?.getBoundingClientRect();
                 const name = el.querySelector(".name");
-                const meta = el.querySelector(".module-meta > span:first-child");
+                const track = el.querySelector(".module-track").getBoundingClientRect();
                 return {
                   height: rect.height,
                   round: getComputedStyle(el).borderRadius,
@@ -308,22 +327,22 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
                     !percent || (percent.left >= content.left && percent.right <= content.right),
                   nameWrap: getComputedStyle(name).whiteSpace,
                   nameEllipsis: getComputedStyle(name).textOverflow,
-                  metaWrap: getComputedStyle(meta).whiteSpace,
-                  metaEllipsis: getComputedStyle(meta).textOverflow,
+                  trackUseful: track.width >= content.width - 1 && track.width >= 80,
+                  trackBelow: track.top >= status.bottom,
                   titles: el.querySelectorAll("[title]").length,
                   outline: getComputedStyle(el).outlineStyle,
                 };
               });
               assert.deepEqual(layout, {
-                height: 54,
+                height: 56,
                 round: "999px",
                 overflow: true,
                 statusInside: true,
                 percentInside: true,
                 nameWrap: "nowrap",
                 nameEllipsis: "ellipsis",
-                metaWrap: "nowrap",
-                metaEllipsis: "ellipsis",
+                trackUseful: true,
+                trackBelow: true,
                 titles: 0,
                 outline: "none",
               });
@@ -342,18 +361,33 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
               0,
             );
             assert.equal(
-              await panel.locator('[data-agent="single-layout"] [role="meter"]').count(),
-              0,
+              await panel
+                .locator('[data-agent="single-layout"] [role="meter"]')
+                .getAttribute("aria-valuenow"),
+              "100",
             );
             assert.equal(
               await panel
                 .locator('[data-agent="fine-layout"] [role="meter"]')
                 .getAttribute("aria-valuenow"),
-              "66.7",
+              "50",
             );
             assert.equal(
               await panel.locator('[data-agent="fine-layout"] .module-percent').innerText(),
-              "66.7%",
+              "50%",
+            );
+            assert.match(
+              await panel.locator('[data-agent="fine-layout"] .name').innerText(),
+              /^Very long assigned Agent name/,
+            );
+            const fineLabel = await panel
+              .locator('[data-agent="fine-layout"] [role="meter"]')
+              .getAttribute("aria-label");
+            assert.match(fineLabel, /Very long assigned Agent name/);
+            assert.match(fineLabel, /A long assigned task/);
+            assert.match(
+              await panel.locator('[data-agent="fine-layout"] .module-fill').getAttribute("style"),
+              /scaleX\(0\.5\)/,
             );
             const unknownText = (
               await panel.locator('[data-agent="unknown-layout"]').textContent()
@@ -361,13 +395,56 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
             const singleText = (
               await panel.locator('[data-agent="single-layout"]').textContent()
             ).replace(/\s+/g, " ");
+            assert.match(unknownText, locale === "zh-CN" ? /等待中.*未关联/ : /Waiting.*Unlinked/);
+            assert.match(singleText, locale === "zh-CN" ? /已返回.*100%/ : /Returned.*100%/);
             assert.match(
-              unknownText,
-              locale === "zh-CN" ? /进度未登记.*等待中/ : /Progress not recorded.*Waiting/,
+              await panel
+                .locator('[data-agent="single-layout"] [role="meter"]')
+                .getAttribute("aria-label"),
+              /1\/1/,
             );
             assert.match(
-              singleText,
-              locale === "zh-CN" ? /1 项已完成.*已返回/ : /1 assigned item completed.*Returned/,
+              await panel
+                .locator('[data-agent="unknown-layout"] .module-track')
+                .getAttribute("aria-label"),
+              locale === "zh-CN" ? /尚未关联任务/ : /no task linked/,
+            );
+            assert.match(
+              await panel
+                .locator('[data-agent="linked-unknown-layout"] .module-percent')
+                .innerText(),
+              locale === "zh-CN" ? /未登记/ : /Unknown/,
+            );
+            assert.equal(await panel.locator('[data-agent="none-layout"] .module-fill').count(), 0);
+            assert.equal(
+              await panel
+                .locator('[data-agent="none-layout"] .module-track')
+                .getAttribute("aria-valuenow"),
+              null,
+            );
+            assert.doesNotMatch(
+              await panel.locator('[data-agent="none-layout"]').innerText(),
+              /100%/,
+            );
+            assert.equal(
+              await panel.locator('[data-agent="linked-unknown-layout"] .module-fill').count(),
+              0,
+            );
+            assert.equal(
+              await panel
+                .locator('[data-agent="linked-unknown-layout"] .module-track')
+                .getAttribute("aria-valuenow"),
+              null,
+            );
+            assert.equal(
+              await panel.locator('[data-agent="unknown-layout"] .module-fill').count(),
+              0,
+            );
+            assert.equal(
+              await panel
+                .locator('[data-agent="unknown-layout"] .module-track')
+                .getAttribute("aria-valuenow"),
+              null,
             );
           }
         }
@@ -491,18 +568,34 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           "0",
         );
         assert.equal(await rows.nth(1).locator('[role="meter"]').count(), 0);
-        assert.match(await rows.nth(1).innerText(), /进度未登记/);
+        assert.match(await rows.nth(1).innerText(), /未关联/);
         assert.doesNotMatch(await rows.nth(1).innerText(), /—|0\/0/);
-        assert.equal(await rows.nth(1).locator(".module-percent, .module-track").count(), 0);
-        assert.match(await rows.nth(0).innerText(), /已分配任务 0\/4/);
-        assert.match(await rows.nth(0).innerText(), /记录为 正在执行/);
-        assert.match(await rows.nth(2).innerText(), /已分配任务 2\/2/);
+        assert.equal(await rows.nth(1).locator(".module-fill").count(), 0);
+        assert.equal(
+          await rows.nth(1).locator(".module-track").getAttribute("aria-valuenow"),
+          null,
+        );
+        assert.match(
+          await rows.nth(0).locator(".module-track").getAttribute("aria-label"),
+          /已分配任务: 0\/4/,
+        );
+        assert.match(
+          await rows.nth(0).locator(".status").getAttribute("aria-label"),
+          /记录为 正在执行/,
+        );
+        assert.match(
+          await rows.nth(2).locator(".module-track").getAttribute("aria-label"),
+          /已分配任务: 2\/2/,
+        );
         await page.evaluate(() => {
           window.fixture.subagents.agents[0].progressBasis = "task-lifecycle";
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.equal(await panel.locator('[data-agent="done"] .module-track').count(), 1);
-        assert.match(await panel.locator('[data-agent="done"]').innerText(), /已登记任务进度 2\/2/);
+        assert.match(
+          await panel.locator('[data-agent="done"] .module-track').getAttribute("aria-label"),
+          /已登记任务进度: 2\/2/,
+        );
         await page.evaluate(() => {
           Object.assign(window.fixture.subagents.agents[0], {
             progressBasis: "registered-checklist",
@@ -512,7 +605,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.match(await panel.locator('[data-agent="done"]').innerText(), /已登记清单 2\/2/);
+        assert.match(
+          await panel.locator('[data-agent="done"] .module-track').getAttribute("aria-label"),
+          /已登记清单: 2\/2/,
+        );
         assert.doesNotMatch(await panel.locator('[data-agent="done"]').innerText(), /记录为 未知/);
         assert.ok(
           (await rows.nth(1).boundingBox()).height < (await rows.nth(0).boundingBox()).height + 4,
@@ -531,11 +627,14 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         const single = panel.locator('[data-agent="working"]');
-        assert.match(await single.innerText(), /1 项已分配/);
+        assert.match(
+          await single.locator(".module-track").getAttribute("aria-label"),
+          /已完成的分配项: 0\/1/,
+        );
         assert.match(await single.innerText(), /已返回/);
         assert.match(await single.innerText(), /Working agent/);
-        assert.equal(await single.locator(".module-track, .module-percent").count(), 0);
-        assert.doesNotMatch(await single.innerText(), /0%|0\/1/);
+        assert.equal(await single.locator(".module-track").getAttribute("aria-valuenow"), "0");
+        assert.match(await single.innerText(), /0%/);
         for (const width of [320, 400, 600]) {
           await page.setViewportSize({ width, height: 740 });
           assert.equal(
@@ -558,7 +657,7 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
         assert.equal(await single.locator(".module-track").count(), 1);
-        assert.match(await single.innerText(), /2\/3/);
+        assert.match(await single.locator(".module-track").getAttribute("aria-label"), /2\/3/);
         await page.evaluate(() => {
           Object.assign(window.fixture.subagents.agents[2], {
             progress: { completed: 1, total: 1, percent: 100 },
@@ -566,8 +665,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           });
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        assert.match(await single.innerText(), /1 项已完成/);
-        assert.equal(await single.locator(".module-track").count(), 0);
+        assert.match(
+          await single.locator(".module-track").getAttribute("aria-label"),
+          /已完成的分配项: 1\/1/,
+        );
+        assert.equal(await single.locator(".module-track").getAttribute("aria-valuenow"), "100");
         for (const sample of [
           { runningCount: 0, ratio: 0, offset: "100" },
           { runningCount: 10, ratio: 0.5, offset: "50" },

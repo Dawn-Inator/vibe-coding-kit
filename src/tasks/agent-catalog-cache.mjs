@@ -42,10 +42,26 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
   const lock = entry ?? { pending: false, lastAccessAt: time };
   lock.pending = true; entries.set(key, lock);
   try {
+    if (entry?.restart) {
+      entry = { pending: true, lastAccessAt: time, headSignature: null, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: entry.proofs, observations: entry.observations, activityHints: entry.activityHints, urgentObservationOffset: entry.urgentObservationOffset, otherObservationOffset: entry.otherObservationOffset, lookupOffset: entry.lookupOffset, proofOffset: entry.proofOffset, observationOffset: entry.observationOffset };
+    }
     const head = normalize(await listPage(undefined), observedAt, stamp, undefined);
     if (Buffer.byteLength(JSON.stringify(head)) > MAX_BYTES) throw new Error('Child catalog page exceeds byte limit');
     const signature = headKey(head);
-    if (!entry || entry.headSignature !== signature) entry = { pending: true, lastAccessAt: time, headSignature: signature, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: entry?.proofs ?? new Map(), observations: entry?.observations ?? new Map() };
+    if (entry && entry.headSignature !== null && entry.headSignature !== signature) {
+      if (entry.complete) {
+        // A finished sweep has no frontier left to preserve. Restart now so
+        // small catalogs can be reverified within this same poll.
+        entry = { pending: true, lastAccessAt: time, headSignature: signature, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: entry.proofs, observations: entry.observations, activityHints: entry.activityHints, lookupOffset: entry.lookupOffset, proofOffset: entry.proofOffset, observationOffset: entry.observationOffset, urgentObservationOffset: entry.urgentObservationOffset, otherObservationOffset: entry.otherObservationOffset };
+      } else {
+        // Preserve the advancing frontier during churn, but never certify a
+        // sweep assembled from different heads as a complete catalog.
+        entry.mixed = true;
+        entry.headSignature = signature;
+      }
+    }
+    if (!entry) entry = { pending: true, lastAccessAt: time, headSignature: signature, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: new Map(), observations: new Map() };
+    if (entry.headSignature === null) entry.headSignature = signature;
     if (entry.pages.length) entry.pages[0] = head; else { entry.pages.push(head); entry.nextCursor = head.nextCursor; }
     // Once complete, refresh one retained page per poll. A changed identity
     // invalidates the sweep; changed updatedAt invalidates its scoped proof.
@@ -53,8 +69,8 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
       const index = Math.max(1, Math.min(entry.refreshIndex ?? 1, entry.pages.length - 1));
       const old = entry.pages[index];
       const refreshed = normalize(await listPage(old.cursor), observedAt, stamp, old.cursor);
-      if (headKey(refreshed) !== headKey(old)) throw new Error('Child catalog changed during refresh');
-      entry.pages[index] = refreshed;
+      if (headKey(refreshed) !== headKey(old)) { entry.mixed = true; entry.complete = false; entry.restart = true; }
+      else entry.pages[index] = refreshed;
       entry.refreshIndex = index + 1 < entry.pages.length ? index + 1 : 1;
     }
     let budget = 3;
@@ -70,7 +86,12 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
         entry.pages.pop(); entry.truncated = true; entry.invalid = true; break;
       }
     }
-    if (entry.nextCursor === null && !entry.truncated && !entry.invalid && !entry.complete) {
+    if (entry.nextCursor === null && entry.mixed && !entry.invalid) {
+      // Start a new authoritative sweep next poll; retain this pass only as
+      // partial discovery. A stable subsequent sweep can regain completeness.
+      entry.restart = true;
+    }
+    if (entry.nextCursor === null && !entry.mixed && !entry.truncated && !entry.invalid && !entry.complete) {
       // Revisit every page identity after the scan. This detects changes away
       // from the head as well as additions at the head, without freezing writers.
       entry.verifyIndex ??= 1;
@@ -78,16 +99,15 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
         budget--;
         const old = entry.pages[entry.verifyIndex];
         const checked = normalize(await listPage(old.cursor), now().toISOString(), stamp, old.cursor);
-        if (headKey(checked) !== headKey(old)) throw new Error('Child catalog changed during verification');
+        if (headKey(checked) !== headKey(old)) { entry.mixed = true; entry.restart = true; break; }
         entry.pages[entry.verifyIndex++] = checked;
       }
-      if (entry.verifyIndex === entry.pages.length && budget > 0) {
+      if (!entry.mixed && entry.verifyIndex === entry.pages.length && budget > 0) {
         budget--;
         // A new child may arrive after this invocation's first head read.
         const finalHead = normalize(await listPage(undefined), now().toISOString(), stamp, undefined);
-        if (headKey(finalHead) !== entry.headSignature) throw new Error('Child catalog changed during verification');
-        entry.pages[0] = finalHead;
-        entry.complete = true;
+        if (headKey(finalHead) !== entry.headSignature) { entry.mixed = true; entry.restart = true; }
+        else { entry.pages[0] = finalHead; entry.complete = true; }
       }
     }
     // Replacements can grow even when no page was appended.

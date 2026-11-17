@@ -1929,6 +1929,7 @@ export class GoalProgressHelper {
                   schemas: createTaskProgressSchemas(z),
                   listPage: (cursor) => listDirectSubagents(threadId, cursor),
                   listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
+                  lookupAgent: (childId) => this.#runtime.readThreadIdentity(childId),
                   ...(observer ? { observeAgent: observer } : {}),
                   ...(verifier ? { verifyAgent: verifier } : {}),
                   ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),

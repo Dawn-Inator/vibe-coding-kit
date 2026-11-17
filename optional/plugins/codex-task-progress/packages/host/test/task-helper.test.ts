@@ -4928,3 +4928,128 @@ test("assignment overlay prefers only collector-fenced finer child checklists", 
   assert.equal(unverified.progressGranularity, "single-item");
   assert.equal(overlayAgentAssignment(base, undefined), base);
 });
+
+test("parent activity IDs use direct identity lookup during an incomplete catalog", async () => {
+  const root = await mkdtemp("/tmp/ctph-direct-agents-");
+  await mkdir(join(root, ".git"));
+  const testRuntime = runtime(root);
+  const children = (parent: string) =>
+    Array.from({ length: 18 }, (_, index) => `${parent}-child-${index}`);
+  const childIdentity = (parent: string, child: string) => ({
+    ...identity(child, root),
+    parentThreadId: parent,
+    source: {
+      subAgent: { thread_spawn: { parent_thread_id: parent, agent_path: `/root/${child}` } },
+    },
+    status: { type: "active" as const, activeFlags: [] },
+  });
+  const lookupCalls: string[] = [];
+  testRuntime.readThreadIdentity = async (threadId) => {
+    const match = /^(good|bad)-child-(\d+)$/.exec(threadId);
+    if (!match) return identity(threadId, root);
+    lookupCalls.push(threadId);
+    return childIdentity(
+      match[1] === "bad" && match[2] === "17" ? "foreign" : (match[1] ?? ""),
+      threadId,
+    );
+  };
+  testRuntime.listDirectSubagents = async (parent, cursor) => ({
+    data: cursor
+      ? []
+      : children(parent)
+          .slice(0, 12)
+          .map((id) => childIdentity(parent, id)),
+    nextCursor: cursor ? `${cursor}-next` : "more",
+  });
+  testRuntime.listSubagentTurns = async (parent) => ({
+    data: [
+      {
+        id: "root-turn",
+        rootTurnId: "root-turn",
+        startedAt: 1794830400,
+        itemsView: "full",
+        items: [
+          {
+            type: "collabAgentToolCall",
+            senderThreadId: parent,
+            receiverThreadIds: children(parent),
+            tool: "spawnAgent",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  });
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: testRuntime,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  type Result = {
+    subagents: {
+      complete: boolean;
+      observedRunningCount?: number | null;
+      agents: { id: string; state: string }[];
+    };
+  };
+  let call = 0;
+  const read = async (parent: string, native: boolean): Promise<Result> =>
+    (
+      await client.request(
+        native
+          ? { method: "task.native-read", params: { action: "get", threadId: parent, input: {} } }
+          : {
+              method: "task.request",
+              params: {
+                action: "get",
+                input: {},
+                auth: {
+                  kind: "codex-request",
+                  toolName: "task_progress_get",
+                  identity: {
+                    threadId: parent,
+                    sessionId: parent,
+                    turnId: "turn-1",
+                    callId: `direct-${++call}`,
+                    model: "test",
+                    threadSource: "user",
+                    cwd: root,
+                  },
+                },
+              },
+            },
+      )
+    ).result as Result;
+  const waitFor = async (parent: string, native: boolean, expected: number) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const result = await read(parent, native);
+      if (result.subagents.agents.length === expected) return result;
+      await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
+    }
+    assert.fail(`expected ${expected} admitted agents`);
+  };
+  try {
+    await helper.start();
+    const native = await waitFor("good", true, 18);
+    assert.equal(native.subagents.complete, false);
+    assert.equal(native.subagents.observedRunningCount, 18);
+    assert.ok(native.subagents.agents.every((agent) => agent.state === "working"));
+    const full = await waitFor("good", false, 18);
+    assert.equal(full.subagents.observedRunningCount, 18);
+    assert.ok(
+      children("good")
+        .slice(12)
+        .every((id) => lookupCalls.includes(id)),
+    );
+    const rejected = await waitFor("bad", true, 17);
+    assert.equal(rejected.subagents.complete, false);
+    assert.equal(rejected.subagents.observedRunningCount, 17);
+    assert.ok(!rejected.subagents.agents.some((agent) => agent.id === "bad-child-17"));
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
