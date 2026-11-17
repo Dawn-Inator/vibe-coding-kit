@@ -180,7 +180,11 @@ test("native panel MCP Apps integration", async (t) => {
       );
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
-      if (virtualClock) await page.clock.install();
+      if (virtualClock) {
+        await page.clock.install();
+        // Freeze startup before navigation so the first retry cannot race the test's initial read.
+        await page.clock.pauseAt(new Date(Date.now() + 60_000));
+      }
       const requests = [];
       const pageErrors = [];
       page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
