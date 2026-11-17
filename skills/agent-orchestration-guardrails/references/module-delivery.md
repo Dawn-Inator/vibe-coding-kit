@@ -24,6 +24,26 @@ name its owner and interface, arrange the dependency through the orchestrator, a
 Do not call it an unavailable external input or replace it with a passing stub. A real external blocker names
 the unavailable input/resource, evidence, responsible party and the work it actually prevents.
 
+## Candidate integration lead
+
+When several owners contribute to one delivery candidate, name an integration lead before the first
+assembly. This can be the orchestrator or an existing owner; it does not require another agent. Different
+leads may carry independent candidates, with exact write boundaries and one owner per shared file.
+
+The lead tracks assembly through acceptance and landing, while module owners retain implementation,
+tests, repairs and resubmission. In the existing candidate packet, identify the target/main baseline,
+contributing source snapshots, the real call chain and interfaces, required test adapters, contract and
+generated fingerprints, architecture registration and the acceptance entry point, where applicable.
+Reuse existing project checks and record their exact scope, commands, owners and results. A planned check
+or read-only input inspection is not a passing generator, test or acceptance run; missing required inputs
+remain visible. Do not invent new gates or require checks outside the approved acceptance scope.
+
+Surface omissions early enough for their owners to repair before expensive shared validation. The lead
+coordinates shared-file changes through their sole owner and follows each returned finding to a corrected
+candidate; it does not become the default fixer for every module. Any lead who authors integration changes
+is an implementation author for those changes and cannot provide their independent review. The orchestrator
+retains final acceptance authority; candidate assembly alone is not acceptance.
+
 ## Persistent owner, bounded invocations
 
 Put this obligation in every implementation packet:

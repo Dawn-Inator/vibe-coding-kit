@@ -38,7 +38,7 @@ as an event; the full ten-row audit need not run on every such event unless due.
 ## Capacity and backlog decisions
 
 Apply the orchestration skill's [capacity balance policy](../../agent-orchestration-guardrails/references/capacity-balance.md)
-at each full audit and material bottleneck event. That reference owns role definitions, example ratios,
+at each full audit and material bottleneck event. That reference owns role definitions, trial allocation,
 evidence and reallocation rules; do not turn them into fixed staffing requirements in this audit.
 
 Before opening another module, inspect pending candidate acceptance and queued checks. If those queues are
@@ -53,6 +53,10 @@ planned role allocation versus actual activity, arrivals, newly accepted modules
 Do not count repeated reports on one dependency as independent queues or infer live workers from roles.
 If evidence is missing, record unknown rather than a made-up trend. Check whether the last adjustment
 cleared its targeted dependency or reduced its queue and whether arrivals/host availability changed.
+For a candidate spanning owners, check its named integration lead and the early assembly evidence in the
+[candidate integration contract](../../agent-orchestration-guardrails/references/module-delivery.md#candidate-integration-lead).
+Return omissions to the responsible owner and check the repair, rather than adding more execution agents
+merely because a candidate has not landed.
 
 Record a bounded change or an evidence-backed hold, responsible owner, expected effect and next review
 point in that same checkpoint. Changing a ratio never changes module acceptance, owner responsibility,
@@ -60,6 +64,31 @@ write isolation, user staffing constraints or resource limits. If an explicit ag
 its existing revision using the normal writer workflow; only actual probes/receipts establish activity.
 The audit recommends and records coordination; it never kills, replaces or redispatches workers under
 its own authority. Do not create another registry, timer, status enum or certification field for ratios.
+
+## Readiness and rework
+
+In the existing linked checkpoint, distinguish resource queue waits, internal interface/dependency waits,
+test adaptation, contract/generated drift, missing architecture registration, target-branch integration
+and independent acceptance backlog when evidence supports them. These are diagnostic descriptions, not
+new ledger statuses or mandatory tags. Cite the failed check or returned finding, affected candidate,
+responsible owner and next action; retain unknown when the cause or elapsed time is not established.
+One zero-queue receipt does not establish that resources were available throughout the delivery cycle.
+
+Review complete-function acceptance and landing, first-pass outcomes, and repair rounds/reasons over a
+stated comparable scope and window. For first-pass outcomes, count each distinct delivery candidate's
+first submission once: report accepted on first decision, returned on first decision and still unresolved
+separately. A resubmitted commit stays with the same candidate lineage and does not reset its first pass.
+If reporting a first-pass rate, give its numerator and denominator of decided first submissions, and also
+show unresolved submissions; unknown history cannot be reconstructed from a current PASS. Record changed
+scope or batch boundaries so they cannot manufacture an improvement. Count repair/resubmission rounds
+from returned findings, not repeated unchanged checks or progress messages.
+
+Compare the targeted return reasons and repair rounds after a readiness or staffing adjustment, accounting
+for arrivals, candidate size and host availability. Fewer omissions may support keeping that change;
+agent counts, component test passes or one favorable window alone do not prove faster complete delivery.
+Do not delay repairs or acceptance to collect metrics, or add a registry or hard gate for this audit.
+
+## Preserve the ledger contract
 
 Keep existing Item IDs, statuses, receipts, Decomposition syntax and `heartbeat/v2` certification unchanged.
 For an inactive leaf with a queue or candidate final, cite its real private-final/checkpoint in the existing
