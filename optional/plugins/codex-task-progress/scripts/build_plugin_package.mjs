@@ -1,6 +1,7 @@
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/main-module.mjs";
 import { build } from "esbuild";
 import { buildNativePanel } from "./build_native_panel.mjs";
 import { kitRevision, kitRoot } from "./kit_root.mjs";
@@ -149,7 +150,7 @@ export async function buildPluginPackage(options = {}) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   buildPluginPackage()
     .then((outputRoot) => {
       process.stdout.write(`${relative(defaultSourceRoot, outputRoot)}\n`);

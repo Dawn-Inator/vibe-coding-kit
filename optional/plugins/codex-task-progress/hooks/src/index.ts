@@ -1,5 +1,4 @@
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   type RuntimeContext,
@@ -13,6 +12,7 @@ import {
   GoalProgressIpcClient,
 } from "../../packages/ipc/src/index.js";
 import { resolveGoalProgressPaths } from "../../packages/store/src/index.js";
+import { isMainModule } from "../../scripts/lib/main-module.mjs";
 
 export const GOAL_PROGRESS_TOOL_PATTERN =
   "^(?:(?:goal_progress_|.*[^A-Za-z0-9]goal_progress[^A-Za-z0-9]+goal_progress_)(?:activate|initialize|get|update|rescope|set_phase)|(?:task_progress_|.*[^A-Za-z0-9]task_progress[^A-Za-z0-9]+task_progress_)(?:get|initialize|update|rescope|history|heartbeat_history|bind_heartbeat))$";
@@ -508,7 +508,6 @@ export async function runHookCli(): Promise<void> {
   }
 }
 
-const entryPath = process.argv[1];
-if (entryPath && import.meta.url === pathToFileURL(resolve(entryPath)).href) {
+if (isMainModule(import.meta.url)) {
   runHookCli().catch(() => undefined);
 }

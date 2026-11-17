@@ -111,3 +111,6 @@ names the primary-relative scratch areas that stay writable. It fails open on an
 or resolution error. **Bash writes (`>`, `sed -i`, `tee`) are not inspected** — Bash
 stays governed by this skill's rules and the git-level hooks. Treat it as an early,
 cheap deny that complements the ref-level lock, not a sandbox.
+
+Bash commands that bypass git hooks (`--no-verify`, `core.hooksPath`, `HUSKY=0`, `git stash`) are covered by a separate
+optional Bash-matcher hook: see [hook-bypass-guard.md](hook-bypass-guard.md).

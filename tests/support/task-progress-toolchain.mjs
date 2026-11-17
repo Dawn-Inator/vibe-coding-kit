@@ -1,6 +1,7 @@
 // The Task Progress plugin's dev toolchain (esbuild, tsx, Playwright, ...) is a required test dependency,
 // not an optional one: a missing package fails the suite with install instructions instead of skipping it.
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
 const PLUGIN_PACKAGE = new URL('../../optional/plugins/codex-task-progress/package.json', import.meta.url);
 
@@ -17,4 +18,11 @@ export function requireTaskProgressToolchain(...specifiers) {
     );
   }
   return require;
+}
+
+// Imports a toolchain entry point resolved from the plugin package, so the dependency stays owned by the
+// plugin's package.json rather than by whichever test file wraps the plugin suite.
+export async function importTaskProgressToolchainModule(specifier) {
+  const require = requireTaskProgressToolchain(specifier);
+  return import(pathToFileURL(require.resolve(specifier)).href);
 }

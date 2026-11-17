@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
@@ -52,6 +51,7 @@ import {
   type TrustedToolAuthorization,
 } from "./runtime-identity.js";
 import { scheduleSourceUninstall } from "./uninstall.js";
+import { isMainModule } from "../../../scripts/lib/main-module.mjs";
 
 export const GOAL_PROGRESS_INITIALIZE_TOOL_NAME = "goal_progress_initialize";
 export const GOAL_PROGRESS_ACTIVATE_TOOL_NAME = "goal_progress_activate";
@@ -1408,8 +1408,7 @@ export async function runMcpServer(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
-const entryPath = process.argv[1];
-if (entryPath && import.meta.url === pathToFileURL(resolve(entryPath)).href) {
+if (isMainModule(import.meta.url)) {
   runMcpServer().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack : "GOAL_PROGRESS_MCP_FAILED";
     process.stderr.write(`${message ?? "GOAL_PROGRESS_MCP_FAILED"}\n`);

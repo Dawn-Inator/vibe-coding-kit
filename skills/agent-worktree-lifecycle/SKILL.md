@@ -90,6 +90,7 @@ cherry-pick recoverable commits. Follow [recovery-notes](references/recovery-not
 | `begin` flags, stale base, `--worker`, `--install`, `--with-deps` | `references/begin-flags.md`, `references/dependency-stamp.md` |
 | Personal mirror branches | `references/personal-mirror-branches.md` |
 | stash blocked by hook, primary lock, write guard | `references/safety-mechanisms.md` |
+| `--no-verify`, `core.hooksPath`, `HUSKY=0`, `git stash` refused by the Bash guard | `references/hook-bypass-guard.md` |
 | Commit identity rejected | `references/ai-identity.md` |
 | Finish semantics, merge-preserving finish, what to report | `references/finish-work.md` |
 | Finish queue stuck / dead lock holder | `references/finish-lock-queue.md` |

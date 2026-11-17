@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/main-module.mjs";
 import { build } from "esbuild";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,7 +48,7 @@ export async function buildNativePanel(options = {}) {
   return outputPath;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   buildNativePanel()
     .then((outputPath) => process.stdout.write(`${outputPath}\n`))
     .catch((error) => {

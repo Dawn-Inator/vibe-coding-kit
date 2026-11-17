@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/main-module.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const MACOS_UPDATE_ARCHIVE_NAME = "codex-task-progress-macos-arm64.zip";
@@ -75,7 +76,7 @@ export async function packageMacosUpdateAssets(options = {}) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   packageMacosUpdateAssets()
     .then((result) => {
       process.stdout.write(`${result.outputRoot}\n`);

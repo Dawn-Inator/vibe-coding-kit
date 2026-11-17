@@ -2,7 +2,6 @@ import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { pathToFileURL } from "node:url";
 import { readOptionalGroupPreference } from "vibe-coding-kit/src/optional/preferences.mjs";
 import { projectAgentAllocation } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import {
@@ -138,6 +137,7 @@ export type {
   ResolveCurrentThread,
   TrustedNativeGoal,
 } from "./helper-session-coordinator.js";
+import { isMainModule } from "../../../scripts/lib/main-module.mjs";
 
 type TaskDiagnosticStage =
   | "native-identity"
@@ -2338,8 +2338,7 @@ export async function runHelperCli(argv: readonly string[] = process.argv.slice(
   process.once("SIGTERM", stop);
 }
 
-const entryPath = process.argv[1];
-if (entryPath && import.meta.url === pathToFileURL(resolve(entryPath)).href) {
+if (isMainModule(import.meta.url)) {
   runHelperCli().catch((error: unknown) => {
     process.stderr.write(`${helperErrorCode(error)}\n`);
     process.exitCode = 1;

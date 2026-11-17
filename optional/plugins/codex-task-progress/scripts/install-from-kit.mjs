@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/main-module.mjs";
 import { ensurePinnedNodeRuntime, inspectPinnedNodeRuntime } from "./release-node-runtime.mjs";
 import {
   configureReleaseSigning,
@@ -364,7 +365,7 @@ async function main(options = {}) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   await main();
 }
 

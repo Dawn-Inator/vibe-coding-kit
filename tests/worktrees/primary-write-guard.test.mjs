@@ -120,7 +120,8 @@ test('fail open: cwd outside any git repository is allowed', () => {
 test('class guard: the settings snippet matcher equals GUARDED_TOOL_NAMES', () => {
   assert.ok(Object.isFrozen(GUARDED_TOOL_NAMES));
   const snippet = JSON.parse(readFileSync(join(here, '..', '..', 'templates', 'claude-settings-snippet.json'), 'utf8'));
-  const entries = snippet.hooks.PreToolUse;
+  const entries = snippet.hooks.PreToolUse.filter((entry) =>
+    entry.hooks.some((h) => String(h.command).includes('primary-write-guard-hook.mjs')));
   assert.equal(entries.length, 1);
   assert.deepEqual(new Set(entries[0].matcher.split('|')), new Set(GUARDED_TOOL_NAMES));
   assert.equal(entries[0].matcher.split('|').length, GUARDED_TOOL_NAMES.length);
