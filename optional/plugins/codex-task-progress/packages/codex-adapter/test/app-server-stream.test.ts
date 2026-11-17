@@ -481,6 +481,21 @@ test("runtime wraps verified child metadata and records exact current-turn rollo
     const working = await runtime.observeDirectSubagent?.("child", context);
     assert.equal(working?.state, "working");
     assert.equal(working?.basis, "codex-rollout");
+    assert.equal(
+      (
+        await runtime.observeDirectSubagent?.("child", {
+          parentThreadId: "parent",
+          cwd: project,
+          activityScope: "parent-thread",
+        })
+      )?.state,
+      "working",
+    );
+    assert.equal(
+      (await runtime.observeDirectSubagent?.("child", { ...context, rootTurnId: "another-root" }))
+        ?.state,
+      "unknown",
+    );
     await write([
       event("task_started", "2026-11-16T12:00:01.000Z"),
       event("task_complete", "2026-11-16T12:00:02.000Z"),

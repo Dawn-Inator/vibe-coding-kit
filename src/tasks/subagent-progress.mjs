@@ -3,7 +3,8 @@ import { isAbsolute, resolve } from 'node:path';
 import { TaskStore } from './task-store.mjs';
 import { readIncrementalAgentCatalog } from './agent-catalog-cache.mjs';
 
-export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, observeAgent, verifyAgent, taskCycleId, cycleStartedAt, taskSourcePath, now = () => new Date() }) {
+export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, observeAgent, verifyAgent, taskCycleId, cycleStartedAt, taskSourcePath, activityScope, now = () => new Date() }) {
+  const parentMode = activityScope === 'parent-thread';
   const observedAt = now().toISOString();
   const snapshot = { schemaVersion: 1, parentThreadId, observedAt, status: 'ready', runningCount: null, runningBasis: 'unknown', agents: [], complete: true, truncated: false, taskCycleId: taskCycleId ?? null, taskSourcePath: taskSourcePath ?? null, scopeBasis: 'unknown' };
   const hasCycle = taskCycleId != null || cycleStartedAt != null;
@@ -11,7 +12,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const validSource = typeof taskSourcePath === 'string' && !!taskSourcePath.trim() && !taskSourcePath.includes('\0') && isAbsolute(taskSourcePath) && resolve(taskSourcePath) === taskSourcePath;
   const sourceScope = !hasCycle && validSource;
   let cycleMs = validCycle ? Date.parse(cycleStartedAt) : NaN;
-  if ((taskSourcePath != null && !validSource) || (hasCycle && taskSourcePath != null) || (hasCycle && !validCycle) || (!hasCycle && !sourceScope) || typeof listTurnsPage !== 'function') {
+  if ((taskSourcePath != null && !validSource) || (hasCycle && taskSourcePath != null) || (hasCycle && !validCycle) || (!hasCycle && !sourceScope && !parentMode) || typeof listTurnsPage !== 'function') {
     snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot;
   }
   const members = new Set();
@@ -37,10 +38,10 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         const latest = result.data[0];
         if (result.data.length === 0) {
           if (result.nextCursor != null) throw new Error('Missing newest turn');
-          snapshot.complete = false;
+          if (!parentMode) snapshot.complete = false;
           break;
         }
-        if (!latest || typeof latest !== 'object' || Array.isArray(latest) || typeof latest.id !== 'string' || !latest.id.trim() || typeof latest.rootTurnId !== 'string' || !latest.rootTurnId.trim() || !Number.isFinite(latest.startedAt) || !Array.isArray(latest.items)) throw new Error('Invalid newest turn');
+        if (!latest || typeof latest !== 'object' || Array.isArray(latest) || typeof latest.id !== 'string' || !latest.id.trim() || (!parentMode && (typeof latest.rootTurnId !== 'string' || !latest.rootTurnId.trim())) || !Number.isFinite(latest.startedAt) || !Array.isArray(latest.items)) throw new Error('Invalid newest turn');
         rootTurnId = latest.rootTurnId;
         snapshot.rootTurnId = rootTurnId;
       }
@@ -63,7 +64,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       turnCursor = result.nextCursor;
       if (page === 7) { snapshot.complete = false; snapshot.truncated = true; }
     }
-    if (sourceScope) {
+    if (sourceScope && !parentMode) {
       if (!rootTurnId || rootCount !== 1 || !snapshot.rootTurnStartedAt) {
         snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot;
       }
@@ -101,16 +102,21 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         } else if (item.type === 'subAgentActivity') snapshot.complete = false;
       }
     }
-    if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
-  } catch { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; }
+    if (parentMode) snapshot.scopeBasis = 'parent-thread';
+    else if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
+  } catch { if (!parentMode) { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; } snapshot.scopeBasis = 'parent-thread'; }
+  // The parent scan supplies dispatch and invalidation hints only. Its root or
+  // pagination completeness does not determine parent-thread catalog coverage.
+  const recentMembers = new Set(members);
+  if (parentMode) { snapshot.complete = true; snapshot.truncated = false; }
   let runtimeStatusesComplete = true;
   const countEntries = [];
   const finalizeRunningCount = () => {
     const working = countEntries.filter(agent => agent.state === 'working' && ['runtime', 'recorded-runtime', 'codex-rollout'].includes(agent.stateBasis));
     // A runtime idle/completed status proves not running even if the displayed
     // completed label is sourced from an earlier parent activity event.
-    const runtimeExact = snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && runtimeStatusesComplete;
-    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && countEntries.every(agent => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed', 'failed'].includes(agent.state)));
+    const runtimeExact = snapshot.complete && snapshot.status === 'ready' && (parentMode || rootCount === 1) && runtimeStatusesComplete;
+    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && (parentMode || rootCount === 1) && countEntries.every(agent => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed', 'failed'].includes(agent.state)));
     const bases = new Set(countEntries.map(agent => agent.stateBasis).filter(basis => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(basis)));
     snapshot.observedRunningCount = working.length || (allObserved ? 0 : null);
     snapshot.observedRunningComplete = allObserved;
@@ -124,7 +130,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const admittedCatalog = new Map(), ambiguousIds = new Set(), catalogIds = new Set(), catalogTimes = new Map(), catalogGenerations = new Map();
   let catalogFailed = false, catalogPages = 0, parentScopeResolved = !parentWindowIncomplete, catalog;
   try {
-    const key = JSON.stringify([parentThreadId, canonicalCwd, rootTurnId, taskSourcePath ?? null, taskCycleId ?? null, cycleStartedAt ?? null, resolve(storageRoot)]);
+    const key = JSON.stringify([parentThreadId, canonicalCwd, parentMode ? 'parent-thread' : rootTurnId, parentMode ? null : taskSourcePath ?? null, parentMode ? null : taskCycleId ?? null, parentMode ? null : cycleStartedAt ?? null, resolve(storageRoot)]);
     catalog = await readIncrementalAgentCatalog({ key, listPage, now });
     catalogPages = catalog.rows.length || (catalog.complete ? 1 : 0);
     if (!catalog.complete) snapshot.complete = false;
@@ -151,7 +157,8 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       for (const cache of [catalog.proofs, catalog.state?.observations].filter(Boolean))
         for (const id of cache.keys()) if (!admittedCatalog.has(id)) cache.delete(id);
     }
-    const candidates = [...admittedCatalog.values()].filter(child => parentWindowIncomplete || !members.has(child.id));
+    if (parentMode) { members.clear(); for (const id of admittedCatalog.keys()) members.add(id); parentScopeResolved = true; }
+    const candidates = parentMode ? [] : [...admittedCatalog.values()].filter(child => parentWindowIncomplete || !members.has(child.id));
     if (parentWindowIncomplete && catalog.complete && candidates.length === 0) parentScopeResolved = true;
     if (candidates.length && (typeof verifyAgent !== 'function' || !rootTurnId || !snapshot.rootTurnStartedAt)) snapshot.complete = false;
     if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
@@ -217,14 +224,27 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const seen = new Set();
   const observationQueue = [];
   const observationCache = catalog?.state?.observations ?? new Map();
+  // These hints only schedule reads; they are never displayed as state evidence.
+  const activityHints = parentMode && catalog?.state ? (catalog.state.activityHints ??= new Set()) : new Set();
+  if (parentMode && catalog?.complete) for (const id of activityHints) if (!admittedCatalog.has(id)) activityHints.delete(id);
   const store = new TaskStore(storageRoot, { schemas });
+  const readProgress = async entry => {
+    const { state, uncertain } = await store.getReadOnly(entry.id, { maxBytes: 1024 * 1024 });
+    if (uncertain) snapshot.complete = false;
+    const dispatchedAt = dispatches.get(entry.id);
+    const progressStart = Date.parse(state?.lifecycle?.startedAt ?? state?.createdAt);
+    if (state?.threadId === entry.id && state.progress && Number.isFinite(dispatchedAt) && Number.isFinite(progressStart) && progressStart >= dispatchedAt) {
+      entry.progress = state.progress;
+      entry.progressBasis = state.lifecycle ? 'task-lifecycle' : 'registered-checklist';
+    }
+  };
   try {
       for (const [id, child] of admittedCatalog) {
         if (!members.has(id)) continue;
         const spawn = child.source.subAgent.thread_spawn;
         seen.add(id);
         const displayed = snapshot.agents.length < 100;
-        if (!displayed) snapshot.truncated = true;
+        if (!displayed && !parentMode) snapshot.truncated = true;
         const catalogPath = validAgentPath(spawn.agent_path) ? spawn.agent_path : undefined;
         const activityPath = activityPaths.get(child.id);
         const path = activityPath === null || (catalogPath && activityPath && catalogPath !== activityPath) ? undefined : catalogPath ?? activityPath;
@@ -249,7 +269,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         } else if (runtimeUsable && validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
         else if (runtimeUsable && validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
         countEntries.push(entry);
-        if (displayed) snapshot.agents.push(entry);
+        if (displayed && !parentMode) snapshot.agents.push(entry);
         try {
           entry.assignmentEligible = true;
           if (typeof observeAgent === 'function' && !runtimeUsable) {
@@ -258,45 +278,85 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
             const cached = observationCache.get(child.id);
             const baseline = { state: entry.state, stateBasis: entry.stateBasis, observedAt: entry.observedAt };
             const applyObservation = result => {
-              const proof = (result?.basis === 'codex-rollout' ? result.readStable === true : result?.basis === 'codex-turn' && result.latestTurnVerified === true) && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
+              const proof = (result?.basis === 'codex-rollout' ? result.readStable === true : result?.basis === 'codex-turn' && result.latestTurnVerified === true) && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && (parentMode ? (validId(result.rootTurnId) || (result.basis === 'codex-turn' && result.rootTurnId == null)) : result.rootTurnId === rootTurnId);
               const timestamp = typeof result?.observedAt === 'string' ? Date.parse(result.observedAt) : NaN;
               const currentWorkingTurn = proof && result.basis === 'codex-rollout' && result.state === 'working';
               const afterInteraction = Number.isFinite(invalidation) ? timestamp >= invalidation : result.basis === 'codex-turn' && !invalidations.has(child.id);
               const afterParentTerminal = result?.state !== 'working' || !terminalEvent || (terminalEvent.reliable && Number.isFinite(timestamp) && timestamp >= terminalEvent.timestamp);
-              if (proof && afterParentTerminal && (result.basis === 'codex-turn' ? ['completed', 'idle', 'failed'].includes(result.state) : ['working', 'completed', 'idle'].includes(result.state)) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (result.basis === 'codex-turn' || baseline.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(baseline.observedAt))) {
+              if (proof && afterParentTerminal && (result.basis === 'codex-turn' ? ['completed', 'idle', 'failed'].includes(result.state) : ['working', 'completed', 'idle'].includes(result.state)) && Number.isFinite(timestamp) && (parentMode || timestamp >= cycleMs) && (currentWorkingTurn || afterInteraction) && (result.basis === 'codex-turn' || baseline.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(baseline.observedAt))) {
                 entry.state = result.state; entry.stateBasis = result.basis; entry.observedAt = result.observedAt; return true;
               }
               return false;
             };
-            if (version !== null && cached?.version === version && Date.parse(observedAt) >= cached.checkedAt) applyObservation(cached.result);
-            if (version !== null)
-              observationQueue.push(async () => {
+            const cachedAccepted = version !== null && cached?.version === version && Date.parse(observedAt) >= cached.checkedAt && applyObservation(cached.result);
+            // A terminal observation is reusable only while its catalog version and
+            // parent lifecycle fence remain unchanged. Working always refreshes.
+            const stableTerminal = parentMode && cachedAccepted && ['completed', 'idle', 'failed'].includes(cached.result.state);
+            if ((version !== null || parentMode) && !stableTerminal)
+              observationQueue.push({ id: child.id, updatedAt: child.updatedAt, urgent: parentMode && (recentMembers.has(child.id) || activityHints.has(child.id) || ['working', 'waiting'].includes(cached?.result?.state)), run: async () => {
                 try {
-                  const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
-                  if (applyObservation(result)) { if (!observationCache.has(child.id) && observationCache.size >= 2000) observationCache.delete(observationCache.keys().next().value); observationCache.set(child.id, { version, checkedAt: Date.parse(observedAt), result: { state: result.state, basis: result.basis, observedAt: result.observedAt, eventTurnId: result.eventTurnId, rootTurnId: result.rootTurnId, complete: true, ...(result.basis === 'codex-turn' ? { latestTurnVerified: true } : { readStable: true }) } }); }
+                  const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt, ...(parentMode ? { activityScope: 'parent-thread' } : {}) });
+                  const accepted = applyObservation(result);
+                  if (parentMode) {
+                    if (accepted && ['working', 'waiting'].includes(result.state)) {
+                      if (!activityHints.has(child.id) && activityHints.size >= 2000) activityHints.delete(activityHints.values().next().value);
+                      activityHints.add(child.id);
+                    } else activityHints.delete(child.id);
+                  }
+                  if (accepted && version !== null) { if (!observationCache.has(child.id) && observationCache.size >= 2000) observationCache.delete(observationCache.keys().next().value); observationCache.set(child.id, { version, checkedAt: Date.parse(observedAt), result: { state: result.state, basis: result.basis, observedAt: result.observedAt, eventTurnId: result.eventTurnId, rootTurnId: result.rootTurnId, complete: true, ...(result.basis === 'codex-turn' ? { latestTurnVerified: true } : { readStable: true }) } }); }
+                  else if (accepted) { observationCache.delete(child.id); }
                   else { Object.assign(entry, baseline); observationCache.delete(child.id); }
-                } catch { Object.assign(entry, baseline); observationCache.delete(child.id); }
-              });
+                } catch { if (parentMode) activityHints.delete(child.id); Object.assign(entry, baseline); observationCache.delete(child.id); }
+              } });
           }
-          if (!displayed) continue;
-          const { state, uncertain } = await store.getReadOnly(child.id, { maxBytes: 1024 * 1024 });
-          if (uncertain) snapshot.complete = false;
-          const dispatchedAt = dispatches.get(child.id);
-          const progressStart = Date.parse(state?.lifecycle?.startedAt ?? state?.createdAt);
-          if (state?.threadId === child.id && state.progress && Number.isFinite(dispatchedAt) && Number.isFinite(progressStart) && progressStart >= dispatchedAt) {
-            entry.progress = state.progress;
-            entry.progressBasis = state.lifecycle ? 'task-lifecycle' : 'registered-checklist';
-          }
+          if (!parentMode && displayed) await readProgress(entry);
         } catch { snapshot.complete = false; }
       }
   } catch { snapshot.complete = false; snapshot.status = snapshot.agents.length ? 'partial' : 'unavailable'; }
-  const offset = observationQueue.length ? (catalog?.state?.observationOffset ?? 0) % observationQueue.length : 0;
-  const work = [...observationQueue.slice(offset), ...observationQueue.slice(0, offset)].slice(0, 100);
-  if (catalog?.state && observationQueue.length) catalog.state.observationOffset = (offset + work.length) % observationQueue.length;
+  if (parentMode) {
+    // Sorting affects read order only; timestamps never establish activity.
+    const updated = value => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+    observationQueue.sort((a, b) => Number(recentMembers.has(b.id)) - Number(recentMembers.has(a.id)) || updated(b.updatedAt) - updated(a.updatedAt));
+  }
+  let work;
+  if (parentMode) {
+    const urgent = observationQueue.filter(item => item.urgent);
+    const other = observationQueue.filter(item => !item.urgent);
+    // Reserve 20 slots for history while lending unused slots in either lane.
+    // Each lane advances independently, including when urgent exceeds capacity.
+    const urgentLimit = Math.min(urgent.length, other.length ? 80 : 100);
+    const otherLimit = Math.min(other.length, 100 - urgentLimit);
+    const urgentCount = Math.min(urgent.length, 100 - otherLimit);
+    const take = (queue, count, key) => {
+      if (!queue.length || !count) return [];
+      const offset = (catalog?.state?.[key] ?? 0) % queue.length;
+      const selected = [...queue.slice(offset), ...queue.slice(0, offset)].slice(0, count);
+      if (catalog?.state) catalog.state[key] = (offset + selected.length) % queue.length;
+      return selected;
+    };
+    work = [...take(urgent, urgentCount, 'urgentObservationOffset'), ...take(other, otherLimit, 'otherObservationOffset')];
+  } else {
+    const offset = observationQueue.length ? (catalog?.state?.observationOffset ?? 0) % observationQueue.length : 0;
+    work = [...observationQueue.slice(offset), ...observationQueue.slice(0, offset)].slice(0, 100);
+    if (catalog?.state && observationQueue.length) catalog.state.observationOffset = (offset + work.length) % observationQueue.length;
+  }
   let nextObservation = 0;
   await Promise.all(Array.from({ length: Math.min(2, work.length) }, async () => {
-    while (nextObservation < work.length) await work[nextObservation++]();
+    while (nextObservation < work.length) await work[nextObservation++].run();
   }));
+  if (parentMode) {
+    const active = countEntries.filter(entry => ['working', 'waiting'].includes(entry.state));
+    snapshot.agents = active.slice(0, 100);
+    if (active.length > 100) snapshot.truncated = true;
+    for (const entry of snapshot.agents) {
+      if (!dispatches.has(entry.id)) continue;
+      try { await readProgress(entry); } catch { snapshot.complete = false; }
+    }
+  }
   if (seen.size !== members.size) snapshot.complete = false;
   if (!runtimeStatusesComplete && countEntries.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;
   if (catalogFailed && !catalogPages && !snapshot.agents.length) snapshot.status = 'unavailable';

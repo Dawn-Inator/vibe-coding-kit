@@ -630,6 +630,7 @@ thread: ${threadId}
         data: [
           child("current-child"),
           child("old-child"),
+          { ...child("completed-child"), status: { type: "completed", activeFlags: [] } },
           {
             ...child("foreign-child"),
             source: { subAgent: { thread_spawn: { parent_thread_id: "foreign-parent" } } },
@@ -677,7 +678,8 @@ thread: ${threadId}
       scopeBasis: string;
       rootTurnId?: string;
       taskSourcePath?: string;
-      agents: Array<{ id: string }>;
+      allocation?: { ratio: number | null };
+      agents: Array<{ id: string; state: string }>;
     };
   };
   async function callRead(
@@ -709,7 +711,9 @@ thread: ${threadId}
       );
       if (
         snapshot.taskSource?.status === "ready" &&
-        ["ready", "partial"].includes(snapshot.subagents?.status ?? "")
+        ["ready", "partial"].includes(snapshot.subagents?.status ?? "") &&
+        snapshot.subagents?.agents.some((agent) => agent.id === "current-child") &&
+        snapshot.subagents.agents.some((agent) => agent.id === "old-child")
       )
         break;
       await new Promise((r) => setTimeout(r, 20));
@@ -725,13 +729,15 @@ thread: ${threadId}
     assert.ok(snapshot.subagents);
     assert.ok(["ready", "partial"].includes(snapshot.subagents.status));
     assert.equal(snapshot.subagents.parentThreadId, threadId);
-    assert.equal(snapshot.subagents.scopeBasis, "parent-root-turn");
+    assert.equal(snapshot.subagents.scopeBasis, "parent-thread");
     assert.equal(snapshot.subagents.rootTurnId, "root-turn");
     assert.equal(snapshot.subagents.taskSourcePath, ledgerPath);
-    assert.deepEqual(
-      snapshot.subagents.agents.map((agent) => agent.id),
-      ["current-child"],
-    );
+    assert.deepEqual(snapshot.subagents.agents.map((agent) => agent.id).sort(), [
+      "current-child",
+      "old-child",
+    ]);
+    assert.ok(snapshot.subagents.agents.every((agent) => agent.state === "working"));
+    assert.equal(snapshot.subagents.allocation?.ratio, null);
     return snapshot;
   }
   try {
@@ -1042,7 +1048,7 @@ test("real MCP preserves canonical assignments and projects their progress to th
     }
     assert.equal(native?.task?.revision, 3);
     assert.equal(native?.subagents?.parentThreadId, threadId);
-    assert.equal(native?.subagents?.scopeBasis, "parent-root-turn");
+    assert.equal(native?.subagents?.scopeBasis, "parent-thread");
     assert.equal(native?.subagents?.rootTurnId, "root-turn");
     assert.equal(native?.subagents?.agents.length, 1);
     const member = native?.subagents?.agents[0];
@@ -1178,6 +1184,8 @@ test("native panel resource URI compatibility accepts only shipped same-origin v
     "ui://codex-task-progress/panel-0.5.16.html",
     "ui://codex-task-progress/panel-0.6.1.html",
     "ui://codex-task-progress/panel-0.6.3.html",
+    "ui://codex-task-progress/panel-0.11.0.html",
+    "ui://codex-task-progress/panel-0.12.0.html",
     TASK_PROGRESS_PANEL_RESOURCE_URI,
   ];
   for (const uri of accepted) {

@@ -213,6 +213,167 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
   };
   try {
     await t.test(
+      "agent capsules stay single-line with honest progress at narrow widths",
+      async () => {
+        const { page, panel } = await open("?defaultSubagents", { reducedMotion: "reduce" });
+        await page.evaluate((value) => {
+          window.fixture.task = {
+            ...value,
+            lifecycle: {
+              id: "cycle-1",
+              sequence: 1,
+              startedAt: "2026-11-15T11:00:00Z",
+              completion: null,
+            },
+          };
+          window.fixture.subagents = {
+            taskCycleId: "cycle-1",
+            rootTurnId: "turn-1",
+            rootTurnStartedAt: "2026-11-15T11:30:00Z",
+            scopeBasis: "parent-root-turn",
+            schemaVersion: 1,
+            parentThreadId: "thread-a",
+            observedAt: "2026-11-15T12:00:00Z",
+            status: "ready",
+            runningCount: 1,
+            runningBasis: "runtime",
+            complete: true,
+            truncated: false,
+            allocation: null,
+            agents: [
+              {
+                id: "unknown-layout",
+                name: "Long Agent 名称 ".repeat(12),
+                state: "waiting",
+                stateBasis: "codex-rollout",
+                observedAt: "2026-11-15T12:00:00Z",
+                progress: null,
+                progressBasis: null,
+              },
+              {
+                id: "fine-layout",
+                name: "Very long assigned Agent name ".repeat(8),
+                state: "working",
+                stateBasis: "codex-rollout",
+                observedAt: "2026-11-15T12:00:00Z",
+                progress: { completed: 2, total: 3, percent: 66.7 },
+                progressBasis: "registered-checklist",
+                progressGranularity: "checklist",
+              },
+              {
+                id: "single-layout",
+                name: "单项任务 Agent ".repeat(10),
+                state: "completed",
+                stateBasis: "codex-rollout",
+                observedAt: "2026-11-15T12:00:00Z",
+                progress: { completed: 1, total: 1, percent: 100 },
+                progressBasis: "module-delivery",
+                progressGranularity: "single-item",
+              },
+            ],
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        const rows = panel.locator(".agent-row");
+        await rows.first().waitFor();
+        for (const locale of ["zh-CN", "en-US"]) {
+          await panel.evaluate(async (host, value) => {
+            host.locale = value;
+            await host.updateComplete;
+          }, locale);
+          for (const width of [320, 420, 640]) {
+            await page.setViewportSize({ width, height: 740 });
+            assert.equal(
+              await panel.locator(".scroll").evaluate((el) => el.scrollWidth <= el.clientWidth),
+              true,
+            );
+            for (const row of await rows.all()) {
+              const layout = await row.evaluate((el) => {
+                const rect = el.getBoundingClientRect();
+                const content = el.querySelector(".module-content").getBoundingClientRect();
+                const status = el.querySelector(".status").getBoundingClientRect();
+                const percent = el.querySelector(".module-percent")?.getBoundingClientRect();
+                const name = el.querySelector(".name");
+                const meta = el.querySelector(".module-meta > span:first-child");
+                return {
+                  height: rect.height,
+                  round: getComputedStyle(el).borderRadius,
+                  overflow: el.scrollWidth <= el.clientWidth,
+                  statusInside:
+                    status.left >= content.left &&
+                    status.right <= content.right &&
+                    status.left >= rect.left &&
+                    status.right <= rect.right,
+                  percentInside:
+                    !percent || (percent.left >= content.left && percent.right <= content.right),
+                  nameWrap: getComputedStyle(name).whiteSpace,
+                  nameEllipsis: getComputedStyle(name).textOverflow,
+                  metaWrap: getComputedStyle(meta).whiteSpace,
+                  metaEllipsis: getComputedStyle(meta).textOverflow,
+                  titles: el.querySelectorAll("[title]").length,
+                  outline: getComputedStyle(el).outlineStyle,
+                };
+              });
+              assert.deepEqual(layout, {
+                height: 54,
+                round: "999px",
+                overflow: true,
+                statusInside: true,
+                percentInside: true,
+                nameWrap: "nowrap",
+                nameEllipsis: "ellipsis",
+                metaWrap: "nowrap",
+                metaEllipsis: "ellipsis",
+                titles: 0,
+                outline: "none",
+              });
+            }
+            for (const id of ["fine-layout", "unknown-layout"]) {
+              const nameWidth = await panel
+                .locator(`[data-agent="${id}"] .name`)
+                .evaluate((el) => el.getBoundingClientRect().width);
+              assert.ok(
+                nameWidth >= 48,
+                `${id} name has only ${nameWidth}px at ${width}px (${locale})`,
+              );
+            }
+            assert.equal(
+              await panel.locator('[data-agent="unknown-layout"] [role="meter"]').count(),
+              0,
+            );
+            assert.equal(
+              await panel.locator('[data-agent="single-layout"] [role="meter"]').count(),
+              0,
+            );
+            assert.equal(
+              await panel
+                .locator('[data-agent="fine-layout"] [role="meter"]')
+                .getAttribute("aria-valuenow"),
+              "66.7",
+            );
+            assert.equal(
+              await panel.locator('[data-agent="fine-layout"] .module-percent').innerText(),
+              "66.7%",
+            );
+            const unknownText = (
+              await panel.locator('[data-agent="unknown-layout"]').textContent()
+            ).replace(/\s+/g, " ");
+            const singleText = (
+              await panel.locator('[data-agent="single-layout"]').textContent()
+            ).replace(/\s+/g, " ");
+            assert.match(
+              unknownText,
+              locale === "zh-CN" ? /进度未登记.*等待中/ : /Progress not recorded.*Waiting/,
+            );
+            assert.match(
+              singleText,
+              locale === "zh-CN" ? /1 项已完成.*已返回/ : /1 assigned item completed.*Returned/,
+            );
+          }
+        }
+      },
+    );
+    await t.test(
       "subagent allocation uses canonical plan ratio and preserves the parent goal",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
@@ -681,6 +842,29 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         assert.equal(await ring.locator(".allocation-fill").count(), 0);
         assert.match(await panel.locator(".agent-counts").innerText(), /尚未记录/);
         assert.doesNotMatch(await ring.innerText(), /0\/0|1\/1|100%/);
+        // Parent-thread activity can predate the latest root turn. It remains
+        // bound to this thread and source, including after task completion.
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents, {
+            scopeBasis: "parent-thread",
+            rootTurnStartedAt: "2026-11-15T12:01:00Z",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 1);
+        await page.evaluate(() => {
+          window.fixture.subagents.observedAt = "2999-01-01T00:00:00Z";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 0);
+        await page.evaluate(() => {
+          Object.assign(window.fixture.subagents, {
+            observedAt: "2026-11-15T12:00:00Z",
+            scopeBasis: "parent-root-turn",
+            rootTurnStartedAt: "2026-11-15T11:30:00Z",
+          });
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
         await page.evaluate(() => {
           window.fixture.task.phase = "completed";
           return window.__CODEX_TASK_PROGRESS__.refresh();

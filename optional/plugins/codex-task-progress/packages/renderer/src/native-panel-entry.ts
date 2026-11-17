@@ -240,12 +240,13 @@ function schedule(response?: TaskPanelResponse): void {
     response?.heartbeatPending === true ||
     response?.taskSourcePending === true ||
     response?.subagents?.status === "pending" ||
+    response?.subagents?.status === "partial" ||
     (response as ScopedResponse | undefined)?.presentation?.pending === true;
   const delay = pending ? (pendingDelays[pendingAttempts++] ?? 5_000) : 5_000;
   if (!pending) pendingAttempts = 0;
   timer = setTimeout(() => {
     timer = null;
-    void refresh();
+    void refresh(response?.subagents?.status === "partial");
   }, delay);
 }
 let controller: AbortController | null = null;
@@ -320,6 +321,94 @@ function isOlderTask(response: TaskPanelResponse, current: TaskPanelResponse): b
     Number.isFinite(existing) &&
     incoming < existing
   );
+}
+// Old model-side tool results can omit agent metadata. Retain it only when
+// both complete task identities prove the same conversation and task source.
+function retainMissingAgents(
+  response: TaskPanelResponse,
+  current: TaskPanelResponse,
+  threadId: string,
+): TaskPanelResponse {
+  if (
+    (Object.hasOwn(response, "subagents") &&
+      response.subagents?.status !== "pending" &&
+      !(
+        response.subagents?.status === "partial" &&
+        !response.subagents.complete &&
+        response.subagents.agents.length === 0 &&
+        !!current.subagents?.agents.length
+      )) ||
+    (response.subagents?.taskCycleId !== undefined &&
+      response.subagents.taskCycleId !== current.subagents?.taskCycleId) ||
+    (response.subagents?.taskSourcePath !== undefined &&
+      response.subagents.taskSourcePath !== current.subagents?.taskSourcePath) ||
+    response.enabled === false ||
+    (response as ScopedResponse).presentation?.error ||
+    !scopeOf(response) ||
+    scopeOf(response) !== scopeOf(current) ||
+    !response.task ||
+    !current.task ||
+    response.task.threadId !== threadId ||
+    current.task.threadId !== threadId ||
+    !current.subagents ||
+    current.subagents.parentThreadId !== threadId ||
+    !["ready", "partial"].includes(current.subagents.status) ||
+    typeof current.subagents.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(current.subagents.observedAt)) ||
+    Date.parse(current.subagents.observedAt) > Date.now() ||
+    (current.subagents.scopeBasis !== "parent-thread" &&
+      (current.subagents.scopeBasis !== "parent-root-turn" ||
+        !current.subagents.rootTurnId?.trim() ||
+        !current.subagents.rootTurnStartedAt ||
+        !Number.isFinite(Date.parse(current.subagents.rootTurnStartedAt)) ||
+        Date.parse(current.subagents.rootTurnStartedAt) > Date.parse(current.subagents.observedAt)))
+  )
+    return response;
+  const incomingCycle = response.task.lifecycle?.id;
+  const currentCycle = current.task.lifecycle?.id;
+  const sameCycle =
+    !!incomingCycle &&
+    incomingCycle === currentCycle &&
+    current.subagents.taskCycleId === incomingCycle &&
+    response.task.lifecycle?.startedAt === current.task.lifecycle?.startedAt &&
+    (response.task.source?.path ?? null) === (current.task.source?.path ?? null);
+  const incomingSource = response.taskSource;
+  const currentSource = current.taskSource;
+  const sameSource =
+    !incomingCycle &&
+    !currentCycle &&
+    incomingSource?.status === "ready" &&
+    currentSource?.status === "ready" &&
+    !!incomingSource.path &&
+    incomingSource.path === currentSource.path &&
+    response.task.source?.kind === "kit-heartbeat" &&
+    response.task.source.readOnly === true &&
+    response.task.source.path === incomingSource.path &&
+    !!incomingSource.contentHash &&
+    response.task.source.contentHash === incomingSource.contentHash &&
+    current.task.source?.kind === "kit-heartbeat" &&
+    current.task.source.readOnly === true &&
+    current.task.source.path === incomingSource.path &&
+    !!currentSource.contentHash &&
+    current.task.source.contentHash === currentSource.contentHash &&
+    current.subagents.taskCycleId === null &&
+    current.subagents.taskSourcePath === incomingSource.path;
+  if (!sameCycle && !sameSource) return response;
+  const revisionChanged =
+    response.task.revision !== current.task.revision ||
+    response.task.source?.contentHash !== current.task.source?.contentHash;
+  if (!revisionChanged) return { ...response, subagents: current.subagents };
+  // Assignment and allocation are tied to a specific task revision. Keep the
+  // independently observed membership while the native GET recomputes them.
+  const agents = current.subagents.agents.map((agent) => ({
+    ...agent,
+    assignmentTitle: null,
+    ...(agent.progressBasis === "module-delivery"
+      ? { progress: null, progressBasis: null, progressGranularity: "none" as const }
+      : {}),
+  }));
+  const { allocation: _allocation, ...membership } = current.subagents;
+  return { ...response, subagents: { ...membership, agents } };
 }
 function taskVersion(response: TaskPanelResponse): string {
   return JSON.stringify([taskRecord(response), response.task?.revision ?? null]);
@@ -431,11 +520,11 @@ async function readTaskResponse(
   return { response: parsed.result, threadId };
 }
 
-async function refresh(): Promise<void> {
+async function refresh(silent = false): Promise<void> {
   if (disposed || busy || document.visibilityState !== "visible") return;
   clearTimer();
   busy = true;
-  element.refreshing = true;
+  element.refreshing = !silent;
   const requestGeneration = ++refreshSequence;
   controller?.abort();
   controller = new AbortController();
@@ -450,7 +539,11 @@ async function refresh(): Promise<void> {
       schedule(element.data);
       return;
     }
-    applyVerifiedResponse(response, threadId);
+    const merged =
+      threadId === element.threadId
+        ? retainMissingAgents(response, element.data, threadId)
+        : response;
+    applyVerifiedResponse(merged, threadId);
     schedule(response);
   } catch (error) {
     if (disposed || requestGeneration !== refreshSequence) return;
@@ -551,6 +644,50 @@ app.ontoolresult = (result) => {
       return;
     }
     const scope = scopeOf(parsed.result);
+    // Legacy tool pushes have no scope proof. They can request a native read,
+    // but cannot themselves replace any part of an already verified view.
+    // Explicit identity/source changes and revocations still clear immediately.
+    if (
+      scope === null &&
+      activeScope !== null &&
+      element.threadId === verifiedThreadId &&
+      parsed.result.enabled !== false &&
+      !(parsed.result as ScopedResponse).presentation?.error
+    ) {
+      const incoming = parsed.result;
+      const current = element.data;
+      const sourceChanged =
+        (incoming.task === null && Object.hasOwn(incoming, "task")) ||
+        (incoming.taskSource === null && Object.hasOwn(incoming, "taskSource")) ||
+        (incoming.task &&
+          Object.hasOwn(incoming.task, "source") &&
+          incoming.task.source === null &&
+          !!current.task?.source) ||
+        (incoming.task &&
+          Object.hasOwn(incoming.task, "lifecycle") &&
+          incoming.task.lifecycle === null &&
+          !!current.task?.lifecycle) ||
+        (incoming.task?.source?.path !== undefined &&
+          incoming.task.source.path !== current.task?.source?.path) ||
+        (incoming.taskSource?.path !== undefined &&
+          incoming.taskSource.path !== current.taskSource?.path) ||
+        (incoming.taskSource?.status !== undefined && incoming.taskSource.status !== "ready") ||
+        (incoming.task?.lifecycle?.id !== undefined &&
+          incoming.task.lifecycle.id !== current.task?.lifecycle?.id) ||
+        (incoming.task?.lifecycle?.startedAt !== undefined &&
+          incoming.task.lifecycle.startedAt !== current.task?.lifecycle?.startedAt) ||
+        (Object.hasOwn(incoming, "subagents") && incoming.subagents === null) ||
+        incoming.subagents?.status === "unavailable" ||
+        (incoming.subagents?.taskCycleId !== undefined &&
+          incoming.subagents.taskCycleId !== current.subagents?.taskCycleId) ||
+        (incoming.subagents?.taskSourcePath !== undefined &&
+          incoming.subagents.taskSourcePath !== current.subagents?.taskSourcePath);
+      if (!sourceChanged) {
+        invalidatePendingRefresh();
+        void refresh();
+        return;
+      }
+    }
     const identityChanged = element.threadId !== verifiedThreadId || activeScope !== scope;
     const hasBaseResponse = [
       "task",
@@ -577,8 +714,12 @@ app.ontoolresult = (result) => {
     }
     if (!identityChanged && isOlderTask(parsed.result, element.data)) return;
     invalidatePendingRefresh();
-    applyVerifiedResponse(parsed.result, verifiedThreadId);
-    schedule(parsed.result);
+    const merged = !identityChanged
+      ? retainMissingAgents(parsed.result, element.data, verifiedThreadId)
+      : parsed.result;
+    applyVerifiedResponse(merged, verifiedThreadId);
+    if (merged !== parsed.result) void refresh();
+    else schedule(parsed.result);
   }
 };
 app.onhostcontextchanged = applyContext;

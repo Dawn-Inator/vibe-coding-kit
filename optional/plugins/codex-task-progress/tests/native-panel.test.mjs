@@ -384,6 +384,105 @@ test("native panel MCP Apps integration", async (t) => {
       ),
     );
 
+    await t.test("partial subagents retry promptly, then return to quiet polling", () =>
+      scenario(
+        async (page, frame) => {
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel")?.data.task?.title ===
+              "Native task panel",
+          );
+          // Capture the actual ready-poll deadline: the installed clock advances
+          // during protocol round trips, so 4,999 ms after observation is too late.
+          await page.locator("#app").evaluate((iframe) => {
+            const win = iframe.contentWindow;
+            const original = win.setTimeout;
+            win.setTimeout = function (callback, delay, ...args) {
+              if (delay === 5_000) win.lastQuietPollScheduledAt = win.Date.now();
+              return original.call(this, callback, delay, ...args);
+            };
+          });
+          await page.evaluate(() => {
+            const subagents = {
+              schemaVersion: 1,
+              parentThreadId: window.currentThreadId,
+              observedAt: null,
+              status: "partial",
+              runningCount: null,
+              runningBasis: "unknown",
+              agents: [],
+              complete: false,
+              truncated: false,
+            };
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents,
+              presentation: { scope: "project-a", pending: false, cached: false, updatedAt: 10 },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.subagents?.status ===
+              "partial",
+          );
+          const count = () =>
+            page.evaluate(
+              () => window.hostCalls.filter((c) => c.name === "task_progress_get").length,
+            );
+          const before = await count();
+          await page.evaluate(() => {
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents: {
+                ...window.currentResponse.subagents,
+                status: "ready",
+                complete: true,
+              },
+            };
+          });
+          await page.clock.fastForward(150);
+          await page.waitForFunction(
+            () =>
+              document
+                .getElementById("app")
+                .contentWindow.document.querySelector("codex-task-panel").data.subagents?.status ===
+              "ready",
+          );
+          assert.equal(await count(), before + 1);
+          const snapshot = await frame
+            .locator("codex-task-panel")
+            .evaluate((panel) => panel.data.subagents);
+          assert.equal(snapshot.runningCount, null);
+          assert.equal(snapshot.runningBasis, "unknown");
+          await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1);
+          const remaining = await page.locator("#app").evaluate((iframe) => {
+            const win = iframe.contentWindow;
+            return win.lastQuietPollScheduledAt + 5_000 - win.Date.now();
+          });
+          assert.ok(
+            remaining > 4_000 && remaining <= 5_000,
+            `invalid quiet-poll deadline: ${remaining}`,
+          );
+          await page.clock.fastForward(remaining - 1);
+          assert.equal(await count(), before + 1, "no poll before the five-second deadline");
+          await page.clock.fastForward(1);
+          await page.clock.resume();
+          await page.waitForFunction(
+            (expected) =>
+              window.hostCalls.filter((c) => c.name === "task_progress_get").length === expected,
+            before + 2,
+          );
+        },
+        "",
+        true,
+      ),
+    );
+
     await t.test(
       "agent-only pushes read fresh data and scoped cache rejects late responses and revocation",
       () =>
@@ -681,6 +780,112 @@ test("native panel MCP Apps integration", async (t) => {
             assert.doesNotMatch(await allocation.innerText(), /\d+%|\d+\/\d+|0/);
           };
           await verifyCurrentData();
+
+          // A legacy model result may carry an updated source revision but omit
+          // agents while the authenticated native read is still in flight.
+          const callsBeforeLegacy = await page.evaluate(() => window.hostCalls.length);
+          await page.evaluate(() => {
+            window.holdGet = true;
+            const { subagents: ignored, ...legacy } = window.currentResponse;
+            legacy.task = { ...legacy.task, revision: 5 };
+            window.deliverToolResult(window.currentThreadId, legacy);
+          });
+          await page.waitForFunction(
+            (count) => window.hostCalls.length > count && window.releaseHeldGet,
+            callsBeforeLegacy,
+          );
+          assert.equal(await panel.evaluate((element) => element.data.task.revision), 5);
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          await page.evaluate(() => {
+            window.holdGet = false;
+            window.releaseHeldGet();
+          });
+          await verifyCurrentData();
+
+          // An unscoped legacy push is only a refresh hint, never a new view.
+          const callsBeforeUnscoped = await page.evaluate(() => window.hostCalls.length);
+          await page.evaluate(() => {
+            window.holdGet = true;
+            window.releaseHeldGet = null;
+            const { presentation, subagents, ...legacy } = window.currentResponse;
+            legacy.task = { ...legacy.task, title: "Untrusted legacy title" };
+            window.deliverToolResult(window.currentThreadId, legacy);
+          });
+          await page.waitForFunction(
+            (count) => window.hostCalls.length > count && window.releaseHeldGet,
+            callsBeforeUnscoped,
+          );
+          assert.equal(
+            await panel.evaluate((element) => element.data.task.title),
+            "Completed read-only heartbeat task",
+          );
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          await page.evaluate(() => {
+            window.holdGet = false;
+            window.releaseHeldGet();
+          });
+          await verifyCurrentData();
+
+          // Pending snapshots, both push and GET, retain proven membership and
+          // schedule another read. A changed source must never retain it.
+          await page.evaluate(() => {
+            window.currentResponse = {
+              ...window.currentResponse,
+              subagents: {
+                schemaVersion: 1,
+                parentThreadId: window.currentThreadId,
+                status: "pending",
+                observedAt: null,
+                runningCount: null,
+                runningBasis: "unknown",
+                agents: [],
+                complete: false,
+                truncated: false,
+              },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          });
+          await panel.evaluate((element) => element.refreshTask());
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          await page.evaluate(() => {
+            window.currentResponse.subagents.status = "partial";
+          });
+          await panel.evaluate((element) => element.refreshTask());
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          // A complete empty result is authoritative and must clear the list.
+          await page.evaluate(() => {
+            window.currentResponse.subagents = {
+              ...window.currentResponse.subagents,
+              status: "ready",
+              complete: true,
+              scopeBasis: "parent-thread",
+              observedAt: "2026-11-16T12:05:00.000Z",
+              taskCycleId: null,
+              taskSourcePath: "/workspace/heartbeat.md",
+            };
+          });
+          await panel.evaluate((element) => element.refreshTask());
+          await subagentRegion.getByText("No subagents recorded.").waitFor();
+          await page.evaluate((value) => {
+            window.currentResponse = value;
+          }, response);
+          await panel.evaluate((element) => element.refreshTask());
+          await verifyCurrentData();
+          await page.evaluate(() => {
+            const { subagents, ...changed } = window.currentResponse;
+            changed.task = {
+              ...changed.task,
+              source: { ...changed.task.source, path: "/workspace/other.md" },
+            };
+            changed.taskSource = { ...changed.taskSource, path: "/workspace/other.md" };
+            window.deliverToolResult(window.currentThreadId, changed);
+          });
+          await subagentRegion.getByText("This run's agent records are not ready yet.").waitFor();
+          assert.equal(await frame.locator(".agent-row").count(), 0);
+          await page.evaluate((value) => {
+            window.deliverToolResult(window.currentThreadId, value);
+          }, response);
+          await frame.getByText("Current root member", { exact: true }).waitFor();
 
           for (const invalidSnapshot of [
             { taskSourcePath: "/workspace/other-heartbeat.md" },

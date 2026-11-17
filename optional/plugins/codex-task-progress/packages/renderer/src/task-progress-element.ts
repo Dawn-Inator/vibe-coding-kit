@@ -1643,12 +1643,15 @@ export class TaskProgressElement extends LitElement {
       this.data.taskSource?.status === "ready" ? this.data.taskSource.path : undefined;
     const rootTurnStartedAt = snapshot?.rootTurnStartedAt;
     const observedAt = snapshot?.observedAt;
+    const validObservation =
+      typeof observedAt === "string" &&
+      Number.isFinite(Date.parse(observedAt)) &&
+      Date.parse(observedAt) <= Date.now();
     const verifiedRootStart =
       typeof rootTurnStartedAt === "string" &&
       Number.isFinite(Date.parse(rootTurnStartedAt)) &&
-      typeof observedAt === "string" &&
-      Number.isFinite(Date.parse(observedAt)) &&
-      Date.parse(observedAt) >= Date.parse(rootTurnStartedAt);
+      validObservation &&
+      Date.parse(observedAt as string) >= Date.parse(rootTurnStartedAt);
     const managedCycleMatches =
       !!task?.lifecycle?.id && snapshot?.taskCycleId === task.lifecycle.id;
     const sourceScopeMatches =
@@ -1663,10 +1666,12 @@ export class TaskProgressElement extends LitElement {
       !snapshot ||
       snapshot.parentThreadId !== this.threadId ||
       (!managedCycleMatches && !sourceScopeMatches) ||
-      snapshot.scopeBasis !== "parent-root-turn" ||
-      typeof snapshot.rootTurnId !== "string" ||
-      !snapshot.rootTurnId.trim() ||
-      !verifiedRootStart ||
+      !validObservation ||
+      (snapshot.scopeBasis !== "parent-thread" &&
+        (snapshot.scopeBasis !== "parent-root-turn" ||
+          typeof snapshot.rootTurnId !== "string" ||
+          !snapshot.rootTurnId.trim() ||
+          !verifiedRootStart)) ||
       (snapshot.status !== "ready" && snapshot.status !== "partial")
     )
       return null;
@@ -1785,10 +1790,10 @@ export class TaskProgressElement extends LitElement {
               const bounded = fine ? Math.max(0, Math.min(100, percent)) : null;
               return html`<article class="row agent-row" data-agent=${agent.id}>
           <span class="module-icon" data-status=${agent.state === "working" ? "active" : agent.state}>·</span>
-          <span class="module-content"><span class="module-title-line"><span class="name">${title}</span>${fine ? html`<span class="module-percent">${percent}%</span>` : nothing}</span>
-          ${secondary ? html`<span class="agent-secondary">${secondary}</span>` : nothing}
+          <span class="module-content"><span class="module-title-line"><span class="name">${title}</span>${secondary ? html`<span class="agent-secondary">${secondary}</span>` : nothing}</span>
+          ${fine ? html`<span class="module-percent">${percent}%</span>` : nothing}
           ${fine ? html`<span class="module-track" role="meter" aria-label=${title} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${bounded as number} aria-valuetext=${`${progress?.completed}/${progress?.total}`}><span class="module-fill" style=${`transform:scaleX(${(bounded as number) / 100})`}></span></span>` : nothing}
-          <span class="module-meta">${single && progress ? html`<span>${progress.completed === 1 ? this.t("1 assigned item completed", "1 项已完成") : this.t("1 assigned item", "1 项已分配")}</span>` : fine && progress ? html`<span>${agent.progressBasis === "module-delivery" ? this.t("Assigned work", "已分配任务") : agent.progressBasis === "registered-checklist" ? this.t("Recorded checklist", "已登记清单") : this.t("Recorded task progress", "已登记任务进度")} ${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}<span class="status">${agent.state === "unknown" || !agent.stateBasis || agent.stateBasis === "unknown" || agent.stateBasis === "runtime" ? labels[agent.state] : `${this.t("Recorded", "记录为")} ${labels[agent.state]}${agent.observedAt ? ` · ${this.time(agent.observedAt)}` : ""}`}</span></span></span>
+          <span class="module-meta">${single && progress ? html`<span>${progress.completed === 1 ? this.t("1 assigned item completed", "1 项已完成") : this.t("1 assigned item", "1 项已分配")}</span>` : fine && progress ? html`<span>${agent.progressBasis === "module-delivery" ? this.t("Assigned work", "已分配任务") : agent.progressBasis === "registered-checklist" ? this.t("Recorded checklist", "已登记清单") : this.t("Recorded task progress", "已登记任务进度")} ${progress.completed}/${progress.total}</span>` : html`<span>${this.t("Progress not recorded", "进度未登记")}</span>`}</span><span class="status">${agent.state === "unknown" || !agent.stateBasis || agent.stateBasis === "unknown" || agent.stateBasis === "runtime" ? labels[agent.state] : `${this.t("Recorded", "记录为")} ${labels[agent.state]}`}${agent.state !== "unknown" && agent.stateBasis && agent.stateBasis !== "unknown" && agent.stateBasis !== "runtime" && agent.observedAt ? html`<span class="agent-observed"> · ${this.time(agent.observedAt)}</span>` : nothing}</span></span>
         </article>`;
             })
           : html`<p class="empty">${!snapshot ? this.t("This run's agent records are not ready yet.", "本轮 Agent 记录尚未就绪。") : snapshot.complete ? this.t("No subagents recorded.", "暂无子 Agent 记录。") : this.t("No subagents are currently listed.", "当前没有可显示的子 Agent。")}</p>`

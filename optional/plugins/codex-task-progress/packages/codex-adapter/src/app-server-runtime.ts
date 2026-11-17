@@ -48,12 +48,13 @@ export interface DirectSubagentContext {
   cwd: string;
   rootTurnId?: string;
   rootTurnStartedAt?: string;
+  activityScope?: "parent-thread";
 }
 export interface DirectSubagentMetadata {
   path: string | null;
   cwd: string;
   turnId: string;
-  rootTurnId: string;
+  rootTurnId: string | null;
   turnStartedAt: string;
   turnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
   turnCompletedAt?: string;
@@ -65,7 +66,7 @@ export type DirectSubagentObservation =
       basis: "codex-turn";
       observedAt: string;
       eventTurnId: string;
-      rootTurnId: string;
+      rootTurnId: string | null;
       complete: true;
       latestTurnVerified: true;
     };
@@ -348,9 +349,10 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
   ): Promise<DirectSubagentMetadata | null> {
     try {
       if (
-        !context.rootTurnId ||
-        !context.rootTurnStartedAt ||
-        !Number.isFinite(Date.parse(context.rootTurnStartedAt))
+        context.activityScope !== "parent-thread" &&
+        (!context.rootTurnId ||
+          !context.rootTurnStartedAt ||
+          !Number.isFinite(Date.parse(context.rootTurnStartedAt)))
       )
         return null;
       const client = await this.#enqueue(() => this.#ensureClient());
@@ -367,13 +369,15 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
           const code = character.charCodeAt(0);
           return code < 32 || (code >= 127 && code <= 159);
         }) ||
-        !metadata.rootTurnId ||
-        metadata.rootTurnId.trim() !== metadata.rootTurnId ||
-        metadata.rootTurnId.length > 256 ||
-        [...metadata.rootTurnId].some((character) => {
-          const code = character.charCodeAt(0);
-          return code < 32 || (code >= 127 && code <= 159);
-        }) ||
+        (metadata.rootTurnId != null &&
+          (!metadata.rootTurnId ||
+            metadata.rootTurnId.trim() !== metadata.rootTurnId ||
+            metadata.rootTurnId.length > 256 ||
+            [...metadata.rootTurnId].some((character) => {
+              const code = character.charCodeAt(0);
+              return code < 32 || (code >= 127 && code <= 159);
+            }))) ||
+        (context.activityScope !== "parent-thread" && !metadata.rootTurnId) ||
         !Number.isFinite(Date.parse(metadata.turnStartedAt))
       )
         return null;
@@ -393,7 +397,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     context: DirectSubagentContext,
   ): Promise<DirectSubagentProof> {
     const metadata = await this.#verifiedAgentMetadata(threadId, context);
-    if (!metadata) return { verdict: "unknown" };
+    if (!metadata?.rootTurnId) return { verdict: "unknown" };
     if (metadata.rootTurnId !== context.rootTurnId)
       return {
         verdict: "out-of-scope",
@@ -430,8 +434,9 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     const metadata = await this.#verifiedAgentMetadata(threadId, context);
     if (
       !metadata ||
-      metadata.rootTurnId !== context.rootTurnId ||
-      Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt ?? "")
+      (context.activityScope !== "parent-thread" &&
+        (metadata.rootTurnId !== context.rootTurnId ||
+          Date.parse(metadata.turnStartedAt) < Date.parse(context.rootTurnStartedAt ?? "")))
     )
       return unknown();
     if (
@@ -455,7 +460,7 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
         latestTurnVerified: true,
       };
     }
-    if (!metadata.path) return unknown();
+    if (!metadata.path || !metadata.rootTurnId) return unknown();
     try {
       const env = this.#options.env ?? process.env;
       const configuredHome = env.CODEX_HOME;

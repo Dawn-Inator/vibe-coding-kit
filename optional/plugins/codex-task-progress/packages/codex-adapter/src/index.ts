@@ -320,7 +320,7 @@ export class CodexAppServerClient implements ThreadCatalog {
     path: string | null;
     cwd: string;
     turnId: string;
-    rootTurnId: string;
+    rootTurnId: string | null;
     turnStartedAt: string;
     turnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
     turnCompletedAt?: string;
@@ -376,7 +376,7 @@ export class CodexAppServerClient implements ThreadCatalog {
           .array(
             z.object({
               id: z.string().min(1).max(256),
-              rootTurnId: z.string().min(1).max(256),
+              rootTurnId: z.string().min(1).max(256).nullish(),
               startedAt: z.number().finite(),
               status: z.enum(["completed", "interrupted", "failed", "inProgress"]).optional(),
               completedAt: z.number().finite().nullish(),
@@ -393,7 +393,7 @@ export class CodexAppServerClient implements ThreadCatalog {
       path: thread.path ?? null,
       cwd: thread.cwd,
       turnId: latest.id,
-      rootTurnId: latest.rootTurnId,
+      rootTurnId: latest.rootTurnId ?? null,
       turnStartedAt: startedAt.toISOString(),
       ...(latest.status ? { turnStatus: latest.status } : {}),
       ...(latest.completedAt != null &&

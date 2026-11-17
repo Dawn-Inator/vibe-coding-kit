@@ -1890,8 +1890,16 @@ export class GoalProgressHelper {
         this.#runtime.listSubagentTurns
       ) {
         const previous = this.#subagentPresentation.peek(subagentKey);
+        // Incomplete catalog sweeps need another incremental read, including
+        // contention with an older cycle's in-flight sweep. The cache still
+        // deduplicates concurrent reads for this exact source/cycle key.
         const recent =
-          previous.value && previous.updatedAt !== null && Date.now() - previous.updatedAt < 5_000;
+          previous.value?.status === "ready" &&
+          previous.value.complete &&
+          !previous.value.truncated &&
+          previous.updatedAt !== null &&
+          Date.now() >= previous.updatedAt &&
+          Date.now() - previous.updatedAt < 5_000;
         const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
         const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
         const observer = this.#runtime.observeDirectSubagent?.bind(this.#runtime);
@@ -1903,6 +1911,7 @@ export class GoalProgressHelper {
               const load = (async () => {
                 const result = await collectSubagentProgress({
                   parentThreadId: threadId,
+                  activityScope: "parent-thread",
                   cwd: canonicalCwd,
                   storageRoot: storage.root as string,
                   schemas: createTaskProgressSchemas(z),
