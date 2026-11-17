@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { askTaskProgressSigningIdentity } from '../../cli.mjs';
+import { askTaskProgressSigningIdentity, configureOptional } from '../../cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
 
@@ -39,14 +39,12 @@ test('signing identity prompt is TTY-only, lists certificates, and declines by d
 
 function optionalProbeEnv(fixture, env = process.env) {
   const cleanEnv = { ...env };
-  const codexProbeFails = cleanEnv.KIT_OPTIONAL_PROBE_CODEX_FAIL === '1';
-  delete cleanEnv.KIT_OPTIONAL_PROBE_CODEX_FAIL;
   const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : join(fixture.root, 'isolated-home');
   const bin = join(fixture.root, 'optional-probe-bin');
   mkdirSync(bin, { recursive: true });
   const codex = join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
-  if (process.platform === 'win32') writeFileSync(codex, codexProbeFails ? '@echo off\nexit /b 9\n' : '@echo off\necho {"installed":[]}\n');
-  else writeFileSync(codex, codexProbeFails ? '#!/bin/sh\nexit 9\n' : '#!/bin/sh\nprintf \'{"installed":[]}\\n\'\n', { mode: 0o755 });
+  if (process.platform === 'win32') writeFileSync(codex, '@echo off\necho {"installed":[]}\n');
+  else writeFileSync(codex, '#!/bin/sh\nprintf \'{"installed":[]}\\n\'\n', { mode: 0o755 });
   return { ...cleanEnv, HOME: home, USERPROFILE: home, PATH: `${bin}${delimiter}${env.PATH || ''}` };
 }
 
@@ -76,6 +74,50 @@ function install(fixture, options = [], env = process.env) {
   return spawnSync(process.execPath, [cliPath, 'install', '--project-root', fixture.project,
     '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
     '--identity-email', 'install@example.invalid', ...options], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture, env) });
+}
+
+// In-process host simulation: platform, architecture, home and every external command are injected, so the
+// darwin-arm64 reuse paths and the missing-tool paths run identically on every operating system.
+// Tools the catalog probes for unrelated categories; present by default so only the case under test varies.
+const DEFAULT_COMMANDS = { curl: () => ({ code: 0, stdout: 'curl 8.0.0\n', stderr: '' }) };
+const DARWIN_ARM64 = { platform: 'darwin', arch: 'arm64' };
+
+function simulatedHost(fixture, { home, platform = 'darwin', arch = 'arm64', commands = {} } = {}) {
+  const calls = [];
+  const runner = async (command, args) => {
+    calls.push([command, ...args].join(' '));
+    const name = command.replace(/\\/g, '/').split('/').pop().replace(/\.(cmd|exe)$/i, '');
+    const handler = commands[name] ?? DEFAULT_COMMANDS[name];
+    if (handler) return handler(args);
+    return { code: 127, stdout: '', stderr: 'command not found' };
+  };
+  const base = home ?? join(fixture.root, 'isolated-home');
+  return { host: { platform, arch, env: { ...process.env, HOME: base, USERPROFILE: base }, runner }, calls };
+}
+
+function writeInstalledHelper(home, ...segments) {
+  const helper = join(home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', ...segments, 'goal-progress');
+  mkdirSync(join(helper, '..'), { recursive: true });
+  writeFileSync(helper, 'simulated helper; the injected runner answers for it\n');
+  return helper;
+}
+
+async function configureInProcess(fixture, overrides, host) {
+  const lines = [];
+  const original = console.log;
+  console.log = (...parts) => { lines.push(parts.join(' ')); };
+  try {
+    await configureOptional(fixture.project, join(fixture.project, '.vibe-coding/kit'), overrides, {}, host);
+  } finally { console.log = original; }
+  return lines.join('\n');
+}
+
+function readProjectConfig(fixture) {
+  return JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+}
+
+function writeProjectConfig(fixture, config) {
+  writeFileSync(join(fixture.project, '.vibe-coding/project.config.json'), `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function configure(fixture, category, env = process.env) {
@@ -175,16 +217,18 @@ test('legacy init keeps an absent optional field absent and completes its summar
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).optional, undefined);
 });
 
-test('optional setup-required exits nonzero and reports partial setup without discarding core initialization', { skip: process.platform === 'win32' }, () => {
+test('optional setup-required reports partial setup without discarding core initialization', async () => {
   const fixture = optionalConsumer();
-  const noOptionalTools = join(fixture.root, 'no-optional-tools');
-  mkdirSync(noOptionalTools);
-  for (const name of ['npm', 'lark-cli']) writeFileSync(join(noOptionalTools, name), '#!/bin/sh\nexit 127\n', { mode: 0o755 });
-  const result = install(fixture, ['--optional=lark=on'], { ...process.env, PATH: `${noOptionalTools}${delimiter}${process.env.PATH}` });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Optional lark setup is incomplete \(setup-required\)/);
+  const installed = install(fixture);
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  // npm and lark-cli are both unavailable on the simulated host.
+  const { host } = simulatedHost(fixture, { platform: 'linux', arch: 'x64' });
+  await assert.rejects(
+    configureInProcess(fixture, { lark: true }, host),
+    /Optional lark setup is incomplete \(setup-required\)/,
+  );
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), true);
-  assert.equal(JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8')).optional.lark, true);
+  assert.equal(readProjectConfig(fixture).optional.lark, true);
 });
 
 test('retired Dock setup CLI flag gives a migration hint before project changes', () => {
@@ -195,79 +239,73 @@ test('retired Dock setup CLI flag gives a migration hint before project changes'
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
 });
 
-test('fresh install reuses an already installed task progress plugin while configuring another category', {
-  skip: process.platform !== 'darwin' || process.arch !== 'arm64',
-}, () => {
+test('a fresh optional selection reuses an already installed task progress plugin while configuring another category', async () => {
   const fixture = optionalConsumer();
-  const fakeHome = join(fixture.root, 'fake-home');
-  const helper = join(fakeHome, 'Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress');
-  mkdirSync(join(helper, '..'), { recursive: true });
-  writeFileSync(helper, '#!/bin/sh\nprintf \'{"ok":true}\\n\'\n');
-  chmodSync(helper, 0o755);
-  const result = install(fixture, ['--optional=aliyun=on'], { ...process.env, HOME: fakeHome });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
-  assert.equal(config.optional['task-progress'], true);
-  assert.match(result.stdout, /Optional codex-task-progress: already installed; reused/);
+  const installed = install(fixture);
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  const config = readProjectConfig(fixture);
+  delete config.optional; // a fresh selection: no saved preferences yet
+  writeProjectConfig(fixture, config);
+  const home = join(fixture.root, 'fake-home');
+  writeInstalledHelper(home, 'current', 'bin');
+  const { host } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: { 'goal-progress': () => ({ code: 0, stdout: '{"ok":true}\n', stderr: '' }) } });
 
-  const configPath = join(fixture.project, '.vibe-coding/project.config.json');
-  config.optional = { aliyun: false };
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  const partialConfig = configure(fixture, 'aliyun=on', { ...process.env, HOME: fakeHome });
-  assert.equal(partialConfig.status, 0, partialConfig.stderr || partialConfig.stdout);
-  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).optional['task-progress'], false);
+  const output = await configureInProcess(fixture, { aliyun: true }, host);
+  assert.equal(readProjectConfig(fixture).optional['task-progress'], true);
+  assert.match(output, /Optional codex-task-progress: already installed; reused/);
+
+  const partial = readProjectConfig(fixture);
+  partial.optional = { aliyun: false };
+  writeProjectConfig(fixture, partial);
+  await configureInProcess(fixture, { aliyun: true }, host);
+  assert.equal(readProjectConfig(fixture).optional['task-progress'], false);
 });
 
-test('explicit task-progress selection reuses the native plugin without launcher setup', {
-  skip: process.platform !== 'darwin' || process.arch !== 'arm64',
-}, () => {
+test('explicit task-progress selection reuses the native plugin without launcher setup', async () => {
   const fixture = optionalConsumer();
   const initialized = install(fixture);
   assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
-  const fakeHome = join(fixture.root, 'fake-home');
-  const helper = join(fakeHome, 'Library/Application Support/CodexTaskProgress/install/bin/goal-progress');
-  mkdirSync(join(helper, '..'), { recursive: true });
-  writeFileSync(helper, [
-    '#!/bin/sh',
-    'if [ "$1" = doctor ]; then printf \'{"ok":true,"details":{"pluginInstalled":true}}\\n\'; exit 0; fi',
-    'exit 97',
-    '',
-  ].join('\n'));
-  chmodSync(helper, 0o755);
-  const result = configure(fixture, 'task-progress=on', { ...process.env, HOME: fakeHome });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /codex-task-progress: already installed; reused/);
-  assert.doesNotMatch(result.stdout + result.stderr, /Dock|launcher/i);
+  const home = join(fixture.root, 'fake-home');
+  writeInstalledHelper(home, 'bin');
+  const { host, calls } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: {
+    'goal-progress': (args) => args[0] === 'doctor'
+      ? { code: 0, stdout: '{"ok":true,"details":{"pluginInstalled":true}}\n', stderr: '' }
+      : { code: 97, stdout: '', stderr: '' },
+  } });
+  const output = await configureInProcess(fixture, { 'task-progress': true }, host);
+  assert.match(output, /codex-task-progress: already installed; reused/);
+  assert.doesNotMatch(output + calls.join('\n'), /Dock|launcher/i);
+  assert.deepEqual(calls.filter((call) => !/ doctor /.test(` ${call} `)), [], 'only the doctor probe ran');
 });
 
-test('unselected Task Progress detection failure does not block core optional setup', () => {
+test('unselected Task Progress detection failure does not block core optional setup', async () => {
   const fixture = optionalConsumer();
-  const result = install(fixture, ['--optional=aliyun=on'], { ...process.env, KIT_OPTIONAL_PROBE_CODEX_FAIL: '1' });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
+  const initialized = install(fixture);
+  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
+  const { host } = simulatedHost(fixture, { ...DARWIN_ARM64, commands: { codex: () => ({ code: 9, stdout: '', stderr: '' }) } });
+  const output = await configureInProcess(fixture, { aliyun: true }, host);
+  const config = readProjectConfig(fixture);
   assert.equal(config.optional.aliyun, true);
   assert.equal(config.optional['task-progress'], false);
-  assert.match(result.stdout, /task-progress: plugin detection failed/);
+  assert.match(output, /task-progress: plugin detection failed/);
 });
 
-test('task progress detection errors do not block other categories but selected setup fails clearly', {
-  skip: process.platform !== 'darwin' || process.arch !== 'arm64',
-}, () => {
+test('task progress detection errors do not block other categories but selected setup fails clearly', async () => {
   const fixture = optionalConsumer();
-  const fakeHome = join(fixture.root, 'fake-home');
-  const helper = join(fakeHome, 'Library/Application Support/CodexTaskProgress/install/current/bin/goal-progress');
-  mkdirSync(join(helper, '..'), { recursive: true });
-  writeFileSync(helper, '#!/bin/sh\nprintf \'{"ok":false}\\n\'\nexit 1\n');
-  chmodSync(helper, 0o755);
-  const env = { ...process.env, HOME: fakeHome };
-  const installed = install(fixture, ['--optional=aliyun=on'], env);
-  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
-  assert.match(installed.stdout, /plugin detection failed/);
-  assert.equal(JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8')).optional.aliyun, true);
+  const initialized = install(fixture);
+  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
+  const home = join(fixture.root, 'fake-home');
+  writeInstalledHelper(home, 'current', 'bin');
+  const { host } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: { 'goal-progress': () => ({ code: 1, stdout: '{"ok":false}\n', stderr: '' }) } });
 
-  const selected = install(fixture, ['--optional=task-progress=on'], env);
-  assert.notEqual(selected.status, 0);
-  assert.match(selected.stderr, /Could not detect selected optional plugin codex-task-progress/);
+  const output = await configureInProcess(fixture, { aliyun: true }, host);
+  assert.match(output, /plugin detection failed/);
+  assert.equal(readProjectConfig(fixture).optional.aliyun, true);
+
+  await assert.rejects(
+    configureInProcess(fixture, { 'task-progress': true }, host),
+    /Could not detect selected optional plugin codex-task-progress/,
+  );
 });
 
 test('legacy animated-presentations selection survives enabling Aliyun without selecting HyperFrames', () => {

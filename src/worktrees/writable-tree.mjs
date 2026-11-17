@@ -14,9 +14,9 @@ import { join } from 'node:path';
 const OWNER_RWX = 0o700;
 
 // -> { chmodded, foreign, symlinks, errors }
-export function makeOwnedTreeWritable(root, { uid = typeof process.getuid === 'function' ? process.getuid() : -1 } = {}) {
+export function makeOwnedTreeWritable(root, { uid = typeof process.getuid === 'function' ? process.getuid() : -1, platform = process.platform } = {}) {
   const result = { chmodded: 0, foreign: 0, symlinks: 0, errors: 0 };
-  if (process.platform === 'win32') return { ...result, aclProtected: true };
+  if (platform === 'win32') return { ...result, aclProtected: true };
   let rootStat;
   try {
     rootStat = lstatSync(root);

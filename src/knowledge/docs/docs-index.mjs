@@ -25,8 +25,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { writeTextAtomically } from '../../lib/atomic-write.mjs';
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { isMainModule } from '../../lib/main-module.mjs';
 
 // The consumer owns root selection. A library default is the caller's cwd;
 // importing this file must never infer a consumer root from this module's URL.
@@ -341,10 +340,6 @@ export async function main(argv = process.argv.slice(2), defaults = {}) {
   if (command === 'check') return runCheck(defaults).exitCode;
   console.error(`unknown command: ${command}\n\n${usage()}`);
   return 1;
-}
-
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
 }
 
 const invokedDirectly = isMainModule(import.meta.url);

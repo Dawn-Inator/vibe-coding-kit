@@ -171,7 +171,7 @@ async function inspectCommandRequirement(requirement, context) {
 async function inspectTaskProgress(context) {
   if (context.platform !== 'darwin' || context.arch !== 'arm64') return result('unsupported', 'Codex Task Progress installation supports macOS arm64 only.');
   const dataRoot = join(context.home, 'Library', 'Application Support', 'CodexTaskProgress');
-  const stableHelper = resolveInstalledTaskProgressHelper(dataRoot);
+  const stableHelper = resolveInstalledTaskProgressHelper(dataRoot, context.lstat);
   if (stableHelper) {
     const doctor = await run(context.runner, stableHelper, ['doctor', '--json'], dirname(stableHelper), context.env);
     let document;
@@ -210,7 +210,8 @@ async function inspectTaskProgress(context) {
     : result('missing', 'Codex Task Progress is not installed.');
 }
 
-function resolveInstalledTaskProgressHelper(dataRoot) {
+// `probeLink` (lstat) is injectable so symlink rejection is testable on hosts that cannot create symlinks.
+function resolveInstalledTaskProgressHelper(dataRoot, probeLink = lstatSync) {
   const installRoot = join(dataRoot, 'install');
   const fixedBin = join(installRoot, 'bin');
   const fixedHelper = join(fixedBin, 'goal-progress');
@@ -231,7 +232,7 @@ function resolveInstalledTaskProgressHelper(dataRoot) {
   let fixedParentAbsent = false;
   for (const path of fixedParentChain) {
     let stat;
-    try { stat = lstatSync(path); }
+    try { stat = probeLink(path); }
     catch (error) {
       if (error.code === 'ENOENT') { fixedParentAbsent = true; break; }
       throw new Error('installed fixed goal-progress helper parent could not be inspected');
@@ -242,16 +243,16 @@ function resolveInstalledTaskProgressHelper(dataRoot) {
   }
 
   if (!fixedParentAbsent) {
-    const selectedFixed = inspectHelperFile(fixedHelper, 'fixed');
+    const selectedFixed = inspectHelperFile(fixedHelper, 'fixed', probeLink);
     if (selectedFixed) return selectedFixed;
   }
 
-  return inspectHelperFile(legacyHelper, 'legacy');
+  return inspectHelperFile(legacyHelper, 'legacy', probeLink);
 }
 
-function inspectHelperFile(path, label) {
+function inspectHelperFile(path, label, probeLink = lstatSync) {
     let stat;
-    try { stat = lstatSync(path); }
+    try { stat = probeLink(path); }
     catch (error) {
       if (error.code === 'ENOENT') return null;
       throw new Error(`installed ${label} goal-progress helper could not be inspected`);
@@ -303,6 +304,7 @@ function contextFor(options, component, directory) {
     platform: options.platform ?? process.platform,
     arch: options.arch ?? process.arch,
     runner: options.runner ?? defaultRunner,
+    lstat: options.lstat ?? lstatSync,
   };
 }
 

@@ -21,9 +21,8 @@
 // removes anything unlanded, dirty, in use, protected, or missing from this session's own registry:
 // branches another session created are not this session's to clean.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { parseItems } from './check-heartbeat-ledger.mjs';
 import { stateDirOf } from './heartbeat-sweep-worktrees.mjs';
@@ -34,11 +33,7 @@ import { loadConfig } from '../worktrees/config.mjs';
 import { finishLockIsLive, livePathsFromFinishQueue, liveProcessCwds } from '../worktrees/reclaim-stale.mjs';
 import { makeOwnedTreeWritable } from '../worktrees/writable-tree.mjs';
 import { assessHeadLanded, discoverRepo, git, gitRaw } from '../worktrees/worktree-core.mjs';
-
-// Inline copy of the shared helper (the kit is copied into other repos; see heartbeat-sweep.mjs).
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 export const REGISTRY_FILE = 'branches.md';
 // `start` is the branch tip when it was registered (empty when the branch did not exist yet): a tip still

@@ -9,8 +9,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-test("source launcher builds and refreshes the native MCP resource without prebuilt assets", async (context) => {
-  const optionalPackages = [
+test("source launcher builds and refreshes the native MCP resource without prebuilt assets", async () => {
+  const requiredPackages = [
     "@modelcontextprotocol/sdk/client/index.js",
     "@modelcontextprotocol/sdk/client/stdio.js",
     "@modelcontextprotocol/ext-apps",
@@ -19,12 +19,11 @@ test("source launcher builds and refreshes the native MCP resource without prebu
     "lit",
     "zod",
   ];
-  try {
-    for (const packageName of optionalPackages) import.meta.resolve(packageName);
-  } catch {
-    context.skip("optional source-runtime dependencies are unavailable");
-    return;
-  }
+  // Required dev dependencies: fail closed with install instructions instead of skipping.
+  const missing = requiredPackages.filter((packageName) => {
+    try { import.meta.resolve(packageName); return false; } catch { return true; }
+  });
+  assert.deepEqual(missing, [], `source-runtime dependencies are not installed; run \`pnpm install --frozen-lockfile\` in optional/plugins/codex-task-progress`);
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
   const scratch = await mkdtemp(join(tmpdir(), "task-source-panel-"));
@@ -178,7 +177,7 @@ test("source launcher builds and refreshes the native MCP resource without prebu
   }
 });
 
-test("source launcher fixture loads without the optional dependency toolchain", async () => {
+test("source launcher fails closed with install instructions when the dev toolchain is missing", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "task-source-no-deps-"));
   const testDir = resolve(scratch, "tests");
   try {
@@ -187,27 +186,24 @@ test("source launcher fixture loads without the optional dependency toolchain", 
     const childEnv = { ...process.env, NODE_PATH: "" };
     delete childEnv.NODE_TEST_CONTEXT;
     delete childEnv.NODE_OPTIONS;
-    let result;
-    try {
-      result = await execFileAsync(
-        process.execPath,
-        [
-          "--test",
-          "--test-reporter=tap",
-          "--test-name-pattern=^source launcher builds",
-          resolve(testDir, "source-launcher.test.mjs"),
-        ],
-        { cwd: scratch, env: childEnv },
-      );
-    } catch (error) {
-      throw new Error(
-        `clean source fixture failed: ${error.message}\nstdout: ${error.stdout ?? ""}\nstderr: ${error.stderr ?? ""}`,
-      );
-    }
+    const failure = await execFileAsync(
+      process.execPath,
+      [
+        "--test",
+        "--test-reporter=tap",
+        "--test-name-pattern=^source launcher builds",
+        resolve(testDir, "source-launcher.test.mjs"),
+      ],
+      { cwd: scratch, env: childEnv },
+    ).then(
+      () => assert.fail("a missing toolchain must fail the suite, not pass or skip it"),
+      (error) => error,
+    );
+    assert.doesNotMatch(failure.stdout, /# SKIP /u, `stdout: ${failure.stdout}`);
     assert.match(
-      result.stdout,
-      /SKIP optional source-runtime dependencies are unavailable/u,
-      `stdout: ${result.stdout}\nstderr: ${result.stderr}`,
+      failure.stdout,
+      /source-runtime dependencies are not installed; run `pnpm install --frozen-lockfile`/u,
+      `stdout: ${failure.stdout}\nstderr: ${failure.stderr}`,
     );
   } finally {
     await rm(scratch, { recursive: true, force: true });

@@ -15,7 +15,7 @@ const inside = (root, p) => { const r = relative(root, p); return r !== '..' && 
 const finding = (code, message, path) => ({ code, message, ...(path ? { path } : {}) });
 
 // Reject traversal and symlink escapes, including output paths whose final components do not exist yet.
-async function projectPath(root, value, mustExist = true) {
+async function projectPath(root, value, mustExist = true, probeLink = lstat) {
   if (!string(value) || isAbsolute(value) || value.includes('\\') || value.split('/').some((p) => !p || p === '.' || p === '..')) throw new Error(`invalid project-relative path: ${value}`);
   const target = resolve(root, value);
   if (!inside(root, target)) throw new Error(`path escapes project root: ${value}`);
@@ -29,7 +29,7 @@ async function projectPath(root, value, mustExist = true) {
     let component = root;
     for (const part of value.split('/')) {
       component = resolve(component, part);
-      try { if ((await lstat(component)).isSymbolicLink()) throw new Error(`output path contains symlink: ${value}`); }
+      try { if ((await probeLink(component)).isSymbolicLink()) throw new Error(`output path contains symlink: ${value}`); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
   }
@@ -94,7 +94,8 @@ export function renderReuseCatalog({ catalog, source, document, sourceHash }) {
  * A consumer-supplied validateReuseCatalog callback is trusted project code and MUST be
  * read-only. It receives action and readOnly: true; this is a contract, not a sandbox.
  */
-export async function runReuseCatalog({ projectRoot, action = 'check', validatePublicSurface } = {}) {
+// `lstat` is an injectable link probe so symlink rejection is testable on hosts that cannot create symlinks.
+export async function runReuseCatalog({ projectRoot, action = 'check', validatePublicSurface, lstat: probeLink = lstat } = {}) {
   if (!['check', 'regen'].includes(action)) throw new Error('action must be check or regen');
   const root = await realpath(projectRoot); let config;
   try { config = JSON.parse(await readFile(resolve(root, '.vibe-coding/project.config.json'), 'utf8')); }
@@ -117,7 +118,7 @@ export async function runReuseCatalog({ projectRoot, action = 'check', validateP
     const { source, document } = { ...defaults[kind], ...options };
     try {
       if (!document.endsWith('.md')) throw new Error('document must be a Markdown (.md) path');
-      const sourcePath = await projectPath(root, source); const documentPath = await projectPath(root, document, false);
+      const sourcePath = await projectPath(root, source); const documentPath = await projectPath(root, document, false, probeLink);
       const identity = await writeIdentity(documentPath);
       if (sourcePath === documentPath || document === '.vibe-coding/project.config.json' || document === config.adapter || outputs.has(identity)) throw new Error('source and document paths must be distinct and outputs unique');
       outputs.add(identity);

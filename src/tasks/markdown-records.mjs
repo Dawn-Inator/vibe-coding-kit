@@ -16,10 +16,10 @@ export async function withMarkdownLock(key, work) {
 	}
 }
 /** Read no more than maxBytes even if a file grows while being read. */
-export async function readBoundedText(path, maxBytes, { trustedRoot, beforeOpen, afterOpen } = {}) {
+export async function readBoundedText(path, maxBytes, { trustedRoot, beforeOpen, afterOpen, open: openFile = open } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 16 * 1024 * 1024) throw new RangeError("Invalid record byte limit");
   await beforeOpen?.(path);
-  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  const handle = await openFile(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
     await afterOpen?.(path);
     const opened = await handle.stat();

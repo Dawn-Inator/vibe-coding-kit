@@ -2,15 +2,11 @@
 // Read-only advisory CLI for the 20-minute heartbeat audit cadence.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { exitDrained } from '../lib/exit-drained.mjs';
 import { heartbeatAuditDue, parseStrictIsoTimestamp } from './heartbeat-audit-due.mjs';
 import { heartbeatLedgerPairPaths, readHeartbeatLedgerPair } from './heartbeat-ledger-files.mjs';
-
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 function parseArgs(args) {
   let ledger = null;

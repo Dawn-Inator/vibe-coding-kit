@@ -11,12 +11,13 @@ import assert from 'node:assert/strict';
 import {
   existsSync, linkSync, mkdirSync, readFileSync, writeFileSync,
 } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { isolatedFixtureGitEnv, withFixtureCommitIdentity } from '../support/isolated-git-env.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
+import { configWith, makeTree } from '../support/node-deps-fixtures.mjs';
 
 import { main } from '../../src/worktrees/cli.mjs';
 import { DEFAULT_CONFIG, loadConfig } from '../../src/worktrees/config.mjs';
@@ -38,16 +39,6 @@ const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
 const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
 // Appends a line per run, so the number of installs is countable.
 const FAKE_INSTALL = nodeFixture('install');
-
-function configWith(nodeDeps, extra = {}) {
-  return { ...DEFAULT_CONFIG, nodeDeps, ...extra };
-}
-
-function makeTree(lock = 'lock v1\n') {
-  const root = mkdtempTracked('wtg-node-deps-');
-  writeFileSync(join(root, 'package-lock.json'), lock);
-  return root;
-}
 
 function installCount(root) {
   const file = join(root, 'node_modules', 'install.log');
@@ -111,26 +102,6 @@ test('stale => installed: a missing or different stamp runs the install command 
   assert.equal(ensureNodeDepsMatchLockfile({ worktreeRoot: root, config, log: () => {} }).status, 'installed');
   assert.equal(installCount(root), 2);
   assert.equal(readNodeDepsStamp(root, STAMP), lockfileSha(root, 'package-lock.json'));
-});
-
-test('Windows resolves the configured pnpm command through a real .cmd shim', { skip: process.platform !== 'win32' && 'Windows cmd.exe/.cmd resolution' }, () => {
-  const root = makeTree();
-  const bin = mkdtempTracked('wtg-windows-pnpm-bin-');
-  const marker = join(root, 'pnpm-invoked.txt');
-  writeFileSync(join(bin, 'pnpm.cmd'), `@echo off\r\n> "%WTG_PNPM_MARKER%" echo invoked\r\nexit /b 0\r\n`);
-  const env = {
-    ...process.env,
-    PATH: `${bin}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
-    WTG_PNPM_MARKER: marker,
-  };
-  const result = ensureNodeDepsMatchLockfile({
-    worktreeRoot: root,
-    config: configWith({ lockfile: 'package-lock.json', installCommand: 'pnpm install --frozen-lockfile' }),
-    env,
-    log: () => {},
-  });
-  assert.equal(result.status, 'installed', result.message);
-  assert.equal(readFileSync(marker, 'utf8').trim(), 'invoked');
 });
 
 test('a failing install fails CLOSED: status failed, the exact repair command and output tail in the message, no stamp written', () => {

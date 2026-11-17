@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
+	constants,
 	existsSync,
+	fstatSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
+	readSync,
 	realpathSync,
 	statSync,
 	symlinkSync,
@@ -867,26 +872,38 @@ test("bounded paired reads enforce combined size, including grown companion befo
 	);
 });
 
-test("bounded reads reject FIFO companions without waiting for a writer", {
-	skip: process.platform === "win32",
-}, (t) => {
+test("bounded reads reject non-regular companions without waiting for a writer", () => {
 	const dir = root(),
 		path = join(dir, "heartbeat.md");
 	writeFileSync(path, wake("2026-01-01T10:00Z"));
-	const fifo = heartbeatLedgerPairPaths(path).historyPath;
-	const result = spawnSync("mkfifo", [fifo], {
-		encoding: "utf8",
-		timeout: 2000,
-	});
-	if (result.error?.code === "ENOENT") {
-		t.skip("mkfifo unavailable");
-		return;
-	}
-	assert.equal(result.status, 0, result.stderr);
+	const companion = heartbeatLedgerPairPaths(path).historyPath;
+	// A FIFO companion is simulated through the injected file primitives (the fd reports a non-regular
+	// file), so the rejection and the non-blocking open flags are asserted identically on every host.
+	writeFileSync(companion, "placeholder");
+	const opened = new Map();
+	const flagsByPath = new Map();
+	const io = {
+		openSync(target, flags) {
+			const fd = openSync(target, flags);
+			opened.set(fd, target);
+			flagsByPath.set(target, flags);
+			return fd;
+		},
+		fstatSync(fd) {
+			if (opened.get(fd) !== companion) return fstatSync(fd);
+			return { isFile: () => false, size: 0, mtimeMs: 0 };
+		},
+		readSync: (...args) => readSync(...args),
+		closeSync: (fd) => closeSync(fd),
+	};
 	assert.throws(
-		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: 1024 }),
+		() => readHeartbeatLedgerPair({ root: dir, path, maxBytes: 1024, io }),
 		/not a file|regular file/i,
 	);
+	const nonBlocking = constants.O_NONBLOCK ?? 0;
+	const noFollow = constants.O_NOFOLLOW ?? 0;
+	assert.equal(flagsByPath.get(companion) & nonBlocking, nonBlocking, "opens without waiting for a writer");
+	assert.equal(flagsByPath.get(companion) & noFollow, noFollow, "refuses to follow links");
 });
 
 test("orchestration metadata survives append, restart and pair writes without rewriting history", () => {

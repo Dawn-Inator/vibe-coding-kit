@@ -11,13 +11,12 @@ import {
   rmSync,
   statSync,
   writeFileSync,
-  realpathSync,
 } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { sanitizedGitEnv } from '../../git-environment.mjs';
+import { isMainModule } from '../../lib/main-module.mjs';
 
 // The caller owns root selection. CWD is the standalone CLI default; this
 // module never infers a consumer root from its own import.meta.url.
@@ -96,10 +95,6 @@ function trackedFiles({ rootDir }) {
     throw new Error(`git ls-files failed: ${detail}`);
   }
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
-}
-
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
 }
 
 function exitDrained(code) {

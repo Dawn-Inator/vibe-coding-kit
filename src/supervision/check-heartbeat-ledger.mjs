@@ -37,7 +37,6 @@ import { parseHeartbeatOrchestrationLines } from './heartbeat-orchestration.mjs'
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   createBlockedStreakTracker,
@@ -55,12 +54,7 @@ import { gradeSources, parseIsoMs } from './heartbeat-ledger-sources.mjs';
 import { checkSplittable } from './heartbeat-ledger-splittable.mjs';
 import { checkTrackingRows, isConcreteCoordinationField, isTrackingItemState } from './heartbeat-ledger-tracking.mjs';
 import { exitDrained } from '../lib/exit-drained.mjs';
-
-// Realpath on both sides: Node resolves symlinks in import.meta.url, argv[1] keeps the caller's spelling (starter kit is copied into
-// other repos, so this is an inline copy of the shared helper rather than an import).
-function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
-  try { return Boolean(argv1) && realpathSync(argv1) === realpathSync(fileURLToPath(importMetaUrl)); } catch { return false; }
-}
+import { isMainModule } from '../lib/main-module.mjs';
 
 // The ten sweep categories, in order. SKILL.md's backlog sweep uses these exact phrases; the test
 // suite fails if the two drift apart.

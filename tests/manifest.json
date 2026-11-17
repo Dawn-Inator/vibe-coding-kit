@@ -86,5 +86,15 @@
   "optional/task-progress-release.test.mjs",
   "optional/task-progress-native-panel.test.mjs",
   "optional/task-progress-native-runtime.test.mjs",
-  "install/optional.test.mjs"
+  "install/optional.test.mjs",
+  "worktrees/process-provenance.win32.test.mjs",
+  "worktrees/windows-git-job.win32.test.mjs",
+  "worktrees/node-deps-integrity.win32.test.mjs",
+  "worktrees/primary-write-guard.win32.test.mjs",
+  "worktrees/writable-tree.posix.test.mjs",
+  "worktrees/cli.posix.test.mjs",
+  "worktrees/reclaim-stale.linux.test.mjs",
+  "install/command.posix.test.mjs",
+  "install/command.win32.test.mjs",
+  "contracts/no-skip-policy.test.mjs"
 ]

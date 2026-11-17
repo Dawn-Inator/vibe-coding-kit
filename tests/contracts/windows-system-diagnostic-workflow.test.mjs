@@ -121,8 +121,8 @@ test('native proof executes only its fixed Windows command and propagates child 
   assert.match(calls[0].args[0], /--test/u);
   assert.ok(calls[0].args.includes('--test-reporter=tap'));
   assert.ok(calls[0].args.includes('--test-concurrency=1'));
-  assert.ok(calls[0].args.includes('tests/worktrees/process-provenance.test.mjs'));
-  assert.ok(calls[0].args.includes('tests/worktrees/windows-git-job.test.mjs'));
+  assert.ok(calls[0].args.includes('tests/worktrees/process-provenance.win32.test.mjs'));
+  assert.ok(calls[0].args.includes('tests/worktrees/windows-git-job.win32.test.mjs'));
   assert.ok(calls[0].args.some((arg) => arg.startsWith('--test-name-pattern=')));
   assert.equal(calls[0].options.env.VIBE_KIT_REQUIRE_PRIVILEGED_DELETE_PROOF, '1');
   assert.equal(calls[0].options.env.PROOF_TEST_SENTINEL, 'preserved');
