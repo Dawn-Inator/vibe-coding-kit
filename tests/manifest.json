@@ -98,5 +98,9 @@
   "worktrees/reclaim-stale.linux.test.mjs",
   "install/command.posix.test.mjs",
   "install/command.win32.test.mjs",
+  "supervision/heartbeat-ledger-files.fifo.posix.test.mjs",
+  "tasks/subagent-progress.fifo.posix.test.mjs",
+  "install/install-optional-chain.posix.test.mjs",
+  "install/install-optional-chain.darwin.test.mjs",
   "contracts/no-skip-policy.test.mjs"
 ]

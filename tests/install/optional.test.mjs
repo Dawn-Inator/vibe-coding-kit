@@ -6,11 +6,9 @@ import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { askTaskProgressSigningIdentity, configureOptional } from '../../cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
-import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
+import { cliPath, configure, install, optionalConsumer, optionalProbeEnv, repoRoot } from '../support/optional-install-harness.mjs';
 
 after(cleanupTempDirs);
-const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const cliPath = join(repoRoot, 'cli.mjs');
 
 test('signing identity prompt is TTY-only, lists certificates, and declines by default', async () => {
   const candidates = [{ name: 'Developer ID Application: Example', identity: '0123456789abcdef0123456789abcdef01234567' }];
@@ -36,45 +34,6 @@ test('signing identity prompt is TTY-only, lists certificates, and declines by d
     input: { isTTY: true }, output: { isTTY: true }, ask: async () => candidates[0].identity,
   }), candidates[0].identity);
 });
-
-function optionalProbeEnv(fixture, env = process.env) {
-  const cleanEnv = { ...env };
-  const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : join(fixture.root, 'isolated-home');
-  const bin = join(fixture.root, 'optional-probe-bin');
-  mkdirSync(bin, { recursive: true });
-  const codex = join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
-  if (process.platform === 'win32') writeFileSync(codex, '@echo off\necho {"installed":[]}\n');
-  else writeFileSync(codex, '#!/bin/sh\nprintf \'{"installed":[]}\\n\'\n', { mode: 0o755 });
-  return { ...cleanEnv, HOME: home, USERPROFILE: home, PATH: `${bin}${delimiter}${env.PATH || ''}` };
-}
-
-function optionalConsumer() {
-  const fixture = makeProject();
-  for (const name of ['cli.mjs']) cpSync(join(repoRoot, name), join(fixture.source, name));
-  for (const name of ['src', 'templates', 'skills']) cpSync(join(repoRoot, name), join(fixture.source, name), { recursive: true });
-  const optionalRoot = join(repoRoot, 'optional');
-  const excludedOptionalDirectories = new Set(['.git', '.tmp', '.cache', '.turbo', 'node_modules', 'dist', 'build', 'coverage', 'target', '.next', 'out']);
-  cpSync(optionalRoot, join(fixture.source, 'optional'), {
-    recursive: true,
-    filter: (source) => !source.slice(optionalRoot.length).split(/[\\/]+/).some((part) => excludedOptionalDirectories.has(part)),
-  });
-  commit(fixture.source, 'seed runnable kit with optional catalog');
-  git(fixture.project, ['submodule', 'deinit', '-f', '--', '.vibe-coding/kit']);
-  git(fixture.project, ['rm', '-f', '.vibe-coding/kit']);
-  git(fixture.project, ['rm', '-f', '.vibe-coding/project.config.json']);
-  git(fixture.project, ['config', '-f', '.gitmodules', '--remove-section', 'submodule.vibe-coding-kit'], { allowFailure: true });
-  rmSync(join(fixture.project, '.gitmodules'), { force: true });
-  rmSync(join(fixture.project, '.vibe-coding/kit'), { recursive: true, force: true });
-  rmSync(join(fixture.project, '.git/modules/vibe-coding-kit'), { recursive: true, force: true });
-  commit(fixture.project, 'remove fixture kit registration');
-  return fixture;
-}
-
-function install(fixture, options = [], env = process.env) {
-  return spawnSync(process.execPath, [cliPath, 'install', '--project-root', fixture.project,
-    '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
-    '--identity-email', 'install@example.invalid', ...options], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture, env) });
-}
 
 // In-process host simulation: platform, architecture, home and every external command are injected, so the
 // darwin-arm64 reuse paths and the missing-tool paths run identically on every operating system.
@@ -118,11 +77,6 @@ function readProjectConfig(fixture) {
 
 function writeProjectConfig(fixture, config) {
   writeFileSync(join(fixture.project, '.vibe-coding/project.config.json'), `${JSON.stringify(config, null, 2)}\n`);
-}
-
-function configure(fixture, category, env = process.env) {
-  return spawnSync(process.execPath, [cliPath, 'optional', 'configure', '--project-root', fixture.project,
-    '--optional', category], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture, env) });
 }
 
 test('installer accepts the full inline optional assignment and stores category preferences', () => {
