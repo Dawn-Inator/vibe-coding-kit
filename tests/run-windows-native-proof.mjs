@@ -58,8 +58,8 @@ export function runNativeProof({ platform = process.platform, spawn = spawnSync,
     '--test-reporter=tap',
     '--test-concurrency=1',
     `--test-name-pattern=${PATTERN}`,
-    'tests/worktrees/process-provenance.test.mjs',
-    'tests/worktrees/windows-git-job.test.mjs',
+    'tests/worktrees/process-provenance.win32.test.mjs',
+    'tests/worktrees/windows-git-job.win32.test.mjs',
   ];
   const result = spawn(process.execPath, args, {
     cwd,

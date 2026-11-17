@@ -22,6 +22,7 @@ import {
   withFixtureCommitIdentity,
 } from '../support/isolated-git-env.mjs';
 
+import { run, makeFixtureRepo, withCwd, withEnv, captureConsole, findManagedWorktree, setUpFinishableWorktree, CROSS_PLATFORM_COMMAND, nodeFixture } from '../support/worktree-cli-harness.mjs';
 import { main, parseArgs, removeWorktreeSafely } from '../../src/worktrees/cli.mjs';
 import { discoverRepo, readWorktreeMetadata, GIT_RETRY_BACKOFF_MS } from '../../src/worktrees/worktree-core.mjs';
 import { stashGuardStatus, primaryAuditLogPath } from '../../src/worktrees/hooks.mjs';
@@ -33,10 +34,6 @@ import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 // markers sync-primary treats as proof of AI-parenthood. A "human shell" test
 // must scrub every configured marker.
 const NO_AI_MARKERS = Object.fromEntries(aiParentEnvMarkers(loadConfig()).map((name) => [name, undefined]));
-const CROSS_PLATFORM_COMMAND = fileURLToPath(new URL('./fixtures/cross-platform-command.mjs', import.meta.url));
-const quoteShellArg = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
-const nodeFixture = (...args) => [process.execPath, CROSS_PLATFORM_COMMAND, ...args].map(quoteShellArg).join(' ');
-
 function retryingDescendantTransport(firstAttemptPath, childPidPath, readinessBudgetMs) {
   return [
     "const fs = require('node:fs');",
@@ -61,48 +58,6 @@ function retryingDescendantTransport(firstAttemptPath, childPidPath, readinessBu
 // test helpers
 // ---------------------------------------------------------------------------
 
-function run(cmd, args, cwd) {
-  const result = spawnSync(
-    cmd,
-    cmd === 'git' ? withFixtureCommitIdentity(args) : args,
-    {
-      cwd,
-      encoding: 'utf8',
-      ...(cmd === 'git' ? { env: isolatedFixtureGitEnv() } : {}),
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} failed in ${cwd}: ${result.stderr || result.stdout}`);
-  }
-  return result.stdout;
-}
-
-/**
- * A throwaway bare "remote" repo plus a "primary" clone of it, with an
- * initial commit already pushed to `main` and upstream tracking configured
- * -- everything commandCreate/commandFinish/commandSyncPrimary need to
- * operate against a real repo end to end.
- */
-function makeFixtureRepo(rootDir, { fileCount = 0 } = {}) {
-  const remoteDir = join(rootDir, 'remote.git');
-  const primaryDir = join(rootDir, 'primary');
-
-  run('git', ['init', '--bare', '--initial-branch=main', remoteDir], rootDir);
-  run('git', ['clone', '--shared', remoteDir, primaryDir], rootDir);
-
-  writeFileSync(join(primaryDir, 'README.md'), '# fixture\n');
-  for (let i = 0; i < fileCount; i += 1) {
-    writeFileSync(join(primaryDir, `file${i}.txt`), `content ${i}\n`);
-  }
-
-  run('git', ['add', '-A'], primaryDir);
-  run('git', ['commit', '-m', 'initial commit'], primaryDir);
-  run('git', ['push', 'origin', 'HEAD:refs/heads/main'], primaryDir);
-  run('git', ['branch', '--set-upstream-to=origin/main', 'main'], primaryDir);
-
-  return { remoteDir, primaryDir };
-}
-
 test('safe removal moves the process cwd to the surviving primary before deleting a worktree', () => {
   const original = process.cwd();
   const root = mkdtempSync(join(tmpdir(), 'wtg-remove-own-cwd-'));
@@ -121,68 +76,6 @@ test('safe removal moves the process cwd to the surviving primary before deletin
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-async function withCwd(dir, fn, { worktreeTool = 'claude' } = {}) {
-  const original = process.cwd();
-  const originalWorktreeTool = process.env.WTG_WORKTREE_TOOL;
-  const originalConfigPath = process.env.WTG_CONFIG_PATH;
-  const configDir = mkdtempSync(join(tmpdir(), 'wtg-cli-test-config-'));
-  const configPath = join(configDir, 'config.json');
-  writeFileSync(configPath, JSON.stringify({ identity: { name: 'Synthetic Worktree Bot', email: 'worker@worktree-kit.test' } }));
-  process.chdir(dir);
-  process.env.WTG_WORKTREE_TOOL = worktreeTool;
-  process.env.WTG_CONFIG_PATH = configPath;
-  try {
-    return await fn();
-  } finally {
-    if (originalWorktreeTool === undefined) delete process.env.WTG_WORKTREE_TOOL;
-    else process.env.WTG_WORKTREE_TOOL = originalWorktreeTool;
-    if (originalConfigPath === undefined) delete process.env.WTG_CONFIG_PATH;
-    else process.env.WTG_CONFIG_PATH = originalConfigPath;
-    process.chdir(original);
-    rmSync(configDir, { recursive: true, force: true });
-  }
-}
-
-// A value of `undefined` removes the variable for the duration of `fn`.
-async function withEnv(overrides, fn) {
-  const original = {};
-  for (const key of Object.keys(overrides)) {
-    original[key] = process.env[key];
-  }
-  for (const [key, value] of Object.entries(overrides)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const key of Object.keys(overrides)) {
-      if (original[key] === undefined) delete process.env[key];
-      else process.env[key] = original[key];
-    }
-  }
-}
-
-async function captureConsole(fn) {
-  const logs = [];
-  const errors = [];
-  const originalLog = console.log;
-  const originalError = console.error;
-  console.log = (...args) => logs.push(args.map(String).join(' '));
-  console.error = (...args) => errors.push(args.map(String).join(' '));
-  try {
-    const result = await fn();
-    return { result, logs, errors };
-  } finally {
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
-
-function findManagedWorktree(repo, branchPrefix) {
-  return repo.worktrees.find((w) => w.branch && w.branch.startsWith(branchPrefix));
-}
 
 // ---------------------------------------------------------------------------
 // ① parseArgs
@@ -930,19 +823,6 @@ test('sync-primary: a partial syncPrimary override keeps idle self-authorization
 // finish: hold budget (queue.maxHoldMs)
 // ---------------------------------------------------------------------------
 
-async function setUpFinishableWorktree(tmp, name) {
-  const { primaryDir } = makeFixtureRepo(tmp);
-  const worktreeRoot = join(tmp, 'worktrees');
-  const createRun = await withCwd(primaryDir, () => captureConsole(() => (
-    main(['create', '--name', name, '--worktree-root', worktreeRoot])
-  )));
-  assert.equal(createRun.result, 0, createRun.errors.join('\n'));
-  const created = findManagedWorktree(discoverRepo(primaryDir), `claude/${name.replaceAll(' ', '-')}`);
-  writeFileSync(join(created.path, 'change.txt'), 'work\n');
-  const repo = discoverRepo(created.path);
-  return { primaryDir, created, lockFile: join(repo.commonGitDir, 'worktree-guard-state', 'finish.lock') };
-}
-
 test('finish: an exhausted hold budget fails with a clear message and releases the lock', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'wtg-hold-spent-'));
   try {
@@ -1104,54 +984,6 @@ test('finish: retry backoff consumes the same hold deadline and parent-exit desc
     assert.equal(childStillRunning, false, `retry descendant pid=${childPid} must be gone before cleanup`);
     assert.equal(existsSync(created.path), true, 'timeout preserves the worker worktree');
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('git completion drains an ignored-stdio child after its parent exits without touching another process group', {
-  skip: process.platform === 'win32',
-}, async () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'wtg-group-drain-'));
-  let unrelated;
-  try {
-    const { primaryDir, created, lockFile } = await setUpFinishableWorktree(tmp, 'group drain');
-    const childPidFile = join(tmp, 'ignored-child.pid');
-    const shellPath = (path) => path.replaceAll('\\', '/');
-    const transport = `node ${shellPath(CROSS_PLATFORM_COMMAND)} spawn-ignored-child-and-exit ${shellPath(childPidFile)}`;
-    run('git', ['remote', 'set-url', 'origin', `ext::${transport}`], primaryDir);
-    const cfgPath = join(tmp, 'hold.json');
-    writeFileSync(cfgPath, JSON.stringify({ queue: { maxHoldMs: 15000 } }));
-    unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    unrelated.unref();
-
-    const finishRun = await withEnv({
-      GIT_CONFIG_COUNT: '1',
-      GIT_CONFIG_KEY_0: 'protocol.ext.allow',
-      GIT_CONFIG_VALUE_0: 'always',
-    }, () => withCwd(created.path, () => captureConsole(() => (
-      main(['finish', '--message', 'work', '--no-wait', '--config', cfgPath])
-    ))));
-
-    assert.equal(finishRun.result, 1, 'the transport returns no valid fetch response');
-    assert.ok(existsSync(childPidFile), 'the ignored-stdio descendant started before its parent exited');
-    const childPid = Number(readFileSync(childPidFile, 'utf8'));
-    const childStillActive = () => {
-      const state = spawnSync('ps', ['-o', 'stat=', '-p', String(childPid)], { encoding: 'utf8' });
-      return state.status === 0 && !/^[ZX]/.test(String(state.stdout).trim());
-    };
-    assert.equal(childStillActive(), false, `the process-group drain must stop child pid=${childPid}`);
-    assert.ok(unrelated.pid > 1);
-    process.kill(unrelated.pid, 0);
-    assert.equal(existsSync(lockFile), false, 'finish releases its lock after group drain');
-    assert.equal(existsSync(created.path), true, 'failed fetch keeps the candidate worktree');
-  } finally {
-    if (unrelated?.pid) {
-      try { unrelated.kill('SIGTERM'); } catch { /* already exited */ }
-    }
     rmSync(tmp, { recursive: true, force: true });
   }
 });

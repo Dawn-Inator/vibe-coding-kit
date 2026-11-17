@@ -9,54 +9,11 @@ import test, { after } from 'node:test';
 import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { commit, git, makeProject } from '../support/submodule-fixture.mjs';
+import { consumerProject, optionalProbeEnv, requireExplicitFixtureIdentity, run } from '../support/install-command-harness.mjs';
 
-after(cleanupTempDirs);
 const cliPath = fileURLToPath(new URL('../../cli.mjs', import.meta.url));
 
-function consumerProject() {
-  const fixture = makeProject();
-  requireExplicitFixtureIdentity(fixture);
-  const repo = fileURLToPath(new URL('../..', import.meta.url));
-  for (const name of ['cli.mjs']) cpSync(join(repo, name), join(fixture.source, name));
-  for (const name of ['src', 'templates']) cpSync(join(repo, name), join(fixture.source, name), { recursive: true });
-  cpSync(join(repo, 'skills'), join(fixture.source, 'skills'), { recursive: true });
-  const adapterTemplate = join(fixture.source, 'templates/project-adapter.mjs');
-  writeFileSync(adapterTemplate, `${readFileSync(adapterTemplate, 'utf8')}\n// older-template-marker\n`);
-  fixture.sourceCommit = commit(fixture.source, 'seed runnable kit CLI and templates');
-  git(fixture.project, ['submodule', 'deinit', '-f', '--', '.vibe-coding/kit']);
-  git(fixture.project, ['rm', '-f', '.vibe-coding/kit']);
-  git(fixture.project, ['rm', '-f', '.vibe-coding/project.config.json']);
-  git(fixture.project, ['config', '-f', '.gitmodules', '--remove-section', 'submodule.vibe-coding-kit'], { allowFailure: true });
-  rmSync(join(fixture.project, '.gitmodules'), { force: true });
-  rmSync(join(fixture.project, '.vibe-coding/kit'), { recursive: true, force: true });
-  rmSync(join(fixture.project, '.git/modules/vibe-coding-kit'), { recursive: true, force: true });
-  commit(fixture.project, 'remove fixture kit registration');
-  return fixture;
-}
-
-function requireExplicitFixtureIdentity(fixture) {
-  for (const repo of [fixture.source, fixture.project]) {
-    git(repo, ['config', 'user.useConfigOnly', 'true']);
-    const identityFallbackProbe = git(repo, ['commit', '--allow-empty', '-m', 'identity fallback must fail'], { allowFailure: true });
-    assert.notEqual(identityFallbackProbe.status, 0, 'bare commit must fail when the isolated fixture has no explicit identity');
-  }
-}
-
-function optionalProbeEnv(fixture, env = process.env) {
-  const home = join(fixture.root, 'isolated-home');
-  const bin = join(fixture.root, 'optional-probe-bin');
-  mkdirSync(bin, { recursive: true });
-  const codex = join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
-  if (process.platform === 'win32') writeFileSync(codex, '@echo off\necho {"installed":[]}\n');
-  else writeFileSync(codex, '#!/bin/sh\nprintf \'{"installed":[]}\\n\'\n', { mode: 0o755 });
-  return { ...env, HOME: home, USERPROFILE: home, PATH: `${bin}${delimiter}${env.PATH || ''}` };
-}
-
-function run(fixture, more = [], projectRoot = fixture.project) {
-  return spawnSync(process.execPath, [cliPath, 'install', '--project-root', projectRoot,
-    '--url', pathToFileURL(fixture.source).href, '--identity-name', 'Install User',
-    '--identity-email', 'install@example.invalid', '--secrets', 'vault', ...more], { cwd: fixture.project, encoding: 'utf8', env: optionalProbeEnv(fixture) });
-}
+after(cleanupTempDirs);
 
 function snapshotFiles(root, { excludedPaths = new Set() } = {}) {
   const entries = [];
@@ -263,21 +220,6 @@ test('install validates invalid skill decisions before registering the submodule
   assert.equal(existsSync(join(fixture.project, '.vibe-coding/kit')), false);
 });
 
-test('install rejects a committed symlink at the kit path without touching its target', { skip: process.platform === 'win32' }, () => {
-  const fixture = consumerProject();
-  const outside = join(fixture.root, 'outside-kit-target');
-  mkdirSync(outside);
-  writeFileSync(join(outside, 'keep.txt'), 'preserve');
-  mkdirSync(join(fixture.project, '.vibe-coding'), { recursive: true });
-  symlinkSync(outside, join(fixture.project, '.vibe-coding/kit'), 'dir');
-  commit(fixture.project, 'symlink kit target');
-  const result = run(fixture);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /symlink install target/);
-  assert.equal(readFileSync(join(outside, 'keep.txt'), 'utf8'), 'preserve');
-  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
-});
-
 test('install refuses non-root paths and missing refs before init', () => {
   const fixture = consumerProject();
   const nested = join(fixture.project, 'nested');
@@ -291,35 +233,6 @@ test('install refuses non-root paths and missing refs before init', () => {
   assert.match(missing.stderr, /could not be fetched/);
   assert.ok(existsSync(join(fixture.project, '.gitmodules')), 'registration is accurately retained after fetch failure');
   assert.equal(existsSync(join(fixture.project, 'engineering/automation/vibe-coding/project-adapter.mjs')), false);
-});
-
-test('installer accepts Windows case and available 8.3 aliases for the same project root', { skip: process.platform !== 'win32' }, (t) => {
-  const fixture = consumerProject();
-  const caseAlias = fixture.project.toUpperCase();
-  assert.notEqual(caseAlias, fixture.project);
-  const caseCheck = run(fixture, ['--check'], caseAlias);
-  assert.equal(caseCheck.status, 1, `case-alias install --check: status=${caseCheck.status}, stderr=${caseCheck.stderr}, stdout=${caseCheck.stdout}`);
-  assert.match(caseCheck.stdout, /Would register/, `case-alias install --check: status=${caseCheck.status}, stderr=${caseCheck.stderr}, stdout=${caseCheck.stdout}`);
-
-  const shortPathScript = join(fixture.project, 'resolve-short-path.cmd');
-  writeFileSync(shortPathScript, '@echo off\r\nfor %%I in ("%CD%") do @echo %%~sI\r\n');
-  const shortPath = spawnSync('cmd.exe', ['/d', '/c', 'resolve-short-path.cmd'], { cwd: fixture.project, encoding: 'utf8' });
-  rmSync(shortPathScript, { force: true });
-  assert.equal(shortPath.error, undefined, `8.3 path query failed to start: ${shortPath.error?.message || ''}`);
-  assert.equal(shortPath.status, 0, `8.3 path query failed: status=${shortPath.status}, stderr=${shortPath.stderr}, stdout=${shortPath.stdout}`);
-  const shortAlias = shortPath.stdout.trim().split(/\r?\n/).at(-1);
-  assert.ok(shortAlias, `8.3 path query returned no candidate: status=${shortPath.status}, stderr=${shortPath.stderr}, stdout=${shortPath.stdout}`);
-  assert.ok(existsSync(shortAlias), `8.3 path candidate does not exist: ${JSON.stringify(shortAlias)}; stderr=${shortPath.stderr}, stdout=${shortPath.stdout}`);
-  assert.ok(samePathIdentity(shortAlias, fixture.project), `8.3 path candidate is a different filesystem object: ${JSON.stringify(shortAlias)}; project=${fixture.project}`);
-  if (!/(?:^|[\\/])[^\\/]*~\d+(?:[\\/]|$)/.test(shortAlias)) {
-    t.diagnostic(`Windows did not provide an alternate 8.3 component for this fixture path; case-alias coverage passed. Candidate=${JSON.stringify(shortAlias)}`);
-  } else {
-    t.diagnostic(`Validated Windows 8.3 candidate: ${JSON.stringify(shortAlias)} (same filesystem identity as ${JSON.stringify(fixture.project)})`);
-    const shortCheck = run(fixture, ['--check'], shortAlias);
-    assert.equal(shortCheck.status, 1, `8.3-alias install --check: status=${shortCheck.status}, stderr=${shortCheck.stderr}, stdout=${shortCheck.stdout}`);
-    assert.match(shortCheck.stdout, /Would register/, `8.3-alias install --check: status=${shortCheck.status}, stderr=${shortCheck.stderr}, stdout=${shortCheck.stdout}`);
-  }
-  assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
 });
 
 test('fresh noninteractive install defaults secret storage off without creating or asking for credentials', () => {

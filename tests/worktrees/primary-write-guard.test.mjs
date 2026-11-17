@@ -8,16 +8,12 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  isolatedFixtureGitEnv,
-  withFixtureCommitIdentity,
-} from '../support/isolated-git-env.mjs';
 import { cleanupTempDirs, mkdtempTracked } from '../support/temp-dirs.mjs';
+import { fixture, git, write } from '../support/primary-guard-fixture.mjs';
 import { samePathIdentity } from '../../src/lib/path-identity.mjs';
 import {
   GUARDED_TOOL_NAMES,
@@ -31,37 +27,6 @@ import {
 after(cleanupTempDirs);
 
 const here = dirname(fileURLToPath(import.meta.url));
-const env = isolatedFixtureGitEnv();
-
-function git(cwd, ...args) {
-  const r = spawnSync('git', withFixtureCommitIdentity(args), { cwd, env, encoding: 'utf8' });
-  assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
-  return r.stdout;
-}
-
-// A primary checkout (one commit) plus a sibling linked worktree and one nested inside
-// the primary directory. Everything is addressed through the realpath of the temp dir;
-// `viaLink` is a symlink to the same primary.
-function fixture() {
-  const base = realpathSync(mkdtempTracked('wtg-primary-guard-'));
-  const primary = join(base, 'primary');
-  mkdirSync(primary);
-  git(primary, 'init', '-q', '-b', 'main');
-  writeFileSync(join(primary, 'README.md'), 'x\n');
-  git(primary, 'add', '.');
-  git(primary, 'commit', '-q', '-m', 'init');
-  const sibling = join(base, 'sibling-wt');
-  git(primary, 'worktree', 'add', '-q', '-b', 'feat-a', sibling);
-  const nested = join(primary, 'nested-wt');
-  git(primary, 'worktree', 'add', '-q', '-b', 'feat-b', nested);
-  const viaLink = join(base, 'link-to-primary');
-  symlinkSync(primary, viaLink, process.platform === 'win32' ? 'junction' : 'dir');
-  return { base, primary, sibling, nested, viaLink };
-}
-
-const write = (file_path, cwd, extra = {}) =>
-  decidePrimaryWrite({ toolName: 'Write', toolInput: { file_path }, cwd, ...extra });
-
 test('write into the primary checkout is denied with an actionable reason', () => {
   const { primary } = fixture();
   const d = write(join(primary, 'src', 'new.txt'), primary);
@@ -123,13 +88,6 @@ test('a symlinked path to the primary is still recognised, even for a new file',
   assert.equal(write(join(viaLink, 'new-dir', 'a.txt'), sibling).allow, false);
   assert.equal(write(join(viaLink, 'a.txt'), viaLink).allow, false);
   assert.equal(samePathIdentity(resolvePrimaryRoot(viaLink), primary), true);
-});
-
-test('Windows drive/case aliases still resolve to the protected primary tree', { skip: process.platform !== 'win32' && 'Windows path alias behavior' }, () => {
-  const { primary } = fixture();
-  const casingAlias = primary.replace(/[a-z]/g, (letter, index) => (index % 2 === 0 ? letter.toUpperCase() : letter));
-  assert.notEqual(casingAlias, primary);
-  assert.equal(write(join(casingAlias, 'new-dir', 'file.txt'), casingAlias).allow, false);
 });
 
 test('NotebookEdit uses notebook_path and MultiEdit uses file_path', () => {
