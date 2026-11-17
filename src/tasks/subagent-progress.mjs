@@ -275,7 +275,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
                   const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
                   if (applyObservation(result)) { if (!observationCache.has(child.id) && observationCache.size >= 2000) observationCache.delete(observationCache.keys().next().value); observationCache.set(child.id, { version, checkedAt: Date.parse(observedAt), result: { state: result.state, basis: result.basis, observedAt: result.observedAt, eventTurnId: result.eventTurnId, rootTurnId: result.rootTurnId, complete: true, ...(result.basis === 'codex-turn' ? { latestTurnVerified: true } : { readStable: true }) } }); }
                   else { Object.assign(entry, baseline); observationCache.delete(child.id); }
-                } catch { /* Unknown stays unknown; observation never creates membership. */ }
+                } catch { Object.assign(entry, baseline); observationCache.delete(child.id); }
               });
           }
           if (!displayed) continue;

@@ -822,6 +822,7 @@ test('catalog refresh preserves bounded scoped proofs, checks replacement bytes 
  for(let i=0;i<8;i++){result=await read();if(result.complete)break;}assert.equal(result.complete,true);
  large=true;let overflow=false;for(let i=0;i<8;i++){result=await read();if(result.truncated){overflow=true;break;}}
  assert.equal(overflow,true);assert.equal(result.complete,false);assert.equal(result.rows.length,0);
+ large=false;for(let i=0;i<8;i++){result=await read();if(result.complete)break;}assert.equal(result.complete,true);
 });
 
 test('retained runtime terminal evidence is invalidated by a later parent interaction', async () => {
@@ -894,4 +895,18 @@ test('parent completion or interruption invalidates an older cached working obse
    assert.equal(observations,2);assert.notEqual(result.agents[0].state,'working');assert.equal(result.observedRunningCount,null);assert.equal(result.observedRunningComplete,false);assert.equal(result.runningCount,null);
   } finally {await rm(root,{recursive:true,force:true});}
  }
+});
+
+
+test('a throwing selected observer clears the cached state and remains incomplete', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-observer-throw-'));
+ try {
+  const started=Date.parse(cycleStartedAt);let fail=false;
+  const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'child',kind:'started',startedAtMs:started}]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'child',cwd:root,updatedAt:1,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}),
+   observeAgent:async()=>{if(fail)throw new Error('offline');return {state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'t',rootTurnId:'r',complete:true,readStable:true};}};
+  const first=await collectScoped(opts);assert.equal(first.observedRunningCount,1);
+  fail=true;const result=await collectScoped(opts);assert.equal(result.agents[0].state,'unknown');assert.equal(result.observedRunningCount,null);assert.equal(result.observedRunningComplete,false);
+ } finally {await rm(root,{recursive:true,force:true});}
 });

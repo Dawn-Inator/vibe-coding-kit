@@ -67,7 +67,7 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
       entry.pages.push(page);
       entry.nextCursor = page.nextCursor;
       if (entry.pages.reduce((n, current) => n + current.rows.length, 0) > MAX_ROWS || Buffer.byteLength(JSON.stringify(entry.pages)) > MAX_BYTES) {
-        entry.pages.pop(); entry.truncated = true; break;
+        entry.pages.pop(); entry.truncated = true; entry.invalid = true; break;
       }
     }
     if (entry.nextCursor === null && !entry.truncated && !entry.invalid && !entry.complete) {
@@ -92,7 +92,7 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
     }
     // Replacements can grow even when no page was appended.
     if (Buffer.byteLength(JSON.stringify(entry.pages)) > MAX_BYTES) {
-      entry.pages = []; entry.complete = false; entry.truncated = true;
+      entry.pages = []; entry.complete = false; entry.truncated = true; entry.invalid = true;
       entry.proofs.clear(); entry.observations.clear();
     }
     entry.pending = false;
