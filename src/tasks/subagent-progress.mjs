@@ -97,25 +97,26 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           }
           if (item.kind === 'interacted' || item.kind === 'started') invalidations.set(item.agentThreadId, itemMs);
           if (item.kind === 'interacted') dispatches.delete(item.agentThreadId);
-          recorded.set(item.agentThreadId, { kind: item.kind, timestamp: itemMs ?? startMs });
+          recorded.set(item.agentThreadId, { kind: item.kind, timestamp: itemMs ?? startMs, reliable: itemMs !== null });
         } else if (item.type === 'subAgentActivity') snapshot.complete = false;
       }
     }
     if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
   } catch { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; }
   let runtimeStatusesComplete = true;
+  const countEntries = [];
   const finalizeRunningCount = () => {
-    const working = snapshot.agents.filter(agent => agent.state === 'working' && ['runtime', 'recorded-runtime', 'codex-rollout'].includes(agent.stateBasis));
+    const working = countEntries.filter(agent => agent.state === 'working' && ['runtime', 'recorded-runtime', 'codex-rollout'].includes(agent.stateBasis));
     // A runtime idle/completed status proves not running even if the displayed
     // completed label is sourced from an earlier parent activity event.
     const runtimeExact = snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && runtimeStatusesComplete;
-    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && snapshot.agents.every(agent => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed', 'failed'].includes(agent.state)));
-    const bases = new Set(snapshot.agents.map(agent => agent.stateBasis).filter(basis => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(basis)));
+    const allObserved = runtimeExact || (snapshot.complete && snapshot.status === 'ready' && rootCount === 1 && countEntries.every(agent => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis) && ['working', 'waiting', 'idle', 'completed', 'failed'].includes(agent.state)));
+    const bases = new Set(countEntries.map(agent => agent.stateBasis).filter(basis => ['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(basis)));
     snapshot.observedRunningCount = working.length || (allObserved ? 0 : null);
     snapshot.observedRunningComplete = allObserved;
     snapshot.observedRunningBasis = bases.size > 1 ? 'mixed' : bases.size ? [...bases][0] : allObserved ? 'runtime' : 'unknown';
     if (runtimeExact) {
-      snapshot.runningCount = snapshot.agents.filter(agent => agent.state === 'working' && agent.stateBasis === 'runtime').length;
+      snapshot.runningCount = countEntries.filter(agent => agent.state === 'working' && agent.stateBasis === 'runtime').length;
       snapshot.runningBasis = 'runtime';
     }
   };
@@ -146,11 +147,16 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       catalogTimes.set(child.id, row.observedAt);
       catalogGenerations.set(child.id, row.generation);
     }
+    if (catalog.complete) {
+      for (const cache of [catalog.proofs, catalog.state?.observations].filter(Boolean))
+        for (const id of cache.keys()) if (!admittedCatalog.has(id)) cache.delete(id);
+    }
     const candidates = [...admittedCatalog.values()].filter(child => parentWindowIncomplete || !members.has(child.id));
     if (parentWindowIncomplete && catalog.complete && candidates.length === 0) parentScopeResolved = true;
     if (candidates.length && (typeof verifyAgent !== 'function' || !rootTurnId || !snapshot.rootTurnStartedAt)) snapshot.complete = false;
     if (typeof verifyAgent === 'function' && rootTurnId && snapshot.rootTurnStartedAt) {
       const cache = catalog.proofs;
+      const saveProof = (id, value) => { if (!cache.has(id) && cache.size >= 2000) cache.delete(cache.keys().next().value); cache.set(id, value); };
       const proofVersion = child => {
         const changedByParent = invalidations.has(child.id);
         const parentTimestamp = invalidations.get(child.id);
@@ -171,8 +177,8 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
           try {
             const proof = await verifyAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
             if (!proof || proof.verdict === 'unknown' || proof.parentThreadId !== parentThreadId || !validId(proof.rootTurnId) || !validCwd(proof.cwd) || await realpath(proof.cwd) !== canonicalCwd || typeof proof.turnStartedAt !== 'string' || !Number.isFinite(Date.parse(proof.turnStartedAt))) continue;
-            if (proof.verdict === 'out-of-scope' && proof.rootTurnId !== rootTurnId) cache.set(child.id, { proof, updatedAt: proofVersion(child) });
-            else if ((proof.verdict === undefined || proof.verdict === 'in-scope') && proof.rootTurnId === rootTurnId && Date.parse(proof.turnStartedAt) >= cycleMs) cache.set(child.id, { proof, updatedAt: proofVersion(child) });
+            if (proof.verdict === 'out-of-scope' && proof.rootTurnId !== rootTurnId) saveProof(child.id, { proof, updatedAt: proofVersion(child) });
+            else if ((proof.verdict === undefined || proof.verdict === 'in-scope') && proof.rootTurnId === rootTurnId && Date.parse(proof.turnStartedAt) >= cycleMs) saveProof(child.id, { proof, updatedAt: proofVersion(child) });
           } catch { /* Retry unknown identity in a later bounded pass. */ }
         }
       }));
@@ -210,13 +216,15 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   }
   const seen = new Set();
   const observationQueue = [];
+  const observationCache = catalog?.state?.observations ?? new Map();
   const store = new TaskStore(storageRoot, { schemas });
   try {
       for (const [id, child] of admittedCatalog) {
         if (!members.has(id)) continue;
         const spawn = child.source.subAgent.thread_spawn;
         seen.add(id);
-        if (snapshot.agents.length >= 100) { snapshot.complete = false; snapshot.truncated = true; break; }
+        const displayed = snapshot.agents.length < 100;
+        if (!displayed) snapshot.truncated = true;
         const catalogPath = validAgentPath(spawn.agent_path) ? spawn.agent_path : undefined;
         const activityPath = activityPaths.get(child.id);
         const path = activityPath === null || (catalogPath && activityPath && catalogPath !== activityPath) ? undefined : catalogPath ?? activityPath;
@@ -227,31 +235,50 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         const flags = child.status?.activeFlags;
         const validActive = statusType === 'active' && Array.isArray(flags) && flags.length <= 16 && flags.every(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput');
         const validNonActive = ['idle', 'completed'].includes(statusType) && (flags === undefined || (Array.isArray(flags) && flags.length === 0));
-        const validRuntime = validActive || validNonActive;
-        if (!validRuntime || !freshRuntime) runtimeStatusesComplete = false;
+        const invalidation = invalidations.get(child.id);
+        const parentTerminal = recorded.get(child.id);
+        const terminalEvent = parentTerminal && ['completed', 'interrupted'].includes(parentTerminal.kind) ? parentTerminal : null;
+        const terminalUnknown = terminalEvent && !terminalEvent.reliable;
+        const runtimeUsable = (validActive || validNonActive) && (freshRuntime || ((!validActive || (!terminalUnknown && (!terminalEvent || Date.parse(catalogTime ?? '') >= terminalEvent.timestamp))) && (!invalidations.has(child.id) || (Number.isFinite(invalidation) && Date.parse(catalogTime ?? '') >= invalidation))));
+        if (!runtimeUsable || !freshRuntime) runtimeStatusesComplete = false;
         const activity = recorded.get(child.id);
         if (activity?.kind === 'completed') { entry.state = 'completed'; entry.stateBasis = 'recorded-activity'; entry.observedAt = new Date(activity.timestamp).toISOString(); }
-        if (validActive) {
+        if (runtimeUsable && validActive) {
           entry.state = child.status.activeFlags.some(flag => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput') ? 'waiting' : 'working';
           entry.observedAt = catalogTime ?? null; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime';
-        } else if (validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
-        else if (validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
-        snapshot.agents.push(entry);
+        } else if (runtimeUsable && validNonActive && statusType === 'idle' && entry.state !== 'completed') { entry.state = 'idle'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
+        else if (runtimeUsable && validNonActive && statusType === 'completed') { entry.state = 'completed'; entry.stateBasis = freshRuntime ? 'runtime' : 'recorded-runtime'; entry.observedAt = catalogTime ?? null; }
+        countEntries.push(entry);
+        if (displayed) snapshot.agents.push(entry);
         try {
           entry.assignmentEligible = true;
-          if (typeof observeAgent === 'function' && !validRuntime)
-            observationQueue.push(async () => {
-              try {
-                const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
-                const proof = (result?.basis === 'codex-rollout' ? result.readStable === true : result?.basis === 'codex-turn' && result.latestTurnVerified === true) && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
-                const timestamp = typeof result?.observedAt === 'string' ? Date.parse(result.observedAt) : NaN;
-                const currentWorkingTurn = proof && result.basis === 'codex-rollout' && result.state === 'working';
-                const afterInteraction = Number.isFinite(invalidations.get(child.id)) ? timestamp >= invalidations.get(child.id) : result.basis === 'codex-turn' && !invalidations.has(child.id);
-                if (proof && (result.basis === 'codex-turn' ? ['completed', 'idle', 'failed'].includes(result.state) : ['working', 'completed', 'idle'].includes(result.state)) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (result.basis === 'codex-turn' || entry.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(entry.observedAt))) {
-                  entry.state = result.state; entry.stateBasis = result.basis; entry.observedAt = result.observedAt;
-                }
-              } catch { /* Unknown stays unknown; observation never creates membership. */ }
-            });
+          if (typeof observeAgent === 'function' && !runtimeUsable) {
+            const parentStamp = invalidations.has(child.id) ? invalidations.get(child.id) : null;
+            const version = invalidations.has(child.id) && !Number.isFinite(parentStamp) ? null : JSON.stringify([child.updatedAt ?? catalogTime, parentStamp, terminalEvent ? [terminalEvent.kind, terminalEvent.timestamp, terminalEvent.reliable] : null]);
+            const cached = observationCache.get(child.id);
+            const baseline = { state: entry.state, stateBasis: entry.stateBasis, observedAt: entry.observedAt };
+            const applyObservation = result => {
+              const proof = (result?.basis === 'codex-rollout' ? result.readStable === true : result?.basis === 'codex-turn' && result.latestTurnVerified === true) && result.complete === true && typeof result.eventTurnId === 'string' && result.eventTurnId.trim().length > 0 && result.eventTurnId.length <= 256 && result.rootTurnId === rootTurnId;
+              const timestamp = typeof result?.observedAt === 'string' ? Date.parse(result.observedAt) : NaN;
+              const currentWorkingTurn = proof && result.basis === 'codex-rollout' && result.state === 'working';
+              const afterInteraction = Number.isFinite(invalidation) ? timestamp >= invalidation : result.basis === 'codex-turn' && !invalidations.has(child.id);
+              const afterParentTerminal = result?.state !== 'working' || !terminalEvent || (terminalEvent.reliable && Number.isFinite(timestamp) && timestamp >= terminalEvent.timestamp);
+              if (proof && afterParentTerminal && (result.basis === 'codex-turn' ? ['completed', 'idle', 'failed'].includes(result.state) : ['working', 'completed', 'idle'].includes(result.state)) && Number.isFinite(timestamp) && timestamp >= cycleMs && (currentWorkingTurn || afterInteraction) && (result.basis === 'codex-turn' || baseline.stateBasis !== 'recorded-activity' || timestamp >= Date.parse(baseline.observedAt))) {
+                entry.state = result.state; entry.stateBasis = result.basis; entry.observedAt = result.observedAt; return true;
+              }
+              return false;
+            };
+            if (version !== null && cached?.version === version && Date.parse(observedAt) >= cached.checkedAt) applyObservation(cached.result);
+            if (version !== null)
+              observationQueue.push(async () => {
+                try {
+                  const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
+                  if (applyObservation(result)) { if (!observationCache.has(child.id) && observationCache.size >= 2000) observationCache.delete(observationCache.keys().next().value); observationCache.set(child.id, { version, checkedAt: Date.parse(observedAt), result: { state: result.state, basis: result.basis, observedAt: result.observedAt, eventTurnId: result.eventTurnId, rootTurnId: result.rootTurnId, complete: true, ...(result.basis === 'codex-turn' ? { latestTurnVerified: true } : { readStable: true }) } }); }
+                  else { Object.assign(entry, baseline); observationCache.delete(child.id); }
+                } catch { /* Unknown stays unknown; observation never creates membership. */ }
+              });
+          }
+          if (!displayed) continue;
           const { state, uncertain } = await store.getReadOnly(child.id, { maxBytes: 1024 * 1024 });
           if (uncertain) snapshot.complete = false;
           const dispatchedAt = dispatches.get(child.id);
@@ -263,15 +290,18 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         } catch { snapshot.complete = false; }
       }
   } catch { snapshot.complete = false; snapshot.status = snapshot.agents.length ? 'partial' : 'unavailable'; }
+  const offset = observationQueue.length ? (catalog?.state?.observationOffset ?? 0) % observationQueue.length : 0;
+  const work = [...observationQueue.slice(offset), ...observationQueue.slice(0, offset)].slice(0, 100);
+  if (catalog?.state && observationQueue.length) catalog.state.observationOffset = (offset + work.length) % observationQueue.length;
   let nextObservation = 0;
-  await Promise.all(Array.from({ length: Math.min(2, observationQueue.length) }, async () => {
-    while (nextObservation < observationQueue.length) await observationQueue[nextObservation++]();
+  await Promise.all(Array.from({ length: Math.min(2, work.length) }, async () => {
+    while (nextObservation < work.length) await work[nextObservation++]();
   }));
   if (seen.size !== members.size) snapshot.complete = false;
-  if (!runtimeStatusesComplete && snapshot.agents.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;
+  if (!runtimeStatusesComplete && countEntries.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;
   if (catalogFailed && !catalogPages && !snapshot.agents.length) snapshot.status = 'unavailable';
   if (!snapshot.complete && snapshot.status === 'ready') snapshot.status = 'partial';
-  const observationTimes = snapshot.agents.map(agent => Date.parse(agent.observedAt ?? '')).filter(Number.isFinite);
+  const observationTimes = countEntries.map(agent => Date.parse(agent.observedAt ?? '')).filter(Number.isFinite);
   if (observationTimes.length) snapshot.observedAt = new Date(Math.min(...observationTimes)).toISOString();
   finalizeRunningCount();
   return snapshot;

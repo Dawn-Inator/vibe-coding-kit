@@ -45,7 +45,7 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
     const head = normalize(await listPage(undefined), observedAt, stamp, undefined);
     if (Buffer.byteLength(JSON.stringify(head)) > MAX_BYTES) throw new Error('Child catalog page exceeds byte limit');
     const signature = headKey(head);
-    if (!entry || entry.headSignature !== signature) entry = { pending: true, lastAccessAt: time, headSignature: signature, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: new Map() };
+    if (!entry || entry.headSignature !== signature) entry = { pending: true, lastAccessAt: time, headSignature: signature, pages: [], cursors: new Set(), nextCursor: undefined, complete: false, truncated: false, proofs: entry?.proofs ?? new Map(), observations: entry?.observations ?? new Map() };
     if (entry.pages.length) entry.pages[0] = head; else { entry.pages.push(head); entry.nextCursor = head.nextCursor; }
     // Once complete, refresh one retained page per poll. A changed identity
     // invalidates the sweep; changed updatedAt invalidates its scoped proof.
@@ -74,19 +74,26 @@ export async function readIncrementalAgentCatalog({ key, listPage, now = () => n
       // Revisit every page identity after the scan. This detects changes away
       // from the head as well as additions at the head, without freezing writers.
       entry.verifyIndex ??= 1;
-      while (entry.verifyIndex < entry.pages.length && budget-- > 0) {
+      while (entry.verifyIndex < entry.pages.length && budget > 0) {
+        budget--;
         const old = entry.pages[entry.verifyIndex];
         const checked = normalize(await listPage(old.cursor), now().toISOString(), stamp, old.cursor);
         if (headKey(checked) !== headKey(old)) throw new Error('Child catalog changed during verification');
         entry.pages[entry.verifyIndex++] = checked;
       }
-      if (entry.verifyIndex === entry.pages.length) {
+      if (entry.verifyIndex === entry.pages.length && budget > 0) {
+        budget--;
         // A new child may arrive after this invocation's first head read.
         const finalHead = normalize(await listPage(undefined), now().toISOString(), stamp, undefined);
         if (headKey(finalHead) !== entry.headSignature) throw new Error('Child catalog changed during verification');
         entry.pages[0] = finalHead;
         entry.complete = true;
       }
+    }
+    // Replacements can grow even when no page was appended.
+    if (Buffer.byteLength(JSON.stringify(entry.pages)) > MAX_BYTES) {
+      entry.pages = []; entry.complete = false; entry.truncated = true;
+      entry.proofs.clear(); entry.observations.clear();
     }
     entry.pending = false;
     entry.lastAccessAt = now().getTime();

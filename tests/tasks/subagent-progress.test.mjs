@@ -792,3 +792,106 @@ test('later parent activity invalidates old-root scope proof even before the chi
   const uncertain=await collectScoped(options); assert.equal(uncertain.complete,false); assert.deepEqual(uncertain.agents,[]); assert.equal(uncertain.runningCount,null);
  } finally {await rm(root,{recursive:true,force:true});}
 });
+
+test('recorded count covers more than 100 members while cards remain bounded', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-count-101-'));
+ try {
+  const started=Date.parse(cycleStartedAt), children=Array.from({length:101},(_,i)=>({id:`c${i}`,cwd:root,updatedAt:1,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}},status:{type:'active',activeFlags:[]}}));
+  const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:children.map(child=>({type:'subAgentActivity',agentThreadId:child.id,kind:'started',startedAtMs:started}))}],nextCursor:null}),
+   listPage:async cursor=>{const n=cursor?Number(cursor):0;return {data:children.slice(n,n+50),nextCursor:n+50<children.length?String(n+50):null};}};
+  let result; for(let i=0;i<5;i++){result=await collectScoped(opts);if(result.observedRunningComplete)break;}
+  assert.equal(result.complete,true); assert.equal(result.truncated,true); assert.equal(result.agents.length,100);
+  assert.equal(result.observedRunningCount,101); assert.equal(result.observedRunningComplete,true);
+  children[100].status={type:'notLoaded'}; children[100].updatedAt=2;
+  for(let i=0;i<5;i++){result=await collectScoped(opts);if(!result.observedRunningComplete)break;}
+  assert.equal(result.observedRunningComplete,false); assert.equal(result.runningCount,null);
+  assert.ok(result.observedRunningCount<=100);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('catalog refresh preserves bounded scoped proofs, checks replacement bytes and never exceeds four page reads', async () => {
+ const {readIncrementalAgentCatalog}=await import('../../src/tasks/agent-catalog-cache.mjs');
+ let tick=0, calls=0, extra=false, large=false;
+ const child=i=>({id:`c${i}`,cwd:'/tmp',source:{subAgent:{thread_spawn:{parent_thread_id:'p',agent_path:large?'x'.repeat(4096):'a'}}}});
+ const listPage=async cursor=>{calls++;const n=cursor?Number(cursor):0;const rows=Array.from({length:251},(_,i)=>child(i));if(extra)rows.unshift(child(251));return {data:rows.slice(n,n+50),nextCursor:n+50<rows.length?String(n+50):null};};
+ const read=async()=>{calls=0;const value=await readIncrementalAgentCatalog({key:'bounded-refresh-regression',listPage,now:()=>new Date(Date.parse(cycleStartedAt)+tick++)});assert.ok(calls<=4);return value;};
+ let result;for(let i=0;i<8;i++){result=await read();if(result.complete)break;}
+ assert.equal(result.complete,true);result.proofs.set('c0',{proof:{verdict:'unknown'},updatedAt:1});
+ extra=true;result=await read();assert.equal(result.complete,false);assert.ok(result.proofs.has('c0'));
+ for(let i=0;i<8;i++){result=await read();if(result.complete)break;}assert.equal(result.complete,true);
+ large=true;let overflow=false;for(let i=0;i<8;i++){result=await read();if(result.truncated){overflow=true;break;}}
+ assert.equal(overflow,true);assert.equal(result.complete,false);assert.equal(result.rows.length,0);
+});
+
+test('retained runtime terminal evidence is invalidated by a later parent interaction', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-stale-status-'));
+ try {
+  const started=Date.parse(cycleStartedAt), children=Array.from({length:101},(_,i)=>({id:`c${i}`,cwd:root,updatedAt:1,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}},status:{type:'completed'}}));
+  let nowMs=started+10000, interacted=false, observations=0;
+  const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),now:()=>new Date(nowMs),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'c100',kind:interacted?'interacted':'started',startedAtMs:interacted?started+20000:started}]}],nextCursor:null}),
+   listPage:async cursor=>{const n=cursor?Number(cursor):0;return {data:children.slice(n,n+50),nextCursor:n+50<children.length?String(n+50):null};},
+   verifyAgent:async()=>({verdict:'out-of-scope',parentThreadId:'p',cwd:root,rootTurnId:'old',turnStartedAt:new Date(started+1000).toISOString()}),
+   observeAgent:async()=>{observations++;return {state:'unknown',basis:'codex-rollout',observedAt:null,complete:false,readStable:false};}};
+  await collectScoped(opts); nowMs+=1000; await collectScoped(opts);
+  interacted=true;nowMs=started+21000;const result=await collectScoped(opts);
+  assert.equal(observations,1);assert.equal(result.agents[0]?.state,'unknown');assert.equal(result.runningCount,null);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('observation collection across more than 100 members resumes with a bounded per-pass budget', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-observe-101-'));
+ try {
+  const started=Date.parse(cycleStartedAt), children=Array.from({length:101},(_,i)=>({id:`c${i}`,cwd:root,updatedAt:1,source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}},status:{type:'notLoaded'}}));
+  let calls=0;const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:children.map(child=>({type:'subAgentActivity',agentThreadId:child.id,kind:'started',startedAtMs:started}))}],nextCursor:null}),
+   listPage:async cursor=>{const n=cursor?Number(cursor):0;return {data:children.slice(n,n+50),nextCursor:n+50<children.length?String(n+50):null};},
+   observeAgent:async()=>{calls++;return {state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'t',rootTurnId:'r',complete:true,readStable:true};}};
+  let result;for(let i=0;i<6;i++){const before=calls;result=await collectScoped(opts);assert.ok(calls-before<=100);if(result.observedRunningComplete)break;}
+  assert.equal(result.agents.length,100);assert.equal(result.observedRunningCount,101);assert.equal(result.observedRunningComplete,true);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('cached observation is refreshed when the child changes without an updated catalog version', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-refresh-observation-'));
+ try {
+  const started=Date.parse(cycleStartedAt);let terminal=false,calls=0;
+  const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'child',kind:'started',startedAtMs:started}]}],nextCursor:null}),
+   listPage:async()=>({data:[{id:'child',cwd:root,updatedAt:1,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}),
+   observeAgent:async()=>{calls++;return {state:terminal?'completed':'working',basis:'codex-rollout',observedAt:new Date(started+(terminal?2000:1000)).toISOString(),eventTurnId:'t',rootTurnId:'r',complete:true,readStable:true};}};
+  const first=await collectScoped(opts);assert.equal(first.observedRunningCount,1);
+  terminal=true;const second=await collectScoped(opts);assert.equal(calls,2);assert.equal(second.agents[0].state,'completed');assert.equal(second.observedRunningCount,0);assert.equal(second.observedRunningComplete,true);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('bounded observation refresh rotates through members beyond the first hundred', async () => {
+ const root=await mkdtemp(join(tmpdir(),'subagent-refresh-rotation-'));
+ try {
+  const started=Date.parse(cycleStartedAt), children=Array.from({length:101},(_,i)=>({id:`child-${i}`,cwd:root,updatedAt:1,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}));
+  const seen=new Map();
+  const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+   listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:children.map(child=>({type:'subAgentActivity',agentThreadId:child.id,kind:'started',startedAtMs:started}))}],nextCursor:null}),
+   listPage:async cursor=>{const offset=cursor?Number(cursor):0;return {data:children.slice(offset,offset+50),nextCursor:offset+50<children.length?String(offset+50):null};},
+   observeAgent:async id=>{seen.set(id,(seen.get(id)??0)+1);return {state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'t',rootTurnId:'r',complete:true,readStable:true};}};
+  let result;for(let poll=0;poll<5;poll++)result=await collectScoped(opts);
+  assert.ok(seen.has('child-100'));assert.equal(seen.size,101);assert.equal(result.observedRunningCount,101);assert.equal(result.observedRunningComplete,true);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('parent completion or interruption invalidates an older cached working observation', async () => {
+ for (const kind of ['completed','interrupted']) {
+  const root=await mkdtemp(join(tmpdir(),'subagent-parent-terminal-'));
+  try {
+   const started=Date.parse(cycleStartedAt);let terminal=false,observations=0;
+   const opts={parentThreadId:'p',cwd:root,storageRoot:root,schemas,taskSourcePath:join(root,'heartbeat.md'),
+    listTurnsPage:async()=>({data:[{id:'r',rootTurnId:'r',startedAt:started/1000,itemsView:'full',items:[{type:'subAgentActivity',agentThreadId:'child',kind:'started',startedAtMs:started},...(terminal?[{type:'subAgentActivity',agentThreadId:'child',kind,startedAtMs:started+3000}]:[])]}],nextCursor:null}),
+    listPage:async()=>({data:[{id:'child',cwd:root,updatedAt:1,status:{type:'notLoaded'},source:{subAgent:{thread_spawn:{parent_thread_id:'p'}}}}],nextCursor:null}),
+    observeAgent:async()=>{observations++;return terminal?{state:'unknown',basis:'codex-rollout',observedAt:null,complete:false,readStable:false}:{state:'working',basis:'codex-rollout',observedAt:new Date(started+1000).toISOString(),eventTurnId:'t',rootTurnId:'r',complete:true,readStable:true};}};
+   const first=await collectScoped(opts);assert.equal(first.observedRunningCount,1);
+   terminal=true;const result=await collectScoped(opts);
+   assert.equal(observations,2);assert.notEqual(result.agents[0].state,'working');assert.equal(result.observedRunningCount,null);assert.equal(result.observedRunningComplete,false);assert.equal(result.runningCount,null);
+  } finally {await rm(root,{recursive:true,force:true});}
+ }
+});
