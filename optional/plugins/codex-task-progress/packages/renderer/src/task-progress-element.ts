@@ -1653,26 +1653,55 @@ export class TaskProgressElement extends LitElement {
       validObservation &&
       Date.parse(observedAt as string) >= Date.parse(rootTurnStartedAt);
     const managedCycleMatches =
-      !!task?.lifecycle?.id && snapshot?.taskCycleId === task.lifecycle.id;
+      !!task?.lifecycle?.id &&
+      snapshot?.taskCycleId === task.lifecycle.id &&
+      snapshot.taskSourcePath == null;
     const sourceScopeMatches =
       !task?.lifecycle?.id &&
       source?.kind === "kit-heartbeat" &&
       source.readOnly === true &&
       !!sourcePath &&
       source.path === sourcePath &&
+      ((!source.contentHash && !this.data.taskSource?.contentHash) ||
+        (!!source.contentHash && source.contentHash === this.data.taskSource?.contentHash)) &&
       snapshot?.taskSourcePath === sourcePath &&
       snapshot.taskCycleId === null;
     if (
       !snapshot ||
+      this.data.enabled === false ||
       snapshot.parentThreadId !== this.threadId ||
-      (!managedCycleMatches && !sourceScopeMatches) ||
       !validObservation ||
-      (snapshot.scopeBasis !== "parent-thread" &&
-        (snapshot.scopeBasis !== "parent-root-turn" ||
-          typeof snapshot.rootTurnId !== "string" ||
-          !snapshot.rootTurnId.trim() ||
-          !verifiedRootStart)) ||
       (snapshot.status !== "ready" && snapshot.status !== "partial")
+    )
+      return null;
+    const sourceUnavailable =
+      this.data.taskSourcePending === true ||
+      ["stale", "error", "pending", "pending-selection"].includes(
+        this.data.taskSource?.status ?? "",
+      );
+    const taskContextMatches = !sourceUnavailable && (managedCycleMatches || sourceScopeMatches);
+    if (snapshot.scopeBasis === "parent-thread") {
+      if (taskContextMatches) return snapshot;
+      // Unbound activity is still useful, but no task, assignment, or plan
+      // metadata can be carried across an absent or mismatched task context.
+      const { allocation: _allocation, ...activity } = snapshot;
+      return {
+        ...activity,
+        agents: snapshot.agents.map((agent) => ({
+          ...agent,
+          progress: null,
+          progressBasis: null,
+          assignmentTitle: null,
+          progressGranularity: "none" as const,
+        })),
+      };
+    }
+    if (
+      !taskContextMatches ||
+      snapshot.scopeBasis !== "parent-root-turn" ||
+      typeof snapshot.rootTurnId !== "string" ||
+      !snapshot.rootTurnId.trim() ||
+      !verifiedRootStart
     )
       return null;
     return snapshot;

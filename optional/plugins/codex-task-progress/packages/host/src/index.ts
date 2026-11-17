@@ -1849,8 +1849,8 @@ export class GoalProgressHelper {
         lifecycleId.trim().length > 0 &&
         typeof lifecycleStartedAt === "string" &&
         Number.isFinite(Date.parse(lifecycleStartedAt));
-      const cycleId = validLifecycle ? lifecycleId : undefined;
-      const cycleStartedAt = validLifecycle ? lifecycleStartedAt : undefined;
+      const cycleId = sourceReady && validLifecycle ? lifecycleId : undefined;
+      const cycleStartedAt = sourceReady && validLifecycle ? lifecycleStartedAt : undefined;
       const boundSource =
         source && typeof source === "object"
           ? (source as {
@@ -1862,6 +1862,7 @@ export class GoalProgressHelper {
             })
           : undefined;
       const sourcePath =
+        sourceReady &&
         !validLifecycle &&
         boundSource?.status === "ready" &&
         boundSource.kind === "kit-heartbeat" &&
@@ -1878,7 +1879,7 @@ export class GoalProgressHelper {
       // Membership is scoped by source path; source revisions only affect the
       // assignment overlay recomputed from the current task on each GET.
       const sourceIdentity = sourcePath ?? null;
-      const hasSubagentScope = validLifecycle || sourcePath !== undefined;
+      const hasSubagentScope = cycleId !== undefined || sourcePath !== undefined;
       const subagentKey = `${scope}:${this.#taskPresentationEpoch}:${JSON.stringify([sourceIdentity, cycleId ?? null, cycleStartedAt ?? null])}`;
       let subagents: SubagentProgressSnapshot = {
         schemaVersion: 1,
@@ -1891,18 +1892,11 @@ export class GoalProgressHelper {
         complete: false,
         truncated: false,
       };
-      if (sourceReady && !hasSubagentScope) subagents = { ...subagents, status: "unavailable" };
-      if (
-        sourceReady &&
-        hasSubagentScope &&
-        (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns)
-      )
+      if (!this.#runtime.listDirectSubagents || !this.#runtime.listSubagentTurns)
         subagents = { ...subagents, status: "unavailable" };
-      if (value && boundSource?.status === "stale")
-        subagents = { ...subagents, status: "unavailable" };
+      // Activity belongs to the verified conversation, independent of whether
+      // a task source is available. Task context is supplied only when valid.
       if (
-        sourceReady &&
-        hasSubagentScope &&
         typeof storage?.root === "string" &&
         this.#runtime.listDirectSubagents &&
         this.#runtime.listSubagentTurns

@@ -130,7 +130,16 @@ export function recoverHeartbeatLedgerPair(
 /** Discard reconstructible indexes. The authenticated source remains authoritative. */
 export function clearHeartbeatDisplayCache(): void;
 export interface HeartbeatDisplayResult {
+	/** On large heads this is a bounded structural projection retaining physical line numbers. */
 	headText: string;
+	headProjected: boolean;
+	customChecks: "not-performed" | "as-configured";
+	/** Bytes omitted only from recognized non-progress write_set cells. */
+	omittedMetadataFields: Array<{
+		line: number;
+		column: "write_set";
+		bytes: number;
+	}>;
 	headDigest: string;
 	contentHash: string;
 	integrity: "verified";
@@ -149,6 +158,21 @@ export interface HeartbeatDisplayResult {
 	modifiedAt: string;
 	lastRecordedAt: string | null;
 }
+/** Bounded head-only discovery; does not validate the pair or perform an audit. */
+export function readHeartbeatDiscoveryHead(options: {
+	root: string;
+	path: string;
+	onRead?: (read: { path: string; bytes: number; position: number }) => void;
+}): Promise<{
+	headText: string;
+	headDigest: string;
+	headProjected: boolean;
+	omittedMetadataFields: Array<{
+		line: number;
+		column: "write_set";
+		bytes: number;
+	}>;
+}>;
 /** Read-only bounded display. Does not perform or certify a full business audit.
  * Cursors are valid only for the exact source content and file identity.
  * Changed sources and stale cursors use HEARTBEAT_DISPLAY_CHANGED and
@@ -160,6 +184,8 @@ export function readHeartbeatDisplay(options: {
 	pageSize?: number;
 	now?: Date;
 	intervalMinutes?: number;
+	/** On large heads explicitly use canonical structural Items validation; custom checks are not performed. */
+	canonicalDisplayOnly?: boolean;
 	/** Custom items inspector; integrity validation remains in the core reader. */
 	inspect?: (
 		text: string,

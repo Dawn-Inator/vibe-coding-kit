@@ -1,3 +1,4 @@
+/** Head size above which explicit sources use the bounded streaming display reader. */
 export const HEARTBEAT_BOUND_MAX_BYTES: number;
 
 import type { TaskSource, TaskState } from "./task-contract.mjs";
@@ -84,14 +85,23 @@ export class HeartbeatDiscoveryInvalidatedError extends Error {
 	readonly retryable: true;
 }
 
-export function isHeartbeatDiscoveryInvalidatedError(error: unknown): error is HeartbeatDiscoveryInvalidatedError;
+export function isHeartbeatDiscoveryInvalidatedError(
+	error: unknown,
+): error is HeartbeatDiscoveryInvalidatedError;
 
 /** Per-workspace bounded cache. Read-only reuse relies on the OS recursive watcher delivering
  * changes; watcher error or closure discards its entries. Unsupported watchers scan afresh.
  * There is no time-based refresh. Use force for write authorization, and close on owner shutdown. */
 export class HeartbeatDiscoveryIndex {
-	constructor(options?: { maxEntries?: number; watchFactory?: typeof import("node:fs").watch; scanFactory?: typeof discoverHeartbeatLedgerSources });
-	discover(options: DiscoverHeartbeatLedgersOptions, context?: { force?: boolean }): Promise<HeartbeatLedgerDiscoveryReport>;
+	constructor(options?: {
+		maxEntries?: number;
+		watchFactory?: typeof import("node:fs").watch;
+		scanFactory?: typeof discoverHeartbeatLedgerSources;
+	});
+	discover(
+		options: DiscoverHeartbeatLedgersOptions,
+		context?: { force?: boolean },
+	): Promise<HeartbeatLedgerDiscoveryReport>;
 	generation(root: string): Promise<number | null>;
 	close(): void;
 }

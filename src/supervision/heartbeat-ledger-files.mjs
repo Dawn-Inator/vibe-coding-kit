@@ -19,6 +19,7 @@ import {
 	parseWakes,
 	WAKE_HEADING_RE,
 	matchHeartbeatLedgerRow,
+	findStrayItemRows,
 } from "./check-heartbeat-ledger.mjs";
 import {
 	heartbeatAuditDueForWake,
@@ -876,6 +877,270 @@ function displayCadenceTracker() {
 		},
 	};
 }
+// The source remains authoritative. Only the display projection may summarize
+// write_set cells in a recognized Items table; all control cells remain bounded.
+async function scanDisplayHead(
+	entry,
+	{ onChunk, onLine, startPosition = 0, firstLine = 1 },
+) {
+	const chunk = Buffer.allocUnsafe(65536),
+		decoder = new TextDecoder("utf-8", { fatal: true });
+	const metadataLimit = 65536;
+	let offset = startPosition,
+		lineStart = startPosition,
+		lineNumber = firstLine,
+		stage = null,
+		headers = [];
+	let parts = [],
+		partBytes = 0,
+		column = -1,
+		eligible = false,
+		cellParts = [],
+		cellBytes = 0,
+		rawBytes = 0,
+		lastNonspace = -1,
+		omitted = [];
+	function keep(part) {
+		if (!part.length) return;
+		partBytes += part.length;
+		if (partBytes > DISPLAY_LINE_LIMIT)
+			throw new Error("Heartbeat display line exceeds limit");
+		parts.push(Buffer.from(part));
+	}
+	function isMetadata() {
+		return stage === "rows" && eligible && headers[column] === "write_set";
+	}
+	function consume(part) {
+		if (!part.length) return;
+		rawBytes += part.length;
+		for (let i = part.length - 1; i >= 0; i--)
+			if (![9, 13, 32].includes(part[i])) {
+				lastNonspace = part[i];
+				break;
+			}
+		let from = 0;
+		for (;;) {
+			const pipe = part.indexOf(124, from),
+				end = pipe < 0 ? part.length : pipe;
+			const segment = part.subarray(from, end);
+			if (isMetadata()) {
+				cellBytes += segment.length;
+				if (cellBytes <= metadataLimit) cellParts.push(Buffer.from(segment));
+				else cellParts = [];
+			} else keep(segment);
+			if (pipe < 0) break;
+			if (column === -1 && stage === "rows")
+				eligible = /^\s*$/.test(
+					Buffer.concat(parts, partBytes).toString("utf8"),
+				);
+			if (isMetadata()) {
+				if (cellBytes > metadataLimit) {
+					keep(Buffer.from("[omitted write_set metadata]"));
+					omitted.push({
+						line: lineNumber,
+						column: "write_set",
+						bytes: cellBytes,
+					});
+				} else for (const saved of cellParts) keep(saved);
+				cellParts = [];
+				cellBytes = 0;
+			}
+			keep(part.subarray(pipe, pipe + 1));
+			column++;
+			from = pipe + 1;
+		}
+	}
+	function finish(newline) {
+		if (isMetadata()) {
+			// Without a terminating pipe the row is not an Items row under the canonical parser.
+			if (cellBytes > metadataLimit)
+				throw new Error("Heartbeat display line exceeds limit");
+			for (const saved of cellParts) keep(saved);
+		}
+		if (omitted.length && lastNonspace !== 124)
+			throw new Error("Heartbeat display line exceeds limit");
+		const text = Buffer.concat(parts, partBytes).toString("utf8"),
+			trimmed = text.trim();
+		if (/^#{1,6}\s+Items\s*$/i.test(text)) {
+			stage = "header";
+			headers = [];
+		} else if (stage === "header") {
+			if (!trimmed) {
+				/* canonical parser skips blank lines before the header */
+			} else if (/^\|.*\|\s*$/.test(trimmed)) {
+				headers = trimmed
+					.slice(1, -1)
+					.split("|")
+					.map((c) => c.trim().toLowerCase().replace(/[ -]+/g, "_"));
+				stage = "separator";
+			} else stage = null;
+		} else if (stage === "separator")
+			stage = /^\|\s*:?-{2,}/.test(trimmed) ? "rows" : null;
+		else if (stage === "rows" && !/^\|.*\|\s*$/.test(trimmed)) stage = null;
+		const end = lineStart + rawBytes + (newline ? 1 : 0);
+		onLine(text, lineStart, end, newline, omitted);
+		lineStart = end;
+		lineNumber++;
+		parts = [];
+		partBytes = 0;
+		column = -1;
+		eligible = false;
+		cellParts = [];
+		cellBytes = 0;
+		rawBytes = 0;
+		lastNonspace = -1;
+		omitted = [];
+	}
+	for (;;) {
+		const { bytesRead } = await displayRead(
+			entry,
+			chunk,
+			0,
+			chunk.length,
+			offset,
+		);
+		if (!bytesRead) break;
+		const piece = chunk.subarray(0, bytesRead);
+		offset += bytesRead;
+		decoder.decode(piece, { stream: true });
+		onChunk?.(piece);
+		let from = 0;
+		for (;;) {
+			const newline = piece.indexOf(10, from);
+			if (newline < 0) {
+				consume(piece.subarray(from));
+				break;
+			}
+			consume(piece.subarray(from, newline));
+			finish(true);
+			from = newline + 1;
+		}
+	}
+	decoder.decode();
+	if (rawBytes) finish(false);
+	return offset;
+}
+
+// Retain all canonical Items inputs, task and association metadata, and line
+// positions; ordinary history prose is replaced by blank lines.
+async function displayProjectLargeHead(entry) {
+	const pairHash = createHash("sha256"),
+		headHash = createHash("sha256"),
+		retained = [],
+		omittedMetadataFields = [];
+	let retainedBytes = 0,
+		table = false,
+		headerSeen = false,
+		blankLines = 0,
+		retainedLines = 0,
+		firstLine = null;
+	function flush() {
+		if (blankLines) {
+			retained.push("\n".repeat(blankLines));
+			blankLines = 0;
+		}
+	}
+	const bytes = await scanDisplayHead(entry, {
+		onChunk(piece) {
+			pairHash.update(piece);
+			headHash.update(piece);
+		},
+		onLine(text, start, end, newline, omitted) {
+			if (start === 0) firstLine = text + (newline ? "\n" : "");
+			if (omittedMetadataFields.length + omitted.length > DISPLAY_INDEX_LIMIT)
+				throw new Error(
+					"Heartbeat display omitted metadata index exceeds limit",
+				);
+			omittedMetadataFields.push(...omitted);
+			const trimmed = text.trim(),
+				isHeading = /^#{1,6}\s+/.test(text),
+				isItems = /^#{1,6}\s+Items\s*$/i.test(text);
+			let keep =
+				isHeading ||
+				/^\s*(?:[-*]\s*)?(?:thread|thread_id|threadId)\s*:/i.test(text) ||
+				/^\s*task_root(?:\s|:|$)/i.test(text) ||
+				/^\s{0,3}(?:`{3,}|~{3,})/.test(text) ||
+				start === 0;
+			if (isItems) {
+				table = true;
+				headerSeen = false;
+			} else if (table) {
+				if (!headerSeen && !trimmed) keep = true;
+				else if (/^\|.*\|\s*$/.test(trimmed)) {
+					keep = true;
+					headerSeen = true;
+				} else table = false;
+			}
+			if (
+				!keep &&
+				trimmed.startsWith("|") &&
+				findStrayItemRows(text, []).length
+			)
+				keep = true;
+			const value = keep ? text : "",
+				length = Buffer.byteLength(value) + (newline ? 1 : 0);
+			if (retainedBytes + length > DISPLAY_HEAD_LIMIT)
+				throw new Error("Heartbeat display head projection exceeds byte limit");
+			retainedBytes += length;
+			if (!value && newline) blankLines++;
+			else {
+				flush();
+				if (++retainedLines > DISPLAY_INDEX_LIMIT)
+					throw new Error(
+						"Heartbeat display retained line index exceeds limit",
+					);
+				retained.push(value, newline ? "\n" : "");
+			}
+		},
+	});
+	flush();
+	return {
+		headText: retained.join(""),
+		headDigest: headHash.digest("hex"),
+		pairHash,
+		headMatch: HEAD.exec(firstLine ?? ""),
+		firstLine: firstLine ?? "",
+		bytes,
+		omittedMetadataFields,
+	};
+}
+async function displayScanLargeHead(entry, start, firstLine, cadenceTracker) {
+	const indexer = displayIndexer(entry.path, firstLine, cadenceTracker);
+	const length = await scanDisplayHead(entry, {
+		onLine(text, begin, end) {
+			if (end <= start) return;
+			if (begin < start)
+				throw new Error("Heartbeat planned head ends inside a line");
+			indexer.line(text, begin, end);
+		},
+	});
+	return indexer.finish(length);
+}
+async function displayHashPrefix(entry, length) {
+	const hash = createHash("sha256"),
+		buffer = Buffer.allocUnsafe(65536);
+	let offset = 0,
+		lines = 0;
+	while (offset < length) {
+		const { bytesRead } = await displayRead(
+			entry,
+			buffer,
+			0,
+			Math.min(buffer.length, length - offset),
+			offset,
+		);
+		if (!bytesRead)
+			throw displayError(
+				"Heartbeat source changed during display read",
+				"HEARTBEAT_DISPLAY_CHANGED",
+			);
+		const piece = buffer.subarray(0, bytesRead);
+		hash.update(piece);
+		for (const byte of piece) if (byte === 10) lines++;
+		offset += bytesRead;
+	}
+	return { digest: hash.digest("hex"), lines };
+}
 function displayIndexer(path, firstLine = 1, cadenceTracker) {
 	const records = [],
 		active = [];
@@ -955,19 +1220,27 @@ async function displayHashFile(entry) {
 	}
 	return hash.digest("hex");
 }
-async function displayScanHistory(entry, paths, headBuffer, cadenceTracker) {
-	const pairHash = createHash("sha256").update(headBuffer).update("\0");
+// HISTORY v3 planned payload is base64 streamed in aligned chunks; only the
+// bounded metadata prefix and the planned head's first line are retained.
+async function displayScanHistory(
+	entry,
+	paths,
+	headBuffer,
+	cadenceTracker,
+	headSize,
+) {
+	const pairHash = Buffer.isBuffer(headBuffer)
+		? createHash("sha256").update(headBuffer).update("\0")
+		: headBuffer.update("\0");
 	const bodyHash = createHash("sha256"),
-		decoder = new TextDecoder("utf-8", { fatal: true });
-	const buffer = Buffer.allocUnsafe(65536);
+		plannedHash = createHash("sha256"),
+		utf8 = new TextDecoder("utf-8", { fatal: true });
+	const buffer = Buffer.allocUnsafe(65536),
+		prefixParts = [];
 	let offset = 0,
-		pending = Buffer.alloc(0),
-		header = null,
-		bodyOffset = 0,
-		bodyLine = 2;
-	const headerChunks = [];
-	let headerBytes = 0;
-	const indexer = displayIndexer(paths.historyPath, bodyLine, cadenceTracker);
+		prefixSize = 0,
+		prefix = null,
+		markerEnd = -1;
 	for (;;) {
 		const { bytesRead } = await displayRead(
 			entry,
@@ -977,68 +1250,155 @@ async function displayScanHistory(entry, paths, headBuffer, cadenceTracker) {
 			offset,
 		);
 		if (!bytesRead) break;
-		const chunk = Buffer.from(buffer.subarray(0, bytesRead));
+		const piece = Buffer.from(buffer.subarray(0, bytesRead));
+		prefixParts.push(piece);
+		prefixSize += bytesRead;
 		offset += bytesRead;
-		pairHash.update(chunk);
-		decoder.decode(chunk, { stream: true });
-		if (header === null) {
-			const newline = chunk.indexOf(10);
-			const headerPart = newline < 0 ? chunk : chunk.subarray(0, newline + 1);
-			if (headerBytes + headerPart.length > DISPLAY_HEADER_LIMIT)
+		if (
+			prefixSize >
+			Math.min(DISPLAY_HEADER_LIMIT, DISPLAY_LINE_LIMIT) + buffer.length
+		)
+			throw new Error("Heartbeat history header exceeds display limit");
+		const combined = Buffer.concat(prefixParts, prefixSize),
+			text = combined.toString("latin1");
+		const marker = / previous=[a-f0-9]{64} planned=/.exec(text);
+		if (marker) {
+			markerEnd = marker.index + marker[0].length;
+			if (markerEnd > Math.min(DISPLAY_HEADER_LIMIT, DISPLAY_LINE_LIMIT))
 				throw new Error("Heartbeat history header exceeds display limit");
-			headerBytes += headerPart.length;
-			headerChunks.push(headerPart);
-			if (newline < 0) continue;
-			header = Buffer.concat(headerChunks, headerBytes).toString("utf8");
-			bodyOffset = headerBytes;
-			pending = chunk.subarray(newline + 1);
-		} else {
-			const newline = chunk.indexOf(10);
-			const firstLineBytes = newline < 0 ? chunk.length : newline + 1;
-			if (pending.length + firstLineBytes > DISPLAY_LINE_LIMIT)
-				throw new Error("Heartbeat display line exceeds limit");
-			pending = Buffer.concat([pending, chunk]);
+			prefix = combined.subarray(0, markerEnd);
+			break;
 		}
-		// Hash only bytes which have not previously been retained as an incomplete line.
-		let consumed = 0;
-		for (;;) {
-			const newline = pending.indexOf(10, consumed);
-			if (newline < 0) break;
-			if (newline + 1 - consumed > DISPLAY_LINE_LIMIT)
-				throw new Error("Heartbeat display line exceeds limit");
-			const bytes = pending.subarray(consumed, newline + 1);
-			bodyHash.update(bytes);
-			indexer.line(
-				bytes.subarray(0, -1).toString("utf8"),
-				bodyOffset,
-				bodyOffset + bytes.length,
-			);
-			bodyOffset += bytes.length;
-			consumed = newline + 1;
-		}
-		pending = pending.subarray(consumed);
-		if (pending.length > DISPLAY_LINE_LIMIT)
-			throw new Error("Heartbeat display line exceeds limit");
+		if (combined.indexOf(10) !== -1) break;
 	}
-	decoder.decode();
-	if (!header)
+	if (!prefix)
+		throw new Error(
+			prefixSize > Math.min(DISPLAY_HEADER_LIMIT, DISPLAY_LINE_LIMIT)
+				? "Heartbeat history header exceeds display limit"
+				: "Heartbeat history companion has an invalid, unrelated or incomplete format",
+		);
+	const prefixText = new TextDecoder("utf-8", { fatal: true }).decode(prefix);
+	const match =
+		/^<!-- heartbeat-history:v3 source=([^\s>]+) body=([a-f0-9]{64}) base=([a-f0-9]{64}) bytes=(\d+) backup=([a-f0-9]{64}) previous=([a-f0-9]{64}) planned=$/.exec(
+			prefixText,
+		);
+	if (!match || decodeURIComponent(match[1]) !== paths.headPath)
 		throw new Error(
 			"Heartbeat history companion has an invalid, unrelated or incomplete format",
 		);
-	if (pending.length) {
-		bodyHash.update(pending);
-		indexer.line(
-			pending.toString("utf8"),
-			bodyOffset,
-			bodyOffset + pending.length,
+	const bytes = Number(match[4]),
+		encodedLength = 4 * Math.ceil(bytes / 3);
+	if (
+		!Number.isSafeInteger(bytes) ||
+		bytes < 1 ||
+		bytes > headSize ||
+		!Number.isSafeInteger(encodedLength)
+	)
+		throw new Error(
+			"Heartbeat pair integrity check failed for planned head length",
 		);
-		bodyOffset += pending.length;
+	pairHash.update(prefix);
+	offset = prefix.length;
+	let remaining = encodedLength,
+		decodedBytes = 0,
+		firstLine = null,
+		lineParts = [],
+		lineLength = 0;
+	while (remaining) {
+		const want = Math.min(buffer.length, remaining);
+		let received = 0;
+		while (received < want) {
+			const { bytesRead } = await displayRead(
+				entry,
+				buffer,
+				received,
+				want - received,
+				offset + received,
+			);
+			if (!bytesRead)
+				throw new Error(
+					"Heartbeat pair integrity check failed for incomplete planned head",
+				);
+			received += bytesRead;
+		}
+		const encoded = buffer.subarray(0, want),
+			text = encoded.toString("ascii"),
+			decoded = Buffer.from(text, "base64");
+		if (
+			encoded.some((byte) => byte > 127) ||
+			!/^[A-Za-z0-9+/]*={0,2}$/.test(text) ||
+			decoded.toString("base64") !== text ||
+			(remaining > want && text.includes("="))
+		)
+			throw new Error(
+				"Heartbeat pair integrity check failed for planned base64",
+			);
+		pairHash.update(encoded);
+		plannedHash.update(decoded);
+		utf8.decode(decoded, { stream: true });
+		decodedBytes += decoded.length;
+		if (firstLine === null) {
+			const newline = decoded.indexOf(10),
+				count = newline < 0 ? decoded.length : newline + 1;
+			if (lineLength + count > DISPLAY_LINE_LIMIT)
+				throw new Error("Heartbeat planned head reference exceeds line limit");
+			lineParts.push(Buffer.from(decoded.subarray(0, count)));
+			lineLength += count;
+			if (newline >= 0)
+				firstLine = Buffer.concat(lineParts, lineLength).toString("utf8");
+		}
+		offset += want;
+		remaining -= want;
 	}
+	utf8.decode();
+	const suffix = Buffer.alloc(5);
+	let count = 0;
+	while (count < suffix.length) {
+		const result = await displayRead(
+			entry,
+			suffix,
+			count,
+			suffix.length - count,
+			offset + count,
+		);
+		if (!result.bytesRead)
+			throw new Error(
+				"Heartbeat pair integrity check failed for incomplete history header",
+			);
+		count += result.bytesRead;
+	}
+	if (!suffix.equals(Buffer.from(" -->\n")))
+		throw new Error(
+			"Heartbeat history companion has an invalid, unrelated or incomplete format",
+		);
+	pairHash.update(suffix);
+	offset += suffix.length;
+	const plannedRef = firstLine === null ? null : HEAD.exec(firstLine);
+	if (
+		decodedBytes !== bytes ||
+		plannedHash.digest("hex") !== match[3] ||
+		!plannedRef ||
+		decodeURIComponent(plannedRef[1]) !== paths.headPath ||
+		decodeURIComponent(plannedRef[2]) !== paths.historyPath
+	)
+		throw new Error("Heartbeat pair integrity check failed for planned head");
+	const indexer = displayIndexer(paths.historyPath, 2, cadenceTracker);
+	const length = await scanDisplayHead(entry, {
+		startPosition: offset,
+		firstLine: 2,
+		onChunk(piece) {
+			pairHash.update(piece);
+			bodyHash.update(piece);
+		},
+		onLine(text, start, end) {
+			indexer.line(text, start, end);
+		},
+	});
 	return {
-		header,
+		match,
 		bodyHash: bodyHash.digest("hex"),
 		contentHash: pairHash.digest("hex"),
-		records: indexer.finish(bodyOffset),
+		records: indexer.finish(length),
 	};
 }
 function displayCursor(contentHash, offset) {
@@ -1133,6 +1493,56 @@ export function clearHeartbeatDisplayCache() {
 	displayCache.clear();
 }
 
+/** Read only a bounded head projection for discovery; pair integrity is not checked. */
+export async function readHeartbeatDiscoveryHead({ root, path, onRead }) {
+	if (onRead !== undefined && typeof onRead !== "function")
+		throw new TypeError("onRead must be a function");
+	const paths = safePaths(root, path);
+	let head;
+	try {
+		head = await displayOpen(paths.headPath, false, onRead);
+		const cached = displayCache.get(paths.headPath);
+		let result;
+		if (cached && cached.fingerprints.split("|")[0] === head.fingerprint) {
+			result = {
+				headText: cached.headText,
+				headDigest: cached.headDigest,
+				headProjected: cached.headProjected,
+				omittedMetadataFields: cached.omittedMetadataFields,
+			};
+		} else if (head.info.size > BigInt(DISPLAY_HEAD_LIMIT)) {
+			const projection = await displayProjectLargeHead(head);
+			result = {
+				headText: projection.headText,
+				headDigest: projection.headDigest,
+				headProjected: true,
+				omittedMetadataFields: projection.omittedMetadataFields,
+			};
+		} else {
+			const data = await displayReadFile(head, DISPLAY_HEAD_LIMIT);
+			result = {
+				headText: data.toString("utf8"),
+				headDigest: sha(data),
+				headProjected: false,
+				omittedMetadataFields: [],
+			};
+		}
+		await displayUnchanged(head);
+		safePaths(root, path);
+		return {
+			...result,
+			omittedMetadataFields: result.omittedMetadataFields.map((entry) => ({
+				...entry,
+			})),
+		};
+	} catch (error) {
+		await displayUnchanged(head);
+		throw error;
+	} finally {
+		await head?.file.close();
+	}
+}
+
 /** Authenticated, bounded display projection; never a full business audit. */
 export async function readHeartbeatDisplay({
 	root,
@@ -1142,8 +1552,11 @@ export async function readHeartbeatDisplay({
 	now = new Date(),
 	onRead,
 	inspect = inspectHeartbeatLedger,
+	canonicalDisplayOnly = false,
 	intervalMinutes,
 }) {
+	if (typeof canonicalDisplayOnly !== "boolean")
+		throw new TypeError("canonicalDisplayOnly must be boolean");
 	if (typeof inspect !== "function")
 		throw new TypeError("inspect must be a function");
 	if (onRead !== undefined && typeof onRead !== "function")
@@ -1172,9 +1585,24 @@ export async function readHeartbeatDisplay({
 				.join("|");
 		let snapshot = displayCache.get(cacheKey);
 		if (!snapshot || snapshot.fingerprints !== fingerprints) {
-			const headBuffer = await displayReadFile(head, DISPLAY_HEAD_LIMIT),
-				headText = headBuffer.toString("utf8"),
-				headMatch = HEAD.exec(headText);
+			const projected = head.info.size > BigInt(DISPLAY_HEAD_LIMIT);
+			if (
+				projected &&
+				inspect !== inspectHeartbeatLedger &&
+				!canonicalDisplayOnly
+			)
+				throw new Error(
+					"Large heartbeat head requires canonical-display-only inspection",
+				);
+			const projection = projected ? await displayProjectLargeHead(head) : null;
+			const headBuffer = projected
+					? null
+					: await displayReadFile(head, DISPLAY_HEAD_LIMIT),
+				headText = projected
+					? projection.headText
+					: headBuffer.toString("utf8"),
+				headMatch = projected ? projection.headMatch : HEAD.exec(headText),
+				headDigest = projected ? projection.headDigest : sha(headBuffer);
 			let records, contentHash, isLegacy;
 			const cadenceTracker = displayCadenceTracker();
 			if (!history) {
@@ -1183,17 +1611,22 @@ export async function readHeartbeatDisplay({
 						"Canonical heartbeat head references a missing history companion",
 					);
 				isLegacy = true;
-				contentHash = createHash("sha256")
-					.update(headBuffer)
+				contentHash = (
+					projected
+						? projection.pairHash
+						: createHash("sha256").update(headBuffer)
+				)
 					.update("\0")
 					.digest("hex");
-				records = indexDisplayBuffer(
-					headBuffer,
-					paths.headPath,
-					0,
-					1,
-					cadenceTracker,
-				);
+				records = projected
+					? await displayScanLargeHead(head, 0, 1, cadenceTracker)
+					: indexDisplayBuffer(
+							headBuffer,
+							paths.headPath,
+							0,
+							1,
+							cadenceTracker,
+						);
 			} else {
 				if (!backup)
 					throw new Error(
@@ -1202,21 +1635,11 @@ export async function readHeartbeatDisplay({
 				const scanned = await displayScanHistory(
 						history,
 						paths,
-						headBuffer,
+						projected ? projection.pairHash : headBuffer,
 						cadenceTracker,
+						projected ? projection.bytes : headBuffer.length,
 					),
-					match = HISTORY.exec(scanned.header);
-				if (
-					!match ||
-					match[0] !== scanned.header ||
-					decodeURIComponent(match[1]) !== paths.headPath
-				)
-					throw new Error(
-						"Heartbeat history companion has an invalid, unrelated or incomplete format",
-					);
-				const plannedBuffer = Buffer.from(match[7], "base64"),
-					planned = plannedBuffer.toString("utf8"),
-					plannedRef = HEAD.exec(planned),
+					match = scanned.match,
 					bytes = Number(match[4]);
 				if (
 					!headMatch ||
@@ -1228,14 +1651,7 @@ export async function readHeartbeatDisplay({
 					);
 				if (
 					scanned.bodyHash !== match[2] ||
-					(await displayHashFile(backup)) !== match[5] ||
-					plannedBuffer.toString("base64") !== match[7] ||
-					!Buffer.from(planned, "utf8").equals(plannedBuffer) ||
-					sha(plannedBuffer) !== match[3] ||
-					plannedBuffer.length !== bytes ||
-					!plannedRef ||
-					decodeURIComponent(plannedRef[1]) !== paths.headPath ||
-					decodeURIComponent(plannedRef[2]) !== paths.historyPath
+					(await displayHashFile(backup)) !== match[5]
 				)
 					throw new Error(
 						"Heartbeat pair integrity check failed for history, backup or planned head",
@@ -1243,24 +1659,46 @@ export async function readHeartbeatDisplay({
 				if (
 					!Number.isSafeInteger(bytes) ||
 					bytes < Buffer.byteLength(headMatch[0]) ||
-					bytes > headBuffer.length ||
-					sha(headBuffer.subarray(0, bytes)) !== match[3]
+					bytes > (projected ? projection.bytes : headBuffer.length)
 				)
 					throw new Error(
 						"Heartbeat pair is incomplete or current head was modified; recovery required",
 					);
-				const prefixLines =
-					headBuffer.subarray(0, bytes).toString("utf8").split("\n").length - 1;
-				records = [
-					...scanned.records,
-					...indexDisplayBuffer(
-						headBuffer,
-						paths.headPath,
-						bytes,
-						prefixLines + 1,
-						cadenceTracker,
-					),
-				];
+				const entireHeadPlanned =
+					bytes === (projected ? projection.bytes : headBuffer.length);
+				// When the prefix is the whole head, the already streamed physical
+				// digest is exactly the required prefix digest and no suffix exists.
+				const prefix = entireHeadPlanned
+					? { digest: headDigest, lines: 0 }
+					: projected
+						? await displayHashPrefix(head, bytes)
+						: {
+								digest: sha(headBuffer.subarray(0, bytes)),
+								lines:
+									headBuffer.subarray(0, bytes).toString("utf8").split("\n")
+										.length - 1,
+							};
+				if (prefix.digest !== match[3])
+					throw new Error(
+						"Heartbeat pair is incomplete or current head was modified; recovery required",
+					);
+				const suffixRecords = entireHeadPlanned
+					? []
+					: projected
+						? await displayScanLargeHead(
+								head,
+								bytes,
+								prefix.lines + 1,
+								cadenceTracker,
+							)
+						: indexDisplayBuffer(
+								headBuffer,
+								paths.headPath,
+								bytes,
+								prefix.lines + 1,
+								cadenceTracker,
+							);
+				records = [...scanned.records, ...suffixRecords];
 				if (records.length > DISPLAY_INDEX_LIMIT)
 					throw new Error("Heartbeat display wake index exceeds limit");
 				contentHash = scanned.contentHash;
@@ -1284,7 +1722,9 @@ export async function readHeartbeatDisplay({
 			snapshot = {
 				fingerprints,
 				headText,
-				headDigest: sha(headBuffer),
+				headDigest,
+				headProjected: projected,
+				omittedMetadataFields: projection?.omittedMetadataFields ?? [],
 				records,
 				lastCompleteWake: cadenceTracker.finish(),
 				contentHash,
@@ -1300,6 +1740,14 @@ export async function readHeartbeatDisplay({
 			if (displayCache.size > 4)
 				displayCache.delete(displayCache.keys().next().value);
 		}
+		if (
+			snapshot.headProjected &&
+			inspect !== inspectHeartbeatLedger &&
+			!canonicalDisplayOnly
+		)
+			throw new Error(
+				"Large heartbeat head requires canonical-display-only inspection",
+			);
 		const cursorVersion = sha(`${snapshot.contentHash}\0${fingerprints}`);
 		const offset = readDisplayCursor(
 			cursor,
@@ -1348,8 +1796,22 @@ export async function readHeartbeatDisplay({
 				isLegacy: true,
 				wakes: [],
 			},
-			{ mode: "items", now, ledgerPath: paths.headPath, inspect },
+			{
+				mode: "items",
+				now,
+				ledgerPath: paths.headPath,
+				inspect:
+					snapshot.headProjected && canonicalDisplayOnly
+						? inspectHeartbeatLedger
+						: inspect,
+			},
 		);
+		// A structural display may omit write_set bytes, so it cannot claim a
+		// complete Items audit even if the retained fields have no errors.
+		if (snapshot.omittedMetadataFields.length) {
+			inventory.passed = false;
+			inventory.certifiesCurrent = false;
+		}
 		await Promise.all([
 			displayUnchanged(head),
 			displayUnchanged(history),
@@ -1374,6 +1836,11 @@ export async function readHeartbeatDisplay({
 				lastRecordedTime = record.timeMs;
 		return {
 			headText: snapshot.headText,
+			headProjected: snapshot.headProjected,
+			customChecks: snapshot.headProjected ? "not-performed" : "as-configured",
+			omittedMetadataFields: snapshot.omittedMetadataFields.map((entry) => ({
+				...entry,
+			})),
 			headDigest: snapshot.headDigest,
 			contentHash: snapshot.contentHash,
 			integrity: "verified",

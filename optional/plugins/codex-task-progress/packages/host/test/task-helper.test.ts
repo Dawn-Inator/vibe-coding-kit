@@ -3759,6 +3759,15 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
         },
         status: { type: "active", activeFlags: [] },
       },
+      ...(parentThreadId === "source-chat-stale"
+        ? Array.from({ length: 26 }, (_, i) => ({
+            id: `stale-active-${i}`,
+            parentThreadId,
+            cwd: root,
+            source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+            status: { type: "active", activeFlags: [] },
+          }))
+        : []),
       {
         id: "foreign-child",
         parentThreadId: "different-chat",
@@ -4055,56 +4064,44 @@ test("native get uses a ready bound Kit heartbeat source when no task lifecycle 
       turnCollections.filter((thread) => thread === "source-chat").length > firstScopeCalls,
     );
 
+    const expectActivity = async (threadId: string, expectedCount: number) => {
+      let snapshot = await native(threadId);
+      for (let i = 0; i < 150 && snapshot.subagents.agents.length !== expectedCount; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        snapshot = await native(threadId);
+      }
+      assert.equal(snapshot.subagents.parentThreadId, threadId);
+      assert.equal(snapshot.subagents.agents.length, expectedCount);
+      assert.equal(
+        snapshot.subagents.agents.some((agent) => agent.id === "foreign-child"),
+        false,
+      );
+      assert.ok(
+        snapshot.subagents.agents.every(
+          (agent) => agent.progress == null && agent.progressBasis == null,
+        ),
+      );
+      const model = await modelGet(threadId);
+      assert.equal(model.subagents.agents.length, expectedCount);
+      assert.ok(model.subagents.agents.every((agent) => agent.progress == null));
+      return snapshot;
+    };
     for (const status of ["pending", "pending-selection", "error", "stale"] as const) {
       sourceStatus = status;
       now += 5_001;
       const threadId = `source-chat-${status}`;
-      result = await waitForProjection(threadId, status, sourcePath, false);
-      assert.notEqual(result.subagents.status, "ready", `${status} source must not be used`);
-      assert.deepEqual(result.subagents.agents, [], `${status} source must not leak cached agents`);
-      assert.equal(
-        turnCollections.filter((thread) => thread === threadId).length,
-        0,
-        `${status} source must not trigger collection for its chat`,
-      );
-      const model = await modelGet(threadId);
-      assert.equal(model.taskSource?.status, status);
-      assert.notEqual(model.subagents.status, "ready");
-      assert.deepEqual(model.subagents.agents, []);
-      assert.equal(turnCollections.filter((thread) => thread === threadId).length, 0);
+      await waitForProjection(threadId, status, sourcePath, false);
+      const snapshot = await expectActivity(threadId, status === "stale" ? 27 : 1);
+      assert.equal(snapshot.taskSource?.status, status);
     }
-
     sourceStatus = "ready";
     now += 5_001;
-    result = await waitForProjection("source-chat-mismatch", "ready", sourcePath, false);
-    assert.equal(
-      result.subagents.status,
-      "unavailable",
-      "mismatched task/source hashes cannot select a scope",
-    );
-    assert.deepEqual(result.subagents.agents, []);
-    assert.equal(turnCollections.filter((thread) => thread === "source-chat-mismatch").length, 0);
-    const mismatchedModel = await modelGet("source-chat-mismatch");
-    assert.equal(mismatchedModel.subagents.status, "unavailable");
-    assert.deepEqual(mismatchedModel.subagents.agents, []);
-    assert.equal(turnCollections.filter((thread) => thread === "source-chat-mismatch").length, 0);
-
+    await waitForProjection("source-chat-mismatch", "ready", sourcePath, false);
+    const mismatch = await expectActivity("source-chat-mismatch", 1);
+    assert.equal(mismatch.taskSource?.status, "ready");
     now += 5_001;
-    let noScope = await native("source-chat-no-scope");
-    for (let i = 0; i < 100 && noScope.subagents.status !== "unavailable"; i++) {
-      await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
-      noScope = await native("source-chat-no-scope");
-    }
+    const noScope = await expectActivity("source-chat-no-scope", 1);
     assert.equal(noScope.taskSource, null);
-    assert.equal(noScope.subagents.parentThreadId, "source-chat-no-scope");
-    assert.equal(noScope.subagents.status, "unavailable");
-    assert.deepEqual(noScope.subagents.agents, []);
-    assert.equal(turnCollections.filter((thread) => thread === "source-chat-no-scope").length, 0);
-    const unscopedModel = await modelGet("source-chat-no-scope");
-    assert.equal(unscopedModel.taskSource, null);
-    assert.equal(unscopedModel.subagents.status, "unavailable");
-    assert.deepEqual(unscopedModel.subagents.agents, []);
-    assert.equal(turnCollections.filter((thread) => thread === "source-chat-no-scope").length, 0);
   } finally {
     Date.now = originalNow;
     HeartbeatService.prototype.taskProjection = originalProjection;

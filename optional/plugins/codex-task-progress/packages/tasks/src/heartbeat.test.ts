@@ -2302,3 +2302,34 @@ test("private full-source assignments include leaves beyond the panel window and
     await f.close();
   }
 });
+
+test("bound large head uses canonical display inventory with project inspector configured", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(
+      f.source,
+      [
+        "# Supervision",
+        "thread: large-chat",
+        "## Items",
+        "| id | source | item | status | evidence |",
+        "| --- | --- | --- | --- | --- |",
+        "| I1 | report:r1 | actual item | done | verified |",
+        "## 2026-11-11T09:00:00Z wake (10-row ledger)",
+        "",
+      ].join("\n"),
+    );
+    assert.equal((await f.service.bind("large-chat", f.source, f.project))?.status, "ready");
+    await appendFile(
+      f.source,
+      `## Notes\n${"x".repeat(4095).concat("\n").repeat(8193)}## 2026-11-11T10:00:00Z wake (10-row ledger)\n`,
+    );
+    const projected = await f.service.taskProjection("large-chat", f.project);
+    assert.equal(projected.status, "ready", projected.error);
+    assert.equal(projected.task?.objectives[0]?.id, "I1");
+    const history = await f.service.history("large-chat", f.project);
+    assert.equal(history.total, 2);
+  } finally {
+    await f.close();
+  }
+});

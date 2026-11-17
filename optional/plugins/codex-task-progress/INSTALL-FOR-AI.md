@@ -1,4 +1,4 @@
-# Install Task Progress 0.12.0
+# Install Task Progress 0.12.1
 
 In version 0.7.6, a known, verified chat and project scope can immediately show its last in-memory snapshot when returning to a window while canonical refresh runs in the background when due. A background error retains the last display without asserting it is current. Unsupported, untrusted, moved, or disabled contexts do not inherit another scope’s snapshot. The panel restores the selected task, History or Heartbeat tab and relevant expanded selections only for the matching context. Polling remains independent at five seconds; a five-second snapshot lease avoids duplicate work and pending reads retain fast follow-ups. Cold scopes without a snapshot still need an initial read, so no universal instant or one-second display is promised. Task models and writes continue to use canonical authority; no disk or browser storage is added.
 
@@ -42,7 +42,7 @@ corepack pnpm test:ui
 GOAL_PROGRESS_NODE_BINARY=/absolute/path/to/node-v24.19.0-darwin-arm64/bin/node corepack pnpm build:release:macos
 ```
 
-The release is under `dist/release/macos-arm64`. Verify its version is `0.12.0`. Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; The user confirmed that 0.9.4 restored the native page; actual current host visibility and data remain separate verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
+The release is under `dist/release/macos-arm64`. Verify its version is `0.12.1`. Version 0.9.4 retains `task_progress_dashboard` and advertises the stable protocol address `ui://codex-task-progress/panel-v1.html`, independently of the plugin release version. It relies on the host’s package-revision cache dimension for updates. Published versioned URIs remain read-only aliases serving the current server’s embedded HTML; unknown future URIs are rejected. In actual 0.9.3 acceptance the host displayed “Couldn’t display” and “Try again”; The user confirmed that 0.9.4 restored the native page; actual current host visibility and data remain separate verification. If needed, a chat catalog refresh may be tried, but its effect has not been verified. Do not restart Codex. Keep build/check results, Helper health (`doctor --json`, `verify --json`), plugin registration, and actual native panel visibility/data as separate evidence.
 
 ## Signing and protected folders
 
@@ -69,6 +69,8 @@ An optional standalone `task_root: <Items ID>` selects a tracking root and its l
 Version 0.9.0 shows a frameless allocation ring for the recorded running-agent count against an explicit agent plan. The after-audit Heartbeat observation supplies the numerator and the before-to-after observation is supporting context; listed agents are not the denominator. A missing or unmatched plan or observation, zero denominator, or an over-plan count does not produce a misleading progress arc. Unknown values use a gray ring. This is a timestamped observation, not a live Desktop count. The native entry moves to `task_progress_dashboard`; `task_progress_panel` remains model-only and read-only for compatibility. Native rendering and migration must be verified in the host.
 
 Version 0.9.2 aligns Archive header and row hover hit regions to consistent inset boundaries, with coherent spacing and corner radii. Long archive titles stay compact with an ellipsis while collapsed and show their full text with wrapping when expanded, while the date remains visible. Archive data and logic are unchanged. Verify this UI in the native host; release and build checks do not establish host acceptance.
+
+The 0.12.1 candidate separates parent-chat activity observation from task-source availability, so a stale source does not hide verified agent activity. Task percentages still require a valid canonical source. Bounded streaming support for large ledger heads is intended to make them discoverable and readable without loading the whole head at once; real-data compatibility and native display require verification.
 
 ## Storage compatibility
 

@@ -787,6 +787,43 @@ test("native panel MCP Apps integration", async (t) => {
           };
           await verifyCurrentData();
 
+          // A source failure must not erase verified parent-thread activity.
+          await page.evaluate((base) => {
+            window.currentResponse = {
+              ...base,
+              task: null,
+              taskSource: { ...base.taskSource, status: "stale" },
+              subagents: {
+                ...base.subagents,
+                scopeBasis: "parent-thread",
+                taskSourcePath: null,
+                runningCount: 27,
+                runningBasis: "runtime",
+                agents: Array.from({ length: 27 }, (_, i) => ({
+                  ...base.subagents.agents[0],
+                  id: `agent-${i}`,
+                  name: `Agent ${i}`,
+                })),
+              },
+            };
+            window.deliverToolResult(window.currentThreadId, window.currentResponse);
+          }, response);
+          await frame.getByText("Agent 0", { exact: true }).waitFor();
+          assert.equal(await frame.locator(".agent-row").count(), 27);
+          const unbound = await panel.evaluate((element) => element.currentRunSubagents());
+          assert.ok(
+            unbound.agents.every(
+              (agent) => agent.progress === null && agent.progressBasis === null,
+            ),
+          );
+          assert.equal(unbound.allocation, undefined);
+          await page.evaluate((base) => {
+            window.currentResponse = base;
+            window.deliverToolResult(window.currentThreadId, base);
+          }, response);
+          await frame.getByText("Current root member", { exact: true }).waitFor();
+          await verifyCurrentData();
+
           // A legacy model result may carry an updated source revision but omit
           // agents while the authenticated native read is still in flight.
           const callsBeforeLegacy = await page.evaluate(() => window.hostCalls.length);

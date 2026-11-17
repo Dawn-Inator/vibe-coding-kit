@@ -929,6 +929,7 @@ export class HeartbeatService {
         return false;
       if (candidate.path !== (await realpath(view.sourcePath))) return false;
       const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
+        canonicalDisplayOnly: true,
         root,
         path: candidate.path,
         now: this.#now(),
@@ -1192,6 +1193,7 @@ export class HeartbeatService {
       const cadenceMinutes =
         typeof cadence === "number" && cadence > 0 && Number.isFinite(cadence) ? cadence : null;
       const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
+        canonicalDisplayOnly: true,
         root,
         path: source,
         now: this.#now(),
@@ -1262,6 +1264,7 @@ export class HeartbeatService {
     let pageSize = limit;
     while (true) {
       const pair = await api.readHeartbeatDisplay({
+        canonicalDisplayOnly: true,
         root,
         path: sourcePath,
         now: this.#now(),
@@ -1474,6 +1477,7 @@ export class HeartbeatService {
       const config = await this.#config(root);
       const inspect = await this.#inspector(root, config);
       const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
+        canonicalDisplayOnly: true,
         root,
         path: view.sourcePath,
         now: this.#now(),
@@ -1564,6 +1568,7 @@ export class HeartbeatService {
         throw new Error("Heartbeat source must be a valid project ledger within the read limit.");
       const absolutePath = candidate.path;
       const pair = await (await loadPairFilesApi()).readHeartbeatDisplay({
+        canonicalDisplayOnly: true,
         root,
         path: absolutePath,
         now: this.#now(),

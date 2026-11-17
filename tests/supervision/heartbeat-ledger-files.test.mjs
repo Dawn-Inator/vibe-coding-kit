@@ -30,12 +30,18 @@ import {
 	migrateHeartbeatLedgerPair,
 	readHeartbeatLedgerPair,
 	readHeartbeatDisplay,
+	readHeartbeatDiscoveryHead,
 	clearHeartbeatDisplayCache,
 	readHeartbeatLedgerPairVersion,
 	recoverHeartbeatLedgerPair,
 	writeHeartbeatLedgerPair,
 } from "../../src/supervision/heartbeat-ledger-files.mjs";
-import { discoverHeartbeatLedgers } from "../../src/tasks/heartbeat-task-source.mjs";
+import {
+	discoverHeartbeatLedgers,
+	discoverBoundHeartbeatSource,
+	parseHeartbeatTaskRoot,
+	projectHeartbeatTask,
+} from "../../src/tasks/heartbeat-task-source.mjs";
 import { inspectHeartbeatLedger } from "../../src/supervision/heartbeat-ledger-api.mjs";
 import { readProjectHeartbeat } from "../../src/tasks/project-heartbeat.mjs";
 import { atomicWriteFileSync } from "../../src/tasks/task-io.mjs";
@@ -902,8 +908,16 @@ test("bounded reads reject non-regular companions without waiting for a writer",
 	);
 	const nonBlocking = constants.O_NONBLOCK ?? 0;
 	const noFollow = constants.O_NOFOLLOW ?? 0;
-	assert.equal(flagsByPath.get(companion) & nonBlocking, nonBlocking, "opens without waiting for a writer");
-	assert.equal(flagsByPath.get(companion) & noFollow, noFollow, "refuses to follow links");
+	assert.equal(
+		flagsByPath.get(companion) & nonBlocking,
+		nonBlocking,
+		"opens without waiting for a writer",
+	);
+	assert.equal(
+		flagsByPath.get(companion) & noFollow,
+		noFollow,
+		"refuses to follow links",
+	);
 });
 
 test("orchestration metadata survives append, restart and pair writes without rewriting history", () => {
@@ -1253,9 +1267,9 @@ test("display enforces head, header, line and page budgets before large reads or
 	};
 	await assert.rejects(
 		readHeartbeatDisplay({ root: dir, path, onRead }),
-		/head exceeds/,
+		/line exceeds/,
 	);
-	assert.equal(total, 0);
+	assert.ok(total <= 1024 * 1024 + 65536);
 	writeFileSync(path, "legacy");
 	writeFileSync(paths.historyPath, "x");
 	truncateSync(paths.historyPath, 48 * 1024 * 1024 + 1);
@@ -1453,4 +1467,300 @@ test("large history cadence survives paging without rescanning the history", asy
 	});
 	assert.deepEqual(second.cadence, first.cadence);
 	assert.ok(historyBytes < 8192);
+});
+
+test("large appended head keeps canonical inventory, digest, binding and bounded history pages", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	const initial = `# Project\nthread: parent\ntask_root: I1\n## Items\n\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | report:r1 | current | done | receipt |\n${wake("2026-01-01T10:00Z")}`;
+	writeFileSync(path, initial);
+	migrate({ root: dir, path });
+	appendFileSync(
+		path,
+		`## Notes\n${"x".repeat(4095).concat("\n").repeat(8193)}${wake("2026-01-01T11:00Z")}${wake("2026-01-01T12:00Z")}`,
+	);
+	assert.ok(statSync(path).size > 32 * 1024 * 1024);
+	clearHeartbeatDisplayCache();
+	let bytes = 0,
+		maxRead = 0;
+	const onRead = (read) => {
+		bytes += read.bytes;
+		maxRead = Math.max(maxRead, read.bytes);
+	};
+	const first = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		pageSize: 1,
+		onRead,
+	});
+	assert.equal(first.headProjected, true);
+	assert.ok(maxRead <= 65536);
+	assert.equal(first.customChecks, "not-performed");
+	assert.ok(Buffer.byteLength(first.headText) < 1024 * 1024);
+	assert.equal(
+		first.headDigest,
+		createHash("sha256").update(readFileSync(path)).digest("hex"),
+	);
+	assert.equal(first.contentHash, version(path));
+	assert.equal(first.inventory.items[0].id, "I1");
+	assert.equal(parseHeartbeatTaskRoot(first.headText), "I1");
+	assert.ok(first.historyPage.total >= 3);
+	assert.ok(first.historyPage.nextCursor);
+	const discovery = await discoverBoundHeartbeatSource({
+		root: dir,
+		ledgerPath: path,
+		threadId: "parent",
+	});
+	assert.equal(discovery.complete, false);
+	assert.equal(discovery.boundSourceDigest, first.headDigest);
+	assert.deepEqual(discovery.candidates, [{ path, associated: true }]);
+	bytes = 0;
+	const next = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		pageSize: 1,
+		cursor: first.historyPage.nextCursor,
+		onRead,
+	});
+	assert.ok(bytes < 8192);
+	assert.notEqual(
+		next.historyPage.wakes[0].heading,
+		first.historyPage.wakes[0].heading,
+	);
+	const custom = (text, options) => inspectHeartbeatLedger(text, options);
+	await assert.rejects(
+		readHeartbeatDisplay({ root: dir, path, inspect: custom }),
+		/canonical-display-only/,
+	);
+	const canonical = await readHeartbeatDisplay({
+		root: dir,
+		path,
+		inspect: custom,
+		canonicalDisplayOnly: true,
+	});
+	assert.equal(canonical.customChecks, "not-performed");
+	assert.equal(canonical.inventory.certifiesCurrent, false);
+	appendFileSync(path, "\n| I2 | report:r2 | stray | done | evidence |\n");
+	const invalid = await readHeartbeatDisplay({ root: dir, path });
+	assert.ok(
+		invalid.inventory.findings.some((f) => f.rule === "item-outside-table"),
+	);
+	appendFileSync(path, "task_root: I2\n");
+	const duplicate = await readHeartbeatDisplay({ root: dir, path });
+	assert.throws(
+		() => parseHeartbeatTaskRoot(duplicate.headText),
+		/exactly once/,
+	);
+	appendFileSync(path, "thread: another-chat\n");
+	const conflicting = await discoverBoundHeartbeatSource({
+		root: dir,
+		ledgerPath: path,
+		threadId: "parent",
+	});
+	assert.equal(conflicting.candidates[0].associated, false);
+});
+
+test("large legacy head remains source bound without migration", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(
+		path,
+		`# Legacy\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I1 | report:r | item | done | receipt |\n## History\n`,
+	);
+	appendFileSync(
+		path,
+		`${"x".repeat(4095).concat("\n").repeat(8193)}${wake("2026-01-01T10:00Z")}`,
+	);
+	const result = await readHeartbeatDisplay({ root: dir, path });
+	assert.equal(result.isLegacy, true);
+	assert.equal(result.headProjected, true);
+	assert.equal(result.inventory.items[0].id, "I1");
+	assert.equal(
+		result.headDigest,
+		createHash("sha256").update(readFileSync(path)).digest("hex"),
+	);
+	assert.equal(existsSync(heartbeatLedgerPairPaths(path).historyPath), false);
+});
+
+test("large write_set cells remain bounded while later identity columns and source hashes survive", async () => {
+	const payloads = [18, 14, 8].map((n) => "x".repeat(n * 1024 * 1024));
+	for (const paired of [false, true]) {
+		const dir = realpathSync(root()),
+			path = join(dir, "heartbeat.md"),
+			paths = heartbeatLedgerPairPaths(path);
+		const marker = paired
+			? `<!-- heartbeat-head:v2 source=${encodeURIComponent(path)} history=${encodeURIComponent(paths.historyPath)} -->\n`
+			: "";
+		const rows = payloads
+			.map(
+				(value, index) =>
+					`| I${index + 1} | report:r${index + 1} | item ${index + 1} | done | receipt | owner-${index} |${value}| agent-${index} |`,
+			)
+			.join("\n");
+		const head = `${marker}# Project\nthread: metadata-chat\n## Items\n| id | source | item | status | evidence | owner | write_set | agent_thread_id |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n${rows}\n${wake("2026-01-01T10:00Z")}`;
+		writeFileSync(path, head);
+		let history = "";
+		const hash = (value) => createHash("sha256").update(value).digest("hex");
+		if (paired) {
+			const backup = "legacy backup\n",
+				body = head.slice(marker.length);
+			history = `<!-- heartbeat-history:v3 source=${encodeURIComponent(path)} body=${hash(body)} base=${hash(head)} bytes=${Buffer.byteLength(head)} backup=${hash(backup)} previous=${hash(backup)} planned=${Buffer.from(head).toString("base64")} -->\n${body}`;
+			assert.ok(history.indexOf("\n") > 48 * 1024 * 1024);
+			writeFileSync(paths.historyPath, history);
+			writeFileSync(paths.legacyBackupPath, backup);
+		}
+		clearHeartbeatDisplayCache();
+		let maxRead = 0,
+			totalRead = 0,
+			headRead = 0;
+		const onRead = (read) => {
+			maxRead = Math.max(maxRead, read.bytes);
+			totalRead += read.bytes;
+			if (read.path === path) headRead += read.bytes;
+		};
+		const result = await readHeartbeatDisplay({
+			root: dir,
+			path,
+			pageSize: 1,
+			onRead,
+		});
+		assert.equal(result.headProjected, true);
+		if (paired)
+			assert.equal(
+				headRead,
+				Buffer.byteLength(head),
+				"full planned head is streamed once, with no redundant prefix or empty-suffix scan",
+			);
+		assert.equal(result.customChecks, "not-performed");
+		assert.equal(result.inventory.certifiesCurrent, false);
+		assert.equal(result.inventory.passed, false);
+		assert.equal(result.inventory.items.length, 3);
+		assert.deepEqual(
+			result.omittedMetadataFields.map((x) => [x.column, x.bytes]),
+			payloads.map((x) => ["write_set", Buffer.byteLength(x)]),
+		);
+		assert.deepEqual(
+			result.inventory.items.map((x) => x.agent_thread_id),
+			["agent-0", "agent-1", "agent-2"],
+		);
+		assert.deepEqual(
+			result.inventory.items.map((x) => x.line),
+			[paired ? 7 : 6, paired ? 8 : 7, paired ? 9 : 8],
+		);
+		assert.ok(
+			result.inventory.items.every((x) =>
+				x.write_set.includes("omitted write_set"),
+			),
+		);
+		assert.equal(result.headDigest, hash(head));
+		assert.equal(
+			result.contentHash,
+			createHash("sha256")
+				.update(head)
+				.update("\0")
+				.update(history)
+				.digest("hex"),
+		);
+		const task = projectHeartbeatTask({
+			report: result.inventory,
+			root: dir,
+			path,
+			threadId: "metadata-chat",
+			contentHash: result.contentHash,
+			modifiedAt: result.modifiedAt,
+		});
+		assert.equal(task.objectives.length, 3);
+		assert.equal(task.source.itemOwners.I3.agentThreadId, "agent-2");
+		const bound = await discoverBoundHeartbeatSource({
+			root: dir,
+			ledgerPath: path,
+			threadId: "metadata-chat",
+		});
+		assert.equal(bound.boundSourceDigest, hash(head));
+		assert.equal(bound.candidates[0].associated, true);
+		assert.ok(maxRead <= 65536);
+		totalRead = 0;
+		await readHeartbeatDisplay({ root: dir, path, pageSize: 1, onRead });
+		assert.ok(totalRead < 8192);
+		const custom = (text, options) => inspectHeartbeatLedger(text, options);
+		await assert.rejects(
+			readHeartbeatDisplay({ root: dir, path, inspect: custom }),
+			/canonical-display-only/,
+		);
+		assert.equal(
+			(
+				await readHeartbeatDisplay({
+					root: dir,
+					path,
+					inspect: custom,
+					canonicalDisplayOnly: true,
+				})
+			).customChecks,
+			"not-performed",
+		);
+		if (paired) {
+			writeFileSync(paths.historyPath, "invalid header\n");
+			const headOnly = await readHeartbeatDiscoveryHead({ root: dir, path });
+			assert.equal(headOnly.headDigest, hash(head));
+			const discovery = await discoverBoundHeartbeatSource({
+				root: dir,
+				ledgerPath: path,
+				threadId: "metadata-chat",
+			});
+			assert.equal(discovery.candidates[0].associated, true);
+			await assert.rejects(
+				readHeartbeatDisplay({ root: dir, path }),
+				/invalid|format|integrity/,
+			);
+		}
+	}
+});
+
+test("large control and unrecognized metadata cells remain fail closed", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	for (const field of ["status", "children", "unrecognized"]) {
+		const header = `| id | source | item | status | evidence | ${field === "status" ? "note" : field} |`;
+		const status = field === "status" ? "x".repeat(33 * 1024 * 1024) : "done";
+		const other = field === "status" ? "-" : "x".repeat(33 * 1024 * 1024);
+		writeFileSync(
+			path,
+			`## Items\n${header}\n| --- | --- | --- | --- | --- | --- |\n| I | report:r | task | ${status} | evidence | ${other} |\n`,
+		);
+		await assert.rejects(
+			readHeartbeatDisplay({ root: dir, path }),
+			/line exceeds limit/,
+		);
+	}
+});
+
+test("streamed planned header rejects noncanonical payloads and incomplete publication", async () => {
+	const dir = realpathSync(root()),
+		path = join(dir, "heartbeat.md");
+	writeFileSync(
+		path,
+		`${wake("2026-01-01T10:00Z")}## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| I | report:r | task | done | receipt |\n`,
+	);
+	migrate({ root: dir, path });
+	const paths = heartbeatLedgerPairPaths(path),
+		original = readFileSync(paths.historyPath, "utf8");
+	const planned = /planned=([A-Za-z0-9+/=]+)/.exec(original)[1];
+	const variants = [
+		original.replace(`planned=${planned}`, `planned=${"=" + planned.slice(1)}`),
+		original.replace(/ bytes=(\d+) /, (_, n) => ` bytes=${Number(n) + 1} `),
+		original.replace(
+			`planned=${planned}`,
+			`planned=${(planned[0] === "A" ? "B" : "A") + planned.slice(1)}`,
+		),
+		original.replace(" -->\n", " extra -->\n"),
+		original.slice(0, original.indexOf("planned=") + 12),
+	];
+	for (const invalid of variants) {
+		writeFileSync(paths.historyPath, invalid);
+		clearHeartbeatDisplayCache();
+		await assert.rejects(
+			readHeartbeatDisplay({ root: dir, path }),
+			/invalid|integrity|incomplete|format/,
+		);
+	}
 });

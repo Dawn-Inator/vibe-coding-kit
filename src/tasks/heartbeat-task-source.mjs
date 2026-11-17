@@ -5,6 +5,7 @@ import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { calculateTaskProgress } from "./task-contract.mjs";
 import { summarizeHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
+import { readHeartbeatDiscoveryHead } from "../supervision/heartbeat-ledger-files.mjs";
 import {
 	createProjectLedgerPathScan,
 	isProjectPathWithinRoot,
@@ -21,18 +22,32 @@ const SKIP = new Set([
 	".tmp",
 ]);
 const MAX_SCAN_BYTES = 8 * 1024 * 1024;
-/** Total head and history budget for explicitly bound heartbeat sources. */
+/** Head size above which explicit sources use the bounded streaming display reader. */
 export const HEARTBEAT_BOUND_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_FILTER_DIRECTORIES = 16384;
 const MAX_FILTER_SOURCE_IDENTITIES = 2500;
 const MAX_DIRECTORY_ENTRIES = 65536;
-const metadataStamp = (info) => `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+const metadataStamp = (info) =>
+	`${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 const fileIdentity = (info) =>
 	Number.isSafeInteger(info?.dev) && Number.isSafeInteger(info?.ino)
-		? `${info.dev}:${info.ino}` : null;
-const directoryEntryKind = (entry) => entry.isFile() ? "file" : entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink" : "other";
+		? `${info.dev}:${info.ino}`
+		: null;
+const directoryEntryKind = (entry) =>
+	entry.isFile()
+		? "file"
+		: entry.isDirectory()
+			? "directory"
+			: entry.isSymbolicLink()
+				? "symlink"
+				: "other";
 function isHeartbeatCompanion(name) {
-	return /^taskhistory\.md$/i.test(name) || /(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(name);
+	return (
+		/^taskhistory\.md$/i.test(name) ||
+		/(?:\.taskhistory\.md|\.md\.legacy|\.tmp(?:-|$)|\.legacy(?:$|\.)|\.taskhistory\.md\.tmp)/i.test(
+			name,
+		)
+	);
 }
 function withoutFencedExamples(text) {
 	if (!/^\s{0,3}(?:`{3,}|~{3,})/m.test(text)) return text;
@@ -54,13 +69,19 @@ function withoutFencedExamples(text) {
 
 /** Read a single optional task root from source-head metadata, outside fenced examples. */
 export function parseHeartbeatTaskRoot(text) {
-	if (typeof text !== "string") throw new TypeError("Heartbeat task root metadata requires text");
-	const declarations = withoutFencedExamples(text).split("\n")
+	if (typeof text !== "string")
+		throw new TypeError("Heartbeat task root metadata requires text");
+	const declarations = withoutFencedExamples(text)
+		.split("\n")
 		.filter((line) => /^\s*task_root(?:\s|:|$)/i.test(line));
 	if (!declarations.length) return undefined;
-	if (declarations.length !== 1) throw new Error("Heartbeat task_root must be declared exactly once");
-	const match = /^\s*task_root\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s*$/i.exec(declarations[0]);
-	if (!match) throw new Error("Heartbeat task_root must name a valid nonblank Items ID");
+	if (declarations.length !== 1)
+		throw new Error("Heartbeat task_root must be declared exactly once");
+	const match = /^\s*task_root\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s*$/i.exec(
+		declarations[0],
+	);
+	if (!match)
+		throw new Error("Heartbeat task_root must name a valid nonblank Items ID");
 	return match[1];
 }
 
@@ -97,18 +118,21 @@ function priority(name) {
  * Find candidate heartbeat ledgers without mutating or scheduling anything. The canonical
  * heartbeat API remains responsible for parsing and validating ledger structure.
  */
-async function discoverHeartbeatLedgerSourcesInternal({
-	root,
-	threadId,
-	ledgerPath,
-	maxFiles = 2500,
-	maxDepth = 5,
-	collectAssociation,
-	collectObservedDirectory,
-	collectSourceIdentity,
-	collectObservation,
-	collectDirectoryEntries,
-} = {}, { boundOnly = false } = {}) {
+async function discoverHeartbeatLedgerSourcesInternal(
+	{
+		root,
+		threadId,
+		ledgerPath,
+		maxFiles = 2500,
+		maxDepth = 5,
+		collectAssociation,
+		collectObservedDirectory,
+		collectSourceIdentity,
+		collectObservation,
+		collectDirectoryEntries,
+	} = {},
+	{ boundOnly = false } = {},
+) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError(
 			"Heartbeat discovery requires an absolute project root",
@@ -144,13 +168,42 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	const prepare = async (candidatePath, explicitlySelected = false) => {
 		try {
 			const { path, info } = await pathScan.resolve(candidatePath);
-			const limit = boundOnly || explicitlySelected ? HEARTBEAT_BOUND_MAX_BYTES : MAX_SCAN_BYTES;
-			if (info.size > limit) return { path, info, oversized: true };
+			const limit =
+				boundOnly || explicitlySelected
+					? HEARTBEAT_BOUND_MAX_BYTES
+					: MAX_SCAN_BYTES;
+			if (info.size > limit) {
+				if (!boundOnly && !explicitlySelected)
+					return { path, info, oversized: true };
+				try {
+					const display = await readHeartbeatDiscoveryHead({
+						root: projectRoot,
+						path,
+					});
+					const after = await lstat(path);
+					if (metadataStamp(after) !== metadataStamp(info))
+						throw new Error("Source changed while reading");
+					return {
+						path,
+						info,
+						original: display.headText,
+						physicalHeadDigest: display.headDigest,
+					};
+				} catch {
+					return { path, info, unreadable: true };
+				}
+			}
 			let handle;
 			try {
-				handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+				handle = await open(
+					path,
+					constants.O_RDONLY |
+						(constants.O_NOFOLLOW ?? 0) |
+						(constants.O_NONBLOCK ?? 0),
+				);
 				const initial = await handle.stat();
-				if (!initial.isFile() || metadataStamp(initial) !== metadataStamp(info)) throw new Error("Source changed while opening");
+				if (!initial.isFile() || metadataStamp(initial) !== metadataStamp(info))
+					throw new Error("Source changed while opening");
 				const chunks = [];
 				let total = 0;
 				for (;;) {
@@ -161,8 +214,13 @@ async function discoverHeartbeatLedgerSourcesInternal({
 					if (total > limit) return { path, info, oversized: true };
 					chunks.push(chunk.subarray(0, bytesRead));
 				}
-				if (metadataStamp(await handle.stat()) !== metadataStamp(initial)) throw new Error("Source changed while reading");
-				return { path, info, original: Buffer.concat(chunks, total).toString("utf8") };
+				if (metadataStamp(await handle.stat()) !== metadataStamp(initial))
+					throw new Error("Source changed while reading");
+				return {
+					path,
+					info,
+					original: Buffer.concat(chunks, total).toString("utf8"),
+				};
 			} catch {
 				return { path, info, unreadable: true };
 			} finally {
@@ -193,21 +251,37 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		visitedFiles += 1;
 		collectSourceIdentity?.(result.info);
 		collectObservation?.(path, result.info);
-		if (result.oversized) { reasons.add("oversized-file"); return; }
-		if (result.unreadable) { reasons.add("unreadable-file"); return; }
+		if (result.oversized) {
+			reasons.add("oversized-file");
+			return;
+		}
+		if (result.unreadable) {
+			reasons.add("unreadable-file");
+			return;
+		}
 		try {
-			if (boundOnly) boundSourceDigest = createHash("sha256").update(result.original, "utf8").digest("hex");
+			if (boundOnly)
+				boundSourceDigest =
+					result.physicalHeadDigest ??
+					createHash("sha256").update(result.original, "utf8").digest("hex");
 			const text = withoutFencedExamples(result.original);
-			const named = /heartbeat/i.test(basename(path)) ||
+			const named =
+				/heartbeat/i.test(basename(path)) ||
 				(explicitRealPath && path === explicitRealPath);
-			const report = summarizeHeartbeatLedger(text, { includeItems: Boolean(named) });
+			const report = summarizeHeartbeatLedger(text, {
+				includeItems: Boolean(named),
+			});
 			const hasDatedWake = report.wakes.some(
-				(wake) => typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
+				(wake) =>
+					typeof wake.timeMs === "number" && Number.isFinite(wake.timeMs),
 			);
 			if (!hasDatedWake && !(named && report.itemCount)) return;
 			const association = associatedThread(text);
 			collectAssociation?.(path, association);
-			candidates.set(path, { path, associated: Boolean(threadId && association === threadId) });
+			candidates.set(path, {
+				path,
+				associated: Boolean(threadId && association === threadId),
+			});
 		} catch {
 			reasons.add("unreadable-file");
 		}
@@ -216,9 +290,15 @@ async function discoverHeartbeatLedgerSourcesInternal({
 	const enqueue = async (path) => {
 		// Never speculate past the remaining file budget: a failed resolution or
 		// duplicate releases its reservation for the next file.
-		while (pending.length && (pending.length >= 32 ||
-			visitedFiles + pending.length >= maxFiles)) await drainOne();
-		if (visitedFiles >= maxFiles) { reasons.add("file-limit"); return false; }
+		while (
+			pending.length &&
+			(pending.length >= 32 || visitedFiles + pending.length >= maxFiles)
+		)
+			await drainOne();
+		if (visitedFiles >= maxFiles) {
+			reasons.add("file-limit");
+			return false;
+		}
 		pending.push(prepare(path));
 		return true;
 	};
@@ -228,7 +308,9 @@ async function discoverHeartbeatLedgerSourcesInternal({
 			throw new TypeError("ledgerPath must be nonblank");
 		const explicit = resolve(projectRoot, ledgerPath);
 		if (isHeartbeatCompanion(basename(explicit)))
-			throw new Error("Heartbeat history and backup files cannot be selected as ledger heads");
+			throw new Error(
+				"Heartbeat history and backup files cannot be selected as ledger heads",
+			);
 		commit(await prepare(explicit, true), true);
 	}
 
@@ -237,9 +319,13 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		// This report is deliberately incomplete: no project-wide scan took place.
 		reasons.add("source-only");
 		return {
-			schemaVersion: 1, root: projectRoot,
-			candidates: [...candidates.values()], complete: false, visitedFiles,
-			limits: { maxFiles, maxDepth }, reasons: [...reasons].sort(),
+			schemaVersion: 1,
+			root: projectRoot,
+			candidates: [...candidates.values()],
+			complete: false,
+			visitedFiles,
+			limits: { maxFiles, maxDepth },
+			reasons: [...reasons].sort(),
 			...(boundSourceDigest ? { boundSourceDigest } : {}),
 		};
 	}
@@ -257,19 +343,21 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		if (!isProjectPathWithinRoot(projectRoot, canonicalDirectory)) return;
 		let entries;
 		try {
-			if (collectObservation) collectObservation(canonicalDirectory, await lstat(canonicalDirectory));
+			if (collectObservation)
+				collectObservation(canonicalDirectory, await lstat(canonicalDirectory));
 			entries = await readdir(canonicalDirectory, { withFileTypes: true });
 			collectDirectoryEntries?.(canonicalDirectory, entries);
 		} catch {
 			// A nested repository is excluded even if its directory is unreadable.
-			if (!await pathScan.isNestedCanonical(canonicalDirectory)) {
+			if (!(await pathScan.isNestedCanonical(canonicalDirectory))) {
 				collectObservedDirectory?.(null);
 				collectObservation?.(canonicalDirectory, null);
 				reasons.add("unreadable-directory");
 			}
 			return;
 		}
-		if (await pathScan.isNestedListedCanonical(canonicalDirectory, entries)) return;
+		if (await pathScan.isNestedListedCanonical(canonicalDirectory, entries))
+			return;
 		seenDirectories.add(canonicalDirectory);
 		entries.sort(
 			(a, b) =>
@@ -281,12 +369,13 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		collectObservedDirectory?.(canonicalDirectory);
 		if (collectObservedDirectory)
 			for (const entry of entries)
-				if (entry.isDirectory()) collectObservedDirectory(resolve(canonicalDirectory, entry.name));
+				if (entry.isDirectory())
+					collectObservedDirectory(resolve(canonicalDirectory, entry.name));
 		for (const entry of entries) {
 			const path = resolve(canonicalDirectory, entry.name);
 			if (entry.isDirectory() && !SKIP.has(entry.name)) {
 				if (depth + 1 > maxDepth) {
-					if (!await pathScan.isNested(path)) reasons.add("depth-limit");
+					if (!(await pathScan.isNested(path))) reasons.add("depth-limit");
 				} else await scan(path, depth + 1);
 			} else if (
 				entry.isFile() &&
@@ -294,7 +383,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 				!isHeartbeatCompanion(entry.name) &&
 				!seenFiles.has(path)
 			) {
-				if (!await enqueue(path)) return;
+				if (!(await enqueue(path))) return;
 			}
 		}
 	};
@@ -304,7 +393,7 @@ async function discoverHeartbeatLedgerSourcesInternal({
 		const path = resolve(projectRoot, directory);
 		if ((await lstat(path).catch(() => null))?.isDirectory()) {
 			if (1 > maxDepth) {
-				if (!await pathScan.isNested(path)) reasons.add("depth-limit");
+				if (!(await pathScan.isNested(path))) reasons.add("depth-limit");
 			} else await scan(path, 1);
 		}
 	}
@@ -357,8 +446,13 @@ export class HeartbeatDiscoveryIndex {
 	#watch;
 	#scan;
 	#limit;
-	constructor({ watchFactory = watch, scanFactory = discoverHeartbeatLedgerSources, maxEntries = 16 } = {}) {
-		if (!Number.isInteger(maxEntries) || maxEntries < 1) throw new TypeError("maxEntries must be positive");
+	constructor({
+		watchFactory = watch,
+		scanFactory = discoverHeartbeatLedgerSources,
+		maxEntries = 16,
+	} = {}) {
+		if (!Number.isInteger(maxEntries) || maxEntries < 1)
+			throw new TypeError("maxEntries must be positive");
 		this.#watch = watchFactory;
 		this.#scan = scanFactory;
 		this.#limit = maxEntries;
@@ -382,20 +476,46 @@ export class HeartbeatDiscoveryIndex {
 		entry.watcher?.close();
 		this.#entries.delete(key);
 		this.#invalidate(entry);
-		if (![...this.#entries.values()].some((other) => other.root === entry.root && other.active))
+		if (
+			![...this.#entries.values()].some(
+				(other) => other.root === entry.root && other.active,
+			)
+		)
 			this.#versions.delete(entry.root);
 	}
 	async discover(options, { force = false } = {}) {
 		if (this.#closed) throw new Error("Heartbeat discovery index is closed");
-		if (typeof options?.root !== "string" || !options.root.trim() || !isAbsolute(options.root))
-			throw new TypeError("Heartbeat discovery requires an absolute project root");
-		if (options.threadId !== undefined && (typeof options.threadId !== "string" || !options.threadId.trim()))
+		if (
+			typeof options?.root !== "string" ||
+			!options.root.trim() ||
+			!isAbsolute(options.root)
+		)
+			throw new TypeError(
+				"Heartbeat discovery requires an absolute project root",
+			);
+		if (
+			options.threadId !== undefined &&
+			(typeof options.threadId !== "string" || !options.threadId.trim())
+		)
 			throw new TypeError("Heartbeat discovery requires an exact thread ID");
-		if (options.ledgerPath !== undefined && (typeof options.ledgerPath !== "string" || !options.ledgerPath.trim()))
+		if (
+			options.ledgerPath !== undefined &&
+			(typeof options.ledgerPath !== "string" || !options.ledgerPath.trim())
+		)
 			throw new TypeError("ledgerPath must be nonblank");
-		if (!Number.isInteger(options.maxFiles === undefined ? 2500 : options.maxFiles) || (options.maxFiles === undefined ? 2500 : options.maxFiles) < 1 ||
-			!Number.isInteger(options.maxDepth === undefined ? 5 : options.maxDepth) || (options.maxDepth === undefined ? 5 : options.maxDepth) < 0)
-			throw new TypeError("maxFiles and maxDepth must be nonnegative bounded integers");
+		if (
+			!Number.isInteger(
+				options.maxFiles === undefined ? 2500 : options.maxFiles,
+			) ||
+			(options.maxFiles === undefined ? 2500 : options.maxFiles) < 1 ||
+			!Number.isInteger(
+				options.maxDepth === undefined ? 5 : options.maxDepth,
+			) ||
+			(options.maxDepth === undefined ? 5 : options.maxDepth) < 0
+		)
+			throw new TypeError(
+				"maxFiles and maxDepth must be nonnegative bounded integers",
+			);
 		const root = await realpath(resolve(options.root));
 		const { threadId, ledgerPath, maxFiles = 2500, maxDepth = 5 } = options;
 		const explicit = ledgerPath ? resolve(root, ledgerPath) : null;
@@ -404,51 +524,98 @@ export class HeartbeatDiscoveryIndex {
 		// retains its existing behavior but is always read afresh.
 		if (explicit) {
 			explicitCanonical = await realpath(explicit).catch(() => explicit);
-			if ([explicit, explicitCanonical].some((path) => relative(root, path).split(/[\\/]/).includes(".tmp")))
+			if (
+				[explicit, explicitCanonical].some((path) =>
+					relative(root, path).split(/[\\/]/).includes(".tmp"),
+				)
+			)
 				return this.#scan(options);
 		}
 		const key = JSON.stringify([root, explicit, maxFiles, maxDepth]);
 		let entry = this.#entries.get(key);
 		if (!entry) {
-			entry = { root, epoch: 0, value: null, pending: null, watcher: null, active: false,
-				explicit, explicitCanonical, observedDirectories: null, sourceIdentities: null };
+			entry = {
+				root,
+				epoch: 0,
+				value: null,
+				pending: null,
+				watcher: null,
+				active: false,
+				explicit,
+				explicitCanonical,
+				observedDirectories: null,
+				sourceIdentities: null,
+			};
 			try {
 				const current = entry;
-				const watcher = this.#watch(root, { recursive: true, persistent: false }, (event, filename) => {
-					if (!current.active) return;
-					// Skipped trees are excluded from automatic discovery, but a file
-					// inside one can still be a hardlink to an inspected ledger or an
-					// explicitly configured source. Never suppress an event until every
-					// active key has complete directory and source-identity proof.
-					const name = typeof filename === "string" ? filename : "";
-					const parts = name ? name.split(/[\\/]/) : [];
-					const skippedAncestor = parts.some((part, i) => SKIP.has(part) && i < parts.length - 1);
-					const nestedGit = parts.includes(".git") && parts[0] !== ".git";
-					const regularContentChange = event === "change" && !parts.includes(".git") &&
-						!basename(name).toLowerCase().endsWith(".md");
-					const skippedRegularEvent = skippedAncestor && !nestedGit &&
-						(event === "change" || event === "rename");
-					if (typeof filename === "string" && filename && basename(filename) !== ".git" &&
-						(regularContentChange || skippedRegularEvent)) {
-						const path = resolve(root, filename);
-						const relevant = [...this.#entries.values()].filter((other) => other.root === root && other.active);
-						if (isProjectPathWithinRoot(root, path) && relevant.length) {
-							try {
-								const info = lstatSync(path);
-								const identity = fileIdentity(info);
-								if (info.isFile() && identity && realpathSync(path) === path &&
-									relevant.every((other) => other.observedDirectories && !other.observedDirectories.has(path) &&
-										other.sourceIdentities && !other.sourceIdentities.has(identity) &&
-										(!other.explicit || !isProjectPathWithinRoot(path, other.explicit)) &&
-										(!other.explicitCanonical || !isProjectPathWithinRoot(path, other.explicitCanonical)))) return;
-							} catch { /* Missing or inaccessible paths invalidate. */ }
+				const watcher = this.#watch(
+					root,
+					{ recursive: true, persistent: false },
+					(event, filename) => {
+						if (!current.active) return;
+						// Skipped trees are excluded from automatic discovery, but a file
+						// inside one can still be a hardlink to an inspected ledger or an
+						// explicitly configured source. Never suppress an event until every
+						// active key has complete directory and source-identity proof.
+						const name = typeof filename === "string" ? filename : "";
+						const parts = name ? name.split(/[\\/]/) : [];
+						const skippedAncestor = parts.some(
+							(part, i) => SKIP.has(part) && i < parts.length - 1,
+						);
+						const nestedGit = parts.includes(".git") && parts[0] !== ".git";
+						const regularContentChange =
+							event === "change" &&
+							!parts.includes(".git") &&
+							!basename(name).toLowerCase().endsWith(".md");
+						const skippedRegularEvent =
+							skippedAncestor &&
+							!nestedGit &&
+							(event === "change" || event === "rename");
+						if (
+							typeof filename === "string" &&
+							filename &&
+							basename(filename) !== ".git" &&
+							(regularContentChange || skippedRegularEvent)
+						) {
+							const path = resolve(root, filename);
+							const relevant = [...this.#entries.values()].filter(
+								(other) => other.root === root && other.active,
+							);
+							if (isProjectPathWithinRoot(root, path) && relevant.length) {
+								try {
+									const info = lstatSync(path);
+									const identity = fileIdentity(info);
+									if (
+										info.isFile() &&
+										identity &&
+										realpathSync(path) === path &&
+										relevant.every(
+											(other) =>
+												other.observedDirectories &&
+												!other.observedDirectories.has(path) &&
+												other.sourceIdentities &&
+												!other.sourceIdentities.has(identity) &&
+												(!other.explicit ||
+													!isProjectPathWithinRoot(path, other.explicit)) &&
+												(!other.explicitCanonical ||
+													!isProjectPathWithinRoot(
+														path,
+														other.explicitCanonical,
+													)),
+										)
+									)
+										return;
+								} catch {
+									/* Missing or inaccessible paths invalidate. */
+								}
+							}
 						}
-					}
-					// Every key observes the same root. Invalidate them together before
-					// another key can serve a result while its own event is still queued.
-					for (const other of this.#entries.values())
-						if (other.root === root && other.active) this.#invalidate(other);
-				});
+						// Every key observes the same root. Invalidate them together before
+						// another key can serve a result while its own event is still queued.
+						for (const other of this.#entries.values())
+							if (other.root === root && other.active) this.#invalidate(other);
+					},
+				);
 				entry.watcher = watcher;
 				entry.active = true;
 				const lost = () => {
@@ -457,7 +624,8 @@ export class HeartbeatDiscoveryIndex {
 				};
 				watcher.on("error", lost);
 				watcher.on("close", lost);
-				if (!this.#versions.has(root)) this.#versions.set(root, ++this.#sequence);
+				if (!this.#versions.has(root))
+					this.#versions.set(root, ++this.#sequence);
 				this.#entries.set(key, entry);
 				while (this.#entries.size > this.#limit) {
 					const [oldKey, old] = this.#entries.entries().next().value;
@@ -479,13 +647,28 @@ export class HeartbeatDiscoveryIndex {
 		const derive = (record) => {
 			// The watcher may have invalidated the snapshot after a pending scan
 			// resolved but before its awaiting caller resumed.
-			if (!entry.active || entry.value !== record || this.#versions.get(root) !== record.generation)
-				throw new HeartbeatDiscoveryInvalidatedError("Heartbeat discovery changed before delivery; retry required");
-			const report = { ...record.report, reasons: [...record.report.reasons], limits: { ...record.report.limits },
+			if (
+				!entry.active ||
+				entry.value !== record ||
+				this.#versions.get(root) !== record.generation
+			)
+				throw new HeartbeatDiscoveryInvalidatedError(
+					"Heartbeat discovery changed before delivery; retry required",
+				);
+			const report = {
+				...record.report,
+				reasons: [...record.report.reasons],
+				limits: { ...record.report.limits },
 				candidates: record.report.candidates.map((candidate) => ({
-					path: candidate.path, associated: Boolean(threadId && record.associations.get(candidate.path) === threadId),
-				})) };
-			Object.defineProperty(report, "indexGeneration", { value: record.generation });
+					path: candidate.path,
+					associated: Boolean(
+						threadId && record.associations.get(candidate.path) === threadId,
+					),
+				})),
+			};
+			Object.defineProperty(report, "indexGeneration", {
+				value: record.generation,
+			});
 			return report;
 		};
 		if (force) {
@@ -500,45 +683,93 @@ export class HeartbeatDiscoveryIndex {
 			const record = entry.value;
 			const revision = record.revision;
 			const updates = [];
-			let valid = Boolean(record.observations && record.directories && entry.sourceIdentities);
+			let valid = Boolean(
+				record.observations && record.directories && entry.sourceIdentities,
+			);
 			if (valid) {
 				const observations = [...record.observations];
-				for (let offset = 0; offset < observations.length && valid; offset += 32) {
-					const results = await Promise.all(observations.slice(offset, offset + 32).map(async ([path, stamp]) => {
-						const info = await lstat(path).catch(() => null);
-						if (!info) return false;
-						if (metadataStamp(info) === stamp) return true;
-						const oldEntries = record.directories.get(path);
-						if (!oldEntries || !info.isDirectory()) return false;
-						const list = await readdir(path, { withFileTypes: true }).catch(() => null);
-						if (!list || list.length > MAX_DIRECTORY_ENTRIES) return false;
-						const current = new Map(list.map((item) => [item.name, directoryEntryKind(item)]));
-						for (const [name, kind] of oldEntries) if (current.get(name) !== kind) return false;
-						for (const [name, kind] of current) {
-							if (oldEntries.has(name)) continue;
-							if (kind !== "file" || name === ".git" || name.toLowerCase().endsWith(".md")) return false;
-							const added = resolve(path, name);
-							const addedInfo = await lstat(added).catch(() => null);
-							const identity = fileIdentity(addedInfo);
-							if (!addedInfo?.isFile() || addedInfo.nlink !== 1 || !identity || entry.sourceIdentities.has(identity) ||
-								(entry.explicit && isProjectPathWithinRoot(added, entry.explicit)) ||
-								(entry.explicitCanonical && isProjectPathWithinRoot(added, entry.explicitCanonical)) ||
-								await realpath(added).catch(() => null) !== added) return false;
-						}
-						const after = await lstat(path).catch(() => null);
-						if (!after || metadataStamp(after) !== metadataStamp(info)) return false;
-						updates.push([path, metadataStamp(info), current]);
-						return true;
-					}));
+				for (
+					let offset = 0;
+					offset < observations.length && valid;
+					offset += 32
+				) {
+					const results = await Promise.all(
+						observations
+							.slice(offset, offset + 32)
+							.map(async ([path, stamp]) => {
+								const info = await lstat(path).catch(() => null);
+								if (!info) return false;
+								if (metadataStamp(info) === stamp) return true;
+								const oldEntries = record.directories.get(path);
+								if (!oldEntries || !info.isDirectory()) return false;
+								const list = await readdir(path, { withFileTypes: true }).catch(
+									() => null,
+								);
+								if (!list || list.length > MAX_DIRECTORY_ENTRIES) return false;
+								const current = new Map(
+									list.map((item) => [item.name, directoryEntryKind(item)]),
+								);
+								for (const [name, kind] of oldEntries)
+									if (current.get(name) !== kind) return false;
+								for (const [name, kind] of current) {
+									if (oldEntries.has(name)) continue;
+									if (
+										kind !== "file" ||
+										name === ".git" ||
+										name.toLowerCase().endsWith(".md")
+									)
+										return false;
+									const added = resolve(path, name);
+									const addedInfo = await lstat(added).catch(() => null);
+									const identity = fileIdentity(addedInfo);
+									if (
+										!addedInfo?.isFile() ||
+										addedInfo.nlink !== 1 ||
+										!identity ||
+										entry.sourceIdentities.has(identity) ||
+										(entry.explicit &&
+											isProjectPathWithinRoot(added, entry.explicit)) ||
+										(entry.explicitCanonical &&
+											isProjectPathWithinRoot(
+												added,
+												entry.explicitCanonical,
+											)) ||
+										(await realpath(added).catch(() => null)) !== added
+									)
+										return false;
+								}
+								const after = await lstat(path).catch(() => null);
+								if (!after || metadataStamp(after) !== metadataStamp(info))
+									return false;
+								updates.push([path, metadataStamp(info), current]);
+								return true;
+							}),
+					);
 					valid = results.every(Boolean);
 				}
 			}
-			if (valid && record.directoryEntryCount + updates.reduce((sum, [path, , entries]) => sum + entries.size - record.directories.get(path).size, 0) > MAX_DIRECTORY_ENTRIES) valid = false;
+			if (
+				valid &&
+				record.directoryEntryCount +
+					updates.reduce(
+						(sum, [path, , entries]) =>
+							sum + entries.size - record.directories.get(path).size,
+						0,
+					) >
+					MAX_DIRECTORY_ENTRIES
+			)
+				valid = false;
 			// An older validation cannot invalidate or overwrite a replacement proof.
-			if (entry.value !== record || !entry.active || record.revision !== revision) continue;
+			if (
+				entry.value !== record ||
+				!entry.active ||
+				record.revision !== revision
+			)
+				continue;
 			if (valid) {
 				for (const [path, stamp, entries] of updates) {
-					record.directoryEntryCount += entries.size - record.directories.get(path).size;
+					record.directoryEntryCount +=
+						entries.size - record.directories.get(path).size;
 					record.observations.set(path, stamp);
 					record.directories.set(path, entries);
 				}
@@ -563,15 +794,34 @@ export class HeartbeatDiscoveryIndex {
 					let directoryMetadataComplete = true;
 					let sourceIdentitiesComplete = true;
 					let observedSources = 0;
-					const report = await this.#scan({ ...options, root, threadId: undefined,
+					const report = await this.#scan({
+						...options,
+						root,
+						threadId: undefined,
 						collectObservation: (path, info) => {
-							if (!info || (!observations.has(path) && observations.size >= MAX_FILTER_DIRECTORIES + MAX_FILTER_SOURCE_IDENTITIES)) observationsComplete = false;
+							if (
+								!info ||
+								(!observations.has(path) &&
+									observations.size >=
+										MAX_FILTER_DIRECTORIES + MAX_FILTER_SOURCE_IDENTITIES)
+							)
+								observationsComplete = false;
 							else observations.set(path, metadataStamp(info));
 						},
 						collectDirectoryEntries: (path, entries) => {
 							directoryEntryCount += entries.length;
-							if (directoryEntryCount > MAX_DIRECTORY_ENTRIES) observationsComplete = false;
-							else directories.set(path, new Map(entries.map((item) => [item.name, directoryEntryKind(item)])));
+							if (directoryEntryCount > MAX_DIRECTORY_ENTRIES)
+								observationsComplete = false;
+							else
+								directories.set(
+									path,
+									new Map(
+										entries.map((item) => [
+											item.name,
+											directoryEntryKind(item),
+										]),
+									),
+								);
 						},
 						collectAssociation: (path, value) => associations.set(path, value),
 						collectSourceIdentity: (info) => {
@@ -579,30 +829,62 @@ export class HeartbeatDiscoveryIndex {
 							const identity = fileIdentity(info);
 							if (!identity) sourceIdentitiesComplete = false;
 							else if (!sourceIdentities.has(identity)) {
-								if (sourceIdentities.size >= MAX_FILTER_SOURCE_IDENTITIES) sourceIdentitiesComplete = false;
+								if (sourceIdentities.size >= MAX_FILTER_SOURCE_IDENTITIES)
+									sourceIdentitiesComplete = false;
 								else sourceIdentities.add(identity);
 							}
 						},
 						collectObservedDirectory: (path) => {
 							if (!path) directoryMetadataComplete = false;
 							else if (!observedDirectories.has(path)) {
-								if (observedDirectories.size >= MAX_FILTER_DIRECTORIES) directoryMetadataComplete = false;
+								if (observedDirectories.size >= MAX_FILTER_DIRECTORIES)
+									directoryMetadataComplete = false;
 								else observedDirectories.add(path);
 							}
-						} });
+						},
+					});
 					if (current.active && current.epoch === epoch) {
-						const record = { report, associations, directories: observationsComplete && directories.has(root) ? directories : null, directoryEntryCount, revision: 0, observations: observationsComplete && observations.has(root) && observedSources === report.visitedFiles ? observations : null, generation: this.#versions.get(root) };
-						current.observedDirectories = directoryMetadataComplete && observedDirectories.has(root) ? observedDirectories : null;
-						current.sourceIdentities = sourceIdentitiesComplete && observedSources === report.visitedFiles ? sourceIdentities : null;
+						const record = {
+							report,
+							associations,
+							directories:
+								observationsComplete && directories.has(root)
+									? directories
+									: null,
+							directoryEntryCount,
+							revision: 0,
+							observations:
+								observationsComplete &&
+								observations.has(root) &&
+								observedSources === report.visitedFiles
+									? observations
+									: null,
+							generation: this.#versions.get(root),
+						};
+						current.observedDirectories =
+							directoryMetadataComplete && observedDirectories.has(root)
+								? observedDirectories
+								: null;
+						current.sourceIdentities =
+							sourceIdentitiesComplete &&
+							observedSources === report.visitedFiles
+								? sourceIdentities
+								: null;
 						current.value = record;
 						return record;
 					}
 					if (!current.active) break;
 				}
-				throw new HeartbeatDiscoveryInvalidatedError("Heartbeat discovery changed while scanning; retry required");
+				throw new HeartbeatDiscoveryInvalidatedError(
+					"Heartbeat discovery changed while scanning; retry required",
+				);
 			})();
 			current.pending = pending;
-			void pending.finally(() => { if (current.pending === pending) current.pending = null; }).catch(() => {});
+			void pending
+				.finally(() => {
+					if (current.pending === pending) current.pending = null;
+				})
+				.catch(() => {});
 		}
 		return derive(await entry.pending);
 	}
@@ -621,7 +903,8 @@ export async function discoverHeartbeatLedgers(options = {}) {
 
 function parsedChildren(value) {
 	if (Array.isArray(value)) return value;
-	if (typeof value !== "string" || !value.trim() || value.trim() === "-") return [];
+	if (typeof value !== "string" || !value.trim() || value.trim() === "-")
+		return [];
 	try {
 		const parsed = JSON.parse(value);
 		return Array.isArray(parsed) ? parsed : null;
@@ -728,27 +1011,56 @@ export function projectHeartbeatTask({
 	}
 
 	if (taskRootId !== undefined) {
-		if (typeof taskRootId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(taskRootId))
-			throw new Error("Heartbeat task root must name a valid nonblank Items ID");
+		if (
+			typeof taskRootId !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(taskRootId)
+		)
+			throw new Error(
+				"Heartbeat task root must name a valid nonblank Items ID",
+			);
 		const rootRow = byId.get(taskRootId);
-		if (!rootRow) throw new Error(`Heartbeat task root ${taskRootId} is missing from Items`);
+		if (!rootRow)
+			throw new Error(
+				`Heartbeat task root ${taskRootId} is missing from Items`,
+			);
 		if (!/^tracking\b/i.test(String(rootRow.status ?? "").trim()))
 			throw new Error(`Heartbeat task root ${taskRootId} must be tracking`);
 		const selected = new Set();
 		const visiting = new Set();
 		const walk = (id) => {
-			if (visiting.has(id)) throw new Error(`Heartbeat task root ${taskRootId} has cyclic child links`);
+			if (visiting.has(id))
+				throw new Error(
+					`Heartbeat task root ${taskRootId} has cyclic child links`,
+				);
 			if (selected.has(id)) return;
 			const row = byId.get(id);
-			if (!row) throw new Error(`Heartbeat task root ${taskRootId} has missing child ${id}`);
-			const children = row.children === undefined || row.children === "" ? [] : parsedChildren(row.children);
-			if (!children) throw new Error(`Heartbeat task root ${taskRootId} has invalid children on ${id}`);
+			if (!row)
+				throw new Error(
+					`Heartbeat task root ${taskRootId} has missing child ${id}`,
+				);
+			const children =
+				row.children === undefined || row.children === ""
+					? []
+					: parsedChildren(row.children);
+			if (!children)
+				throw new Error(
+					`Heartbeat task root ${taskRootId} has invalid children on ${id}`,
+				);
 			const tracking = /^tracking\b/i.test(String(row.status ?? "").trim());
 			if ((children.length && !tracking) || (tracking && !children.length))
-				throw new Error(`Heartbeat task root ${taskRootId} has invalid tracking children on ${id}`);
-			const normalized = children.map((child) => typeof child === "string" ? child.trim() : "");
-			if (normalized.some((child) => !child) || new Set(normalized).size !== normalized.length)
-				throw new Error(`Heartbeat task root ${taskRootId} has invalid child links on ${id}`);
+				throw new Error(
+					`Heartbeat task root ${taskRootId} has invalid tracking children on ${id}`,
+				);
+			const normalized = children.map((child) =>
+				typeof child === "string" ? child.trim() : "",
+			);
+			if (
+				normalized.some((child) => !child) ||
+				new Set(normalized).size !== normalized.length
+			)
+				throw new Error(
+					`Heartbeat task root ${taskRootId} has invalid child links on ${id}`,
+				);
 			visiting.add(id);
 			for (const child of normalized) walk(child);
 			visiting.delete(id);
@@ -756,14 +1068,19 @@ export function projectHeartbeatTask({
 		};
 		walk(taskRootId);
 		for (const id of byId.keys()) if (!selected.has(id)) byId.delete(id);
-		if (!(typeof title === "string" && title.trim())) title = String(rootRow.item ?? "").trim();
+		if (!(typeof title === "string" && title.trim()))
+			title = String(rootRow.item ?? "").trim();
 	}
 
 	const links = new Map();
 	const linkRisks = [];
 	for (const [id, row] of byId) {
 		if (row.children === undefined || row.children === "") continue;
-		if (typeof row.children === "string" && row.children.trim() === "-" && /^tracking\b/i.test(String(row.status ?? "").trim())) {
+		if (
+			typeof row.children === "string" &&
+			row.children.trim() === "-" &&
+			/^tracking\b/i.test(String(row.status ?? "").trim())
+		) {
 			linkRisks.push(`${id}: tracking parent requires nonempty child links`);
 			continue;
 		}
@@ -912,10 +1229,21 @@ export function projectHeartbeatTask({
 				[...byId].map(([id, row]) => [id, String(row.status ?? "")]),
 			),
 			itemOwners: Object.fromEntries(
-				[...byId].map(([id, row]) => [id, {
-					...(typeof row.owner === "string" && row.owner.trim() && !/^[-—]$/.test(row.owner.trim()) ? { owner: row.owner.trim() } : {}),
-					...(typeof row.agent_thread_id === "string" && row.agent_thread_id.trim() && !/^[-—]$/.test(row.agent_thread_id.trim()) ? { agentThreadId: row.agent_thread_id.trim() } : {}),
-				}]),
+				[...byId].map(([id, row]) => [
+					id,
+					{
+						...(typeof row.owner === "string" &&
+						row.owner.trim() &&
+						!/^[-—]$/.test(row.owner.trim())
+							? { owner: row.owner.trim() }
+							: {}),
+						...(typeof row.agent_thread_id === "string" &&
+						row.agent_thread_id.trim() &&
+						!/^[-—]$/.test(row.agent_thread_id.trim())
+							? { agentThreadId: row.agent_thread_id.trim() }
+							: {}),
+					},
+				]),
 			),
 			...(linkRisks.length ? { linkRisks } : {}),
 		},

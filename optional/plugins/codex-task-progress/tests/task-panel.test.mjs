@@ -905,6 +905,98 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
+      "parent-thread activity survives stale or absent task sources without task progress",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        await page.evaluate((value) => {
+          const path = "/workspace/heartbeat.md";
+          window.fixture.task = {
+            ...value,
+            source: { kind: "kit-heartbeat", path, readOnly: true },
+          };
+          window.fixture.taskSource = { status: "stale", path, readOnly: true };
+          window.fixture.subagents = {
+            schemaVersion: 1,
+            parentThreadId: "thread-a",
+            taskCycleId: null,
+            taskSourcePath: path,
+            scopeBasis: "parent-thread",
+            status: "ready",
+            observedAt: "2026-11-15T12:00:00Z",
+            runningCount: 27,
+            runningBasis: "runtime",
+            complete: true,
+            truncated: false,
+            allocation: {
+              status: "ready",
+              planId: "old",
+              planRevision: 1,
+              plannedCount: 27,
+              runningCount: 27,
+              ratio: 1,
+              observedAt: "2026-11-15T12:00:00Z",
+              basis: "heartbeat",
+            },
+            agents: Array.from({ length: 27 }, (_, i) => ({
+              id: `a-${i}`,
+              name: `Agent ${i}`,
+              state: "working",
+              stateBasis: "runtime",
+              observedAt: "2026-11-15T12:00:00Z",
+              progress: { completed: 1, total: 1, percent: 100 },
+              progressBasis: "module-delivery",
+              assignmentTitle: "Old assignment",
+              progressGranularity: "single-item",
+            })),
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        assert.equal(await panel.locator(".agent-row").count(), 27);
+        let projected = await panel.evaluate((element) => element.currentRunSubagents());
+        assert.equal(projected.allocation, undefined);
+        assert.ok(
+          projected.agents.every(
+            (agent) =>
+              agent.progress === null &&
+              agent.progressBasis === null &&
+              agent.assignmentTitle === null,
+          ),
+        );
+        await page.evaluate(() => {
+          window.fixture.task = null;
+          window.fixture.taskSource = null;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 27);
+        projected = await panel.evaluate((element) => element.currentRunSubagents());
+        assert.equal(projected.agents[0].progress, null);
+        await page.evaluate(() => {
+          window.fixture.subagents.parentThreadId = "other-chat";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 0);
+        await page.evaluate((value) => {
+          const path = "/workspace/heartbeat.md";
+          window.fixture.task = {
+            ...value,
+            source: { kind: "kit-heartbeat", path, readOnly: true },
+          };
+          window.fixture.taskSource = { status: "ready", path, readOnly: true };
+          window.fixture.subagents.parentThreadId = "thread-a";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        assert.equal(await panel.locator(".agent-row").count(), 27);
+        projected = await panel.evaluate((element) => element.currentRunSubagents());
+        assert.equal(projected.agents[0].progress.percent, 100);
+        await page.evaluate(() => {
+          window.fixture.disabled = true;
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        assert.equal(await panel.locator(".agent-row").count(), 0);
+        await context.close();
+      },
+    );
+    await t.test(
       "subagent mode state is isolated and panel fills short and tall windows",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");

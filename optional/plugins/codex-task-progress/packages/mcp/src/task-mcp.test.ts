@@ -179,6 +179,10 @@ test("ordinary task MCP tool schemas and trusted identity cross the real IPC tra
       "ui://codex-task-progress/panel-0.6.7.html",
       "ui://codex-task-progress/panel-0.6.3.html",
       "ui://codex-task-progress/panel-0.6.1.html",
+      "ui://codex-task-progress/panel-0.10.0.html",
+      "ui://codex-task-progress/panel-0.11.0.html",
+      "ui://codex-task-progress/panel-0.12.0.html",
+      "ui://codex-task-progress/panel-0.12.1.html",
       createTaskProgressPanelResourceUri(GOAL_PROGRESS_RELEASE_VERSION),
     ];
     for (const uri of compatiblePanelUris) {
