@@ -442,7 +442,7 @@ export class CodexAppServerClient implements ThreadCatalog {
       parentThreadId,
       cursor: cursor ?? null,
       limit: 50,
-      sortKey: "created_at",
+      sortKey: "updated_at",
       sortDirection: "desc",
       useStateDbOnly: true,
       sourceKinds: ["subAgentThreadSpawn"],

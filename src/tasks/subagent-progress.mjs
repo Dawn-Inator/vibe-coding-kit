@@ -24,8 +24,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const dispatches = new Map();
   const invalidations = new Map();
   const turns = [];
-  const olderDiscoveryHints = new Set();
-  let parentDiscoveryIncomplete = false;
   let rootTurnId;
   let turnCursor;
   const turnCursors = new Set();
@@ -48,19 +46,9 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         snapshot.rootTurnId = rootTurnId;
       }
       for (const turn of result.data) {
-        if (!turn || typeof turn.id !== 'string' || !turn.id.trim() || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { snapshot.complete = false; if (parentMode) parentDiscoveryIncomplete = true; continue; }
+        if (!turn || typeof turn.id !== 'string' || !turn.id.trim() || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { snapshot.complete = false; continue; }
         const startMs = turn.startedAt * 1000;
-        if (turn.rootTurnId !== rootTurnId) {
-          if (!parentMode) { boundary = true; if (rootCount !== 1) snapshot.complete = false; break; }
-          // Older turns supply IDs only. Their lifecycle, dispatch and assignment
-          // events must not alter the current root's authority or state.
-          for (const item of turn.items) {
-            if (item?.type === 'subAgentActivity' && validId(item.agentThreadId)) olderDiscoveryHints.add(item.agentThreadId);
-            if (item?.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed' && Array.isArray(item.receiverThreadIds))
-              for (const id of item.receiverThreadIds) if (validId(id)) olderDiscoveryHints.add(id);
-          }
-          continue;
-        }
+        if (turn.rootTurnId !== rootTurnId) { boundary = true; if (rootCount !== 1) snapshot.complete = false; break; }
         if (turn.id === rootTurnId) {
           rootCount++;
           if (sourceScope && rootCount > 1) throw new Error('Ambiguous root turn');
@@ -71,10 +59,10 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         turns.push(turn);
       }
       if (boundary || result.nextCursor === null) break;
-      if (typeof result.nextCursor !== 'string' || !result.nextCursor || turnCursors.has(result.nextCursor)) { snapshot.complete = false; if (parentMode) parentDiscoveryIncomplete = true; break; }
+      if (typeof result.nextCursor !== 'string' || !result.nextCursor || turnCursors.has(result.nextCursor)) { snapshot.complete = false; break; }
       turnCursors.add(result.nextCursor);
       turnCursor = result.nextCursor;
-      if (page === 7) { snapshot.complete = false; snapshot.truncated = true; if (parentMode) parentDiscoveryIncomplete = true; }
+      if (page === 7) { snapshot.complete = false; snapshot.truncated = true; }
     }
     if (sourceScope && !parentMode) {
       if (!rootTurnId || rootCount !== 1 || !snapshot.rootTurnStartedAt) {
@@ -116,7 +104,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     }
     if (parentMode) snapshot.scopeBasis = 'parent-thread';
     else if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
-  } catch { if (!parentMode) { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; } parentDiscoveryIncomplete = true; snapshot.scopeBasis = 'parent-thread'; }
+  } catch { if (!parentMode) { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; } snapshot.scopeBasis = 'parent-thread'; }
   // The parent scan supplies dispatch and invalidation hints only. Its root or
   // pagination completeness does not determine parent-thread catalog coverage.
   const recentMembers = new Set(members);
@@ -149,9 +137,6 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     catalogPages = catalog.rows.length || (catalog.complete ? 1 : 0);
     if (parentMode && catalog.state) activityHints = (catalog.state.activityHints ??= new Set());
     if (!catalog.complete) snapshot.complete = false;
-    // Complete catalog coverage is independently authoritative even when the
-    // optional older-turn discovery pass is unavailable.
-    if (parentDiscoveryIncomplete && !catalog.complete) snapshot.complete = false;
     if (catalog.truncated) snapshot.truncated = true;
     const admit = async (child, row) => {
       if (!child || typeof child !== 'object' || Array.isArray(child) || !validId(child.id)) return false;
@@ -186,7 +171,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     // Parent activity identifies candidates, not ownership. Resolve missing
     // recent IDs with the public identity API and the same admission rules.
     if (parentMode && !catalog.complete && typeof lookupAgent === 'function') {
-      const missing = [...new Set([...recentMembers, ...olderDiscoveryHints, ...activityHints])].filter(id => !admittedCatalog.has(id) && !catalogIds.has(id) && !ambiguousIds.has(id));
+      const missing = [...new Set([...recentMembers, ...activityHints])].filter(id => !admittedCatalog.has(id) && !catalogIds.has(id) && !ambiguousIds.has(id));
       const offset = missing.length ? (catalog.state?.lookupOffset ?? 0) % missing.length : 0;
       const work = [...missing.slice(offset), ...missing.slice(0, offset)].slice(0, 100);
       if (catalog.state && missing.length) catalog.state.lookupOffset = (offset + work.length) % missing.length;
@@ -308,7 +293,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         const parentTerminal = recorded.get(child.id);
         const terminalEvent = parentTerminal && ['completed', 'interrupted'].includes(parentTerminal.kind) ? parentTerminal : null;
         const terminalUnknown = terminalEvent && !terminalEvent.reliable;
-        const needsFreshHint = parentMode && !recentMembers.has(child.id) && (hintedLookups.has(child.id) || olderDiscoveryHints.has(child.id));
+        const needsFreshHint = parentMode && !recentMembers.has(child.id) && hintedLookups.has(child.id);
         const runtimeUsable = !needsFreshHint && (validActive || validNonActive) && (freshRuntime || ((!validActive || (!terminalUnknown && (!terminalEvent || Date.parse(catalogTime ?? '') >= terminalEvent.timestamp))) && (!invalidations.has(child.id) || (Number.isFinite(invalidation) && Date.parse(catalogTime ?? '') >= invalidation))));
         if (!runtimeUsable || !freshRuntime) runtimeStatusesComplete = false;
         const activity = recorded.get(child.id);
@@ -354,7 +339,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
             // parent lifecycle fence remain unchanged. Working always refreshes.
             const stableTerminal = parentMode && cachedAccepted && ['completed', 'idle', 'failed'].includes(cached.result.state);
             if ((version !== null || parentMode) && !stableTerminal)
-              observationQueue.push({ id: child.id, updatedAt: child.updatedAt, urgent: parentMode && (recentMembers.has(child.id) || olderDiscoveryHints.has(child.id) || activityHints.has(child.id) || ['working', 'waiting'].includes(cached?.result?.state)), run: async () => {
+              observationQueue.push({ id: child.id, updatedAt: child.updatedAt, urgent: parentMode && (recentMembers.has(child.id) || activityHints.has(child.id) || ['working', 'waiting'].includes(cached?.result?.state)), run: async () => {
                 try {
                   const result = await observeAgent(child.id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt, ...(parentMode ? { activityScope: 'parent-thread' } : {}) });
                   const accepted = applyObservation(result);
@@ -381,7 +366,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
       return Number.isFinite(parsed) ? parsed : -Infinity;
     };
-    observationQueue.sort((a, b) => Number(recentMembers.has(b.id)) - Number(recentMembers.has(a.id)) || Number(olderDiscoveryHints.has(b.id)) - Number(olderDiscoveryHints.has(a.id)) || updated(b.updatedAt) - updated(a.updatedAt));
+    observationQueue.sort((a, b) => Number(recentMembers.has(b.id)) - Number(recentMembers.has(a.id)) || updated(b.updatedAt) - updated(a.updatedAt));
   }
   let work;
   if (parentMode) {
