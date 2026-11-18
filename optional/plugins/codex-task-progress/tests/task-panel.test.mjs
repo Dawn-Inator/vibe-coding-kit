@@ -3281,6 +3281,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           );
         }
 
+        await page.evaluate(() => {
+          window.fixture.taskSource.status = "error";
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
         await panel.getByRole("button", { name: "历史", exact: true }).click();
         const historyError = scroll
           .locator(".info-card-error")
