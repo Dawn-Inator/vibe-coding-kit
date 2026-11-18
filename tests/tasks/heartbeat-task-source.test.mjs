@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import {
 	linkSync,
+	lstatSync,
 	mkdirSync,
 	realpathSync,
 	rmSync,
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	HEARTBEAT_BOUND_MAX_BYTES,
+	HEARTBEAT_RACY_STAMP_WINDOW_MS,
 	discoverHeartbeatLedgers,
 	discoverBoundHeartbeatSource,
 	HeartbeatDiscoveryIndex,
@@ -2077,4 +2079,54 @@ test("viewer opt-in preserves existing safe projection of link risks without tol
 	assert.deepEqual(viewer.objectives, prior.objectives);
 	assert.deepEqual(viewer.progress, prior.progress);
 	assert.equal(viewer.source.unknownStatusCount, 0);
+});
+
+// Deterministic racy-stamp coverage: the clock and the validation lstat are
+// injected, so no sleeping and no dependence on the filesystem tick size.
+async function racyStampDiscovery(sampleOffsetMs) {
+	const root = projectRoot();
+	writeFileSync(join(root, "source.ts"), "first");
+	const stat = lstatSync(root);
+	const stampTime = Math.max(stat.mtimeMs, stat.ctimeMs);
+	const frozen = stat;
+	let scans = 0;
+	const index = new HeartbeatDiscoveryIndex({
+		watchFactory: () => Object.assign(new EventEmitter(), { close() {} }),
+		clock: () => stampTime + sampleOffsetMs,
+		// The directory changes below, but its stamp reads as unchanged: this
+		// is exactly what a same-tick write looks like to the validator.
+		lstatFactory: async (path) =>
+			path === realpathSync(root) ? frozen : lstatSync(path),
+		async scanFactory(options) {
+			scans++;
+			return discoverHeartbeatLedgerSources(options);
+		},
+	});
+	try {
+		assert.equal((await index.discover({ root })).candidates.length, 0);
+		const top = join(root, "heartbeat.md");
+		writeFileSync(join(root, "another.ts"), "x");
+		writeFileSync(
+			top,
+			`${ledger([["I", "request", "work", "done", "ok", "[]"]])}\nthread: A\n`,
+		);
+		const found = (await index.discover({ root })).candidates.map((x) => x.path);
+		return { found, scans, top };
+	} finally {
+		index.close();
+	}
+}
+
+test("equal directory stamp inside the racy window is re-verified by listing", async () => {
+	const { found, scans, top } = await racyStampDiscovery(1);
+	assert.deepEqual(found, [top]);
+	assert.equal(scans, 2, "racy stamp falls back to a fresh comparison");
+});
+
+test("equal directory stamp outside the racy window keeps the cache hit", async () => {
+	const { found, scans } = await racyStampDiscovery(
+		HEARTBEAT_RACY_STAMP_WINDOW_MS + 1,
+	);
+	assert.deepEqual(found, [], "stamp is trusted once it is no longer racy");
+	assert.equal(scans, 1);
 });

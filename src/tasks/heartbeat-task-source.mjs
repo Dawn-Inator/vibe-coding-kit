@@ -28,6 +28,20 @@ export const HEARTBEAT_BOUND_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_FILTER_DIRECTORIES = 16384;
 const MAX_FILTER_SOURCE_IDENTITIES = 2500;
 const MAX_DIRECTORY_ENTRIES = 65536;
+/**
+ * Racy-timestamp window for directory metadata stamps. Filesystems stamp
+ * mtime/ctime from a coarse kernel tick (commonly 4-10ms, up to 1-2s on
+ * FAT/HFS+/some network mounts), so two changes inside one tick leave the
+ * stamp identical. A stamp whose mtime/ctime is within this window of the
+ * moment it was sampled therefore cannot prove the directory is unchanged
+ * (the same "racy git" problem as git's index timestamps) and must be
+ * re-verified by listing the directory.
+ */
+export const HEARTBEAT_RACY_STAMP_WINDOW_MS = 2000;
+const isRacyStamp = (info, sampledAt) =>
+	!Number.isFinite(sampledAt) ||
+	sampledAt - Math.max(info.mtimeMs, info.ctimeMs) <
+		HEARTBEAT_RACY_STAMP_WINDOW_MS;
 const metadataStamp = (info) =>
 	`${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 const fileIdentity = (info) =>
@@ -447,16 +461,22 @@ export class HeartbeatDiscoveryIndex {
 	#watch;
 	#scan;
 	#limit;
+	#clock;
+	#lstat;
 	constructor({
 		watchFactory = watch,
 		scanFactory = discoverHeartbeatLedgerSources,
 		maxEntries = 16,
+		clock = Date.now,
+		lstatFactory = lstat,
 	} = {}) {
 		if (!Number.isInteger(maxEntries) || maxEntries < 1)
 			throw new TypeError("maxEntries must be positive");
 		this.#watch = watchFactory;
 		this.#scan = scanFactory;
 		this.#limit = maxEntries;
+		this.#clock = clock;
+		this.#lstat = lstatFactory;
 	}
 	async generation(root) {
 		const canonical = await realpath(resolve(root));
@@ -698,10 +718,19 @@ export class HeartbeatDiscoveryIndex {
 						observations
 							.slice(offset, offset + 32)
 							.map(async ([path, stamp]) => {
-								const info = await lstat(path).catch(() => null);
+								const info = await this.#lstat(path).catch(() => null);
 								if (!info) return false;
-								if (metadataStamp(info) === stamp) return true;
 								const oldEntries = record.directories.get(path);
+								if (metadataStamp(info) === stamp) {
+									// Equal stamps only prove "unchanged" for files and for
+									// directories sampled outside the racy window.
+									if (
+										!oldEntries ||
+										!info.isDirectory() ||
+										!isRacyStamp(info, record.observedAt?.get(path))
+									)
+										return true;
+								}
 								if (!oldEntries || !info.isDirectory()) return false;
 								const list = await readdir(path, { withFileTypes: true }).catch(
 									() => null,
@@ -721,7 +750,7 @@ export class HeartbeatDiscoveryIndex {
 									)
 										return false;
 									const added = resolve(path, name);
-									const addedInfo = await lstat(added).catch(() => null);
+									const addedInfo = await this.#lstat(added).catch(() => null);
 									const identity = fileIdentity(addedInfo);
 									if (
 										!addedInfo?.isFile() ||
@@ -739,10 +768,15 @@ export class HeartbeatDiscoveryIndex {
 									)
 										return false;
 								}
-								const after = await lstat(path).catch(() => null);
+								const after = await this.#lstat(path).catch(() => null);
 								if (!after || metadataStamp(after) !== metadataStamp(info))
 									return false;
-								updates.push([path, metadataStamp(info), current]);
+								updates.push([
+									path,
+									metadataStamp(info),
+									current,
+									this.#clock(),
+								]);
 								return true;
 							}),
 					);
@@ -768,10 +802,11 @@ export class HeartbeatDiscoveryIndex {
 			)
 				continue;
 			if (valid) {
-				for (const [path, stamp, entries] of updates) {
+				for (const [path, stamp, entries, sampledAt] of updates) {
 					record.directoryEntryCount +=
 						entries.size - record.directories.get(path).size;
 					record.observations.set(path, stamp);
+					record.observedAt.set(path, sampledAt);
 					record.directories.set(path, entries);
 				}
 				if (updates.length) record.revision++;
@@ -787,6 +822,7 @@ export class HeartbeatDiscoveryIndex {
 					const epoch = current.epoch;
 					const associations = new Map();
 					const observations = new Map();
+					const observedAt = new Map();
 					const directories = new Map();
 					let directoryEntryCount = 0;
 					let observationsComplete = true;
@@ -807,7 +843,10 @@ export class HeartbeatDiscoveryIndex {
 										MAX_FILTER_DIRECTORIES + MAX_FILTER_SOURCE_IDENTITIES)
 							)
 								observationsComplete = false;
-							else observations.set(path, metadataStamp(info));
+							else {
+								observations.set(path, metadataStamp(info));
+								observedAt.set(path, this.#clock());
+							}
 						},
 						collectDirectoryEntries: (path, entries) => {
 							directoryEntryCount += entries.length;
@@ -854,6 +893,7 @@ export class HeartbeatDiscoveryIndex {
 									: null,
 							directoryEntryCount,
 							revision: 0,
+							observedAt,
 							observations:
 								observationsComplete &&
 								observations.has(root) &&
