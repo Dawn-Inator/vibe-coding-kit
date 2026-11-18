@@ -2343,7 +2343,14 @@ test("default unbound task discovery continues once for bounded deep sources", a
   await writeFile(resolve(deep, "heartbeat-multi-b.md"), ledger("multi-chat"));
   for (let i = 0; i < 45; i++)
     await writeFile(resolve(deep, `heartbeat-unrelated-${i}.md`), ledger(`unrelated-${i}`));
-  const index = new HeartbeatDiscoveryIndex();
+  // All fixture files are written before the scan; isolate this test from
+  // delayed operating-system watcher events while retaining protected generations.
+  const index = new HeartbeatDiscoveryIndex({
+    watchFactory: (() =>
+      Object.assign(new EventEmitter(), {
+        close() {},
+      })) as unknown as typeof import("node:fs").watch,
+  });
   const realDiscover = index.discover.bind(index);
   const calls: { maxFiles: number | undefined; maxDepth: number | undefined }[] = [];
   index.discover = async (options, context) => {
