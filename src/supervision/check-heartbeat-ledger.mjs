@@ -315,7 +315,7 @@ const AUTH_CHECK_RE = /(checked|核对|已检查|已核对|检查|复核|已复�
 const AUTH_COVERAGE_GAP_RE = /(?:does\s+not\s+cover|doesn't\s+cover|doesnt\s+cover|not\s+cover(?:ed)?|outside\s+(?:its|the)\s+scope|not\s+in\s+(?:its|that|the)\s+(?:scope|list)|no\s+(?:standing\s+)?authorization\s+covers|不在[^，,;]{0,24}(?:范围|清单)|不覆盖|不涵盖|未覆盖|未涵盖|不属于[^，,;]{0,16}(?:范围|清单))/i;
 const REPLAY_RE = /replays:([\w./-]+)=(\d+)/gi;
 
-function itemKind(status, owner = '') {
+export function itemKind(status, owner = '') {
   const text = status.trim();
   if (/^ready$/i.test(text)) return 'ready';
   if (isTrackingItemState(text)) return 'tracking';

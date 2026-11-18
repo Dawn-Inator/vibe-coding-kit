@@ -66,6 +66,7 @@ export interface TaskPanelState {
     error?: string;
     itemStatuses?: Readonly<Record<string, string>>;
     itemStatusCount?: number;
+    unknownStatusCount?: number;
     linkRiskCount?: number;
     linkRisks?: readonly string[];
     presentation?: {
@@ -1630,11 +1631,25 @@ export class TaskProgressElement extends LitElement {
       presentation.displayedItemCount < presentation.sourceItemCount
         ? html`<p class="muted">${this.t("Showing", "当前显示")} ${presentation.displayedItemCount}/${presentation.sourceItemCount} ${this.t("items. Progress counts all items.", "项；进度按全部项目计算。")}</p>`
         : nothing;
+    const unknownCount = source?.unknownStatusCount;
+    const showUnknownCount =
+      registeredMetadata &&
+      sourceInfo?.status === "ready" &&
+      !!source?.path &&
+      sourceInfo.path === source.path &&
+      !!source.contentHash &&
+      sourceInfo.contentHash === source.contentHash &&
+      Number.isSafeInteger(unknownCount) &&
+      (unknownCount as number) > 0 &&
+      (unknownCount as number) <= 1_000_000;
+    const unknownNotice = showUnknownCount
+      ? html`<p class="muted">${unknownCount} ${this.t("items with unrecognized status count as incomplete", "项状态未识别，计为未完成")}</p>`
+      : nothing;
     const showLinkRisks = registeredMetadata && risks.length > 0;
-    if (!sourceError && !showLinkRisks) return notice;
+    if (!sourceError && !showLinkRisks) return html`${notice}${unknownNotice}`;
     const body = html`${sourceError ? html`<div class="info-card-error"><strong>${this.t("Source error", "来源错误")}</strong><pre class="diagnostic-text">${sourceError}</pre></div>` : nothing}
       ${showLinkRisks ? html`<div class="error">${this.t("Some parent-child links need review.", "部分父子关联需要检查。")}</div>` : nothing}`;
-    return html`${notice}${this.framedCard(
+    return html`${notice}${unknownNotice}${this.framedCard(
       this.t("Task needs attention", "任务需要关注"),
       FileText,
       body,

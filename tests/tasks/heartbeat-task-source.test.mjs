@@ -2018,3 +2018,63 @@ test("real malformed child values and unsafe links retain their diagnostic risks
 		);
 	assert.ok(!risks.some((risk) => risk.startsWith("L:")));
 });
+
+test("viewer opt-in projects unknown audited item statuses as pending without changing audit", () => {
+	const rows = Array.from({ length: 35 }, (_, index) => [
+		`I${index}`,
+		"report:fixture",
+		`Item ${index}`,
+		index < 19 ? "done" : index < 21 ? (index === 19 ? "continuing ← rollout" : "completed") : "blocked <- external input",
+		index < 19 ? "`receipt`" : "-",
+		"[]",
+	]);
+	const report = inspectHeartbeatLedger(ledger(rows), { mode: "items" });
+	assert.equal(report.passed, false);
+	assert.deepEqual(report.findings.filter(f => f.severity === "error").map(f => f.rule), ["item-status", "item-status"]);
+	const options = { report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "fixture", modifiedAt: "2026-01-01T00:00:00Z" };
+	assert.throws(() => projectHeartbeatTask(options), /Cannot project invalid/);
+	const state = projectHeartbeatTask({ ...options, allowUnknownItemStatuses: true });
+	assert.deepEqual(state.progress, { completed: 19, total: 35, percent: 54.29 });
+	assert.equal(state.source.unknownStatusCount, 2);
+	assert.equal(state.source.itemStatuses.I19, "continuing ← rollout");
+	assert.equal(state.source.itemStatuses.I20, "completed");
+	assert.equal(state.objectives.find(item => item.id === "I19").status, "pending");
+	assert.equal(state.objectives.find(item => item.id === "I20").status, "pending");
+	assert.equal(report.passed, false);
+});
+
+test("viewer status tolerance remains scoped and rejects every other audit error", () => {
+	const rows = [
+		["P", "report:fixture", "Selected root", "tracking", "`checked`", '["A"]'],
+		["A", "report:fixture", "Selected unknown", "continuing ← work", "-", "[]"],
+		["B", "report:fixture", "Outside unknown", "continuing ← other", "-", "[]"],
+	];
+	const report = inspectHeartbeatLedger(ledger(rows), { mode: "items" });
+	const options = { report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "fixture", modifiedAt: "2026-01-01T00:00:00Z", allowUnknownItemStatuses: true };
+	assert.equal(projectHeartbeatTask({ ...options, taskRootId: "P" }).source.unknownStatusCount, 1);
+	for (const bad of [
+		ledger([["I", "report:fixture", "Unknown", "continuing ← x", "-", "[]"], ["D", "report:fixture", "No evidence", "done", "-", "[]"]]),
+		ledger([["I", "report:fixture", "Unknown", "continuing ← x", "-", "[]"], ["I", "report:fixture", "Duplicate", "done", "`proof`", "[]"]]),
+		ledger([["I", "invalid", "Unknown", "continuing ← x", "-", "[]"]]),
+		ledger([["P", "report:fixture", "Bad tree", "tracking", "`checked`", '["MISSING"]'], ["I", "report:fixture", "Unknown", "continuing ← x", "-", "[]"]]),
+	]) {
+		const invalid = inspectHeartbeatLedger(bad, { mode: "items" });
+		assert.ok(invalid.findings.some(f => f.severity === "error" && f.rule !== "item-status"));
+		assert.throws(() => projectHeartbeatTask({ ...options, report: invalid }), /Cannot project invalid/);
+	}
+	assert.throws(() => projectHeartbeatTask({ ...options, path: "/outside/heartbeat.md" }), /within the project root/);
+});
+
+test("viewer opt-in preserves existing safe projection of link risks without tolerated status errors", () => {
+	const report = { mode: "items", findings: [], items: [
+		{ id: "P", item: "Parent", status: "tracking", evidence: "checked", children: '["missing"]' },
+		{ id: "C", item: "Child", status: "done", evidence: "receipt", children: "[]" },
+	] };
+	const options = { report, root: PROJECT_ROOT, threadId: THREAD, path: PROJECT_LEDGER, contentHash: "fixture", modifiedAt: "2026-01-01T00:00:00Z" };
+	const prior = projectHeartbeatTask(options);
+	const viewer = projectHeartbeatTask({ ...options, allowUnknownItemStatuses: true });
+	assert.deepEqual(viewer.source.linkRisks, prior.source.linkRisks);
+	assert.deepEqual(viewer.objectives, prior.objectives);
+	assert.deepEqual(viewer.progress, prior.progress);
+	assert.equal(viewer.source.unknownStatusCount, 0);
+});

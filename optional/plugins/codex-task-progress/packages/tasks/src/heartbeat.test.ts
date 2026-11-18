@@ -2558,3 +2558,80 @@ test("continuation honors a concurrently explicit binding without auto-selecting
     await f.close();
   }
 });
+
+test("persisted bound ledger presents unknown item statuses without certifying or rewriting the source", async () => {
+  const f = await fixture();
+  const source = [
+    "# Supervision",
+    "thread: original-owner",
+    "## 2026-11-11T10:00:00Z wake (10-row ledger)",
+    "| # | category | state |",
+    "| --- | --- | --- |",
+    "| 1 | audit | done |",
+    "## Items",
+    "| id | source | item | status | evidence |",
+    "| --- | --- | --- | --- | --- |",
+    "| A | report:a | Complete A | done | evidence A |",
+    "| B | report:b | Complete B | done | evidence B |",
+    "| C | report:c | Work in progress | continuing ← resources | - |",
+    "",
+  ].join("\n");
+  const storage = resolve(f.root, "unknown-status-bound");
+  await writeFile(f.source, source);
+  const before = await readFile(f.source);
+  const first = new HeartbeatService(storage, {
+    kitPath: PINNED_KIT_HEARTBEAT_API,
+    fallbackKitPath: null,
+    refreshMs: 0,
+  });
+  let reopened: HeartbeatService | undefined;
+  let structural: HeartbeatService | undefined;
+  try {
+    assert.equal((await first.bind("chat-A", f.source, f.project))?.status, "ready");
+    first.close();
+    reopened = new HeartbeatService(storage, {
+      kitPath: PINNED_KIT_HEARTBEAT_API,
+      fallbackKitPath: null,
+      refreshMs: 0,
+    });
+    const result = await reopened.taskProjection("chat-A", f.project);
+    assert.equal(result.status, "ready", result.error);
+    assert.deepEqual(result.task?.progress, { completed: 2, total: 3, percent: 66.67 });
+    assert.equal(result.task?.objectives.find((item) => item.id === "C")?.status, "pending");
+    assert.equal(result.task?.source.unknownStatusCount, 1);
+    const history = await reopened.history("chat-A", f.project);
+    assert.equal(history.total, 1);
+    assert.equal(history.sourcePath, await realpath(f.source));
+    assert.deepEqual(await readFile(f.source), before);
+    const other = await reopened.taskProjection("unrelated-chat", f.project);
+    assert.notEqual(other.status, "ready");
+    assert.equal(other.task, null);
+    assert.equal(
+      reopened.agentTaskProgress({
+        threadId: "unrelated-chat",
+        sourcePath: await realpath(f.source),
+        contentHash: result.contentHash ?? "",
+        agents: [],
+      }),
+      null,
+    );
+
+    const duplicate = resolve(f.project, "heartbeat-duplicate.md");
+    await writeFile(duplicate, source.replace("| C | report:c |", "| A | report:c |"));
+    structural = new HeartbeatService(resolve(f.root, "unknown-status-structural"), {
+      kitPath: PINNED_KIT_HEARTBEAT_API,
+      fallbackKitPath: null,
+      refreshMs: 0,
+    });
+    await structural.bind("structural-chat", duplicate, f.project);
+    const invalid = await structural.taskProjection("structural-chat", f.project);
+    assert.equal(invalid.status, "error");
+    assert.match(invalid.error ?? "", /Cannot project invalid heartbeat Items report|duplicate/i);
+    assert.deepEqual(await readFile(f.source), before);
+  } finally {
+    first.close();
+    reopened?.close();
+    structural?.close();
+    await f.close();
+  }
+});

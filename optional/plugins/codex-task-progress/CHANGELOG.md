@@ -1,3 +1,7 @@
+# Task Progress 0.12.7
+
+- Show evidence-backed known progress from an otherwise valid bound Kit ledger when some status-only labels are unrecognized; affected leaves remain pending. Strict audit and other integrity safeguards are unchanged.
+
 # Task Progress 0.12.6
 
 - When default discovery is budget-limited and relation is unresolved, use one larger bounded scan only to confirm zero association; it cannot bind a source. Preserve normal and explicit binding safeguards, and use the full relation report before compacting candidate display. Present unresolved discovery neutrally and actual source failures as errors.

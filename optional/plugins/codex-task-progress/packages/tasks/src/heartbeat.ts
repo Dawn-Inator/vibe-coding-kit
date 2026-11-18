@@ -1563,6 +1563,9 @@ export class HeartbeatService {
         path: view.sourcePath,
         contentHash,
         modifiedAt: pair.modifiedAt,
+        // Read-only projections keep unknown status rows as pending; the Kit
+        // audit and all other structural validation remain strict.
+        allowUnknownItemStatuses: true,
         ...(taskRootId === undefined ? {} : { taskRootId }),
       });
       const canonicalKey = JSON.stringify([threadId, view.sourcePath, contentHash]);

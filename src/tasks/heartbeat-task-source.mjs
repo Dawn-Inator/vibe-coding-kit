@@ -4,6 +4,7 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { calculateTaskProgress } from "./task-contract.mjs";
+import { itemKind } from "../supervision/check-heartbeat-ledger.mjs";
 import { summarizeHeartbeatLedger } from "../supervision/heartbeat-ledger-api.mjs";
 import { readHeartbeatDiscoveryHead } from "../supervision/heartbeat-ledger-files.mjs";
 import {
@@ -913,14 +914,18 @@ function parsedChildren(value) {
 	}
 }
 
-function mapStatus(raw) {
-	const token = String(raw ?? "")
-		.trim()
-		.split(/\s+/)[0]
-		.toLowerCase();
-	if (token === "done" || token === "completed") return "completed";
-	if (token === "dispatched" || token === "tracking") return "active";
-	if (token === "blocked" || token === "owner") return "blocked";
+function mapStatus(row, useCanonicalClassifier) {
+	if (!useCanonicalClassifier) {
+		const token = String(row.status ?? "").trim().split(/\s+/)[0].toLowerCase();
+		if (token === "done" || token === "completed") return "completed";
+		if (token === "dispatched" || token === "tracking") return "active";
+		if (token === "blocked" || token === "owner") return "blocked";
+		return "pending";
+	}
+	const kind = itemKind(String(row.status ?? ""), String(row.owner ?? ""));
+	if (kind === "done") return "completed";
+	if (kind === "dispatched" || kind === "tracking") return "active";
+	if (kind === "blocked" || kind === "owner") return "blocked";
 	return "pending";
 }
 
@@ -952,6 +957,7 @@ export function projectHeartbeatTask({
 	modifiedAt,
 	title,
 	taskRootId,
+	allowUnknownItemStatuses,
 } = {}) {
 	if (
 		!report ||
@@ -985,8 +991,11 @@ export function projectHeartbeatTask({
 	const modifiedTime = new Date(modifiedAt);
 	if (!Number.isFinite(modifiedTime.getTime()))
 		throw new TypeError("modifiedAt must be a valid timestamp");
+	const toleratesStatusErrors = allowUnknownItemStatuses === true && report.findings.some(
+		(finding) => finding.severity === "error" && finding.rule === "item-status",
+	);
 	const errors = report.findings.filter(
-		(finding) => finding.severity === "error",
+		(finding) => finding.severity === "error" && !(allowUnknownItemStatuses === true && finding.rule === "item-status"),
 	);
 	if (errors.length) {
 		const details = errors
@@ -1091,7 +1100,7 @@ export function projectHeartbeatTask({
 		}
 		if (children.length === 0) continue;
 		if (
-			mapStatus(row.status) !== "active" ||
+			mapStatus(row, allowUnknownItemStatuses === true) !== "active" ||
 			!/^tracking\b/i.test(String(row.status ?? "").trim())
 		) {
 			linkRisks.push(
@@ -1174,7 +1183,7 @@ export function projectHeartbeatTask({
 	const buildEntry = (row) => ({
 		id: row.id.trim(),
 		title: String(row.item ?? "").trim() || `Heartbeat item ${row.id}`,
-		status: mapStatus(row.status),
+		status: mapStatus(row, allowUnknownItemStatuses === true),
 		evidence: rowEvidence(row, path),
 	});
 	const represented = new Set();
@@ -1201,6 +1210,11 @@ export function projectHeartbeatTask({
 			represented.add(id);
 		}
 
+	if (toleratesStatusErrors && linkRisks.length)
+		throw new Error(`Cannot project invalid heartbeat Items topology: ${linkRisks.join("; ")}`);
+	const unknownStatusCount = [...byId.values()].filter(
+		(row) => itemKind(String(row.status ?? ""), String(row.owner ?? "")) === "unknown",
+	).length;
 	const progress = calculateTaskProgress(objectives);
 	const timestamp = modifiedTime.toISOString();
 	return {
@@ -1225,6 +1239,7 @@ export function projectHeartbeatTask({
 			path,
 			readOnly: true,
 			contentHash,
+			...(allowUnknownItemStatuses === true ? { unknownStatusCount } : {}),
 			itemStatuses: Object.fromEntries(
 				[...byId].map(([id, row]) => [id, String(row.status ?? "")]),
 			),

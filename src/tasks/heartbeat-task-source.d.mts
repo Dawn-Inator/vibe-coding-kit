@@ -58,6 +58,7 @@ export interface HeartbeatItemsReport {
 
 export interface HeartbeatTaskSource extends TaskSource {
 	linkRisks?: string[];
+	unknownStatusCount?: number;
 }
 
 export interface ProjectHeartbeatTaskOptions {
@@ -72,6 +73,8 @@ export interface ProjectHeartbeatTaskOptions {
 	title?: string;
 	/** Optional tracking root whose validated descendants form this task. */
 	taskRootId?: string;
+	/** Viewer-only: unrecognized status diagnostics project as pending, never as certification. */
+	allowUnknownItemStatuses?: true;
 }
 
 export type HeartbeatTaskState = Omit<TaskState, "source"> & {

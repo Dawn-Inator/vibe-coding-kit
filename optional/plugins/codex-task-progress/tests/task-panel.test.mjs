@@ -1034,6 +1034,48 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
+      "registered tasks disclose unrecognized statuses without hiding progress",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        await page.evaluate((value) => {
+          const path = "/bound-ledger";
+          window.fixture.task = {
+            ...value,
+            progress: { completed: 1, total: 3, percent: 33.3 },
+            source: {
+              kind: "kit-heartbeat",
+              readOnly: true,
+              path,
+              contentHash: "hash",
+              unknownStatusCount: 2,
+            },
+          };
+          window.fixture.taskSource = {
+            status: "ready",
+            kind: "kit-heartbeat",
+            readOnly: true,
+            path,
+            contentHash: "hash",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        }, task);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "33.3");
+        assert.doesNotMatch(await panel.locator(".scroll").innerText(), /项状态未识别/);
+        await panel.getByRole("button", { name: "已登记任务", exact: true }).click();
+        assert.match(await panel.locator(".scroll").innerText(), /2 项状态未识别，计为未完成/);
+        assert.equal(await panel.getByRole("progressbar").getAttribute("aria-valuenow"), "33.3");
+        assert.equal(await panel.locator(".scroll .info-card-error").count(), 0);
+        for (const value of [0, -1, 1.5, 1000001, null]) {
+          await page.evaluate((count) => {
+            window.fixture.task.source.unknownStatusCount = count;
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          }, value);
+          assert.doesNotMatch(await panel.locator(".scroll").innerText(), /项状态未识别/);
+        }
+        await context.close();
+      },
+    );
+    await t.test(
       "unresolved task source does not present discovery as a source error",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");
