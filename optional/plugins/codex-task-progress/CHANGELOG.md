@@ -1,6 +1,6 @@
 # Task Progress 0.12.6
 
-- Retry unresolved source association once with a larger bounded scan after the default discovery budget is exhausted; retain complete-discovery and confirmed-unique selection safeguards. Present unresolved discovery neutrally and actual source failures as errors.
+- When default discovery is budget-limited and relation is unresolved, use one larger bounded scan only to confirm zero association; it cannot bind a source. Preserve normal and explicit binding safeguards, and use the full relation report before compacting candidate display. Present unresolved discovery neutrally and actual source failures as errors.
 
 # Task Progress 0.12.5
 

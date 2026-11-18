@@ -44,7 +44,7 @@ Version 0.12.2 presents each agent in a 56 px capsule with a single text line an
 
 The 0.12.3 candidate scopes presentation generations and disabled-context cleanup to the affected trusted context. Activity or disabled polling in another chat should not invalidate that context’s retained subagent presentation; revocation still clears the affected scope. Actual native acceptance remains to be verified.
 
-Version 0.12.6 retries unresolved source association once with a larger bounded scan when the default discovery budget is exhausted. Selection still requires complete discovery and a confirmed unique association; unresolved discovery is presented neutrally, while actual source failures remain errors.
+Version 0.12.6 uses one larger bounded scan to confirm zero association when default discovery is budget-limited and the relation remains unresolved. This wider pass does not bind a source; normal and explicit binding retain their existing safeguards. Relation decisions use the full report before candidate display is compacted. Unresolved discovery is presented neutrally, while actual source failures remain errors.
 
 Version 0.12.5 directs the parent to record returned native agent thread IDs on assigned canonical leaves through the existing task workflow. Subagents can display a verified, timestamped agent observation from the bound task ledger independently of the project Heartbeat view; the two may select different ledgers. Missing assignments and observations remain unknown, and no live Desktop count is inferred. Ordinary tasks use the existing Kit assignment workflow.
 

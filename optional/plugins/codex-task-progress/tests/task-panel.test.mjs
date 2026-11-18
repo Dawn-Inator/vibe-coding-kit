@@ -1091,6 +1091,13 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           /Heartbeat discovery was incomplete|foreign history must not appear|50%/,
         );
         assert.equal(await panel.locator('[data-agent="live-agent"] [role="meter"]').count(), 0);
+        await showView(panel, "history");
+        assert.match(await panel.locator(".scroll").innerText(), /当前任务来源尚未解析/);
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /台账历史不可用|Heartbeat discovery was incomplete|foreign history must not appear/,
+        );
+        await showView(panel, "tasks");
         await page.evaluate(() => {
           window.fixture.taskSource = {
             status: "error",
@@ -4012,20 +4019,11 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
           };
           return window.__CODEX_TASK_PROGRESS__.refresh();
         });
-        const unresolvedDetails = panel
-          .locator(".scroll .info-card-error")
-          .filter({ hasText: "台账历史不可用" });
-        await unresolvedDetails.waitFor();
-        await unresolvedDetails.click();
-        assert.equal(
-          await panel
-            .locator(".scroll .info-card")
-            .filter({ hasText: "台账历史不可用" })
-            .locator(".diagnostic-text")
-            .textContent(),
-          "ledger binding is unresolved",
+        assert.match(await panel.locator(".scroll").innerText(), /当前任务来源尚未解析/);
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /台账历史不可用|ledger binding is unresolved|暂无变更记录|must not appear locally/,
         );
-        assert.doesNotMatch(await panel.locator(".scroll").innerText(), /暂无变更记录/);
         await context.close();
       },
     );
@@ -5158,7 +5156,8 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     await t.test("registered checklist completion never claims runtime completion", async () => {
       const { context, page, panel } = await open();
       const header = panel.locator(".summary");
-      assert.match(await header.innerText(), /已登记清单 0\/0/);
+      assert.match(await header.innerText(), /尚未建立任务/);
+      assert.doesNotMatch(await header.innerText(), /已登记清单 0\/0/);
       assert.match(await header.innerText(), /执行状态未知/);
       await page.evaluate((value) => {
         window.fixture.task = {

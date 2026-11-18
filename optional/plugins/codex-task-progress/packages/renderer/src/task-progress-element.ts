@@ -1290,6 +1290,13 @@ export class TaskProgressElement extends LitElement {
       this.busy = false;
     }
     const source = this.historySource();
+    if (this.data.taskSource?.status === "pending-selection") {
+      return this.framedCard(
+        this.t("Ledger records", "台账记录"),
+        List,
+        html`<p class="muted" role="status">${this.t("Current task source is unresolved", "当前任务来源尚未解析")}</p>`,
+      );
+    }
     if (this.taskSourceIsPending() && !source?.path) {
       return this.framedCard(
         this.t("Ledger records", "台账记录"),
@@ -1309,9 +1316,7 @@ export class TaskProgressElement extends LitElement {
           ? (sourceHistory.source.error ?? null)
           : (source.error ??
             (!this.taskSourceIsPending() &&
-            (this.data.taskSource?.status === "stale" ||
-              this.data.taskSource?.status === "error" ||
-              this.data.taskSource?.status === "pending-selection")
+            (this.data.taskSource?.status === "stale" || this.data.taskSource?.status === "error")
               ? (this.data.taskSource.error ?? "The bound ledger is unavailable or stale.")
               : null));
       const body = html`${retrying ? html`<p class="muted" role="status">${this.t("Ledger history is refreshing. Refresh to try again.", "台账历史正在刷新，可再次点击刷新重试。")}</p>` : nothing}${
@@ -1389,6 +1394,7 @@ export class TaskProgressElement extends LitElement {
             : this.t("Heartbeat task source is unavailable", "心跳任务来源暂不可用");
       return label;
     }
+    if (!this.data.task) return this.t("No task checklist", "尚未建立任务");
     const counts = `${this.data.completionBasis === "task-lifecycle" ? this.t("Task progress", "任务进度") : this.t("Registered checklist", "已登记清单")} ${progress?.completed ?? 0}/${progress?.total ?? 0}`;
     const source =
       this.data.task?.source?.kind === "kit-heartbeat"

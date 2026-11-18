@@ -2341,9 +2341,11 @@ test("default unbound task discovery continues once for bounded deep sources", a
   await writeFile(resolve(deep, "heartbeat-one.md"), ledger("one-chat"));
   await writeFile(resolve(deep, "heartbeat-multi-a.md"), ledger("multi-chat"));
   await writeFile(resolve(deep, "heartbeat-multi-b.md"), ledger("multi-chat"));
+  for (let i = 0; i < 45; i++)
+    await writeFile(resolve(deep, `heartbeat-unrelated-${i}.md`), ledger(`unrelated-${i}`));
   const index = new HeartbeatDiscoveryIndex();
   const realDiscover = index.discover.bind(index);
-  const calls: { maxFiles?: number; maxDepth?: number }[] = [];
+  const calls: { maxFiles: number | undefined; maxDepth: number | undefined }[] = [];
   index.discover = async (options, context) => {
     calls.push({ maxFiles: options.maxFiles, maxDepth: options.maxDepth });
     return realDiscover(options, context);
@@ -2363,9 +2365,13 @@ test("default unbound task discovery continues once for bounded deep sources", a
       { maxFiles: 12_000, maxDepth: 32 },
     ]);
     const one = await service.taskProjection("one-chat", f.project);
-    assert.equal(one.status, "ready");
-    assert.equal(one.sourcePath, await realpath(resolve(deep, "heartbeat-one.md")));
-    assert.equal(one.task?.threadId, "one-chat");
+    assert.equal(one.status, "pending-selection");
+    assert.equal(one.task, null);
+    const relations = new (
+      await import("vibe-coding-kit/src/tasks/task-source-relations.mjs")
+    ).TaskSourceRelations(resolve(f.root, "deep-data"));
+    assert.equal((await relations.get("one-chat")).found, false);
+    assert.equal((await relations.get("multi-chat")).found, false);
     assert.deepEqual(calls.splice(0), [
       { maxFiles: undefined, maxDepth: undefined },
       { maxFiles: 12_000, maxDepth: 32 },
@@ -2373,6 +2379,7 @@ test("default unbound task discovery continues once for bounded deep sources", a
     const multi = await service.taskProjection("multi-chat", f.project);
     assert.equal(multi.status, "pending-selection");
     assert.equal(multi.task, null);
+    assert.equal((await relations.get("multi-chat")).found, false);
     assert.deepEqual(calls.splice(0), [
       { maxFiles: undefined, maxDepth: undefined },
       { maxFiles: 12_000, maxDepth: 32 },
@@ -2450,6 +2457,94 @@ test("continuation respects explicit limits and never retries non-budget failure
   } finally {
     limited.close();
     unsafe.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("expanded incomplete scan remains pending while ordinary shallow binding remains automatic", async () => {
+  const f = await fixture();
+  const deep = resolve(f.project, "a/b/c/d/e/f/g");
+  await mkdir(deep, { recursive: true });
+  const index = new HeartbeatDiscoveryIndex();
+  let scans = 0;
+  index.discover = async (options) => {
+    scans++;
+    const result = await discoverHeartbeatLedgerSources(options);
+    if (options.maxDepth === 32) return { ...result, complete: false, reasons: ["file-limit"] };
+    return result;
+  };
+  const incomplete = new HeartbeatService(resolve(f.root, "still-incomplete"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    assert.equal((await incomplete.taskProjection("chat", f.project)).status, "pending-selection");
+    assert.equal(scans, 2);
+    const rel = new (
+      await import("vibe-coding-kit/src/tasks/task-source-relations.mjs")
+    ).TaskSourceRelations(resolve(f.root, "still-incomplete"));
+    assert.equal((await rel.get("chat")).found, false);
+    // A shallow complete scan still uses the existing automatic binding path.
+    const shallowProject = resolve(f.root, "shallow");
+    await mkdir(resolve(shallowProject, ".git"), { recursive: true });
+    const path = resolve(shallowProject, "heartbeat.md");
+    await writeFile(path, ledger("shallow-chat"));
+    const shallow = new HeartbeatService(resolve(f.root, "shallow-data"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      refreshMs: 0,
+    });
+    try {
+      const projected = await shallow.taskProjection("shallow-chat", shallowProject);
+      assert.equal(projected.status, "ready");
+      assert.equal(projected.sourcePath, await realpath(path));
+      const shallowRel = new (
+        await import("vibe-coding-kit/src/tasks/task-source-relations.mjs")
+      ).TaskSourceRelations(resolve(f.root, "shallow-data"));
+      assert.equal((await shallowRel.get("shallow-chat")).binding?.origin, "automatic");
+    } finally {
+      shallow.close();
+    }
+  } finally {
+    incomplete.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("continuation honors a concurrently explicit binding without auto-selecting", async () => {
+  const f = await fixture();
+  const deep = resolve(f.project, "a/b/c/d/e/f/g");
+  await mkdir(deep, { recursive: true });
+  const source = resolve(deep, "heartbeat.md");
+  await writeFile(source, ledger("chat"));
+  const root = resolve(f.root, "concurrent-binding");
+  const relations = new (
+    await import("vibe-coding-kit/src/tasks/task-source-relations.mjs")
+  ).TaskSourceRelations(root);
+  const index = new HeartbeatDiscoveryIndex();
+  const realDiscover = index.discover.bind(index);
+  index.discover = async (options, context) => {
+    const result = await realDiscover(options, context);
+    if (options.maxDepth === 32) await relations.set("chat", { path: source, origin: "explicit" });
+    return result;
+  };
+  const service = new HeartbeatService(root, {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    const projection = await service.taskProjection("chat", f.project);
+    assert.equal(projection.status, "ready");
+    assert.equal(projection.sourcePath, await realpath(source));
+    assert.equal((await relations.get("chat")).binding?.origin, "explicit");
+  } finally {
+    service.close();
     index.close();
     await f.close();
   }

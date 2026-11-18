@@ -67,6 +67,7 @@ export interface HeartbeatView {
   candidateCount?: number;
   candidatesTruncated?: boolean;
   discoveryComplete?: boolean;
+  selectionPending?: boolean;
   discoveryVisitedFiles?: number;
   discoveryLimits?: { maxFiles: number; maxDepth: number };
   discoveryReasons?: string[];
@@ -1184,9 +1185,9 @@ export class HeartbeatService {
               force: Boolean(options.forceDiscovery),
             })
           : discoverHeartbeatLedgerSources(expanded));
-        // A protected scan must still describe the current root before it can
-        // create an automatic source binding. The outer view check also fences
-        // the final snapshot; unprotected scans retain their existing semantics.
+        // A protected scan must still describe the current root. The outer
+        // view check also fences the final snapshot; unprotected scans retain
+        // their existing semantics.
         if (
           this.#options.discoveryIndex &&
           discovery.indexGeneration !== undefined &&
@@ -1195,7 +1196,19 @@ export class HeartbeatService {
           throw new HeartbeatDiscoveryInvalidatedError(
             "Heartbeat discovery changed while reading; retry required",
           );
-        relation = await relations.resolve(threadId, { projectRoot: root, discovery });
+        const matches = discovery.candidates.filter((candidate) => candidate.associated);
+        if (discovery.complete && matches.length === 0) {
+          // This path can only conclude absence; it cannot create a binding.
+          relation = await relations.resolve(threadId, { projectRoot: root, discovery });
+        } else {
+          // Never let a source found only during continuation auto-bind: a
+          // watcher event can race the journal write. An explicit concurrent
+          // selection is still authoritative and must be resolved normally.
+          const current = await relations.get(threadId);
+          relation = current.found
+            ? await relations.resolve(threadId, { projectRoot: root, discovery })
+            : { status: "pending-selection", binding: null };
+        }
       }
       if (observation)
         observation.generation = boundOnly ? null : (discovery.indexGeneration ?? null);
@@ -1207,6 +1220,7 @@ export class HeartbeatService {
           status: "candidates",
           candidates,
           candidateCount: candidates.length,
+          selectionPending: relation.status === "pending-selection",
           discoveryComplete: discovery.complete,
           discoveryVisitedFiles: discovery.visitedFiles,
           discoveryLimits: discovery.limits,
@@ -1475,16 +1489,24 @@ export class HeartbeatService {
       const discoveryTruncated =
         view.candidatesTruncated === true ||
         (view.candidateCount ?? view.candidates.length) > view.candidates.length;
-      if (view.discoveryComplete === false || associatedCount > 1 || discoveryTruncated)
+      // The resolver's decision uses the full discovery report, before the
+      // bounded display truncates unrelated candidate rows.
+      const selectionPending =
+        view.selectionPending ??
+        (view.discoveryComplete === false || associatedCount > 1 || discoveryTruncated);
+      if (selectionPending)
         return {
           status: "pending-selection",
           task: null,
           sourcePath: null,
           error:
             view.error ??
-            (discoveryTruncated || view.discoveryComplete === false
+            (view.discoveryComplete === false ||
+            (view.selectionPending === undefined && discoveryTruncated)
               ? "Heartbeat discovery was incomplete, so the runtime cannot confirm this chat's task-source association yet."
-              : "Multiple heartbeat ledgers carry this chat association; task-source authority is unresolved while project Heartbeat remains available separately."),
+              : associatedCount > 1
+                ? "Multiple heartbeat ledgers carry this chat association; task-source authority is unresolved while project Heartbeat remains available separately."
+                : "A heartbeat found during expanded discovery requires explicit source selection."),
         };
     }
     if (!view?.sourcePath)
