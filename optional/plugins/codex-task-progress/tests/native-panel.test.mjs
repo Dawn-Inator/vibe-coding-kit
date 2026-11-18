@@ -173,6 +173,10 @@ test("native panel MCP Apps integration", async (t) => {
       const context = await browser.newContext({
         viewport: { width: 350, height: 740 },
         locale: "en-US",
+        // The panel body plays a 200ms entry animation (scale + translate). A pointer click that lands while a
+        // starved renderer is mid-animation is hit-tested against a stale transform, so <html> / .summary
+        // intercept it. Static layout is what these protocol scenarios assert, not the animation.
+        reducedMotion: "reduce",
         ...(preferredColorScheme ? { colorScheme: preferredColorScheme } : {}),
       });
       await context.addInitScript(() =>

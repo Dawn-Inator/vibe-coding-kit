@@ -190,6 +190,9 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     const context = await browser.newContext({
       viewport: { width: 1100, height: 850 },
       locale: "zh-CN",
+      // Static layout keeps pointer hit-testing deterministic on a starved runner (the panel body plays a
+      // 200ms entry animation); a test that needs the animation passes reducedMotion: "no-preference".
+      reducedMotion: "reduce",
       ...contextOptions,
     });
     contexts.add(context);
@@ -2131,7 +2134,10 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
     await t.test(
       "disabled project returns an empty standalone panel; omitted flag stays enabled",
       async () => {
-        const context = await browser.newContext({ viewport: { width: 1100, height: 850 } });
+        const context = await browser.newContext({
+          viewport: { width: 1100, height: 850 },
+          reducedMotion: "reduce",
+        });
         contexts.add(context);
         const page = await context.newPage();
         await page.goto(`${url}?disabled=true`);

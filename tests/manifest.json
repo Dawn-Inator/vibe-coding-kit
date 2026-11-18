@@ -88,6 +88,7 @@
   "optional/runtime.test.mjs",
   "optional/task-progress-release.test.mjs",
   "optional/task-progress-native-panel.test.mjs",
+  "optional/task-progress-ui-test-determinism.test.mjs",
   "optional/task-progress-native-runtime.test.mjs",
   "optional/task-progress-main-module.test.mjs",
   "optional/task-progress-main-module.symlink.posix.test.mjs",
