@@ -20,7 +20,12 @@ import {
 	WAKE_HEADING_RE,
 	matchHeartbeatLedgerRow,
 	findStrayItemRows,
+	parseItemTables,
 } from "./check-heartbeat-ledger.mjs";
+import {
+	isConcreteCoordinationField,
+	isTrackingItemState,
+} from "./heartbeat-ledger-tracking.mjs";
 import {
 	heartbeatAuditDueForWake,
 	isFullTenRowWake,
@@ -652,13 +657,32 @@ export function migrateHeartbeatLedgerPair(options) {
 	const paths = safePaths(options.root, options.path);
 	return withWriterLock(paths, () => migrateLocked(paths, options));
 }
-function writeLocked(paths, options, kind) {
+function readWritablePair(paths, options) {
 	assertExpected(paths, options.expectedContentHash);
 	const prior = readPair(paths);
 	if (prior.isLegacy)
 		throw new Error(
 			"Explicitly migrate the quiescent legacy ledger before writing",
 		);
+	return prior;
+}
+function publishPairHead(paths, options, prior, head, historyBody) {
+	const backup = readFileSync(paths.legacyBackupPath, "utf8");
+	assertExpected(paths, options.expectedContentHash);
+	atomicWrite(
+		paths.historyPath,
+		historyText(historyBody, head, backup, paths, prior.headText),
+	);
+	options.beforeHeadPublish?.();
+	if (readFileSync(paths.headPath, "utf8") !== prior.headText)
+		throw new Error(
+			"Heartbeat version conflict before head publication; committed history retained for recovery",
+		);
+	atomicWrite(paths.headPath, head);
+	return readPair(paths);
+}
+function writeLocked(paths, options, kind) {
+	const prior = readWritablePair(paths, options);
 	const marker = HISTORY.exec(prior.historyText),
 		body = prior.historyText.slice(marker[0].length);
 	let input = kind === "append" ? options.wakeText : options.text;
@@ -690,19 +714,7 @@ function writeLocked(paths, options, kind) {
 			: input,
 		paths,
 	);
-	const backup = readFileSync(paths.legacyBackupPath, "utf8");
-	assertExpected(paths, options.expectedContentHash);
-	atomicWrite(
-		paths.historyPath,
-		historyText(historyBody, head, backup, paths, prior.headText),
-	);
-	options.beforeHeadPublish?.();
-	if (readFileSync(paths.headPath, "utf8") !== prior.headText)
-		throw new Error(
-			"Heartbeat version conflict before head publication; committed history retained for recovery",
-		);
-	atomicWrite(paths.headPath, head);
-	return readPair(paths);
+	return publishPairHead(paths, options, prior, head, historyBody);
 }
 export function writeHeartbeatLedgerPair(options) {
 	requireOwnership(options);
@@ -713,6 +725,166 @@ export function appendHeartbeatWake(options) {
 	requireOwnership(options);
 	const paths = safePaths(options.root, options.path);
 	return withWriterLock(paths, () => writeLocked(paths, options, "append"));
+}
+
+const isEmptyAssignmentCell = (value) =>
+	value === "" || value === "-" || value === "—";
+const isLiteralCell = (value) =>
+	typeof value === "string" &&
+	value === value.trim() &&
+	!/[|\p{Cc}\p{Cs}\u2028\u2029]/u.test(value);
+const isNativeThreadId = (value) =>
+	isLiteralCell(value) &&
+	isConcreteCoordinationField(value) &&
+	/[\p{L}\p{N}]/u.test(value) &&
+	!/[\s\\<>]/u.test(value);
+
+function editAgentAssignments(head, assignments) {
+	if (!Array.isArray(assignments) || !assignments.length)
+		throw new TypeError("Heartbeat assignments must be a nonempty array");
+	const lines = head.split("\n");
+	const [table] = parseItemTables(head);
+	if (
+		!table?.rows.length ||
+		lines.filter((line) => /^#{1,6}\s+Items\s*$/i.test(line)).length !== 1
+	)
+		throw new Error(
+			"Heartbeat assignments require one unambiguous populated Items table",
+		);
+	const { headers, rows } = table;
+	const dispatchColumn = headers.indexOf("dispatch_ref");
+	const childrenColumn = headers.indexOf("children");
+	const agentColumn = headers.indexOf("agent_thread_id");
+	if (
+		!headers.includes("id") ||
+		!headers.includes("status") ||
+		dispatchColumn < 0 ||
+		headers.includes("") ||
+		new Set(headers).size !== headers.length ||
+		(childrenColumn >= 0 && childrenColumn !== dispatchColumn + 1)
+	)
+		throw new Error("Heartbeat assignments require valid, unique Items headers");
+
+	const tableStart = rows[0].line - 3;
+	const tableEnd = rows.at(-1).line;
+	const rawTable = lines.slice(tableStart, tableEnd).map((line) => {
+		// The shared parser accepts uneven Markdown rows. An edit needs exact cell
+		// boundaries and retains every character outside the assignment cells.
+		const cells = line.split("|");
+		if (
+			cells.length !== headers.length + 2 ||
+			cells[0].trim() ||
+			cells.at(-1).trim()
+		)
+			throw new Error("Malformed Heartbeat Items row or separator");
+		return cells;
+	});
+	if (
+		!rawTable[1].slice(1, -1).every((cell) => /^:?-{2,}:?$/.test(cell.trim())) ||
+		lines[tableEnd]?.trimStart().startsWith("|")
+	)
+		throw new Error("Malformed Heartbeat Items row or separator");
+	const items = new Map();
+	for (const row of rows) {
+		if (!row.id || !row.status || items.has(row.id))
+			throw new Error("Malformed or duplicate Heartbeat Items row");
+		items.set(row.id, row);
+	}
+	if (findStrayItemRows(head, rows).some(({ id }) => items.has(id)))
+		throw new Error("Heartbeat Items include an ambiguous row outside the registry");
+
+	const seen = new Set();
+	const changes = new Map();
+	for (const assignment of assignments) {
+		const input = assignment ?? {};
+		const { itemId, agentThreadId, expectedDispatchRef, expectedAgentThreadId } =
+			input;
+		if (
+			!isLiteralCell(itemId) ||
+			!itemId ||
+			!isNativeThreadId(agentThreadId) ||
+			!Object.hasOwn(input, "expectedDispatchRef") ||
+			!isLiteralCell(expectedDispatchRef) ||
+			(!isEmptyAssignmentCell(expectedDispatchRef) &&
+				!isConcreteCoordinationField(expectedDispatchRef)) ||
+			(expectedAgentThreadId !== undefined && !isNativeThreadId(expectedAgentThreadId))
+		)
+			throw new TypeError(
+				"Heartbeat assignment requires an Item ID, native thread ID and exact expected dispatch_ref",
+			);
+		if (seen.has(itemId))
+			throw new Error(`Duplicate Heartbeat assignment for Item ${itemId}`);
+		seen.add(itemId);
+		const row = items.get(itemId);
+		if (!row) throw new Error(`Heartbeat assignment Item ${itemId} does not exist`);
+		const children = row.children ?? "";
+		if (
+			isTrackingItemState(row.status) ||
+			(!isEmptyAssignmentCell(children) && !/^\[\s*\]$/.test(children))
+		)
+			throw new Error(`Heartbeat assignment Item ${itemId} is not an unambiguous leaf`);
+		if (row.dispatch_ref !== expectedDispatchRef)
+			throw new Error(`Heartbeat assignment dispatch_ref conflict for Item ${itemId}`);
+		const current = row.agent_thread_id ?? "";
+		if (
+			(expectedAgentThreadId !== undefined && current !== expectedAgentThreadId) ||
+			(expectedAgentThreadId === undefined &&
+				current !== agentThreadId &&
+				!isEmptyAssignmentCell(current))
+		)
+			throw new Error(`Heartbeat assignment agent_thread_id conflict for Item ${itemId}`);
+		if (current !== agentThreadId)
+			changes.set(row.line - 1 - tableStart, agentThreadId);
+	}
+	if (!changes.size) return head;
+	if (agentColumn < 0) {
+		const insertAt = Math.max(dispatchColumn, childrenColumn) + 2;
+		const columnCells = [" agent_thread_id ", " --- "];
+		for (const [index, cells] of rawTable.entries()) {
+			const agent = changes.get(index);
+			cells.splice(
+				insertAt,
+				0,
+				columnCells[index] ?? (agent ? ` ${agent} ` : "  "),
+			);
+			lines[tableStart + index] = cells.join("|");
+		}
+	} else {
+		for (const [index, agent] of changes) {
+			const cells = rawTable[index];
+			const old = cells[agentColumn + 1];
+			cells[agentColumn + 1] = old.trim()
+				? old.replace(old.trim(), () => agent)
+				: ` ${agent} `;
+			lines[tableStart + index] = cells.join("|");
+		}
+	}
+	return lines.join("\n");
+}
+
+/** Record only explicit native assignments verified by the authorized source writer. */
+export function recordHeartbeatAgentAssignments(options) {
+	requireOwnership(options);
+	const paths = safePaths(options.root, options.path);
+	return withWriterLock(paths, () => {
+		const prior = readWritablePair(paths, options);
+		const marker = HISTORY.exec(prior.historyText);
+		// Folding an unarchived suffix into the authenticated head would remove its
+		// wakes from reads. Assignment edits keep the entire history body intact.
+		if (Buffer.byteLength(prior.headText) !== Number(marker[4]))
+			throw new Error(
+				"Heartbeat assignments require a canonical head without an unarchived suffix",
+			);
+		const head = editAgentAssignments(prior.headText, options.assignments);
+		if (head === prior.headText) return prior;
+		return publishPairHead(
+			paths,
+			options,
+			prior,
+			head,
+			prior.historyText.slice(marker[0].length),
+		);
+	});
 }
 
 /** Read raw version without interpreting the pair, including interrupted transactions. */

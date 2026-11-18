@@ -2,6 +2,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { TaskStore } from './task-store.mjs';
 import { readIncrementalAgentCatalog } from './agent-catalog-cache.mjs';
+import { calculateTaskProgress } from './task-contract.mjs';
 
 export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot, schemas, listPage, listTurnsPage, observeAgent, verifyAgent, lookupAgent, taskCycleId, cycleStartedAt, taskSourcePath, activityScope, now = () => new Date() }) {
   const parentMode = activityScope === 'parent-thread';
@@ -18,22 +19,47 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   const members = new Set();
   const recorded = new Map();
   const activityPaths = new Map();
+  const dispatchTools = ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'];
   const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value && !/[\x00-\x1f\x7f-\x9f]/.test(value);
   const validCwd = value => typeof value === 'string' && value.trim().length > 0 && isAbsolute(value) && resolve(value) === value && !/[\x00-\x1f\x7f-\x9f]/.test(value);
   const validAgentPath = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x1f]/.test(value) && value.trim() === value;
   const dispatches = new Map();
+  const checklistDispatches = new Map();
+  const recordChecklistEvent = (id, timestamp, kind) => {
+    const previous = checklistDispatches.get(id);
+    const latestTimestamp = previous?.latestTimestamp ?? -Infinity;
+    const ordered = Number.isFinite(timestamp) && timestamp >= latestTimestamp;
+    // One start event may accompany a dispatch. A restart without a new
+    // dispatch, or any other intervening lifecycle event, clears the proof.
+    const confirmsStart = kind === 'started' && ordered && previous?.dispatchAt != null && !previous.started;
+    const dispatchAt = kind === 'dispatch' && ordered && timestamp > latestTimestamp ? timestamp : null;
+    const initialStart = kind === 'started' && previous === undefined;
+    const unverifiedActivity = !confirmsStart && !initialStart && dispatchAt === null;
+    checklistDispatches.set(id, {
+      latestTimestamp: ordered ? timestamp : latestTimestamp,
+      dispatchAt: confirmsStart ? previous.dispatchAt : dispatchAt,
+      started: confirmsStart,
+      verificationBlocked: dispatchAt === null && (previous?.verificationBlocked || (unverifiedActivity && (!ordered || kind === 'dispatch'))),
+      childTurnMustFollow: dispatchAt !== null ? -Infinity : Math.max(previous?.childTurnMustFollow ?? -Infinity, unverifiedActivity && ordered ? timestamp : -Infinity),
+    });
+  };
   const invalidations = new Map();
   const turns = [];
   let rootTurnId;
   let turnCursor;
   const turnCursors = new Set();
+  const parentTurnIds = new Set();
+  let newestBefore = Infinity;
+  let parentScanSucceeded = false;
   let boundary = false;
   let rootCount = 0;
   let parentWindowIncomplete = false;
+  let parentRootMalformed = false;
   try {
     for (let page = 0; page < 8; page++) {
       const result = await listTurnsPage(turnCursor);
       if (!result || !Array.isArray(result.data) || result.data.length > 2) throw new Error('Invalid turn page');
+      if (parentMode && result.data.length === 0 && result.nextCursor !== null) parentRootMalformed = true;
       if (page === 0) {
         const latest = result.data[0];
         if (result.data.length === 0) {
@@ -48,7 +74,13 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       for (const turn of result.data) {
         if (!turn || typeof turn.id !== 'string' || !turn.id.trim() || !Number.isFinite(turn.startedAt) || !Array.isArray(turn.items)) { snapshot.complete = false; continue; }
         const startMs = turn.startedAt * 1000;
+        if (parentMode) {
+          if (!validId(turn.id) || !validId(turn.rootTurnId) || parentTurnIds.has(turn.id) || startMs > newestBefore) parentRootMalformed = true;
+          parentTurnIds.add(turn.id);
+          newestBefore = startMs;
+        }
         if (turn.rootTurnId !== rootTurnId) { boundary = true; if (rootCount !== 1) snapshot.complete = false; break; }
+        if (parentMode && rootCount > 0) parentRootMalformed = true;
         if (turn.id === rootTurnId) {
           rootCount++;
           if (sourceScope && rootCount > 1) throw new Error('Ambiguous root turn');
@@ -80,8 +112,22 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
       for (const item of turn.items) {
         if (!item || typeof item !== 'object' || Array.isArray(item)) { snapshot.complete = false; continue; }
         const itemMs = Number.isFinite(item.startedAtMs) ? item.startedAtMs : null;
-        if (itemMs !== null ? itemMs < cycleMs : startMs < cycleMs) { if (itemMs === null && startMs < cycleMs) snapshot.complete = false; continue; }
-        if (item.type === 'collabAgentToolCall' && item.senderThreadId === parentThreadId && ['spawnAgent', 'followupTask', 'resumeAgent', 'sendInput'].includes(item.tool) && item.status === 'completed') {
+        const acceptedDispatch = item.senderThreadId === parentThreadId && dispatchTools.includes(item.tool) && item.status === 'completed';
+        if (parentMode) {
+          const timestamp = itemMs !== null && itemMs >= startMs ? itemMs : null;
+          if (item.type === 'collabAgentToolCall' && (item.senderThreadId === parentThreadId || !validId(item.senderThreadId)) && !['wait', 'waitForAgents'].includes(item.tool)) {
+            const receivers = item.receiverThreadIds;
+            if (!Array.isArray(receivers) || receivers.some(id => !validId(id)) || new Set(receivers).size !== receivers.length || (!receivers.length && item.tool !== 'spawnAgent')) parentRootMalformed = true;
+            else for (const id of receivers) recordChecklistEvent(id, timestamp, acceptedDispatch ? 'dispatch' : null);
+          } else if (item.type === 'subAgentActivity' && validId(item.agentThreadId)) {
+            recordChecklistEvent(item.agentThreadId, timestamp, item.kind === 'started' ? 'started' : null);
+          }
+        }
+        if (itemMs !== null ? itemMs < cycleMs : startMs < cycleMs) {
+          if (!parentMode && itemMs === null && startMs < cycleMs) snapshot.complete = false;
+          continue;
+        }
+        if (item.type === 'collabAgentToolCall' && acceptedDispatch) {
           if (!Array.isArray(item.receiverThreadIds)) { snapshot.complete = false; continue; }
           for (const id of item.receiverThreadIds) if (validId(id)) {
             members.add(id);
@@ -102,11 +148,16 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         } else if (item.type === 'subAgentActivity') snapshot.complete = false;
       }
     }
+    parentScanSucceeded = true;
     if (parentMode) snapshot.scopeBasis = 'parent-thread';
     else if (rootTurnId) snapshot.scopeBasis = 'parent-root-turn'; else snapshot.complete = false;
   } catch { if (!parentMode) { snapshot.complete = false; snapshot.status = 'unavailable'; return snapshot; } snapshot.scopeBasis = 'parent-thread'; }
-  // The parent scan supplies dispatch and invalidation hints only. Its root or
-  // pagination completeness does not determine parent-thread catalog coverage.
+  // The current-root scan fences checklist attribution. Parent-thread catalog
+  // coverage and runtime counts are independent of that scan.
+  const rootStartMs = Date.parse(snapshot.rootTurnStartedAt ?? '');
+  const assignmentStart = validCycle ? Math.max(cycleMs, rootStartMs) : sourceScope ? rootStartMs : NaN;
+  const verifiedParentRoot = parentScanSucceeded && snapshot.complete && !parentRootMalformed && validId(rootTurnId) && rootCount === 1 && Number.isFinite(assignmentStart);
+  const parentChecklistWindow = verifiedParentRoot && !parentWindowIncomplete;
   const recentMembers = new Set(members);
   if (parentMode) { snapshot.complete = true; snapshot.truncated = false; }
   let runtimeStatusesComplete = true;
@@ -262,15 +313,32 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
   // These hints only schedule reads; they are never displayed as state evidence.
   if (parentMode && catalog?.complete) for (const id of activityHints) if (!admittedCatalog.has(id)) activityHints.delete(id);
   const store = new TaskStore(storageRoot, { schemas });
-  const readProgress = async entry => {
-    const { state, uncertain } = await store.getReadOnly(entry.id, { maxBytes: 1024 * 1024 });
-    if (uncertain) snapshot.complete = false;
-    const dispatchedAt = dispatches.get(entry.id);
-    const progressStart = Date.parse(state?.lifecycle?.startedAt ?? state?.createdAt);
-    if (state?.threadId === entry.id && state.progress && Number.isFinite(dispatchedAt) && Number.isFinite(progressStart) && progressStart >= dispatchedAt) {
-      entry.progress = state.progress;
-      entry.progressBasis = state.lifecycle ? 'task-lifecycle' : 'registered-checklist';
+  const readProgress = async (entry, notBefore) => {
+    const { state, uncertain, sourceBound } = await store.getReadOnly(entry.id, { maxBytes: 1024 * 1024 });
+    if (uncertain) {
+      if (!parentMode) snapshot.complete = false;
+      return;
     }
+    if (sourceBound) return;
+    const progressStart = Date.parse(state?.lifecycle?.startedAt ?? state?.createdAt);
+    if (state?.threadId !== entry.id || !state.progress || !Number.isFinite(notBefore) || !Number.isFinite(progressStart) || progressStart < notBefore) return;
+    // Child milestones can finish while the parent's acceptance is still open.
+    const display = {
+      progress: parentMode ? calculateTaskProgress(state.objectives) : state.progress,
+      progressBasis: parentMode || !state.lifecycle ? 'registered-checklist' : 'task-lifecycle',
+    };
+    return { progressStart, display };
+  };
+  const verifyChecklistTurn = async (id, activity) => {
+    const proof = await verifyAgent(id, { parentThreadId, cwd: canonicalCwd, rootTurnId, rootTurnStartedAt: snapshot.rootTurnStartedAt });
+    if (proof?.verdict !== 'in-scope' || proof.parentThreadId !== parentThreadId || proof.rootTurnId !== rootTurnId || !validCwd(proof.cwd) || await realpath(proof.cwd) !== canonicalCwd) return null;
+    const turnStartedAt = typeof proof.turnStartedAt === 'string' ? Date.parse(proof.turnStartedAt) : NaN;
+    if (!Number.isFinite(turnStartedAt) || turnStartedAt < assignmentStart || turnStartedAt <= (activity?.childTurnMustFollow ?? -Infinity)) return null;
+    // The public turn start can be rounded down to a whole second. A record
+    // from within that second could have been opened before this turn.
+    const nextSecond = Math.floor(turnStartedAt / 1000) * 1000 + 1000;
+    if (Number.isFinite(activity?.dispatchAt) && activity.dispatchAt >= nextSecond) return null;
+    return { turnStartedAt, notBefore: Math.max(nextSecond, activity?.latestTimestamp ?? -Infinity) };
   };
   try {
       for (const [id, child] of admittedCatalog) {
@@ -311,13 +379,10 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
         countEntries.push(entry);
         if (displayed && !parentMode) snapshot.agents.push(entry);
         try {
-          // Parent-thread membership proves activity ownership, not a current
-          // task assignment. Only a precise dispatch in the current root and
-          // task/source window can authorize host path-based assignment.
-          const rootStartMs = Date.parse(snapshot.rootTurnStartedAt ?? '');
-          const assignmentStart = validCycle ? Math.max(cycleMs, rootStartMs) : sourceScope ? rootStartMs : NaN;
-          const dispatchedAt = dispatches.get(child.id);
-          entry.assignmentEligible = !parentMode || (validId(rootTurnId) && rootCount === 1 && Number.isFinite(assignmentStart) && Number.isFinite(dispatchedAt) && dispatchedAt >= assignmentStart);
+          // A precise dispatch in the current root and task/source window
+          // is required to attribute the child checklist in parent mode.
+          const dispatchedAt = checklistDispatches.get(child.id)?.dispatchAt;
+          entry.assignmentEligible = !parentMode || (parentChecklistWindow && Number.isFinite(dispatchedAt) && dispatchedAt >= assignmentStart);
           if (typeof observeAgent === 'function' && !runtimeUsable) {
             const parentStamp = invalidations.has(child.id) ? invalidations.get(child.id) : null;
             const version = invalidations.has(child.id) && !Number.isFinite(parentStamp) ? null : JSON.stringify([child.updatedAt ?? catalogTime, parentStamp, terminalEvent ? [terminalEvent.kind, terminalEvent.timestamp, terminalEvent.reliable] : null]);
@@ -355,7 +420,7 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
                 } catch { if (parentMode) activityHints.delete(child.id); Object.assign(entry, baseline); observationCache.delete(child.id); }
               } });
           }
-          if (!parentMode && displayed) await readProgress(entry);
+          if (!parentMode && displayed) Object.assign(entry, (await readProgress(entry, dispatches.get(id)))?.display);
         } catch { snapshot.complete = false; }
       }
   } catch { snapshot.complete = false; snapshot.status = snapshot.agents.length ? 'partial' : 'unavailable'; }
@@ -398,6 +463,33 @@ export async function collectSubagentProgress({ parentThreadId, cwd, storageRoot
     const active = countEntries.filter(entry => ['working', 'waiting'].includes(entry.state));
     snapshot.agents = active.slice(0, 100);
     if (active.length > 100) snapshot.truncated = true;
+    const verifyChecklists = verifiedParentRoot && typeof verifyAgent === 'function';
+    const checklists = snapshot.agents.filter(entry => entry.assignmentEligible || (verifyChecklists && !checklistDispatches.get(entry.id)?.verificationBlocked));
+    let nextChecklist = 0;
+    await Promise.all(Array.from({ length: Math.min(2, checklists.length) }, async () => {
+      while (nextChecklist < checklists.length) {
+        const entry = checklists[nextChecklist++];
+        try {
+          const child = admittedCatalog.get(entry.id);
+          if (await realpath(child.cwd) !== canonicalCwd) continue;
+          const activity = checklistDispatches.get(entry.id);
+          const notBefore = entry.assignmentEligible ? activity.dispatchAt : Math.max(assignmentStart, activity?.latestTimestamp ?? -Infinity);
+          const candidate = await readProgress(entry, notBefore);
+          if (!candidate) continue;
+          if (entry.assignmentEligible) {
+            Object.assign(entry, candidate.display);
+            continue;
+          }
+          // The local record already exists. Both live samples must agree on
+          // a turn that began before its recorded start, with the same fence.
+          const first = await verifyChecklistTurn(entry.id, activity);
+          if (!first || candidate.progressStart < first.notBefore) continue;
+          const latest = await verifyChecklistTurn(entry.id, activity);
+          if (latest?.turnStartedAt === first.turnStartedAt && await realpath(child.cwd) === canonicalCwd)
+            Object.assign(entry, candidate.display);
+        } catch { /* An unreadable checklist is independent of activity coverage. */ }
+      }
+    }));
   }
   if (seen.size !== members.size) snapshot.complete = false;
   if (!runtimeStatusesComplete && countEntries.some(agent => !['runtime', 'recorded-runtime', 'codex-rollout', 'codex-turn'].includes(agent.stateBasis))) snapshot.complete = false;

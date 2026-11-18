@@ -6,6 +6,7 @@ import { RuntimeContextSchema, RuntimeProofSchema } from "../../contracts/src/in
 import {
   type CodexRequestIdentity,
   CodexRequestIdentitySchema,
+  CodexSubagentTaskToolNameSchema,
   type GoalProgressIpcAuthorization,
   GoalProgressMcpToolNameSchema,
 } from "../../ipc/src/index.js";
@@ -27,6 +28,7 @@ const turnMetadataSchema = z
     model: boundedModel,
     thread_source: boundedId,
     cwd: boundedCwd.optional(),
+    parent_thread_id: z.unknown().optional(),
     subagent_kind: z.unknown().optional(),
     agentRole: z.unknown().optional(),
     agent_role: z.unknown().optional(),
@@ -40,6 +42,12 @@ const requestMetadataSchema = z
     "x-codex-turn-metadata": turnMetadataSchema,
   })
   .passthrough();
+const subagentMetadataSchema = z.object({
+  parent_thread_id: z.string().min(1).max(512).nullish(),
+  subagent_kind: z.literal("thread_spawn").nullish(),
+  agentRole: z.string().min(1).max(256).nullish(),
+  agent_role: z.string().min(1).max(256).nullish(),
+});
 
 export type GoalProgressMcpRequestExtra = Pick<
   RequestHandlerExtra<ServerRequest, ServerNotification>,
@@ -179,7 +187,10 @@ function hasAgentMarker(value: unknown): boolean {
     : value !== undefined && value !== null;
 }
 
-function parseRequestMetadata(extra: GoalProgressMcpRequestExtra): ParsedRequestMetadata {
+function parseRequestMetadata(
+  extra: GoalProgressMcpRequestExtra,
+  toolName: string,
+): ParsedRequestMetadata {
   const parsed = requestMetadataSchema.safeParse(extra._meta);
   if (!parsed.success) {
     return { ok: false, code: "CODEX_REQUEST_METADATA_REQUIRED" };
@@ -187,10 +198,47 @@ function parseRequestMetadata(extra: GoalProgressMcpRequestExtra): ParsedRequest
   const turnMetadata = parsed.data["x-codex-turn-metadata"];
   if (
     parsed.data.threadId !== turnMetadata.thread_id ||
-    turnMetadata.session_id !== turnMetadata.thread_id ||
+    (turnMetadata.thread_source !== "subagent" &&
+      turnMetadata.session_id !== turnMetadata.thread_id) ||
     (parsed.data.plugin_id !== undefined && parsed.data.plugin_id !== EXPECTED_PLUGIN_ID)
   ) {
     return { ok: false, code: "CODEX_REQUEST_IDENTITY_CONFLICT" };
+  }
+  const identity = {
+    threadId: parsed.data.threadId,
+    sessionId: turnMetadata.session_id,
+    turnId: turnMetadata.turn_id,
+    callId: parsed.data.callId,
+    model: turnMetadata.model,
+    ...(turnMetadata.cwd === undefined ? {} : { cwd: turnMetadata.cwd }),
+    ...(parsed.data.plugin_id === undefined ? {} : { pluginId: parsed.data.plugin_id }),
+  };
+  if (turnMetadata.thread_source === "subagent") {
+    const subagent = subagentMetadataSchema.safeParse(turnMetadata);
+    if (!CodexSubagentTaskToolNameSchema.safeParse(toolName).success || !subagent.success) {
+      return { ok: false, code: "CODEX_REQUEST_THREAD_UNTRUSTED" };
+    }
+    const { parent_thread_id, agentRole, agent_role } = subagent.data;
+    if (
+      parent_thread_id === identity.threadId ||
+      (parsed.data.sessionId !== undefined && parsed.data.sessionId !== identity.sessionId) ||
+      (parsed.data.thread_id !== undefined && parsed.data.thread_id !== identity.threadId) ||
+      (parent_thread_id != null &&
+        identity.sessionId !== identity.threadId &&
+        identity.sessionId !== parent_thread_id) ||
+      (agentRole != null && agent_role != null && agentRole !== agent_role)
+    ) {
+      return { ok: false, code: "CODEX_REQUEST_IDENTITY_CONFLICT" };
+    }
+    return {
+      ok: true,
+      identity: CodexRequestIdentitySchema.parse({
+        ...identity,
+        threadSource: "subagent",
+        ...(parent_thread_id == null ? {} : { parentThreadId: parent_thread_id }),
+        ...(agentRole == null && agent_role == null ? {} : { agentRole: agentRole ?? agent_role }),
+      }),
+    };
   }
   if (
     turnMetadata.thread_source !== "user" ||
@@ -202,16 +250,7 @@ function parseRequestMetadata(extra: GoalProgressMcpRequestExtra): ParsedRequest
   }
   return {
     ok: true,
-    identity: CodexRequestIdentitySchema.parse({
-      threadId: parsed.data.threadId,
-      sessionId: turnMetadata.session_id,
-      turnId: turnMetadata.turn_id,
-      callId: parsed.data.callId,
-      model: turnMetadata.model,
-      threadSource: turnMetadata.thread_source,
-      ...(turnMetadata.cwd === undefined ? {} : { cwd: turnMetadata.cwd }),
-      ...(parsed.data.plugin_id === undefined ? {} : { pluginId: parsed.data.plugin_id }),
-    }),
+    identity: CodexRequestIdentitySchema.parse({ ...identity, threadSource: "user" }),
   };
 }
 
@@ -222,8 +261,9 @@ function hookIdentityMatchesMetadata(
 ): boolean {
   const requestIdentity = metadata.identity;
   return (
-    runtimeContext.hookSessionId === requestIdentity.threadId &&
-    runtimeContext.hookSessionId === requestIdentity.sessionId &&
+    (runtimeContext.hookSessionId === requestIdentity.threadId ||
+      (requestIdentity.threadSource === "subagent" &&
+        runtimeContext.hookSessionId === requestIdentity.sessionId)) &&
     runtimeContext.turnId === requestIdentity.turnId &&
     runtimeContext.model === requestIdentity.model &&
     runtimeProof.toolUseId === requestIdentity.callId &&
@@ -250,7 +290,7 @@ export function resolveTrustedToolAuthorization(
   const now = dependencies.now ?? Date.now;
   const requestMeta = record(extra._meta);
   const turnMetadata = record(requestMeta?.["x-codex-turn-metadata"]);
-  const metadata = parseRequestMetadata(extra);
+  const metadata = parseRequestMetadata(extra, toolName);
   const hookContextPresent = input._runtimeContext !== undefined;
   const hookProofPresent = input._runtimeProof !== undefined;
   const hookContext = RuntimeContextSchema.safeParse(input._runtimeContext);
@@ -297,6 +337,21 @@ export function resolveTrustedToolAuthorization(
   if (!parsedToolName.success) {
     return finish({ ok: false, code: "CODEX_REQUEST_METADATA_REQUIRED" });
   }
+  const authorizedToolName = parsedToolName.data;
+
+  const fromMetadata = (
+    identity: CodexRequestIdentity,
+    occurredAtMs: number,
+  ): TrustedToolAuthorization =>
+    finish({
+      ok: true,
+      source: "request-metadata",
+      auth: { kind: "codex-request", identity, toolName: authorizedToolName },
+      sessionId: identity.threadId,
+      turnId: identity.turnId,
+      callId: identity.callId,
+      occurredAtMs,
+    });
 
   if (hookContextPresent || hookProofPresent) {
     if (!hookContext.success || !hookProof.success) {
@@ -308,6 +363,16 @@ export function resolveTrustedToolAuthorization(
       }
       if (!hookIdentityMatchesMetadata(hookContext.data, hookProof.data, metadata)) {
         return finish({ ok: false, code: "CODEX_REQUEST_IDENTITY_CONFLICT" });
+      }
+      // Keep the stricter exact-thread authorization when the Hook adds proof to a child call.
+      if (metadata.identity.threadSource === "subagent") {
+        return fromMetadata(
+          {
+            ...metadata.identity,
+            hook: { runtimeContext: hookContext.data, runtimeProof: hookProof.data },
+          },
+          hookProof.data.issuedAtMs,
+        );
       }
     }
     return finish({
@@ -328,17 +393,5 @@ export function resolveTrustedToolAuthorization(
   if (!metadata.ok) {
     return finish(metadata);
   }
-  return finish({
-    ok: true,
-    source: "request-metadata",
-    auth: {
-      kind: "codex-request",
-      identity: metadata.identity,
-      toolName: parsedToolName.data,
-    },
-    sessionId: metadata.identity.threadId,
-    turnId: metadata.identity.turnId,
-    callId: metadata.identity.callId,
-    occurredAtMs: now(),
-  });
+  return fromMetadata(metadata.identity, now());
 }

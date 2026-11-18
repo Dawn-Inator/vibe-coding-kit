@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import {
   type CodexThreadIdentity,
@@ -21,6 +21,7 @@ import {
 import { hashNativeGoalObjective, migrateGoalContractV1ToV2 } from "../../core/src/index.js";
 import {
   type CodexRequestIdentity,
+  CodexSubagentTaskToolNameSchema,
   type GoalProgressIpcAuthorization,
   GoalProgressIpcHandlerError,
 } from "../../ipc/src/index.js";
@@ -47,6 +48,28 @@ export type ReadThreadIdentity = (threadId: string) => Promise<CodexThreadIdenti
 
 const CODEX_REQUEST_REPLAY_RETENTION_MS = 60_000;
 const CODEX_REQUEST_REPLAY_MAX_ENTRIES = 1_024;
+const DirectSubagentSourceSchema = z.strictObject({
+  subAgent: z.strictObject({
+    thread_spawn: z
+      .object({
+        parent_thread_id: z.string().min(1).max(512),
+        depth: z.literal(1),
+        agent_role: z.string().min(1).max(256),
+      })
+      .passthrough(),
+  }),
+});
+
+function isUserThread(thread: CodexThreadIdentity): boolean {
+  return thread.threadSource === "user" && thread.agentRole === null && !thread.ephemeral;
+}
+
+function untrustedThread(): GoalProgressIpcHandlerError {
+  return new GoalProgressIpcHandlerError(
+    "CODEX_REQUEST_THREAD_UNTRUSTED",
+    "Codex request does not belong to a supported thread for this operation",
+  );
+}
 
 const GoalProgressDetachReasonSchema = z.enum([
   "user-dismissed-preparation",
@@ -389,13 +412,17 @@ export class GoalProgressSessionCoordinator {
     return this.#resolveCurrentThread(input);
   }
 
-  async resolveIdentity(runtimeContext: RuntimeContext): Promise<RuntimeIdentity> {
+  async resolveIdentity(
+    runtimeContext: RuntimeContext,
+    requireExactTurn = false,
+  ): Promise<RuntimeIdentity> {
     try {
       return await this.#resolveCurrentThread({
         sessionTreeId: runtimeContext.hookSessionId,
         turnId: runtimeContext.turnId,
         cwd: runtimeContext.cwd,
         model: runtimeContext.model,
+        ...(requireExactTurn ? { requireExactTurn: true } : {}),
       });
     } catch (error) {
       if (error instanceof CurrentThreadResolverError) {
@@ -419,6 +446,15 @@ export class GoalProgressSessionCoordinator {
     return (await this.authorizeSessionRequestWithThread(auth, claimedSessionId, turnId)).identity;
   }
 
+  async authorizeTaskRequest(
+    auth: GoalProgressIpcAuthorization,
+  ): Promise<{ identity: RuntimeIdentity; thread?: CodexThreadIdentity }> {
+    if (auth.kind === "codex-request") {
+      return this.#authorizeCodexRequest(auth.identity, auth.toolName, undefined, undefined, true);
+    }
+    return this.authorizeSessionRequestWithThread(auth);
+  }
+
   async authorizeSessionRequestWithThread(
     auth: GoalProgressIpcAuthorization,
     claimedSessionId?: string,
@@ -427,13 +463,12 @@ export class GoalProgressSessionCoordinator {
     if (auth.kind === "codex-request") {
       return this.#authorizeCodexRequest(auth.identity, auth.toolName, claimedSessionId, turnId);
     }
-    const identity = await this.#authorizeHookRequest(
+    return this.#authorizeHookRequest(
       auth.runtimeContext,
       auth.runtimeProof,
       claimedSessionId ?? auth.runtimeContext.hookSessionId,
       turnId,
     );
-    return { identity };
   }
 
   async #authorizeHookRequest(
@@ -441,7 +476,7 @@ export class GoalProgressSessionCoordinator {
     runtimeProof: RuntimeProof,
     claimedSessionId: string,
     turnId?: string,
-  ): Promise<RuntimeIdentity> {
+  ): Promise<{ identity: RuntimeIdentity; thread: CodexThreadIdentity }> {
     if (!(await this.#consumeRuntimeProof(runtimeContext, runtimeProof))) {
       throw new GoalProgressIpcHandlerError(
         "RUNTIME_PROOF_INVALID",
@@ -454,19 +489,29 @@ export class GoalProgressSessionCoordinator {
         "Write request identity does not match its Session and turn",
       );
     }
-    const identity = await this.resolveIdentity(runtimeContext);
+    const identity = await this.resolveIdentity(runtimeContext, true);
     if (!claimedSessionMatchesIdentity(claimedSessionId, identity)) {
       throw new GoalProgressIpcHandlerError(
         "THREAD_MISMATCH",
         "Write request identity does not match its Session and turn",
       );
     }
+    // Legacy Hook-only calls cannot claim child-only authorization without model metadata.
+    const thread = await this.#readExactThreadIdentity(identity.threadId);
+    if (
+      thread.id !== identity.threadId ||
+      thread.sessionId !== runtimeContext.hookSessionId ||
+      thread.cwd !== identity.cwd ||
+      !isUserThread(thread)
+    ) {
+      throw untrustedThread();
+    }
     await this.#log({
       level: "info",
       event: "ipc.request",
       ...identityLogFields(identity),
     });
-    return identity;
+    return { identity, thread };
   }
 
   async #authorizeCodexRequest(
@@ -474,6 +519,7 @@ export class GoalProgressSessionCoordinator {
     toolName: string,
     claimedSessionId?: string,
     turnId?: string,
+    allowSubagentTask = false,
   ): Promise<{ identity: RuntimeIdentity; thread: CodexThreadIdentity }> {
     if (
       (claimedSessionId !== undefined && claimedSessionId !== requestIdentity.threadId) ||
@@ -491,19 +537,7 @@ export class GoalProgressSessionCoordinator {
       );
     }
 
-    let thread: CodexThreadIdentity;
-    try {
-      thread = await this.#readThreadIdentity(requestIdentity.threadId);
-    } catch (error) {
-      throw new GoalProgressIpcHandlerError(
-        "CODEX_REQUEST_THREAD_UNAVAILABLE",
-        "Could not read the exact Codex thread for this request",
-        null,
-        undefined,
-        error,
-      );
-    }
-
+    const thread = await this.#readExactThreadIdentity(requestIdentity.threadId);
     if (
       thread.id !== requestIdentity.threadId ||
       thread.sessionId !== requestIdentity.sessionId ||
@@ -515,11 +549,13 @@ export class GoalProgressSessionCoordinator {
         "Codex request identity conflicts with the exact thread record",
       );
     }
-    if (thread.threadSource !== "user" || thread.agentRole !== null || thread.ephemeral) {
-      throw new GoalProgressIpcHandlerError(
-        "CODEX_REQUEST_THREAD_UNTRUSTED",
-        "Codex request does not belong to a supported main user thread",
-      );
+    if (requestIdentity.threadSource === "user") {
+      if (!isUserThread(thread)) throw untrustedThread();
+    } else {
+      if (!allowSubagentTask || !CodexSubagentTaskToolNameSchema.safeParse(toolName).success) {
+        throw untrustedThread();
+      }
+      await this.#authorizeDirectSubagent(thread, requestIdentity);
     }
 
     const identity: RuntimeIdentity = {
@@ -535,6 +571,87 @@ export class GoalProgressSessionCoordinator {
       ...identityLogFields(identity),
     }).catch(() => undefined);
     return { identity, thread };
+  }
+
+  async #readExactThreadIdentity(threadId: string): Promise<CodexThreadIdentity> {
+    try {
+      return await this.#readThreadIdentity(threadId);
+    } catch (error) {
+      throw new GoalProgressIpcHandlerError(
+        "CODEX_REQUEST_THREAD_UNAVAILABLE",
+        "Could not read the exact Codex thread for this request",
+        null,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async #authorizeDirectSubagent(
+    thread: CodexThreadIdentity,
+    request: Extract<CodexRequestIdentity, { threadSource: "subagent" }>,
+  ): Promise<void> {
+    const source = DirectSubagentSourceSchema.safeParse(thread.source);
+    if (
+      !source.success ||
+      thread.ephemeral ||
+      typeof thread.path !== "string" ||
+      !isAbsolute(thread.path) ||
+      thread.path.includes("\0") ||
+      !isAbsolute(thread.cwd) ||
+      thread.cwd.includes("\0")
+    ) {
+      throw untrustedThread();
+    }
+    const { parent_thread_id: parentThreadId, agent_role: agentRole } =
+      source.data.subAgent.thread_spawn;
+    if (
+      parentThreadId === thread.id ||
+      parentThreadId.trim() !== parentThreadId ||
+      /\p{Cc}/u.test(parentThreadId) ||
+      agentRole.trim() !== agentRole ||
+      /\p{Cc}/u.test(agentRole) ||
+      thread.agentRole !== agentRole ||
+      (thread.sessionId !== thread.id && thread.sessionId !== parentThreadId) ||
+      (thread.parentThreadId != null && thread.parentThreadId !== parentThreadId) ||
+      (request.parentThreadId !== undefined && request.parentThreadId !== parentThreadId) ||
+      (request.agentRole !== undefined && request.agentRole !== thread.agentRole)
+    ) {
+      throw new GoalProgressIpcHandlerError(
+        "CODEX_REQUEST_IDENTITY_CONFLICT",
+        "Codex child request conflicts with the exact native ancestry",
+      );
+    }
+    if (request.hook) {
+      const { runtimeContext, runtimeProof } = request.hook;
+      if (
+        (runtimeContext.hookSessionId !== thread.id &&
+          runtimeContext.hookSessionId !== thread.sessionId) ||
+        runtimeContext.turnId !== request.turnId ||
+        runtimeContext.model !== request.model ||
+        runtimeContext.cwd !== thread.cwd ||
+        runtimeProof.toolUseId !== request.callId
+      ) {
+        throw new GoalProgressIpcHandlerError(
+          "CODEX_REQUEST_IDENTITY_CONFLICT",
+          "Codex child request conflicts with the runtime proof",
+        );
+      }
+      if (!(await this.#consumeRuntimeProof(runtimeContext, runtimeProof))) {
+        throw new GoalProgressIpcHandlerError(
+          "RUNTIME_PROOF_INVALID",
+          "Child request does not have valid runtime proof",
+        );
+      }
+    }
+    const parent = await this.#readExactThreadIdentity(parentThreadId);
+    if (
+      parent.id !== parentThreadId ||
+      parent.sessionId !== parentThreadId ||
+      !isUserThread(parent)
+    ) {
+      throw untrustedThread();
+    }
   }
 
   #consumeCodexRequest(identity: CodexRequestIdentity, toolName: string): boolean {

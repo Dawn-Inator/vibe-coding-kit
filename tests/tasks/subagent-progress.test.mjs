@@ -944,16 +944,22 @@ test('parent-thread unknown state never becomes zero and foreign identities neve
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('parent-thread count covers catalog beyond the 100 card limit', async () => {
+test('parent-thread counts the full catalog and reads only displayed eligible checklists', async t => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-parent-'));
   try {
     const rows = Array.from({ length: 110 }, (_, i) => ({ id: `child-${i}`, parentThreadId: 'parent', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'active', activeFlags: [] } }));
-    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
-      listTurnsPage: async () => ({ data: [], nextCursor: null }),
+    rows.push({ ...rows[0], id: 'closed-child', status: { type: 'completed' } });
+    const dispatch = receivers => ({ type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: receivers.map(row => row.id), tool: 'spawnAgent', status: 'completed', startedAtMs: 101000 });
+    const reads = t.mock.method(TaskStore.prototype, 'getReadOnly', async () => ({ state: null, uncertain: false, sourceBound: false }));
+    const result = await collectScoped({ parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', taskSourcePath: join(root, 'heartbeat.md'),
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: 100, itemsView: 'full', items: [dispatch(rows.slice(1, 100)), dispatch(rows.slice(100))] }], nextCursor: null }),
       listPage: async cursor => { const offset = cursor ? Number(cursor) : 0; return { data: rows.slice(offset, offset + 50), nextCursor: offset + 50 < rows.length ? String(offset + 50) : null }; } });
     assert.equal(result.agents.length, 100);
     assert.equal(result.observedRunningCount, 110);
     assert.equal(result.truncated, true);
+    assert.equal(reads.mock.callCount(), 99);
+    assert.deepEqual(new Set(reads.mock.calls.map(call => call.arguments[0])), new Set(result.agents.filter(agent => agent.assignmentEligible).map(agent => agent.id)));
+    assert.ok(reads.mock.calls.every(call => call.arguments[1].maxBytes === 1024 * 1024));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1104,24 +1110,181 @@ test('parent-thread task cycle does not grant assignment for a dispatch before i
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('parent-thread activity does not attribute a child checklist to the current parent assignment', async () => {
+test('parent-thread activity reports verified child milestones without the lifecycle closeout', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-parent-child-checklist-'));
   try {
     const store = new TaskStore(root, { schemas });
-    const dispatchAt = Date.now() - 5000;
-    await store.initialize('child', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Child checklist', objectives: [{ id: 'P', title: 'Parent', items: [{ id: 'A', title: 'A' }, { id: 'B', title: 'B' }, { id: 'C', title: 'C' }] }] });
-    await store.update('child', { requestId: 'two-done', expectedRevision: 1, reason: 'done', changes: [{ targetId: 'A', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }, { targetId: 'B', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }] });
+    await store.initialize('child', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Child checklist', lifecycle: true, objectives: [{ id: 'P', title: 'Parent', items: [{ id: 'A', title: 'A' }, { id: 'B', title: 'B' }, { id: 'C', title: 'C' }] }] });
+    const childStartedAt = Date.parse((await store.get('child')).lifecycle.startedAt);
+    const dispatchAt = childStartedAt - 1000;
     const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, taskSourcePath: join(root, 'heartbeat.md'),
-      listTurnsPage: async () => ({ data: [{ id: 'current-root', rootTurnId: 'current-root', startedAt: (dispatchAt - 1000) / 1000, itemsView: 'full', items: [{ type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['child'], tool: 'spawnAgent', status: 'completed', startedAtMs: dispatchAt }] }], nextCursor: null }),
+      listTurnsPage: async () => ({ data: [{ id: 'current-root', rootTurnId: 'current-root', startedAt: (dispatchAt - 1000) / 1000, itemsView: 'full', items: [
+        { type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['child'], tool: 'spawnAgent', status: 'completed', startedAtMs: dispatchAt },
+        { type: 'subAgentActivity', agentThreadId: 'child', kind: 'started', startedAtMs: dispatchAt + 1 },
+      ] }], nextCursor: null }),
       listPage: async () => ({ data: [{ id: 'child', parentThreadId: 'parent', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent', agent_path: '/same-module' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }) };
-    const parent = await collectScoped({ ...options, activityScope: 'parent-thread' });
+    const collect = () => collectScoped({ ...options, activityScope: 'parent-thread' });
+    const parent = await collect();
     assert.equal(parent.agents[0].assignmentEligible, true);
     assert.equal(parent.agents[0].state, 'working');
-    assert.equal(parent.agents[0].progress, null);
-    assert.equal(parent.agents[0].progressBasis, null);
-    const strict = await collectScoped(options);
-    assert.deepEqual(strict.agents[0].progress, { completed: 2, total: 3, percent: 66.67 });
-    assert.equal(strict.agents[0].progressBasis, 'registered-checklist');
+    assert.deepEqual(parent.agents[0].progress, { completed: 0, total: 3, percent: 0 });
+    assert.equal(parent.agents[0].progressBasis, 'registered-checklist');
+    const completed = targetId => ({ targetId, status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] });
+    await store.update('child', { requestId: 'two-done', expectedRevision: 1, reason: 'done', changes: ['A', 'B'].map(completed) });
+    const updated = await collect();
+    assert.deepEqual(updated.agents[0].progress, { completed: 2, total: 3, percent: 66.67 });
+    assert.equal(updated.agents[0].progressBasis, 'registered-checklist');
+    assert.equal(updated.runningCount, 1);
+    await store.update('child', { requestId: 'three-done', expectedRevision: 2, reason: 'done', changes: [completed('C')] });
+    const canonical = await store.get('child');
+    assert.equal(canonical.lifecycle.completion, null);
+    assert.deepEqual(canonical.progress, { completed: 3, total: 4, percent: 75 });
+    const paths = taskMarkdownPaths(root, 'child');
+    const before = await Promise.all([readFile(paths.history), readFile(paths.heartbeat)]);
+    const allMilestones = await collect();
+    assert.deepEqual(allMilestones.agents[0].progress, { completed: 3, total: 3, percent: 100 });
+    assert.equal(allMilestones.agents[0].progressBasis, 'registered-checklist');
+    const legacy = await collectScoped(options);
+    assert.deepEqual(legacy.agents[0].progress, canonical.progress);
+    assert.equal(legacy.agents[0].progressBasis, 'task-lifecycle');
+    assert.deepEqual(await Promise.all([readFile(paths.history), readFile(paths.heartbeat)]), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('parent-thread activity remains visible when a child checklist has no exact current dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-parent-dispatch-fence-'));
+  try {
+    const store = new TaskStore(root, { schemas });
+    await store.initialize('child', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Prior child', lifecycle: true, objectives: [{ id: 'P', title: 'Parent' }] });
+    const childStartedAt = Date.parse((await store.get('child')).lifecycle.startedAt);
+    const dispatchAt = childStartedAt - 5000;
+    const dispatch = (at, changes = {}) => ({ type: 'collabAgentToolCall', senderThreadId: 'parent', receiverThreadIds: ['child'], tool: 'followupTask', status: 'completed', startedAtMs: at, ...changes });
+    const interaction = (kind, at) => ({ type: 'subAgentActivity', agentThreadId: 'child', kind, startedAtMs: at });
+    const turn = (id, rootTurnId, items, itemsView = 'full', at = dispatchAt - 1000) => ({ id, rootTurnId, items, itemsView, startedAt: at / 1000 });
+    const prior = dispatch(dispatchAt);
+    const verified = turn('root', 'root', [prior]);
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread',
+      listPage: async () => ({ data: [{ id: 'child', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }),
+    };
+    const verifiedScope = { taskSourcePath: join(root, 'heartbeat.md') };
+    const collect = (listTurnsPage, scope = verifiedScope) => collectScoped({ ...options, ...scope, listTurnsPage });
+    const page = (data, nextCursor = null) => async () => ({ data, nextCursor });
+    const exact = await collect(page([verified]));
+    assert.ok(exact.agents[0].progress);
+    assert.equal(exact.agents[0].progressBasis, 'registered-checklist');
+    const situations = [
+      ['latest dispatch is newer than the child checklist', page([turn('root', 'root', [prior, dispatch(childStartedAt + 1000)])])],
+      ['latest dispatch has no timestamp', page([turn('root', 'root', [prior, dispatch(null)])])],
+      ['latest dispatch is still in progress', page([turn('root', 'root', [prior, dispatch(dispatchAt + 1, { status: 'inProgress' })])])],
+      ['latest dispatch has missing sender', page([turn('root', 'root', [prior, dispatch(dispatchAt + 1, { senderThreadId: null })])])],
+      ['later activity has no dispatch', page([turn('root', 'root', [prior, interaction('interacted', null)])])],
+      ['later start follows a terminal event', page([turn('root', 'root', [prior, interaction('completed', dispatchAt + 1), interaction('started', dispatchAt + 2)])])],
+      ['ambiguous dispatch timestamps overlap', page([turn('root', 'root', [prior, dispatch(dispatchAt)])])],
+      ['dispatch timestamp predates its turn', page([turn('root', 'root', [dispatch(dispatchAt - 1001)])])],
+      ['latest root has no dispatch', page([turn('new', 'new', [], 'full', dispatchAt + 1000), verified])],
+      ['current root is missing', page([turn('continuation', 'root', [prior])])],
+      ['current root is duplicated', page([verified, verified])],
+      ['a newer continuation only has partial items', page([turn('continuation', 'root', [], 'partial', dispatchAt + 1000), verified])],
+      ['a later page failed', async cursor => { if (cursor) throw new Error('offline'); return { data: [verified], nextCursor: 'next' }; }],
+      ['a later page repeats a cursor', page([verified], 'next')],
+      ['parent task scope is missing', page([verified]), {}],
+      ['the verified dispatch predates the parent task cycle', page([verified]), { taskCycleId: 'new-cycle', cycleStartedAt: new Date(dispatchAt + 1).toISOString() }],
+    ];
+    for (const [label, listTurnsPage, scope] of situations) {
+      const result = await collect(listTurnsPage, scope);
+      assert.equal(result.status, 'ready', label);
+      assert.equal(result.runningCount, 1, label);
+      assert.deepEqual(result.agents.map(agent => [agent.id, agent.progress, agent.progressBasis]), [['child', null, null]], label);
+    }
+    await new TaskSourceRelations(root, { schemas }).set('child', { path: join(root, 'other-source.md'), origin: 'explicit' });
+    const bound = await collect(page([verified]));
+    assert.equal(bound.runningCount, 1);
+    assert.equal(bound.agents[0].progress, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('partial parent activity uses stable latest child turn proof for checklist progress', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-parent-latest-child-turn-'));
+  try {
+    const store = new TaskStore(root, { schemas });
+    await store.initialize('child', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Child milestones', lifecycle: true, objectives: [{ id: 'A', title: 'First' }, { id: 'B', title: 'Second' }] });
+    await store.update('child', { requestId: 'done', expectedRevision: 1, reason: 'done', changes: [{ targetId: 'A', status: 'completed', evidence: [{ summary: 'verified', verification: 'verified' }] }] });
+    const checklistStartedAt = Date.parse((await store.get('child')).lifecycle.startedAt);
+    const checklistSecond = Math.floor(checklistStartedAt / 1000) * 1000;
+    const childTurnStartedAt = checklistSecond - 1000;
+    const parentTurnStartedAt = childTurnStartedAt - 5000;
+    const iso = at => new Date(at).toISOString();
+    const proof = { verdict: 'in-scope', parentThreadId: 'parent', cwd: root, rootTurnId: 'root', turnStartedAt: iso(childTurnStartedAt) };
+    const activity = (kind, startedAtMs = null) => ({ type: 'subAgentActivity', agentThreadId: 'child', kind, startedAtMs });
+    const started = activity('started');
+    const parent = (items, itemsView = 'partial') => ({ id: 'root', rootTurnId: 'root', startedAt: parentTurnStartedAt / 1000, itemsView, items });
+    let verificationCalls = 0;
+    const collect = (data, proofs, taskScope = { taskSourcePath: join(root, 'heartbeat.md') }) => collectScoped({
+      parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', ...taskScope,
+      listTurnsPage: async () => ({ data, nextCursor: null }),
+      listPage: async () => ({ data: [{ id: 'child', cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'active', activeFlags: [] } }], nextCursor: null }),
+      verifyAgent: async (id, context) => {
+        assert.equal(id, 'child');
+        assert.equal(context.parentThreadId, 'parent');
+        assert.equal(context.rootTurnId, 'root');
+        assert.equal(context.rootTurnStartedAt, iso(parentTurnStartedAt));
+        return proofs[verificationCalls++];
+      },
+    });
+    const positive = [
+      [[parent([started])]],
+      [[parent([], 'full')]],
+      [[parent([activity('interacted', childTurnStartedAt - 1)])]],
+      [[parent([started])], { taskCycleId: 'current-cycle', cycleStartedAt: iso(childTurnStartedAt - 1) }],
+    ];
+    for (const [data, taskScope] of positive) {
+      verificationCalls = 0;
+      const exact = await collect(data, [proof, proof], taskScope);
+      assert.equal(verificationCalls, 2);
+      assert.equal(exact.runningCount, 1);
+      assert.equal(exact.agents[0].progressBasis, 'registered-checklist');
+      assert.deepEqual(exact.agents[0].progress, { completed: 1, total: 2, percent: 50 });
+    }
+    const cases = [
+      ['wrong root', [parent([started])], [{ ...proof, rootTurnId: 'older-root' }]],
+      ['wrong parent', [parent([started])], [{ ...proof, parentThreadId: 'other' }]],
+      ['wrong workspace', [parent([started])], [{ ...proof, cwd: '/' }]],
+      ['no exact verdict', [parent([started])], [{ ...proof, verdict: undefined }]],
+      ['checklist is older than the child turn', [parent([started])], [{ ...proof, turnStartedAt: iso(checklistSecond + 1000) }]],
+      ['checklist was registered in the same second as the child turn', [parent([started])], [{ ...proof, turnStartedAt: iso(checklistSecond) }]],
+      ['proof predates a known interaction', [parent([started, activity('interacted', childTurnStartedAt + 1)])], [proof]],
+      ['later interaction is untimed', [parent([started, activity('interacted')])], [proof, proof]],
+      ['checklist predates the latest timestamped start activity', [parent([activity('started', checklistStartedAt + 1)])], [proof]],
+      ['child latest turn changes between verification samples', [parent([started])], [proof, { ...proof, turnStartedAt: iso(checklistSecond) }]],
+      ['duplicate current root', [parent([started]), parent([started])], [proof, proof]],
+      ['verified child turn predates the current task cycle', [parent([started])], [proof], { taskCycleId: 'new-cycle', cycleStartedAt: iso(childTurnStartedAt + 1) }],
+    ];
+    for (const [label, data, proofs, taskScope] of cases) {
+      verificationCalls = 0;
+      const result = await collect(data, proofs, taskScope);
+      assert.equal(result.runningCount, 1, label);
+      assert.deepEqual(result.agents.map(agent => [agent.id, agent.progress, agent.progressBasis]), [['child', null, null]], label);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('partial parent activity skips child turn verification without a current local checklist', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'subagent-no-current-checklist-'));
+  try {
+    const store = new TaskStore(root, { schemas });
+    const prior = await store.initialize('prior', { requestId: 'init', expectedRevision: 0, reason: 'start', title: 'Old milestones', objectives: [{ id: 'A', title: 'First' }] });
+    const rootStartedAt = Math.floor(Date.parse(prior.state.createdAt) / 1000) + 1;
+    let verificationCalls = 0;
+    const options = { parentThreadId: 'parent', cwd: root, storageRoot: root, schemas, activityScope: 'parent-thread', taskSourcePath: join(root, 'heartbeat.md'),
+      now: () => new Date((rootStartedAt + 1) * 1000),
+      listTurnsPage: async () => ({ data: [{ id: 'root', rootTurnId: 'root', startedAt: rootStartedAt, itemsView: 'partial', items: [] }], nextCursor: null }),
+      listPage: async () => ({ data: ['missing', 'prior'].map(id => ({ id, cwd: root, source: { subAgent: { thread_spawn: { parent_thread_id: 'parent' } } }, status: { type: 'active', activeFlags: [] } })), nextCursor: null }),
+      verifyAgent: async () => { verificationCalls++; return { verdict: 'unknown' }; },
+    };
+    const result = await collectScoped(options);
+    assert.equal(verificationCalls, 0);
+    assert.equal(result.runningCount, 2);
+    assert.deepEqual(result.agents.map(agent => [agent.id, agent.progress]), [['missing', null], ['prior', null]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

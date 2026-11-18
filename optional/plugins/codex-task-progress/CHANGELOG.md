@@ -1,3 +1,7 @@
+# Task Progress 0.12.8
+
+- Record verified child thread assignments on the existing Kit heartbeat Items. The parent panel shows child checklist progress after validating the exact dispatch, task scope, and workspace. Assignments and progress use the existing Kit ledgers.
+
 # Task Progress 0.12.7
 
 - Show evidence-backed known progress from an otherwise valid bound Kit ledger when some status-only labels are unrecognized; affected leaves remain pending. Strict audit and other integrity safeguards are unchanged.

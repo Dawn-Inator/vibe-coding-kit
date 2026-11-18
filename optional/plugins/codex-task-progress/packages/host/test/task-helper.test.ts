@@ -4744,13 +4744,15 @@ test("native and authenticated GET use full verified heartbeat assignments acros
   }
 });
 
-test("parent-thread activity uses canonical parent assignments, never an independent child checklist", async () => {
+test("parent-thread activity overlays a verified child checklist on a single assigned item", async () => {
   const root = await realpath(await mkdtemp("/tmp/ctph-child-revision-"));
   await mkdir(join(root, ".git"));
   const threadId = "parent";
   const childId = "child";
   const testRuntime = runtime(root);
   let collections = 0;
+  let itemsView: "full" | "partial" = "full";
+  let verifyPartialTurn = false;
   testRuntime.listDirectSubagents = async () => {
     collections++;
     return {
@@ -4772,25 +4774,48 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
         id: "turn",
         rootTurnId: "turn",
         startedAt: 1794830400,
-        itemsView: "full",
-        items: [
-          {
-            type: "collabAgentToolCall",
-            senderThreadId: threadId,
-            receiverThreadIds: [childId],
-            tool: "spawnAgent",
-            status: "completed",
-            startedAtMs: 1794830401000,
-          },
-        ],
+        itemsView,
+        items:
+          itemsView === "partial"
+            ? [{ type: "subAgentActivity", agentThreadId: childId, kind: "started" }]
+            : [
+                {
+                  type: "collabAgentToolCall",
+                  senderThreadId: threadId,
+                  receiverThreadIds: [childId],
+                  tool: "spawnAgent",
+                  status: "completed",
+                  startedAtMs: 1794830401000,
+                },
+              ],
       },
     ],
     nextCursor: null,
   });
+  testRuntime.verifyDirectSubagent = async (id, context) => {
+    assert.equal(id, childId);
+    assert.equal(context.parentThreadId, threadId);
+    return verifyPartialTurn
+      ? {
+          verdict: "in-scope",
+          parentThreadId: threadId,
+          cwd: root,
+          rootTurnId: "turn",
+          turnStartedAt: "2026-11-16T12:00:01Z",
+        }
+      : { verdict: "unknown" };
+  };
   const originalGet = KitTaskStore.prototype.get;
   const originalRead = KitTaskStore.prototype.getReadOnly;
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
   let revision = 1;
   let assignmentId = "old";
+  let assignmentSize = 3;
+  let explicitlyAssigned = true;
+  let childStartedAt = "2026-11-16T12:00:00Z";
+  let childProgress = { completed: 2, total: 2, percent: 100 };
   KitTaskStore.prototype.get = async (id) => ({
     schemaVersion: 4,
     kind: "task",
@@ -4806,13 +4831,13 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
         required: true,
         status: "active",
         evidence: [],
-        items: Array.from({ length: 3 }, (_, index) => ({
+        items: Array.from({ length: assignmentSize }, (_, index) => ({
           id: `${assignmentId}-${index}`,
           title: `Leaf ${index}`,
           status: revision === 1 && index < 2 ? ("completed" as const) : ("pending" as const),
           evidence: [],
         })),
-        agent: { threadId: childId },
+        ...(explicitlyAssigned ? { agent: { threadId: childId } } : {}),
       },
     ],
     progress: { completed: 0, total: 1, percent: 0 },
@@ -4833,15 +4858,35 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
               threadId: id,
               title: "Prior child",
               revision: 1,
-              createdAt: "2026-11-16T12:00:02Z",
+              createdAt: childStartedAt,
               updatedAt: "2026-11-16T12:00:02Z",
-              objectives: [],
-              progress: { completed: 2, total: 2, percent: 100 },
-              phase: "completed",
+              objectives: [
+                {
+                  id: "child-milestones",
+                  title: "Child milestones",
+                  required: true,
+                  status: "active",
+                  evidence: [],
+                  items: Array.from({ length: childProgress.total }, (_, index) => ({
+                    id: `child-item-${index}`,
+                    title: `Milestone ${index + 1}`,
+                    status: index < childProgress.completed ? "completed" : "pending",
+                    evidence: index < childProgress.completed
+                      ? [{ summary: "verified", verification: "verified" }]
+                      : [],
+                  })),
+                },
+              ],
+              progress: {
+                completed: childProgress.completed,
+                total: childProgress.total + 1,
+                percent: Math.floor((childProgress.completed / (childProgress.total + 1)) * 10_000) / 100,
+              },
+              phase: "active",
               lifecycle: {
                 id: "child-cycle",
                 sequence: 1,
-                startedAt: "2026-11-16T12:00:02Z",
+                startedAt: childStartedAt,
                 completion: null,
               },
             } as never)
@@ -4856,9 +4901,12 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
   });
   const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
   let call = 0;
-  const get = async () =>
+  const get = async (native = false) =>
     (
-      await client.request({
+      await client.request(native ? {
+        method: "task.native-read",
+        params: { action: "get", threadId, input: {} },
+      } : {
         method: "task.request",
         params: {
           action: "get",
@@ -4884,9 +4932,19 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
           id: string;
           progress: { completed: number; total: number; percent: number | null } | null;
           progressBasis: string | null;
+          assignmentTitle?: string | null;
         }[];
       };
     };
+  const waitForChildProgress = async (completed: number, native = false) => {
+    for (let i = 0; i < 100; i++) {
+      const agent = (await get(native)).subagents.agents[0];
+      if (agent?.progressBasis === "registered-checklist" && agent.progress?.completed === completed)
+        return agent;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail("Exact child checklist did not reach the parent presentation");
+  };
   try {
     await helper.start();
     let before = await get();
@@ -4900,7 +4958,7 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
       percent: 66.67,
     });
     assert.equal(before.subagents.agents[0]?.progressBasis, "module-delivery");
-    assert.equal(childReadCount, 0);
+    assert.equal(childReadCount, 1);
     const collected = collections;
     const same = await get();
     assert.deepEqual(same.subagents.agents[0]?.progress, before.subagents.agents[0]?.progress);
@@ -4919,8 +4977,47 @@ test("parent-thread activity uses canonical parent assignments, never an indepen
       total: 3,
       percent: 0,
     });
-    assert.equal(childReadCount, 0);
+    assert.equal(childReadCount, 1);
+
+    revision++;
+    assignmentSize = 1;
+    const coarse = (await get()).subagents.agents[0];
+    assert.deepEqual(coarse?.progress, { completed: 0, total: 1, percent: 0 });
+    assert.equal(coarse?.progressBasis, "module-delivery");
+
+    childStartedAt = "2026-11-16T12:00:02Z";
+    childProgress = { completed: 1, total: 3, percent: 33.33 };
+    now += 5_001;
+    const fine = await waitForChildProgress(1);
+    assert.deepEqual(fine.progress, childProgress);
+    assert.equal(fine.assignmentTitle, "Leaf 0");
+
+    revision++;
+    explicitlyAssigned = false;
+    childProgress = { completed: 2, total: 3, percent: 66.67 };
+    now += 5_001;
+    const unlinked = await waitForChildProgress(2, true);
+    assert.deepEqual(unlinked.progress, childProgress);
+    assert.equal(unlinked.assignmentTitle, undefined);
+
+    itemsView = "partial";
+    now += 5_001;
+    const expired = (await get()).subagents.agents[0];
+    assert.equal(expired?.id, childId);
+    assert.equal(expired?.progress, null);
+    const collectedBeforePartial = childReadCount;
+    for (let i = 0; i < 5; i++) {
+      const partial = (await get(true)).subagents.agents[0];
+      assert.equal(partial?.id, childId);
+      assert.equal(partial?.progress, null);
+    }
+    assert.equal(childReadCount, collectedBeforePartial);
+    verifyPartialTurn = true;
+    now += 5_001;
+    const verifiedPartial = await waitForChildProgress(2, true);
+    assert.deepEqual(verifiedPartial.progress, childProgress);
   } finally {
+    Date.now = originalNow;
     KitTaskStore.prototype.get = originalGet;
     KitTaskStore.prototype.getReadOnly = originalRead;
     await helper.stop();

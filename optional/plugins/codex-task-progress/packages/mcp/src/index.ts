@@ -584,10 +584,16 @@ async function consumeProofForRejectedInput(
   authorization: Extract<TrustedToolAuthorization, { readonly ok: true }>,
   rejection: InputRejection,
 ) {
-  if (authorization.auth.kind !== "hook-proof") {
+  const hook =
+    authorization.auth.kind === "hook-proof"
+      ? authorization.auth
+      : authorization.auth.identity.threadSource === "subagent"
+        ? authorization.auth.identity.hook
+        : undefined;
+  if (!hook) {
     return inputError(rejection);
   }
-  const { runtimeContext, runtimeProof } = authorization.auth;
+  const { runtimeContext, runtimeProof } = hook;
   try {
     const response = await client.request({
       method: "runtime-proof.consume",
@@ -918,6 +924,12 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
           extra,
         );
         if (!identity.ok) return runtimeContextError(identity.code);
+        const isSubagent =
+          identity.auth.kind === "codex-request" &&
+          identity.auth.identity.threadSource === "subagent";
+        if (isSubagent && (isPanel || isLegacyPanel)) {
+          return runtimeContextError("CODEX_REQUEST_THREAD_UNTRUSTED");
+        }
         const business = tool.schema.safeParse(businessInput(input));
         if (!business.success) {
           return consumeProofForRejectedInput(
@@ -944,7 +956,8 @@ export function createGoalProgressMcpServer(options: GoalProgressMcpServerOption
                 text: JSON.stringify({ ok: true, result: response.result }),
               },
             ],
-            ...(["get", "history", "heartbeat-history", "archive"].includes(tool.action)
+            ...(!isSubagent &&
+            ["get", "history", "heartbeat-history", "archive"].includes(tool.action)
               ? { _meta: { "codex-task-progress/threadId": identity.sessionId } }
               : {}),
           };

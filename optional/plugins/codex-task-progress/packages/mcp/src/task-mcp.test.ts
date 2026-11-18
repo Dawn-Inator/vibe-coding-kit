@@ -7,7 +7,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import type { CodexAppServerRuntime } from "../../codex-adapter/src/index.js";
+import type { CodexAppServerRuntime, CodexThreadIdentity } from "../../codex-adapter/src/index.js";
+import {
+  CURRENT_THREAD_NOT_FOUND,
+  createCurrentThreadResolver,
+} from "../../codex-adapter/src/thread-resolver.js";
 import { GOAL_PROGRESS_RELEASE_VERSION } from "../../contracts/src/index.js";
 import { GoalProgressHelper } from "../../host/src/index.js";
 import {
@@ -1377,6 +1381,275 @@ test("native identity never downgrades partial Hook or turn metadata", () => {
   assert.deepEqual(malformedAlias, {
     ok: false,
     code: "CODEX_REQUEST_METADATA_REQUIRED",
+  });
+});
+
+test("direct persistent subagents use only their own canonical checklist through MCP and Helper", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "tp-child-"));
+  const cwd = await realpath(directory);
+  await mkdir(join(cwd, ".git"));
+  const parentId = "parent";
+  const childId = "child";
+  const siblingId = "sibling";
+  const userThread = (id: string): CodexThreadIdentity => ({
+    id,
+    sessionId: id,
+    cwd,
+    threadSource: "user",
+    agentRole: null,
+    ephemeral: false,
+    status: { type: "idle" },
+  });
+  const childThread = (id: string): CodexThreadIdentity => ({
+    ...userThread(id),
+    path: join(cwd, `${id}.jsonl`),
+    threadSource: "subagent",
+    agentRole: "worker",
+    parentThreadId: parentId,
+    source: {
+      subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_role: "worker" } },
+    },
+  });
+  let child = childThread(childId);
+  const runtime: CodexAppServerRuntime = {
+    async getGoal() {
+      return null;
+    },
+    async readThreadIdentity(id) {
+      return id === childId ? child : id === siblingId ? childThread(id) : userThread(id);
+    },
+    async resolveCurrentThread(input) {
+      return { ...input, threadId: input.sessionTreeId };
+    },
+    async refreshGoalUsage() {
+      throw new Error("Unexpected goal usage");
+    },
+    watchGoalUsage() {},
+    setPollingMode() {},
+    async close() {},
+  };
+  const paths = resolveGoalProgressPaths({ root: join(cwd, "helper") });
+  const helper = new GoalProgressHelper({ paths, runtime, resolveNativeGoal: async () => null });
+  const ipc = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  const hook = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "hook" });
+  const server = createGoalProgressMcpServer({ ipcClient: ipc });
+  const client = new Client({ name: "subagent-checklist-test", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  let callNumber = 0;
+  const metadata = (id = childId, source = "subagent", sessionId = id) => ({
+    threadId: id,
+    callId: `call-${++callNumber}`,
+    "x-codex-turn-metadata": {
+      session_id: sessionId,
+      thread_id: id,
+      turn_id: "child-turn",
+      model: "test",
+      thread_source: source,
+      cwd,
+      ...(source === "subagent"
+        ? { subagent_kind: "thread_spawn", parent_thread_id: parentId }
+        : {}),
+    },
+  });
+  type ToolResponse = Awaited<ReturnType<typeof client.callTool>>;
+  function result(response: ToolResponse) {
+    assert.notEqual(response.isError, true, JSON.stringify(response.content));
+    assert.ok(Array.isArray(response.content));
+    const block = response.content[0];
+    assert.ok(block.type === "text" && typeof block.text === "string");
+    return JSON.parse(block.text).result;
+  }
+  function denied(response: ToolResponse, code: string) {
+    assert.equal(response.isError, true, JSON.stringify(response.content));
+    assert.equal((response.structuredContent as { code?: string }).code, code);
+  }
+  const invoke = (name: string, args = {}, meta = metadata()) =>
+    client.callTool({ name, arguments: args, _meta: meta });
+  const objective = { id: "O", title: "Verified scope", items: [{ id: "O1", title: "Milestone" }] };
+  const initialize = (title: string) => ({
+    title,
+    reason: "Register scoped work",
+    requestId: title,
+    expectedRevision: 0,
+    objectives: [objective],
+  });
+  try {
+    await helper.start();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    result(
+      await invoke("task_progress_initialize", initialize("Parent"), metadata(parentId, "user")),
+    );
+    const parentContext = { hookSessionId: parentId, turnId: "parent-turn", model: "test", cwd };
+    const parentProof = (
+      await hook.request({
+        method: "runtime-proof.issue",
+        params: { runtimeContext: parentContext, toolUseId: "parent-hook" },
+      })
+    ).result as { runtimeProof: unknown };
+    assert.equal(
+      result(
+        await client.callTool({
+          name: "task_progress_get",
+          arguments: { _runtimeContext: parentContext, _runtimeProof: parentProof.runtimeProof },
+        }),
+      ).task?.title,
+      "Parent",
+    );
+    result(await invoke("task_progress_initialize", initialize("Sibling"), metadata(siblingId)));
+    result(await invoke("task_progress_initialize", initialize("Child")));
+    result(
+      await invoke("task_progress_rescope", {
+        expectedRevision: 1,
+        requestId: "child-rescope",
+        reason: "Add verification",
+        objectives: [{ ...objective, items: [...objective.items, { id: "O2", title: "Verify" }] }],
+      }),
+    );
+    const meta = metadata();
+    const runtimeContext = { hookSessionId: childId, turnId: "child-turn", model: "test", cwd };
+    const proof = await hook.request({
+      method: "runtime-proof.issue",
+      params: { runtimeContext, toolUseId: meta.callId },
+    });
+    const update = {
+      requestId: "child-update",
+      expectedRevision: 2,
+      reason: "Start verification",
+      changes: [{ targetId: "O2", status: "active" }],
+      _runtimeContext: runtimeContext,
+      _runtimeProof: (proof.result as { runtimeProof: unknown }).runtimeProof,
+    };
+    result(await invoke("task_progress_update", update, meta));
+    denied(await invoke("task_progress_update", update, meta), "CODEX_REQUEST_REPLAYED");
+    const read = await invoke("task_progress_get");
+    assert.equal(read._meta?.["codex-task-progress/threadId"], undefined);
+    const own = result(read);
+    assert.equal(own.task?.title, "Child");
+    assert.equal(own.task?.revision, 3);
+    for (const field of ["heartbeat", "subagents", "presentation", "storage", "archiveCount"]) {
+      assert.equal(Object.hasOwn(own, field), false, field);
+    }
+    assert.equal(
+      result(await invoke("task_progress_get", {}, metadata(parentId, "user"))).task?.revision,
+      1,
+    );
+    assert.equal(
+      result(await invoke("task_progress_get", {}, metadata(siblingId))).task?.revision,
+      1,
+    );
+    for (const [name, args] of [
+      ["task_progress_bind_heartbeat", { path: null }],
+      ["task_progress_archive", {}],
+      ["task_progress_history", {}],
+      ["task_progress_complete", {}],
+      ["task_progress_heartbeat_history", {}],
+      ["task_progress_dashboard", {}],
+      ["task_progress_panel", {}],
+      ["goal_progress_get", {}],
+    ] as const) {
+      denied(await invoke(name, args), "CODEX_REQUEST_THREAD_UNTRUSTED");
+    }
+    denied(
+      await invoke("task_progress_dashboard", {}, {
+        threadId: childId,
+        thread_id: childId,
+      } as unknown as ReturnType<typeof metadata>),
+      "TASK_THREAD_UNTRUSTED",
+    );
+    for (const invalid of [
+      { ephemeral: true },
+      { path: null },
+      { agentRole: null },
+      { agentRole: "explorer" },
+      { source: { subAgent: "review" } },
+      { source: { subAgent: "compact" } },
+      { source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1 } } } },
+      {
+        source: {
+          subAgent: {
+            thread_spawn: { parent_thread_id: parentId, depth: 2, agent_role: "worker" },
+          },
+        },
+      },
+      { parentThreadId: siblingId },
+      { cwd: "/unexpected-workspace" },
+      { sessionId: parentId },
+    ]) {
+      child = { ...childThread(childId), ...invalid };
+      const rejected = await invoke("task_progress_get");
+      assert.equal(rejected.isError, true, JSON.stringify(invalid));
+    }
+    child = childThread(childId);
+    for (const foreignId of [parentId, siblingId]) {
+      const spoofed = { ...metadata(), threadId: foreignId };
+      denied(await invoke("task_progress_get", {}, spoofed), "CODEX_REQUEST_IDENTITY_CONFLICT");
+      const injection = await invoke("task_progress_update", { threadId: foreignId });
+      assert.equal(injection.isError, true);
+    }
+    const inherited = metadata(childId, "subagent", parentId);
+    denied(await invoke("task_progress_get", {}, inherited), "CODEX_REQUEST_IDENTITY_CONFLICT");
+    child = { ...child, sessionId: parentId };
+    const inheritedMetadata = metadata(childId, "subagent", parentId);
+    const inheritedContext = { ...runtimeContext, hookSessionId: parentId };
+    const inheritedProof = (
+      await hook.request({
+        method: "runtime-proof.issue",
+        params: { runtimeContext: inheritedContext, toolUseId: inheritedMetadata.callId },
+      })
+    ).result as { runtimeProof: unknown };
+    const inheritedRead = await invoke(
+      "task_progress_get",
+      {
+        _runtimeContext: inheritedContext,
+        _runtimeProof: inheritedProof.runtimeProof,
+      },
+      inheritedMetadata,
+    );
+    assert.equal(result(inheritedRead).task?.title, "Child");
+    const hookOnly = (
+      await hook.request({
+        method: "runtime-proof.issue",
+        params: { runtimeContext, toolUseId: "hook-only" },
+      })
+    ).result as { runtimeProof: unknown };
+    denied(
+      await client.callTool({
+        name: "task_progress_get",
+        arguments: { _runtimeContext: runtimeContext, _runtimeProof: hookOnly.runtimeProof },
+      }),
+      "CODEX_REQUEST_THREAD_UNTRUSTED",
+    );
+    const authorization = resolveTrustedToolAuthorization(
+      "task_progress_get",
+      {},
+      {
+        _meta: metadata(childId, "subagent", parentId),
+      },
+    );
+    assert.ok(authorization.ok);
+    await assert.rejects(
+      ipc.request({ method: "activation.plan", params: { auth: authorization.auth } }),
+      { code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    );
+  } finally {
+    await client.close();
+    await server.close();
+    await helper.stop();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("strict Hook authorization cannot reuse a recency-only thread resolution", async () => {
+  const input = { sessionTreeId: "parent", turnId: "child-turn", cwd: "/project", model: "test" };
+  const resolver = createCurrentThreadResolver({
+    listLoadedThreads: async () => [],
+    listThreads: async () => [{ threadId: "parent", cwd: "/project", recencyAt: 1 }],
+    listTurnIds: async () => [],
+  });
+  assert.equal((await resolver.resolve(input)).threadId, "parent");
+  await assert.rejects(resolver.resolve({ ...input, requireExactTurn: true }), {
+    code: CURRENT_THREAD_NOT_FOUND,
   });
 });
 

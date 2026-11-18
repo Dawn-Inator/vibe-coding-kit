@@ -6,6 +6,11 @@ readable projection of the latest task state. The helper serializes writers for 
 history as the canonical record and the head as a projection, never append prior task events manually to the
 head.
 
+Use the same task APIs and journal format for a child's actual module milestones. Resolve storage from the
+child session's trusted thread and working directory. The parent owns its canonical assignment and acceptance
+records; the child's authenticated session owns its module journal. The panel reads child execution progress
+only when the child journal belongs to the in-scope dispatch under the shared task progress skill's scope rules.
+
 Project heartbeat ledgers use the same head/history split after a writer-owned cutover: `heartbeat.md` contains
 the current readable head and `taskhistory.md` contains the complete wake history plus its source marker.
 Display/read APIs are read-only and must not auto-migrate an unrelated active heartbeat. Until an authorized

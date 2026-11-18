@@ -39,7 +39,7 @@ export const GOAL_PROGRESS_HOOK_EVENT_POLICY = Object.freeze({
 export const GOAL_PROGRESS_RESUME_CONTEXT =
   "Goal Progress is active for this session. Continue automatically: load Goal Progress tools with tool_search if deferred, call goal_progress_get before writes, and do not ask the user to invoke the Skill again.";
 export const TASK_PROGRESS_SESSION_CONTEXT =
-  "Use the $codex-task-progress:task-progress Skill and bundled Kit guidance. Call task_progress_get first. The panel shows project Heartbeat automatically; do not ask the user to choose. Project Heartbeat does not replace chat progress; taskSource is authoritative only for related Kit tasks. If taskSource is stale, error or pending, do not create a parallel checklist. Otherwise initialize only when absent; use returned revision/stable requestId and retry unchanged. No native Goal; observation is read-only.";
+  "Use the $codex-task-progress:task-progress Skill and bundled Kit guidance. Call task_progress_get first. For actionable work, persist scope and evidence during execution and before final. Honor revisions. Bound or unresolved taskSource blocks local writes. Parent: record exact returned child thread IDs on canonical assignments. Child: track module milestones in your own authenticated journal before private final. Parent acceptance requires evidence. The panel reads project Heartbeat automatically.";
 const taskSessionOutput: SessionStartOutput = {
   hookSpecificOutput: {
     hookEventName: "SessionStart",

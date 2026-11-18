@@ -1414,6 +1414,7 @@ export class GoalProgressHelper {
     let cwd: string;
     let input: unknown;
     let nativeStatus: unknown;
+    let ownTaskOnly = false;
     if (request.method === "task.request") {
       const expectedTool = `task_progress_${action.replaceAll("-", "_")}`;
       if (
@@ -1425,11 +1426,12 @@ export class GoalProgressHelper {
           "Task action does not match tool identity",
         );
       const authorized = await measureStage("native-identity", () =>
-        this.#sessionCoordinator.authorizeSessionRequestWithThread(request.params.auth),
+        this.#sessionCoordinator.authorizeTaskRequest(request.params.auth),
       );
       threadId = authorized.identity.threadId;
       cwd = authorized.identity.cwd;
       input = request.params.input;
+      ownTaskOnly = authorized.thread?.threadSource === "subagent";
       nativeStatus = authorized.thread
         ? authorized.thread.status
         : await measureStage("native-identity", () =>
@@ -1523,9 +1525,9 @@ export class GoalProgressHelper {
       let sourceTask: Awaited<ReturnType<typeof heartbeatService.taskProjection>>;
       let heartbeat: Awaited<ReturnType<typeof heartbeatService.projectView>> | null = null;
       let heartbeatPending = false;
-      if (action === "get")
+      if (action === "get" || ownTaskOnly)
         sourceTask = await measureStage("task-projection", () =>
-          heartbeatService.taskProjection(threadId, cwd),
+          heartbeatService.taskProjection(threadId, cwd, { forceDiscovery: action !== "get" }),
         );
       else {
         [sourceTask, heartbeat] = await Promise.all([
@@ -1634,7 +1636,7 @@ export class GoalProgressHelper {
           taskStore.complete(threadId, TaskCompleteInputSchema.parse(input)),
         );
       } else {
-        if (action === "get") {
+        if (action === "get" && !ownTaskOnly) {
           const snapshot = await measureStage("project-view-snapshot", () =>
             heartbeatService.projectViewSnapshot(cwd),
           );
@@ -1817,6 +1819,23 @@ export class GoalProgressHelper {
             ? localTaskState
             : await measureStage("local-task-store", () => taskStore.get(threadId));
       logSlowTask(threadId, backgroundStartedAt);
+      if (ownTaskOnly) {
+        if (action !== "get") {
+          return { revision: state?.revision ?? null, result: result as Record<string, unknown> };
+        }
+        return {
+          revision: sourceTask.sourcePath
+            ? (sourceTask.task?.revision ?? null)
+            : (state?.revision ?? null),
+          result: {
+            task: sourceTask.sourcePath ? sourceTask.task : (state ?? null),
+            ...(sourceTask.status === "pending" ? { taskSourcePending: true } : {}),
+            taskSource: ["none", "candidates"].includes(sourceTask.status)
+              ? null
+              : { status: sourceTask.status, readOnly: true },
+          },
+        };
+      }
       return {
         revision: sourceTask.sourcePath
           ? (sourceTask.task?.revision ?? null)
@@ -1930,16 +1949,19 @@ export class GoalProgressHelper {
         this.#runtime.listSubagentTurns
       ) {
         const previous = this.#subagentPresentation.peek(subagentKey);
+        const fresh =
+          previous.error === null &&
+          previous.updatedAt !== null &&
+          Date.now() >= previous.updatedAt &&
+          Date.now() - previous.updatedAt < 5_000;
         // Incomplete catalog sweeps need another incremental read, including
         // contention with an older cycle's in-flight sweep. The cache still
         // deduplicates concurrent reads for this exact source/cycle key.
         const recent =
+          fresh &&
           previous.value?.status === "ready" &&
           previous.value.complete &&
-          !previous.value.truncated &&
-          previous.updatedAt !== null &&
-          Date.now() >= previous.updatedAt &&
-          Date.now() - previous.updatedAt < 5_000;
+          !previous.value.truncated;
         const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
         const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
         const observer = this.#runtime.observeDirectSubagent?.bind(this.#runtime);
@@ -1975,21 +1997,21 @@ export class GoalProgressHelper {
                 this.#presentationLoads.delete(load);
               }
             });
-        if (children.value) subagents = children.value;
-        else if (children.error) subagents = { ...subagents, status: "unavailable" };
-      }
-      // Parent-thread activity spans dispatches, so an independent child
-      // checklist cannot establish progress for the current parent assignment.
-      // Current canonical parent leaves are projected below instead.
-      if (subagents.scopeBasis === "parent-thread") {
-        subagents = {
-          ...subagents,
-          agents: subagents.agents.map((agent) => ({
-            ...agent,
-            progress: null,
-            progressBasis: null,
-          })),
-        };
+        if (children.value) {
+          subagents = children.value;
+          // An expired activity snapshot can keep the roster visible while a new
+          // scan verifies the parent dispatch behind each child checklist.
+          if (!fresh) {
+            subagents = {
+              ...subagents,
+              agents: subagents.agents.map((agent) => ({
+                ...agent,
+                progress: null,
+                progressBasis: null,
+              })),
+            };
+          }
+        } else if (children.error) subagents = { ...subagents, status: "unavailable" };
       }
       // Canonical heartbeat tasks stay private in their source service; never
       // calculate assigned progress from a truncated panel projection.
@@ -2165,6 +2187,7 @@ export class GoalProgressHelper {
     const readEpoch = requestEpoch;
     const beforeRead = this.#taskPresentation.peek(scope).value;
     const canonical = await canonicalRead();
+    if (ownTaskOnly) return canonical;
     if (
       readEpoch !== this.#scopeEpoch(scope) &&
       ["get", "history", "heartbeat-history", "archive"].includes(action) &&

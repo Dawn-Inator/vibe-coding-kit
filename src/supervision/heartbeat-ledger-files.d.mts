@@ -117,6 +117,22 @@ export function appendHeartbeatWake(
 	},
 ): HeartbeatLedgerPair;
 
+export interface HeartbeatAgentAssignment {
+	itemId: string;
+	/** Exact native thread ID observed in the original host dispatch result. */
+	agentThreadId: string;
+	/** Exact current cell value, including `""`, `"-"` or `"—"`. This is a version precondition. */
+	expectedDispatchRef: string;
+	/** Required to replace a different existing native thread ID. */
+	expectedAgentThreadId?: string;
+}
+/** Record verified assignments to existing canonical leaf Items. The authorized source writer
+ * must verify the Item-to-thread mapping against the original dispatch records before calling.
+ * The pair must have no unarchived head suffix. */
+export function recordHeartbeatAgentAssignments(
+	options: HeartbeatWriteOptions & { assignments: readonly HeartbeatAgentAssignment[] },
+): HeartbeatLedgerPair;
+
 /** Read a raw version even when a pair is incomplete; never mutates the files. */
 export function readHeartbeatLedgerPairVersion(options: {
 	root: string;

@@ -7,34 +7,42 @@ import {
   TASK_PROGRESS_SESSION_CONTEXT,
 } from "./index.js";
 
-test("ordinary SessionStart routes through shared guidance and honors read-only source tasks", async () => {
-  const output = await handleHookInput(
-    {
-      hook_event_name: "SessionStart",
-      source: "startup",
-      session_id: "chat-1",
-      cwd: "/project",
-      model: "test",
-    },
-    { resumeSession: async () => ({ status: "inactive" }) },
-  );
-  assert.equal(output?.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.equal(
-    output && "additionalContext" in output.hookSpecificOutput
-      ? output.hookSpecificOutput.additionalContext
-      : "",
-    TASK_PROGRESS_SESSION_CONTEXT,
-  );
+test("SessionStart restores Kit progress guidance on startup, resume, and compact", async () => {
+  for (const source of ["startup", "resume", "compact"]) {
+    const output = await handleHookInput(
+      {
+        hook_event_name: "SessionStart",
+        source,
+        session_id: "chat-1",
+        cwd: "/project",
+        model: "test",
+      },
+      { resumeSession: async () => ({ status: "inactive" }) },
+    );
+    assert.deepEqual(output, {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: TASK_PROGRESS_SESSION_CONTEXT,
+      },
+    });
+  }
   assert.match(
     TASK_PROGRESS_SESSION_CONTEXT,
     /\$codex-task-progress:task-progress Skill and bundled Kit guidance/,
   );
   assert.match(TASK_PROGRESS_SESSION_CONTEXT, /task_progress_get first/);
-  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /taskSource/);
-  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /shows project Heartbeat automatically/);
-  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /do not ask the user to choose/);
-  assert.doesNotMatch(TASK_PROGRESS_SESSION_CONTEXT, /pending-selection|select a ledger/i);
-  assert.doesNotMatch(TASK_PROGRESS_SESSION_CONTEXT, /A 100% checklist|verified evidence/);
+  assert.match(
+    TASK_PROGRESS_SESSION_CONTEXT,
+    /persist scope and evidence during execution and before final/,
+  );
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /record exact returned child thread IDs/);
+  assert.match(
+    TASK_PROGRESS_SESSION_CONTEXT,
+    /module milestones in your own authenticated journal before private final/,
+  );
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /Parent acceptance requires evidence/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /Bound or unresolved taskSource blocks local writes/);
+  assert.match(TASK_PROGRESS_SESSION_CONTEXT, /reads project Heartbeat automatically/);
   assert.ok(TASK_PROGRESS_SESSION_CONTEXT.length <= 512);
 });
 

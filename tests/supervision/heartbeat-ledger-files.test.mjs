@@ -34,6 +34,7 @@ import {
 	clearHeartbeatDisplayCache,
 	readHeartbeatLedgerPairVersion,
 	recoverHeartbeatLedgerPair,
+	recordHeartbeatAgentAssignments,
 	writeHeartbeatLedgerPair,
 } from "../../src/supervision/heartbeat-ledger-files.mjs";
 import {
@@ -177,6 +178,184 @@ test("identical legitimate wakes remain distinct and writer keeps all history pl
 		inspectHeartbeatLedgerPair(rewritten, { mode: "items" }).items[0].id,
 		"I2",
 	);
+});
+
+const assignmentHeader = "| id | source | item | status | evidence | owner | dispatch_ref | children | note |";
+const assignmentSeparator = "| --- | --- | --- | --- | --- | --- | --- | --- | :---: |";
+const reportedRef = "receipts/first returned.json";
+const assignmentRows = [
+	`| I1 | report:r1 | first | dispatched | observed | /root/first | ${reportedRef} | [] | retained |  `,
+	"| I2 | report:r2 | second | done | historical evidence | legacy owner | | - | 例 |",
+	"| I3 | report:r3 | third | blocked <- review | dependency | old owner | - | | untargeted |",
+	'| P1 | report:p1 | parent | tracking | coordination | /root | - | ["I1"] | parent note |',
+	'| P2 | report:p2 | parent in another state | done | coordination | /root | - | ["I2"] | parent note |',
+];
+
+function assignmentFixture({ header = assignmentHeader, separator = assignmentSeparator, rows = assignmentRows, extra = "", crlf = false } = {}) {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const old = `# Project\n\n## Items\n\n${header}\n${separator}\n${rows.join("\n")}\n${extra}\n## Notes\nUnrelated text stays.\n\n${wake("2026-01-01T10:00Z")}\n${wake("2026-01-01T11:00Z")}`;
+	const original = crlf ? old.replaceAll("\n", "\r\n") : old;
+	writeFileSync(path, original);
+	const prior = migrate({ root: dir, path });
+	const request = {
+		root: dir,
+		path,
+		legacyWritersQuiescent: true,
+		expectedContentHash: prior.contentHash,
+	};
+	return { dir, path, original, prior, request };
+}
+
+const firstAgentAssignment = {
+	itemId: "I1",
+	agentThreadId: "native-thread-01",
+	expectedDispatchRef: reportedRef,
+};
+
+test("mechanical assignments preserve the canonical CRLF head outside the new cells and keep archive and backup bytes", async () => {
+	const { path, original, prior, request } = assignmentFixture({ crlf: true });
+	const assignments = [
+		firstAgentAssignment,
+		{ itemId: "I2", agentThreadId: "native-thread-02", expectedDispatchRef: "" },
+		{ itemId: "I3", agentThreadId: "native-thread-02", expectedDispatchRef: "-" },
+	];
+	const after = recordHeartbeatAgentAssignments({ ...request, assignments });
+	assert.equal(
+		after.headText,
+		prior.headText
+			.replace("| children | note |", "| children | agent_thread_id | note |")
+			.replace("| --- | :---: |", "| --- | --- | :---: |")
+			.replace("| [] | retained |", "| [] | native-thread-01 | retained |")
+			.replace("| - | 例 |", "| - | native-thread-02 | 例 |")
+			.replace("| | untargeted |", "| | native-thread-02 | untargeted |")
+			.replace('| ["I1"] | parent note |', '| ["I1"] |  | parent note |')
+			.replace('| ["I2"] | parent note |', '| ["I2"] |  | parent note |'),
+	);
+	assert.deepEqual(readHeartbeatLedgerPair(request), after);
+	assert.notEqual(after.contentHash, prior.contentHash);
+	assert.equal(after.fullText, prior.fullText);
+	assert.deepEqual(after.wakes, prior.wakes);
+	assert.equal(readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, "utf8"), original);
+	const afterItems = inspectHeartbeatLedgerPair(after, { mode: "items" }).items;
+	assert.deepEqual(afterItems.map(({ agent_thread_id }) => agent_thread_id), [
+		"native-thread-01", "native-thread-02", "native-thread-02", "", "",
+	]);
+	assert.deepEqual(
+		afterItems.map(({ agent_thread_id, ...row }) => row),
+		inspectHeartbeatLedgerPair(prior, { mode: "items" }).items,
+	);
+	const display = await readHeartbeatDisplay(request);
+	assert.deepEqual(display.inventory.items.map(({ agent_thread_id }) => agent_thread_id),
+		afterItems.map(({ agent_thread_id }) => agent_thread_id));
+	assert.equal(display.historyPage.total, prior.wakes.length);
+	assert.throws(() => recordHeartbeatAgentAssignments({ ...request, assignments }), /version conflict/i);
+	assert.deepEqual(recordHeartbeatAgentAssignments({
+		...request, expectedContentHash: after.contentHash, assignments,
+		beforeHeadPublish() { assert.fail("an idempotent assignment must not publish"); },
+	}), after);
+	const appended = append({ ...request, wakeText: wake("2026-01-01T12:00Z") });
+	assert.equal(appended.wakes.length, prior.wakes.length + 1);
+	assert.deepEqual(inspectHeartbeatLedgerPair(appended, { mode: "items" }).items, afterItems);
+});
+
+test("assignment writes add their column immediately after dispatch_ref on tables without children", () => {
+	const { request, prior } = assignmentFixture({
+		header: assignmentHeader.replace(" children |", ""),
+		separator: assignmentSeparator.replace(" --- | :---: |", " :---: |"),
+		rows: [
+			`| I1 | report:r1 | first | dispatched | observed | /root/first | ${reportedRef} | retained |`,
+		],
+	});
+	const after = recordHeartbeatAgentAssignments({ ...request, assignments: [firstAgentAssignment] });
+	assert.match(after.headText, /\| dispatch_ref \| agent_thread_id \| note \|/);
+	assert.equal(after.fullText, prior.fullText);
+});
+
+test("bound assignment rejects missing or changed references and protects existing native IDs", () => {
+	const { request, prior } = assignmentFixture();
+	const record = (assignments, pair = prior) => recordHeartbeatAgentAssignments({
+		...request, expectedContentHash: pair.contentHash, assignments,
+	});
+	assert.throws(() => record([{ itemId: "I2", agentThreadId: "native-thread-02" }]), /dispatch_ref/i);
+	for (const expectedDispatchRef of [undefined, null, " ", "unknown", "bad|ref", "-", "different.json"]) {
+		assert.throws(() => record([{ ...firstAgentAssignment, expectedDispatchRef }]), /dispatch_ref/i);
+	}
+	for (const [itemId, expectedDispatchRef] of [["I2", "-"], ["I3", ""]]) {
+		assert.throws(() => record([{ ...firstAgentAssignment, itemId, expectedDispatchRef }]), /dispatch_ref conflict/i);
+	}
+	for (const agentThreadId of ["", "—", "--", "tbd", "bad|agent", "bad\nagent", "bad\0agent", "bad agent", "bad\\agent", "<agent>", "\ud800"]) {
+		assert.throws(() => record([{ ...firstAgentAssignment, agentThreadId }]), /native thread ID/i);
+	}
+	for (const itemId of ["P1", "P2"]) {
+		assert.throws(() => record([{ ...firstAgentAssignment, itemId, expectedDispatchRef: "-" }]), /leaf/i);
+	}
+	assert.throws(() => record([firstAgentAssignment, { ...firstAgentAssignment, itemId: "i1" }]), /does not exist/i);
+	assert.throws(() => record([firstAgentAssignment, firstAgentAssignment]), /duplicate/i);
+	assert.throws(() => record([]), /nonempty/i);
+	assert.deepEqual(readHeartbeatLedgerPair(request), prior);
+	const assigned = record([firstAgentAssignment]);
+	const replacement = { ...firstAgentAssignment, agentThreadId: "native-thread-03" };
+	assert.throws(() => record([replacement], assigned), /agent_thread_id conflict/i);
+	assert.throws(() => record([{ ...replacement, expectedAgentThreadId: "some-other" }], assigned), /agent_thread_id conflict/i);
+	assert.deepEqual(readHeartbeatLedgerPair(request), assigned);
+	const replaced = record([{ ...replacement, expectedAgentThreadId: firstAgentAssignment.agentThreadId }], assigned);
+	assert.equal(replaced.headText, assigned.headText.replace("native-thread-01", "native-thread-03"));
+	assert.equal(replaced.fullText, assigned.fullText);
+	const added = record([{ itemId: "I2", agentThreadId: "native-thread-02", expectedDispatchRef: "" }], replaced);
+	assert.equal(added.headText, replaced.headText.replace("| - |  | 例 |", "| - | native-thread-02 | 例 |"));
+});
+
+test("assignment refuses malformed or ambiguous Items and cannot bypass canonical writer ownership or the lock", () => {
+	for (const [variant, failure] of [
+		[{ extra: "## Items\nno table" }, /unambiguous/i],
+		[{ header: assignmentHeader.replace("note", "agent_thread_id | Agent Thread ID") }, /headers/i],
+		[{ separator: assignmentSeparator.replace(":---:", "malformed") }, /malformed/i],
+		[{ rows: [...assignmentRows, assignmentRows[0]] }, /duplicate/i],
+		[{ rows: [...assignmentRows, "| bad | report:missing |"] }, /malformed/i],
+		[{ rows: [...assignmentRows, "| bad | report:missing | truncated"] }, /malformed/i],
+		[{ extra: `\n${assignmentRows[0]}` }, /ambiguous row/i],
+	]) {
+		const { request, prior } = assignmentFixture(variant);
+		assert.throws(() => recordHeartbeatAgentAssignments({ ...request, assignments: [firstAgentAssignment] }), failure);
+		assert.deepEqual(readHeartbeatLedgerPair(request), prior);
+	}
+	const { dir, path, original, request, prior } = assignmentFixture();
+	const options = { ...request, assignments: [firstAgentAssignment] };
+	assert.throws(() => recordHeartbeatAgentAssignments({ ...options, legacyWritersQuiescent: false }), /exclusive ownership/i);
+	assert.throws(() => recordHeartbeatAgentAssignments({ ...options, expectedContentHash: undefined }), /expectedContentHash/i);
+	writeFileSync(`${path}.lock`, "other writer\n");
+	assert.throws(() => recordHeartbeatAgentAssignments(options), /writer lock/i);
+	assert.deepEqual(readHeartbeatLedgerPair(request), prior);
+	unlinkSync(`${path}.lock`);
+	const legacy = join(dir, "legacy.md");
+	writeFileSync(legacy, original);
+	assert.throws(() => recordHeartbeatAgentAssignments({ ...options, path: legacy, expectedContentHash: version(legacy) }), /explicitly migrate/i);
+	assert.equal(readFileSync(legacy, "utf8"), original);
+});
+
+test("assignment recovery preserves every prior wake and refuses to consume an unarchived wake suffix", () => {
+	const { path, request, prior } = assignmentFixture();
+	const options = { ...request, assignments: [firstAgentAssignment] };
+	assert.throws(() => recordHeartbeatAgentAssignments({
+		...options,
+		beforeHeadPublish() { throw new Error("simulated crash"); },
+	}), /simulated crash/i);
+	assert.equal(readFileSync(path, "utf8"), prior.headText);
+	assert.throws(() => readHeartbeatLedgerPair(request), /recovery required/i);
+	const raw = readHeartbeatLedgerPairVersion(request);
+	const recovered = recoverHeartbeatLedgerPair({ ...request, expectedContentHash: raw.contentHash });
+	assert.match(recovered.headText, /\| native-thread-01 \|/);
+	assert.equal(recovered.fullText, prior.fullText);
+	assert.deepEqual(recovered.wakes, prior.wakes);
+	appendFileSync(path, `\n${wake("2026-01-01T12:00Z")}`);
+	const withSuffix = readHeartbeatLedgerPair(request);
+	assert.equal(withSuffix.wakes.length, prior.wakes.length + 1);
+	assert.throws(() => recordHeartbeatAgentAssignments({
+		...options, expectedContentHash: withSuffix.contentHash,
+		assignments: [{ itemId: "I3", agentThreadId: "other-native", expectedDispatchRef: "-" }],
+	}), /unarchived suffix/i);
+	assert.deepEqual(readHeartbeatLedgerPair(request), withSuffix);
 });
 
 test("missing, unrelated, corrupt, and interrupted companions never return empty history", () => {

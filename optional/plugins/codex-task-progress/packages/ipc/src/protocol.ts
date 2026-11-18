@@ -10,18 +10,35 @@ import {
 export const GOAL_PROGRESS_IPC_PROTOCOL_VERSION = 4 as const;
 export const GOAL_PROGRESS_IPC_MAX_MESSAGE_BYTES = 1_048_576;
 export { TASK_PROGRESS_REQUEST_TIMEOUT_MS } from "../../contracts/src/task-request-policy.js";
-export const CodexRequestIdentitySchema = z
-  .object({
-    threadId: z.string().trim().min(1).max(512),
-    sessionId: z.string().trim().min(1).max(512),
-    turnId: z.string().trim().min(1).max(512),
-    callId: z.string().trim().min(1).max(512),
-    model: z.string().trim().min(1).max(256),
-    threadSource: z.literal("user"),
-    cwd: z.string().trim().min(1).max(4_096).optional(),
-    pluginId: z.string().trim().min(1).max(512).optional(),
-  })
-  .strict();
+
+const CodexRequestIdentityFields = {
+  threadId: z.string().trim().min(1).max(512),
+  sessionId: z.string().trim().min(1).max(512),
+  turnId: z.string().trim().min(1).max(512),
+  callId: z.string().trim().min(1).max(512),
+  model: z.string().trim().min(1).max(256),
+  cwd: z.string().trim().min(1).max(4_096).optional(),
+  pluginId: z.string().trim().min(1).max(512).optional(),
+};
+export const CodexRequestIdentitySchema = z.discriminatedUnion("threadSource", [
+  z.strictObject({ ...CodexRequestIdentityFields, threadSource: z.literal("user") }),
+  z.strictObject({
+    ...CodexRequestIdentityFields,
+    threadSource: z.literal("subagent"),
+    parentThreadId: z.string().min(1).max(512).optional(),
+    agentRole: z.string().min(1).max(256).optional(),
+    hook: z
+      .strictObject({ runtimeContext: RuntimeContextSchema, runtimeProof: RuntimeProofSchema })
+      .optional(),
+  }),
+]);
+
+export const CodexSubagentTaskToolNameSchema = z.enum([
+  "task_progress_get",
+  "task_progress_initialize",
+  "task_progress_update",
+  "task_progress_rescope",
+]);
 
 export const GoalProgressMcpToolNameSchema = z.enum([
   "goal_progress_activate",

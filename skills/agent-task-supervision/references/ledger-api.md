@@ -165,6 +165,25 @@ recoverHeartbeatLedgerPair({
 `inspectHeartbeatLedger` remains the parser and validator for a logical text stream; pair APIs compose the
 physical files and map report lines back to their source.
 
+### Recording agent assignments
+
+The parent or authorized project source writer records the native child thread ID on the assigned leaf in
+the current Items registry using `recordHeartbeatAgentAssignments` from `src/supervision/heartbeat-ledger-files.mjs`.
+For a legacy single-file source, complete the explicit cutover above first under the same writer ownership.
+Read the current pair and call the writer with `root`, `path`, `expectedContentHash: current.contentHash`,
+`legacyWritersQuiescent: true`, and `assignments: [{ itemId, agentThreadId, expectedDispatchRef }]`.
+When replacing a previous ID, also pass its exact value as `expectedAgentThreadId` and retain evidence for
+the reassignment. Reread and recheck the assignment evidence if the source has changed. The writer updates the optional
+`agent_thread_id` column after `dispatch_ref` (after `children` when present). The assignment preserves
+the row's status, dispatch receipt, and existing wake history. The panel reads these records from the pair.
+
+Use the exact returned child thread ID and evidence tying that native dispatch to the same Item. For a legacy
+row, preserve and compare the observed `dispatch_ref` even if it is blank or `-`. That value is a source
+precondition. Backfill only when trusted raw native evidence establishes the exact child and canonical leaf.
+Skip tracking parents, ambiguous leaf matches, and rows with missing evidence. Legacy writers must remain
+quiescent for the full write, including any required cutover. Leave unresolved links unknown and preserve
+the original receipt and wake history.
+
 ## Audit due probe
 
 For event-anchored cadence checks, use the read-only helper from the canonical API:

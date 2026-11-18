@@ -28,6 +28,7 @@ export interface CurrentThreadResolverInput {
   readonly turnId: string;
   readonly cwd: string;
   readonly model: string;
+  readonly requireExactTurn?: boolean;
 }
 
 export interface ThreadCatalogEntry {
@@ -60,7 +61,7 @@ function uniqueThreadIds(entries: readonly ThreadCatalogEntry[]): string[] {
 }
 
 function cacheKey(input: CurrentThreadResolverInput): string {
-  return `${input.sessionTreeId}\0${input.turnId}\0${input.cwd}`;
+  return `${input.sessionTreeId}\0${input.turnId}\0${input.cwd}\0${input.requireExactTurn === true}`;
 }
 
 function uniqueNewestSessionTreeId(
@@ -139,7 +140,7 @@ export function createCurrentThreadResolver(catalog: ThreadCatalog): CurrentThre
         );
         const listedIds = uniqueThreadIds(cwdEntries);
         matches = await matchingThreadIds(listedIds, input.turnId);
-        if (matches.length === 0 && loadedIds.length === 0) {
+        if (matches.length === 0 && loadedIds.length === 0 && !input.requireExactTurn) {
           const newestSessionTreeId = uniqueNewestSessionTreeId(cwdEntries, input.sessionTreeId);
           if (newestSessionTreeId) {
             matches = [newestSessionTreeId];
