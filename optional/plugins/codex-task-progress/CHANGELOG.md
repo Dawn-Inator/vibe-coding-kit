@@ -1,3 +1,7 @@
+# Task Progress 0.12.6
+
+- Retry unresolved source association once with a larger bounded scan after the default discovery budget is exhausted; retain complete-discovery and confirmed-unique selection safeguards. Present unresolved discovery neutrally and actual source failures as errors.
+
 # Task Progress 0.12.5
 
 - Guide parent producers to record returned native agent thread IDs on assigned canonical leaves and timestamp actual Heartbeat observations. Subagents can show a verified timestamped observation from the bound task ledger independently of the project Heartbeat view. Missing associations or observations remain unknown; dispatch acceptance is not completion and no live Desktop count is inferred.

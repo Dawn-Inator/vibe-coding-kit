@@ -1034,6 +1034,81 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
       },
     );
     await t.test(
+      "unresolved task source does not present discovery as a source error",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        const incomplete =
+          "Heartbeat discovery was incomplete, so the runtime cannot confirm this chat's task-source association yet.";
+        await page.evaluate(
+          ({ incomplete, heartbeat }) => {
+            window.fixture.task = null;
+            window.fixture.taskSource = {
+              status: "pending-selection",
+              readOnly: true,
+              error: incomplete,
+            };
+            window.fixture.heartbeat = {
+              ...heartbeat,
+              sourcePath: "/unrelated-project",
+              contentHash: "unrelated",
+              wakes: [{ heading: "foreign history must not appear" }],
+            };
+            window.fixture.subagents = {
+              schemaVersion: 1,
+              parentThreadId: "thread-a",
+              taskCycleId: null,
+              scopeBasis: "parent-thread",
+              status: "ready",
+              observedAt: "2026-11-15T12:00:00Z",
+              runningCount: 1,
+              runningBasis: "runtime",
+              complete: true,
+              truncated: false,
+              agents: [
+                {
+                  id: "live-agent",
+                  name: "Known runtime agent",
+                  state: "working",
+                  stateBasis: "runtime",
+                  observedAt: null,
+                  progress: { completed: 1, total: 2, percent: 50 },
+                  progressBasis: "registered-checklist",
+                },
+              ],
+            };
+            return window.__CODEX_TASK_PROGRESS__.refresh();
+          },
+          { incomplete, heartbeat },
+        );
+        await panel.getByText("Known runtime agent", { exact: true }).waitFor();
+        assert.match(await panel.locator(".summary").innerText(), /当前任务来源尚未解析/);
+        assert.equal(
+          await panel.locator(".scroll .info-card-error").filter({ hasText: "来源错误" }).count(),
+          0,
+        );
+        assert.doesNotMatch(
+          await panel.locator(".scroll").innerText(),
+          /Heartbeat discovery was incomplete|foreign history must not appear|50%/,
+        );
+        assert.equal(await panel.locator('[data-agent="live-agent"] [role="meter"]').count(), 0);
+        await page.evaluate(() => {
+          window.fixture.taskSource = {
+            status: "error",
+            readOnly: true,
+            error: "actual source read failure",
+          };
+          return window.__CODEX_TASK_PROGRESS__.refresh();
+        });
+        const sourceError = panel
+          .locator(".scroll .info-card-error")
+          .filter({ hasText: "来源错误" });
+        await sourceError.waitFor();
+        assert.match(await sourceError.innerText(), /actual source read failure/);
+        assert.equal(await panel.getByText("Known runtime agent", { exact: true }).count(), 1);
+        await context.close();
+      },
+    );
+    await t.test(
       "parent-thread activity survives stale or absent task sources without task progress",
       async () => {
         const { context, page, panel } = await open("?defaultSubagents");

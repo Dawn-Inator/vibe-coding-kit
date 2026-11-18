@@ -1611,13 +1611,12 @@ export class TaskProgressElement extends LitElement {
     if (!source && !sourceInfo) return nothing;
     const risks = source?.linkRisks ?? [];
     const presentation = source?.presentation;
-    const sourceError = this.taskSourceIsPending()
-      ? undefined
-      : sourceInfo?.status === "stale" ||
-          sourceInfo?.status === "error" ||
-          sourceInfo?.status === "pending-selection"
-        ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
-        : source?.error;
+    const sourceError =
+      this.taskSourceIsPending() || sourceInfo?.status === "pending-selection"
+        ? undefined
+        : sourceInfo?.status === "stale" || sourceInfo?.status === "error"
+          ? (sourceInfo.error ?? this.t("Source could not be read.", "无法读取任务来源。"))
+          : source?.error;
     const registeredMetadata = this.taskMode === "registered-tasks";
     const notice =
       registeredMetadata &&

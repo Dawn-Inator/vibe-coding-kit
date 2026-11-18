@@ -2333,3 +2333,124 @@ test("bound large head uses canonical display inventory with project inspector c
     await f.close();
   }
 });
+
+test("default unbound task discovery continues once for bounded deep sources", async () => {
+  const f = await fixture();
+  const deep = resolve(f.project, "a/b/c/d/e/f/g");
+  await mkdir(deep, { recursive: true });
+  await writeFile(resolve(deep, "heartbeat-one.md"), ledger("one-chat"));
+  await writeFile(resolve(deep, "heartbeat-multi-a.md"), ledger("multi-chat"));
+  await writeFile(resolve(deep, "heartbeat-multi-b.md"), ledger("multi-chat"));
+  const index = new HeartbeatDiscoveryIndex();
+  const realDiscover = index.discover.bind(index);
+  const calls: { maxFiles?: number; maxDepth?: number }[] = [];
+  index.discover = async (options, context) => {
+    calls.push({ maxFiles: options.maxFiles, maxDepth: options.maxDepth });
+    return realDiscover(options, context);
+  };
+  const service = new HeartbeatService(resolve(f.root, "deep-data"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    const zero = await service.taskProjection("zero-chat", f.project);
+    assert.equal(zero.status, "candidates");
+    assert.equal(zero.task, null);
+    assert.deepEqual(calls.splice(0), [
+      { maxFiles: undefined, maxDepth: undefined },
+      { maxFiles: 12_000, maxDepth: 32 },
+    ]);
+    const one = await service.taskProjection("one-chat", f.project);
+    assert.equal(one.status, "ready");
+    assert.equal(one.sourcePath, await realpath(resolve(deep, "heartbeat-one.md")));
+    assert.equal(one.task?.threadId, "one-chat");
+    assert.deepEqual(calls.splice(0), [
+      { maxFiles: undefined, maxDepth: undefined },
+      { maxFiles: 12_000, maxDepth: 32 },
+    ]);
+    const multi = await service.taskProjection("multi-chat", f.project);
+    assert.equal(multi.status, "pending-selection");
+    assert.equal(multi.task, null);
+    assert.deepEqual(calls.splice(0), [
+      { maxFiles: undefined, maxDepth: undefined },
+      { maxFiles: 12_000, maxDepth: 32 },
+    ]);
+    const project = await service.projectView(f.project);
+    assert.equal(project.discoveryComplete, false);
+    assert.ok(project.discoveryReasons?.includes("depth-limit"));
+  } finally {
+    service.close();
+    index.close();
+    await f.close();
+  }
+});
+
+test("continuation respects explicit limits and never retries non-budget failures", async () => {
+  const f = await fixture();
+  const deep = resolve(f.project, "a/b/c/d/e/f/g");
+  await mkdir(deep, { recursive: true });
+  await writeFile(resolve(deep, "heartbeat.md"), ledger("chat"));
+  const limited = new HeartbeatService(resolve(f.root, "limited"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    maxDepth: 5,
+  });
+  const index = new HeartbeatDiscoveryIndex();
+  let scans = 0;
+  index.discover = async (options) => {
+    scans++;
+    const result = await discoverHeartbeatLedgerSources(options);
+    return { ...result, complete: false, reasons: [...result.reasons, "unreadable-directory"] };
+  };
+  const unsafe = new HeartbeatService(resolve(f.root, "unsafe"), {
+    kitPath: f.kitPath,
+    fallbackKitPath: null,
+    refreshMs: 0,
+    discoveryIndex: index,
+  });
+  try {
+    assert.equal((await limited.taskProjection("chat", f.project)).status, "pending-selection");
+    const result = await unsafe.taskProjection("chat", f.project);
+    assert.equal(result.status, "pending-selection");
+    assert.equal(scans, 1);
+    const fileLimited = new HeartbeatService(resolve(f.root, "file-explicit"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      refreshMs: 0,
+      maxFiles: 1,
+    });
+    try {
+      assert.equal(
+        (await fileLimited.taskProjection("chat", f.project)).status,
+        "pending-selection",
+      );
+    } finally {
+      fileLimited.close();
+    }
+    await writeFile(
+      resolve(f.project, ".codex-task-progress.json"),
+      JSON.stringify({ heartbeat: { maxDepth: 5 } }),
+    );
+    const configured = new HeartbeatService(resolve(f.root, "configured"), {
+      kitPath: f.kitPath,
+      fallbackKitPath: null,
+      refreshMs: 0,
+    });
+    try {
+      assert.equal(
+        (await configured.taskProjection("chat", f.project)).status,
+        "pending-selection",
+      );
+    } finally {
+      configured.close();
+    }
+  } finally {
+    limited.close();
+    unsafe.close();
+    index.close();
+    await f.close();
+  }
+});

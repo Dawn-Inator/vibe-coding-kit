@@ -1159,13 +1159,47 @@ export class HeartbeatService {
           });
         throw error;
       }
-      if (observation)
-        observation.generation = boundOnly ? null : (discovery.indexGeneration ?? null);
-      const candidates = discovery.candidates;
-      const relation = await relations.resolve(threadId, {
+      let relation = await relations.resolve(threadId, {
         projectRoot: root,
         discovery,
       });
+      // A default bounded scan can stop before reaching deep sources in a large
+      // project. Retry once with a still-bounded scope, but never override an
+      // explicit limit, an existing binding, or non-budget scan failures.
+      const budgetOnly =
+        discovery.reasons.length > 0 &&
+        discovery.reasons.every((reason) => reason === "file-limit" || reason === "depth-limit");
+      if (
+        relation.status === "pending-selection" &&
+        !previous.found &&
+        !boundOnly &&
+        maxFiles === undefined &&
+        maxDepth === undefined &&
+        !discovery.complete &&
+        budgetOnly
+      ) {
+        const expanded = { ...discoveryOptions, maxFiles: 12_000, maxDepth: 32 };
+        discovery = await (this.#options.discoveryIndex
+          ? this.#options.discoveryIndex.discover(expanded, {
+              force: Boolean(options.forceDiscovery),
+            })
+          : discoverHeartbeatLedgerSources(expanded));
+        // A protected scan must still describe the current root before it can
+        // create an automatic source binding. The outer view check also fences
+        // the final snapshot; unprotected scans retain their existing semantics.
+        if (
+          this.#options.discoveryIndex &&
+          discovery.indexGeneration !== undefined &&
+          (await this.#options.discoveryIndex.generation(root)) !== discovery.indexGeneration
+        )
+          throw new HeartbeatDiscoveryInvalidatedError(
+            "Heartbeat discovery changed while reading; retry required",
+          );
+        relation = await relations.resolve(threadId, { projectRoot: root, discovery });
+      }
+      if (observation)
+        observation.generation = boundOnly ? null : (discovery.indexGeneration ?? null);
+      const candidates = discovery.candidates;
       if (relation.status === "none") return null;
       if (relation.status === "candidates" || relation.status === "pending-selection")
         return compactView({
