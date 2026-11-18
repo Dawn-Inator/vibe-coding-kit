@@ -20,7 +20,8 @@ project's authority. Respect explicit developer instructions, including a reques
   incident archive. Put the correction in its necessarily-open Doc instead when there is one.
 - **Tutorial**: generalized cases for readers and adopting projects, not a routine execution prerequisite.
 - **Temporary work**: session work in `.workspace/`, deferred proposals in the project's chosen backlog;
-  neither is canonical. Code/config/tests own machine-verifiable facts.
+  neither is canonical. Use the [task handoff convention](references/authoring-details.md#task-handoff)
+  when passing work to another session, person, or machine. Code/config/tests own machine-verifiable facts.
 
 A decision's current result belongs in the affected current authority; its historical analysis belongs
 in History. Existing historical business data and the rules that handle it are current behavior, not

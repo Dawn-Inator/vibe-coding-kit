@@ -3,6 +3,9 @@
 任务面板可以在经过验证的聊天工作目录中保存普通任务清单及完整变更历史，也可以读取项目 Heartbeat 并
 投影为只读任务视图。存储规范和迁移由共享 Kit 拥有；插件只适配 Kit API 与展示数据。
 
+接手任务时，按[任务交接规范](../../skills/manage-knowledge-artifacts/references/authoring-details.md#task-handoff)
+查找进度来源，并根据接手人能否访问同一工作区选择交接文件的存放位置。
+
 ```js
 import { resolveTaskProgressStorage } from './src/contracts/task-progress-storage.mjs';
 

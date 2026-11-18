@@ -19,6 +19,28 @@ Skill into the kit: retain general rules in the public source and project facts 
 `.agents/skills`, `.claude/skills`, root agent instructions and knowledge indexes are projections; edit
 source and regenerate using the project adapter. A project's configuration determines what is tracked.
 
+## Task handoff
+
+Start with the task's existing progress source:
+
+- For an ordinary Codex task, open the original chat's task panel. Its working directory contains
+  `.workspace/codex-task-progress/tasks/v3/<thread-sha256>/taskhistory.md` for the full history and
+  `heartbeat.md` for the latest readable state.
+- For a task associated with a project Heartbeat, use the associated ledger's `Items` and the project's
+  normal ledger update workflow. The default head is `.workspace/task/<session>/heartbeat.md`, with
+  `taskhistory.md` beside it for paired ledgers. Follow the recorded source path for custom or legacy ledgers.
+
+Use `.workspace/task/<session>/handoff.md` when the recipient can access the same session workspace.
+For another machine, clone, or recipient without access to that workspace, put the handoff in the project's
+Git-tracked `.todolist/<YYYY-MM-DD>-<topic>-handoff.md`. Follow any explicit project directory override.
+Keep existing handoffs and active ledgers at their current paths.
+
+Record the objective, current phase, branch or commit SHA, verified evidence, outstanding work and blockers,
+and the next action and owner. Point to the existing progress source instead of maintaining a second checklist.
+For a shared handoff, include enough verified state to resume and reference evidence the recipient can access.
+Keep sensitive material out of Git. Capture lasting decisions in the canonical project Doc or
+`.vibe-coding/history/` as appropriate.
+
 ## Platform-specific instructions
 
 Use separate-line `<!-- BEGIN: claude-only -->` / `<!-- END: claude-only -->` or
