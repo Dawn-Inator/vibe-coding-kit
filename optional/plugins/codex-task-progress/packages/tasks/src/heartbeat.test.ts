@@ -2519,8 +2519,9 @@ test("continuation honors a concurrently explicit binding without auto-selecting
   const f = await fixture();
   const deep = resolve(f.project, "a/b/c/d/e/f/g");
   await mkdir(deep, { recursive: true });
-  const source = resolve(deep, "heartbeat.md");
-  await writeFile(source, ledger("chat"));
+  const sourcePath = resolve(deep, "heartbeat.md");
+  await writeFile(sourcePath, ledger("chat"));
+  const source = await realpath(sourcePath);
   const root = resolve(f.root, "concurrent-binding");
   const relations = new (
     await import("vibe-coding-kit/src/tasks/task-source-relations.mjs")
@@ -2539,8 +2540,16 @@ test("continuation honors a concurrently explicit binding without auto-selecting
     discoveryIndex: index,
   });
   try {
-    const projection = await service.taskProjection("chat", f.project);
-    assert.equal(projection.status, "ready");
+    let projection = await service.taskProjection("chat", f.project);
+    // The explicit journal write may race a protected scan's generation check.
+    // That must surface as retryable; the next read must honor the binding.
+    if (projection.status === "pending") {
+      assert.equal(projection.retryable, true);
+      assert.equal((await relations.get("chat")).binding?.origin, "explicit");
+      for (let attempt = 0; attempt < 5 && projection.status === "pending"; attempt++)
+        projection = await service.taskProjection("chat", f.project);
+    }
+    assert.equal(projection.status, "ready", projection.error);
     assert.equal(projection.sourcePath, await realpath(source));
     assert.equal((await relations.get("chat")).binding?.origin, "explicit");
   } finally {
