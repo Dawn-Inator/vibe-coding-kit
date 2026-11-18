@@ -4871,16 +4871,18 @@ test("parent-thread activity overlays a verified child checklist on a single ass
                     id: `child-item-${index}`,
                     title: `Milestone ${index + 1}`,
                     status: index < childProgress.completed ? "completed" : "pending",
-                    evidence: index < childProgress.completed
-                      ? [{ summary: "verified", verification: "verified" }]
-                      : [],
+                    evidence:
+                      index < childProgress.completed
+                        ? [{ summary: "verified", verification: "verified" }]
+                        : [],
                   })),
                 },
               ],
               progress: {
                 completed: childProgress.completed,
                 total: childProgress.total + 1,
-                percent: Math.floor((childProgress.completed / (childProgress.total + 1)) * 10_000) / 100,
+                percent:
+                  Math.floor((childProgress.completed / (childProgress.total + 1)) * 10_000) / 100,
               },
               phase: "active",
               lifecycle: {
@@ -4903,29 +4905,33 @@ test("parent-thread activity overlays a verified child checklist on a single ass
   let call = 0;
   const get = async (native = false) =>
     (
-      await client.request(native ? {
-        method: "task.native-read",
-        params: { action: "get", threadId, input: {} },
-      } : {
-        method: "task.request",
-        params: {
-          action: "get",
-          auth: {
-            kind: "codex-request",
-            toolName: "task_progress_get",
-            identity: {
-              threadId,
-              sessionId: threadId,
-              turnId: "turn",
-              callId: `call-${++call}`,
-              model: "test",
-              threadSource: "user",
-              cwd: root,
+      await client.request(
+        native
+          ? {
+              method: "task.native-read",
+              params: { action: "get", threadId, input: {} },
+            }
+          : {
+              method: "task.request",
+              params: {
+                action: "get",
+                auth: {
+                  kind: "codex-request",
+                  toolName: "task_progress_get",
+                  identity: {
+                    threadId,
+                    sessionId: threadId,
+                    turnId: "turn",
+                    callId: `call-${++call}`,
+                    model: "test",
+                    threadSource: "user",
+                    cwd: root,
+                  },
+                },
+                input: {},
+              },
             },
-          },
-          input: {},
-        },
-      })
+      )
     ).result as {
       subagents: {
         agents: {
@@ -4939,7 +4945,10 @@ test("parent-thread activity overlays a verified child checklist on a single ass
   const waitForChildProgress = async (completed: number, native = false) => {
     for (let i = 0; i < 100; i++) {
       const agent = (await get(native)).subagents.agents[0];
-      if (agent?.progressBasis === "registered-checklist" && agent.progress?.completed === completed)
+      if (
+        agent?.progressBasis === "registered-checklist" &&
+        agent.progress?.completed === completed
+      )
         return agent;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
