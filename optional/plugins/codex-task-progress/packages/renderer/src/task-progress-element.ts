@@ -159,6 +159,7 @@ export interface TaskPanelResponse {
   taskSourcePending?: boolean;
   taskSource?: {
     status: "candidates" | "pending-selection" | "ready" | "stale" | "error" | "pending";
+    kind?: "kit-heartbeat";
     retryable?: boolean;
     path?: string;
     historyPath?: string;
@@ -167,6 +168,7 @@ export interface TaskPanelResponse {
     error?: string;
     itemStatuses?: Readonly<Record<string, string>>;
     itemStatusCount?: number;
+    recordedAgentObservation?: { activeAgents: number; observedAt: string };
   } | null;
   history?: TaskPanelHistory | TaskPanelSourceHistory;
   heartbeatHistory?: TaskPanelHeartbeatHistory;
@@ -1707,6 +1709,44 @@ export class TaskProgressElement extends LitElement {
     return snapshot;
   }
 
+  private recordedAgentCount(): string | null {
+    const { task, taskSource } = this.data;
+    const source = task?.source;
+    const path = source?.path;
+    const hash = source?.contentHash;
+    const observation = taskSource?.recordedAgentObservation;
+    if (
+      !this.threadId?.trim() ||
+      task?.threadId !== this.threadId ||
+      task.phase !== "active" ||
+      this.data.taskSourcePending ||
+      source?.kind !== "kit-heartbeat" ||
+      source.readOnly !== true ||
+      typeof path !== "string" ||
+      !path.trim() ||
+      typeof hash !== "string" ||
+      !hash.trim() ||
+      taskSource?.status !== "ready" ||
+      taskSource.kind !== "kit-heartbeat" ||
+      taskSource.readOnly !== true ||
+      taskSource.path !== path ||
+      taskSource.contentHash !== hash ||
+      !observation ||
+      !Number.isSafeInteger(observation.activeAgents)
+    )
+      return null;
+    const { activeAgents, observedAt } = observation;
+    if (
+      activeAgents < 0 ||
+      activeAgents > 1_000_000 ||
+      typeof observedAt !== "string" ||
+      !Number.isFinite(Date.parse(observedAt)) ||
+      Date.parse(observedAt) > Date.now()
+    )
+      return null;
+    return `${this.t("Recorded active agents: ", "台账记录活跃 Agent：")}${activeAgents} · ${this.date(Date.parse(observedAt))}`;
+  }
+
   private renderSubagents() {
     const snapshot = this.currentRunSubagents();
     const agents = snapshot?.agents ?? [];
@@ -1724,7 +1764,7 @@ export class TaskProgressElement extends LitElement {
       unknown: this.t("Unknown", "未知"),
     };
     return html`<section class="subagents" aria-label=${this.t("Subagents", "子 Agent")}>
-      <p class="agent-counts">${this.t("Live agent count unavailable", "实时 Agent 数量不可用")}</p>
+      <p class="agent-counts">${this.recordedAgentCount() ?? this.t("Live agent count unavailable", "实时 Agent 数量不可用")}</p>
       ${
         ranked.length
           ? ranked.map((agent) => {

@@ -94,7 +94,7 @@ and wake mechanism; child modules do not each create a heartbeat, timer or paral
 ## Orchestration snapshot
 
 For each v2 wake, read the [snapshot and writer contract](references/ledger-api.md#orchestration-snapshot).
-Record actual child observations before/after coordination, blocked tasks and known Owner intervention
+Record `orchestration.before` and `orchestration.after` actual `activeAgents`, observation time and evidence before/after coordination; use unknown when unobserved, not accepted-dispatch counts. Record blocked tasks and known Owner intervention
 in that wake's optional Kit `orchestration` metadata, not a parallel plugin record. For an explicit plan,
 record trusted `agentPlan` identity and update its revision when allocation changes. Unknown stays unknown;
 keep ten raw rows, never infer plans/activity from them or rewrite historical wakes.

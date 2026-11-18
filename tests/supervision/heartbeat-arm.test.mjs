@@ -86,6 +86,15 @@ test('project command mappings flow into the checklist and re-arm command', () =
   assert.match(message, /--commands/);
 });
 
+test('wake prompts for evidenced assignments and timestamped observed counts', () => {
+  const message = formatWakeMessage({ seconds: 1200, probe: false, ledger: LEDGER_REL, now: WAKE_NOW });
+  assert.match(message, /returned native agent thread ID on assigned canonical leaves/);
+  assert.match(message, /agent_thread_id after dispatch_ref \(after children if present\)/);
+  assert.match(message, /independently accept before completion/);
+  assert.match(message, /orchestration\.before and orchestration\.after activeAgents, observedAt and evidence/);
+  assert.match(message, /unknown when unavailable, not accepted dispatch counts/);
+});
+
 test('event fallback names the canonical due CLI and makes the first eligible event an audit wake', () => {
   const skill = readSkillText('agent-task-supervision').replace(/\s+/g, ' ').toLowerCase();
   assert.match(skill, /heartbeat-audit-due-cli\.mjs\s+<ledger>\s+\[--minutes 20 --json\]/);

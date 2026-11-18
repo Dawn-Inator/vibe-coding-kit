@@ -22,6 +22,8 @@ process limit are stated in full above (see "Bug-Fix Ownership", "Worker Prompt
 Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule") — restate all of them in every
 dispatch prompt rather than assuming a worker already knows them. Additional orchestrator-only duties:
 
+- After dispatch, record the returned native agent thread ID on its assigned canonical task leaves using the existing task-progress workflow. Maintain or clear the association on evidence and record completion only after independent acceptance. Never invent an ID or write another worker’s private task record.
+
 - Pre-create worker worktrees and dependencies, pass exact paths and name module verification lanes and
   actual per-host grants. Unauthorized heavy commands are violations even when they succeed. Keep selected
   shared checks and final acceptance centralized; the [module owner](module-delivery.md) owns tests and repairs.

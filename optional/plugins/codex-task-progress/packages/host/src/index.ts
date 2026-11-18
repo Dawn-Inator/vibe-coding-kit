@@ -1792,6 +1792,9 @@ export class GoalProgressHelper {
                   ...(sourceTask.historyPath ? { historyPath: sourceTask.historyPath } : {}),
                   ...(sourceTask.contentHash ? { contentHash: sourceTask.contentHash } : {}),
                   ...(sourceTask.itemStatuses ? { itemStatuses: sourceTask.itemStatuses } : {}),
+                  ...(sourceTask.status === "ready" && sourceTask.recordedAgentObservation
+                    ? { recordedAgentObservation: sourceTask.recordedAgentObservation }
+                    : {}),
                   ...(sourceTask.error ? { error: sourceTask.error } : {}),
                   ...(sourceTask.retryable ? { retryable: true } : {}),
                 }

@@ -4470,22 +4470,63 @@ test("native and authenticated GET use full verified heartbeat assignments acros
   await mkdir(join(root, ".git"));
   const childId = "verified-child";
   const ids = Array.from({ length: 300 }, (_, i) => `L${i}`);
-  const source = (done: number) =>
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  let wakeMode: "valid" | "foreign" | "future" | "cycle" | "invalid" = "valid";
+  const observedAt = "2026-11-16T12:00:00.000Z";
+  const source = (done: number, assignedId: string | null) =>
     [
       "# Supervision",
       "thread: source-chat",
       "task_root: ROOT",
       "## Items",
-      "| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children | agent_thread_id |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-      `| ROOT | report:root | Root | tracking | coordinated | agent:lead | repo-a | worktrees/lead | read-only | [] | - | ${JSON.stringify(ids)} | - |`,
+      `| id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children |${assignedId === null ? "" : " agent_thread_id |"}`,
+      `| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |${assignedId === null ? "" : " --- |"}`,
+      `| ROOT | report:root | Root | tracking | coordinated | agent:lead | repo-a | worktrees/lead | read-only | [] | - | ${JSON.stringify(ids)} |${assignedId === null ? "" : " - |"}`,
       ...ids.map(
         (id, i) =>
-          `| ${id} | report:${id} | ${id} | ${i < done ? "done" : `blocked <- resource-${i}`} | receipt | ${childId} | - | - | - | - | - | - | ${childId} |`,
+          `| ${id} | report:${id} | ${id} | ${i < done ? "done" : `blocked <- resource-${i}`} | receipt | ${childId} | - | - | - | - | - | - |${assignedId === null ? "" : ` ${assignedId} |`}`,
       ),
       "",
+      "## 2026-11-16T11:00:00.000Z wake (10-row ledger)",
+      `orchestration: ${JSON.stringify({ scope: "session", before: null, after: { activeAgents: 2, observedAt: "2026-11-16T10:59:00.000Z", evidence: "older" }, blockedTasks: null, blockersEvidence: null })}`,
+      "| # | category | state |",
+      "| --- | --- | --- |",
+      "| 1 | audit | done |",
+      "",
+      `## 2026-11-16T12:01:00.000Z wake (10-row ledger)`,
+      `orchestration: ${
+        wakeMode === "invalid"
+          ? "{invalid"
+          : JSON.stringify({
+              scope: "session",
+              before: null,
+              after: {
+                activeAgents: 18,
+                observedAt:
+                  wakeMode === "future" ? new Date(now + 60_000).toISOString() : observedAt,
+                evidence: "verified observation",
+              },
+              blockedTasks: null,
+              blockersEvidence: null,
+              agentPlan: {
+                parentThreadId: wakeMode === "foreign" ? "other-chat" : "source-chat",
+                planId: "plan",
+                revision: 1,
+                plannedAgents: 20,
+                ...(wakeMode === "cycle" ? { taskCycleId: "old-cycle" } : {}),
+              },
+            })
+      }`,
+      "| # | category | state |",
+      "| --- | --- | --- |",
+      "| 1 | audit | done |",
+      "",
     ].join("\n");
-  await writeFile(join(root, "heartbeat.md"), source(150));
+  await writeFile(join(root, "heartbeat.md"), source(150, null));
+  let currentRoot = "root-turn";
+  let dispatchPresent = true;
   const testRuntime = runtime(root);
   testRuntime.listDirectSubagents = async () => ({
     data: [
@@ -4501,20 +4542,22 @@ test("native and authenticated GET use full verified heartbeat assignments acros
   testRuntime.listSubagentTurns = async () => ({
     data: [
       {
-        id: "root-turn",
-        rootTurnId: "root-turn",
+        id: currentRoot,
+        rootTurnId: currentRoot,
         startedAt: 1794830400,
         itemsView: "full",
-        items: [
-          {
-            type: "collabAgentToolCall",
-            senderThreadId: "source-chat",
-            receiverThreadIds: [childId],
-            tool: "spawnAgent",
-            status: "completed",
-            startedAtMs: 1794830400000,
-          },
-        ],
+        items: dispatchPresent
+          ? [
+              {
+                type: "collabAgentToolCall",
+                senderThreadId: "source-chat",
+                receiverThreadIds: [childId],
+                tool: "spawnAgent",
+                status: "completed",
+                startedAtMs: 1794830400000,
+              },
+            ]
+          : [],
       },
     ],
     nextCursor: null,
@@ -4558,9 +4601,14 @@ test("native and authenticated GET use full verified heartbeat assignments acros
       )
     ).result as {
       task: { source?: Record<string, unknown> } | null;
-      taskSource?: { status: string; contentHash?: string };
+      taskSource?: {
+        status: string;
+        contentHash?: string;
+        recordedAgentObservation?: { activeAgents: number; observedAt: string };
+      };
       subagents: {
         status: string;
+        rootTurnId?: string;
         agents: {
           id: string;
           progress: { completed: number; total: number; percent: number } | null;
@@ -4568,46 +4616,129 @@ test("native and authenticated GET use full verified heartbeat assignments acros
         }[];
       };
     };
-  const until = async (native: boolean, completed: number) => {
+  const until = async (
+    native: boolean,
+    matches: (result: Awaited<ReturnType<typeof get>>) => boolean,
+  ) => {
     let result = await get(native);
-    for (let i = 0; i < 100; i++) {
-      if (result.subagents?.agents[0]?.progress?.completed === completed) return result;
+    for (let i = 0; i < 150; i++) {
+      if (matches(result)) return result;
       await new Promise((resume) => setTimeout(resume, 10));
       result = await get(native);
     }
     assert.fail(`assignment did not converge for ${native ? "native" : "model"}`);
   };
+  const has =
+    (completed: number, differentHash?: string, expectedRoot?: string) =>
+    (result: Awaited<ReturnType<typeof get>>) =>
+      result.taskSource?.status === "ready" &&
+      (!differentHash ||
+        (!!result.taskSource.contentHash && result.taskSource.contentHash !== differentHash)) &&
+      (!expectedRoot || result.subagents?.rootTurnId === expectedRoot) &&
+      result.subagents?.agents.find((agent) => agent.id === childId)?.progress?.completed ===
+        completed;
+  const unlinked = (differentHash?: string) => (result: Awaited<ReturnType<typeof get>>) =>
+    result.taskSource?.status === "ready" &&
+    (!differentHash ||
+      (!!result.taskSource.contentHash && result.taskSource.contentHash !== differentHash)) &&
+    result.subagents?.agents.some((agent) => agent.id === childId && agent.progress === null);
   try {
     await helper.start();
-    const first = await until(false, 150);
-    assert.equal(first.taskSource?.status, "ready");
-    assert.equal(first.subagents.agents[0]?.progressBasis, "module-delivery");
-    assert.deepEqual(first.subagents.agents[0]?.progress, {
+    const initial = await until(false, unlinked());
+    assert.deepEqual(initial.taskSource?.recordedAgentObservation, {
+      activeAgents: 18,
+      observedAt,
+    });
+    assert.equal(
+      initial.subagents.agents.find((agent) => agent.id === childId)?.progressBasis,
+      null,
+    );
+    assert.equal(Object.hasOwn(initial.task?.source ?? {}, "itemOwners"), false);
+    await until(true, unlinked());
+
+    // The same persistent current agent becomes attributable only once the source
+    // writer supplies the exact canonical thread ID, not from its display name.
+    await writeFile(join(root, "heartbeat.md"), source(150, childId));
+    now += 5_001;
+    const first = await until(false, has(150, initial.taskSource?.contentHash));
+    assert.equal(
+      first.subagents.agents.find((agent) => agent.id === childId)?.progressBasis,
+      "module-delivery",
+    );
+    assert.deepEqual(first.subagents.agents.find((agent) => agent.id === childId)?.progress, {
       completed: 150,
       total: 300,
       percent: 50,
     });
     assert.equal(Object.hasOwn(first.task?.source ?? {}, "itemOwners"), false);
-    const nativeFirst = await until(true, 150);
+    const presentation = first.task?.source?.presentation as {
+      truncated: boolean;
+      sourceItemCount: number;
+      displayedItemCount: number;
+    };
+    assert.equal(presentation.truncated, true);
+    assert.equal(presentation.sourceItemCount, 301);
+    assert.ok(presentation.displayedItemCount < presentation.sourceItemCount);
+    const nativeFirst = await until(true, has(150, initial.taskSource?.contentHash));
+    assert.deepEqual(nativeFirst.taskSource?.recordedAgentObservation, {
+      activeAgents: 18,
+      observedAt,
+    });
     assert.deepEqual(
-      nativeFirst.subagents.agents[0]?.progress,
-      first.subagents.agents[0]?.progress,
+      nativeFirst.subagents.agents.find((agent) => agent.id === childId)?.progress,
+      first.subagents.agents.find((agent) => agent.id === childId)?.progress,
     );
-    await writeFile(join(root, "heartbeat.md"), source(200));
-    const second = await until(false, 200);
-    assert.notEqual(second.taskSource?.contentHash, first.taskSource?.contentHash);
-    assert.deepEqual(second.subagents.agents[0]?.progress, {
+
+    // A new parent turn has no fresh dispatch; verified persistent membership and
+    // the source's exact ID still bind this canonical responsibility.
+    currentRoot = "new-root-turn";
+    dispatchPresent = false;
+    await writeFile(join(root, "heartbeat.md"), source(200, childId));
+    now += 5_001;
+    const second = await until(false, has(200, first.taskSource?.contentHash, currentRoot));
+    assert.deepEqual(second.subagents.agents.find((agent) => agent.id === childId)?.progress, {
       completed: 200,
       total: 300,
       percent: 66.67,
     });
-    const nativeSecond = await until(true, 200);
+    const nativeSecond = await until(true, has(200, first.taskSource?.contentHash, currentRoot));
     assert.equal(nativeSecond.taskSource?.contentHash, second.taskSource?.contentHash);
     assert.deepEqual(
-      nativeSecond.subagents.agents[0]?.progress,
-      second.subagents.agents[0]?.progress,
+      nativeSecond.subagents.agents.find((agent) => agent.id === childId)?.progress,
+      second.subagents.agents.find((agent) => agent.id === childId)?.progress,
     );
+
+    await writeFile(join(root, "heartbeat.md"), source(200, "different-child"));
+    now += 5_001;
+    const reassigned = await until(false, unlinked(second.taskSource?.contentHash));
+    assert.equal(
+      reassigned.subagents.agents.find((agent) => agent.id === childId)?.progressBasis,
+      null,
+    );
+    await until(true, unlinked(second.taskSource?.contentHash));
+    await writeFile(join(root, "heartbeat.md"), source(200, ""));
+    now += 5_001;
+    const removed = await until(false, unlinked(reassigned.taskSource?.contentHash));
+    assert.equal(
+      removed.subagents.agents.find((agent) => agent.id === childId)?.progressBasis,
+      null,
+    );
+    await until(true, unlinked(reassigned.taskSource?.contentHash));
+    let oldHash = removed.taskSource?.contentHash;
+    for (const mode of ["foreign", "future", "cycle", "invalid"] as const) {
+      wakeMode = mode;
+      await writeFile(join(root, "heartbeat.md"), source(200, ""));
+      now += 5_001;
+      const next = await until(
+        false,
+        (result) =>
+          unlinked(oldHash)(result) && result.taskSource?.recordedAgentObservation === undefined,
+      );
+      assert.equal(next.taskSource?.recordedAgentObservation, undefined);
+      oldHash = next.taskSource?.contentHash;
+    }
   } finally {
+    Date.now = originalNow;
     await helper.stop();
     await rm(root, { recursive: true, force: true });
   }

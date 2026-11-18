@@ -12,6 +12,7 @@ import type {
 import {
   inspectHeartbeatLedger as bundledHeartbeatInspector,
   projectHeartbeatOrchestration,
+  validateHeartbeatOrchestration,
 } from "vibe-coding-kit/src/supervision/heartbeat-ledger-api.mjs";
 import {
   type AgentTaskProgress,
@@ -94,6 +95,7 @@ export interface HeartbeatTaskProjection {
   historyPath?: string;
   contentHash?: string;
   itemStatuses?: Record<string, string>;
+  recordedAgentObservation?: { activeAgents: number; observedAt: string };
   error?: string;
   retryable?: true;
 }
@@ -1519,6 +1521,28 @@ export class HeartbeatService {
         if (oldest !== undefined) this.#canonicalTasks.delete(oldest);
       }
       const task = compactProjectedTask(canonicalTask);
+      // The newest wake and the task projection share this verified source hash.
+      // Never use project-wide heartbeat data for a separately bound task.
+      let recordedAgentObservation: HeartbeatTaskProjection["recordedAgentObservation"];
+      const wake = pair.historyPage.wakes[0];
+      if (wake?.orchestration && !wake.orchestrationError) {
+        try {
+          const snapshot = validateHeartbeatOrchestration(wake.orchestration);
+          const plan = snapshot.agentPlan;
+          const after = snapshot.after;
+          if (
+            after &&
+            Date.parse(after.observedAt) <= this.#now().getTime() &&
+            (!plan || (plan.parentThreadId === threadId && !Object.hasOwn(plan, "taskCycleId")))
+          )
+            recordedAgentObservation = {
+              activeAgents: after.activeAgents,
+              observedAt: after.observedAt,
+            };
+        } catch {
+          /* Invalid source observations stay unknown. */
+        }
+      }
       return {
         status: "ready",
         task,
@@ -1526,6 +1550,7 @@ export class HeartbeatService {
         ...(view.historyPath ? { historyPath: view.historyPath } : {}),
         contentHash,
         itemStatuses: task.source.itemStatuses,
+        ...(recordedAgentObservation ? { recordedAgentObservation } : {}),
       };
     } catch (error) {
       if (isDisplayChanged(error))

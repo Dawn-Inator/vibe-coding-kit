@@ -11,6 +11,8 @@ The panel displays the current project's Heartbeat automatically when available.
 
 Do not ask the user to select a project Heartbeat ledger. Project display and chat task association are resolved by the runtime from the current project and structured Kit records. A project source without a confirmed current-task relationship must not overwrite chat task progress.
 
+After dispatch, apply the assignment and acceptance workflow in the shared Kit `skills/task-progress/SKILL.md`: record the returned native agent thread ID on the assigned canonical leaves; keep missing IDs unknown.
+
 Use the returned revision as expectedRevision and a unique requestId per logical mutation. Retry the same operation with its unchanged requestId; after a revision conflict read again before preparing a new mutation. Preserve existing IDs and confirmed evidence. Rescope includes all retained objectives; removed entries are retained as cancelled.
 
 The panel appears independently of this Skill. `task_progress_history` reads chat task history. `task_progress_bind_heartbeat` remains available for compatibility and recovery of existing bindings; it is not part of normal project source selection. Heartbeat observation is read-only and does not start a timer or certify a new heartbeat. Native Goals use the separate goal-progress Skill.

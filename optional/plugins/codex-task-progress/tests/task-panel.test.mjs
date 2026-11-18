@@ -704,6 +704,127 @@ void window.__CODEX_TASK_PROGRESS__.refresh();`,
         await context.close();
       },
     );
+    await t.test(
+      "bound task source displays its recorded agent count independently of project heartbeat",
+      async () => {
+        const { context, page, panel } = await open("?defaultSubagents");
+        const fixture = {
+          task: {
+            ...task,
+            phase: "active",
+            lifecycle: undefined,
+            source: { kind: "kit-heartbeat", readOnly: true, path: "/ledger", contentHash: "hash" },
+          },
+          taskSource: {
+            status: "ready",
+            kind: "kit-heartbeat",
+            readOnly: true,
+            path: "/ledger",
+            contentHash: "hash",
+            recordedAgentObservation: { activeAgents: 18, observedAt: "2025-01-02T00:00:00Z" },
+          },
+          heartbeat: {
+            ...heartbeat,
+            status: "ready",
+            sourcePath: "/foreign-project",
+            contentHash: "foreign-hash",
+            wakes: [
+              {
+                orchestration: {
+                  after: {
+                    activeAgents: 99,
+                    observedAt: "2025-01-02T00:00:00Z",
+                    evidence: "foreign",
+                  },
+                },
+              },
+            ],
+          },
+        };
+        const set = async (mutator) =>
+          page.evaluate(
+            ({ fixture, mutator }) => {
+              const value = structuredClone(fixture);
+              switch (mutator) {
+                case "task-thread":
+                  value.task.threadId = "other";
+                  break;
+                case "inactive":
+                  value.task.phase = "completed";
+                  break;
+                case "pending-source":
+                  value.taskSourcePending = true;
+                  break;
+                case "wrong-kind":
+                  value.taskSource.kind = "other";
+                  break;
+                case "stale-source":
+                  value.taskSource.status = "stale";
+                  break;
+                case "path":
+                  value.taskSource.path = "/other";
+                  break;
+                case "source-hash":
+                  value.taskSource.contentHash = "other";
+                  break;
+                case "no-hash":
+                  value.task.source.contentHash = "";
+                  break;
+                case "missing":
+                  delete value.taskSource.recordedAgentObservation;
+                  break;
+                case "future":
+                  value.taskSource.recordedAgentObservation.observedAt = "2999-01-01T00:00:00Z";
+                  break;
+                case "invalid-time":
+                  value.taskSource.recordedAgentObservation.observedAt = "invalid";
+                  break;
+                case "negative":
+                  value.taskSource.recordedAgentObservation.activeAgents = -1;
+                  break;
+                case "too-large":
+                  value.taskSource.recordedAgentObservation.activeAgents = 1_000_001;
+                  break;
+              }
+              Object.assign(window.fixture, value, {
+                taskSourcePending: value.taskSourcePending ?? false,
+              });
+              return window.__CODEX_TASK_PROGRESS__.refresh();
+            },
+            { fixture, mutator },
+          );
+        await set("valid");
+        assert.match(
+          await panel.locator(".agent-counts").innerText(),
+          /台账记录活跃 Agent：18 · .*2025/,
+        );
+        assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /99/);
+        for (const mutation of [
+          "task-thread",
+          "inactive",
+          "pending-source",
+          "wrong-kind",
+          "stale-source",
+          "path",
+          "source-hash",
+          "no-hash",
+          "missing",
+          "future",
+          "invalid-time",
+          "negative",
+          "too-large",
+        ]) {
+          await set(mutation);
+          assert.match(
+            await panel.locator(".agent-counts").innerText(),
+            /实时 Agent 数量不可用/,
+            mutation,
+          );
+          assert.doesNotMatch(await panel.locator(".agent-counts").innerText(), /\d/, mutation);
+        }
+        await context.close();
+      },
+    );
     await t.test("agent members require current cycle and root-turn evidence", async () => {
       const { context, page, panel } = await open("?defaultSubagents");
       await page.evaluate((value) => {

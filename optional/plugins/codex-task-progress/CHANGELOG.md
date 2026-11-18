@@ -1,3 +1,7 @@
+# Task Progress 0.12.5
+
+- Guide parent producers to record returned native agent thread IDs on assigned canonical leaves and timestamp actual Heartbeat observations. Subagents can show a verified timestamped observation from the bound task ledger independently of the project Heartbeat view. Missing associations or observations remain unknown; dispatch acceptance is not completion and no live Desktop count is inferred.
+
 # Task Progress 0.12.4
 
 - Version 0.12.4 replaces the unofficial headline aggregate with a compact notice that the live count is unavailable. Desktop builds its own current-chat roster and counts eligible non-done entries, which can include waiting agents; the MCP Apps interface does not provide that roster or count. Native count parity therefore cannot be established through this interface. Agent details and trustworthy assigned progress remain available, and Heartbeat is explicitly historical.
