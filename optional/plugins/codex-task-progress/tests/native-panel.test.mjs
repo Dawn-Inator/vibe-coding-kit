@@ -70,6 +70,7 @@ window.archiveIdentity=null;
 window.fullHistoryResponse=false;
 window.holdNextHistory=false;
 window.heldHistoryDelivered=false;
+window.heldGetDelivered=false;
 window.releaseHeldHistory=null;
 window.ignoreInitialize=new URL(location.href).searchParams.has('nohost');
 window.deliverToolResult=(threadId,value)=>document.getElementById('app').contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{content:[{type:'text',text:JSON.stringify({ok:true,result:value})}],_meta:{'codex-task-progress/threadId':threadId}}},'*');
@@ -115,10 +116,12 @@ window.addEventListener('message', async (event) => {
     }
     // Snapshot the response and identity when the request arrives, before delaying delivery.
     result=JSON.parse(JSON.stringify(result));
-    if(name === 'task_progress_get' && window.holdGet) await new Promise(resolve=>{window.releaseHeldGet=resolve});
+    const holdThisGet=name === 'task_progress_get' && window.holdGet;
+    if(holdThisGet) await new Promise(resolve=>{window.releaseHeldGet=resolve});
     if(holdThisHistory) await new Promise(resolve=>{window.releaseHeldHistory=resolve});
     frame.contentWindow.postMessage({jsonrpc:'2.0',id:request.id,result},'*');
     if(holdThisHistory) window.heldHistoryDelivered=true;
+    if(holdThisGet) window.heldGetDelivered=true;
   }
 });
 </script></body></html>`;
@@ -173,9 +176,8 @@ test("native panel MCP Apps integration", async (t) => {
       const context = await browser.newContext({
         viewport: { width: 350, height: 740 },
         locale: "en-US",
-        // The panel body plays a 200ms entry animation (scale + translate). A pointer click that lands while a
-        // starved renderer is mid-animation is hit-tested against a stale transform, so <html> / .summary
-        // intercept it. Static layout is what these protocol scenarios assert, not the animation.
+        // Hygiene only: the panel body's 200ms entry animation is not what made clicks flake (see the header of
+        // tests/optional/task-progress-ui-test-determinism.test.mjs for the real cause: a stale-response error banner).
         reducedMotion: "reduce",
         ...(preferredColorScheme ? { colorScheme: preferredColorScheme } : {}),
       });
@@ -1813,6 +1815,49 @@ test("native panel MCP Apps integration", async (t) => {
       }),
     );
 
+    await t.test(
+      "a long error banner scrolls inside itself and never pushes the panel out of view",
+      () =>
+        scenario(async (page, frame) => {
+          await ready(frame);
+          await page.evaluate(() => {
+            window.getError = {
+              code: "UNRECOGNIZED",
+              summary: `Temporarily unavailable. ${"detail ".repeat(400)}`,
+            };
+          });
+          await frame.locator(".panel-head .panel-refresh").click();
+          const banner = frame.locator("#native-panel-error");
+          await banner.waitFor({ state: "visible" });
+          const layout = await frame.locator("body").evaluate(() => {
+            const rect = (node) => node.getBoundingClientRect();
+            const error = rect(document.getElementById("native-panel-error"));
+            const panelBody = rect(
+              document.querySelector("codex-task-panel").shadowRoot.querySelector(".body"),
+            );
+            return {
+              errorHeight: error.height,
+              bodyHeight: panelBody.height,
+              bodyBottom: panelBody.bottom,
+              viewport: innerHeight,
+            };
+          });
+          assert.ok(
+            layout.errorHeight <= 90,
+            `banner must be height-bounded, got ${layout.errorHeight}px`,
+          );
+          assert.ok(
+            layout.bodyHeight >= 300,
+            `panel body must keep its height, got ${layout.bodyHeight}px`,
+          );
+          assert.ok(
+            layout.bodyBottom <= layout.viewport,
+            "panel body must stay inside the viewport",
+          );
+          await frame.getByRole("button", { name: "Registered tasks" }).click();
+        }),
+    );
+
     await t.test("A to B to A rejects late refresh and history", () =>
       scenario(async (page, frame) => {
         await ready(frame);
@@ -1851,9 +1896,16 @@ test("native panel MCP Apps integration", async (t) => {
           window.releaseHeldHistory();
           window.releaseHeldGet();
         });
-        await page.waitForFunction(() => window.heldHistoryDelivered);
+        await page.waitForFunction(() => window.heldHistoryDelivered && window.heldGetDelivered);
         await page.waitForTimeout(150);
         assert.equal(await frame.getByText("STALE HISTORY", { exact: false }).count(), 0);
+        // The aborted requests' late answers are stale traffic the panel rejects: no banner, no error state, and
+        // the panel keeps its full height so the next control stays reachable.
+        assert.equal(await frame.locator("#native-panel-error").isHidden(), true);
+        assert.equal(
+          await frame.locator("codex-task-panel").evaluate((panel) => panel.connectionError),
+          null,
+        );
         await frame.locator(".summary .main").click();
         await ready(frame);
         assert.equal(

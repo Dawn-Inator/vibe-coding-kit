@@ -759,7 +759,14 @@ async function connectApp(): Promise<void> {
   }
 }
 
+// `app.onerror` is the SDK's non-fatal diagnostic channel. Aborting a request (identity switch, newer refresh)
+// drops its response handler, so the host's late answer is reported here as "unknown message ID". That is the
+// stale traffic this panel deliberately rejects, not a connection failure: surfacing it would paint the raw
+// JSON-RPC payload as a banner and mark the panel as errored.
+const STALE_HOST_TRAFFIC =
+  /^Received a (?:response for an unknown message ID|progress notification for an unknown token):/;
 app.onerror = (error) => {
+  if (error instanceof Error && STALE_HOST_TRAFFIC.test(error.message)) return;
   if (!disposed) {
     const message = error instanceof Error ? error.message : "MCP Apps connection failed.";
     element.observed = true;
