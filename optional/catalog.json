@@ -207,7 +207,7 @@
           "https://github.com/zarazhangrui/frontend-slides",
           "https://github.com/iart-ai/web-animation-skills"
         ],
-        "stagedTreeSha256": "8bfcc720cdc75af0a6d5d81cb388daa646b05e190054a4084d4d444e17ee5318",
+        "stagedTreeSha256": "d836ed6b233acfa1339974fac2cf06667299f4799d509f6cae4eb32a8b31e755",
         "license": "MIT",
         "notes": "Kit-authored single-entry skill with pinned MIT Frontend Slides styles, design recipes, stage CSS, and PPTX extractor; HTML starter and Python PDF/publishing adapters are adapted for Kit. See references/sources.md and bundled LICENSE. Other listed upstream is an inspiration reference only.",
         "sourceRevision": "9906a34d640d2111f724544cbc50f7f130569ae1"

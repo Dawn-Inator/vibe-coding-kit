@@ -127,7 +127,8 @@ svg {
     *,
     *::before,
     *::after {
-        animation-duration: 0.01ms !important;
-        transition-duration: 0.2s !important;
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
     }
 }
