@@ -6,6 +6,8 @@ Read when designing or debugging an animated web deck. These are options, not a 
 
 Make a small per-boundary motion map before implementing: outgoing/incoming scene, visual idea, moving shared element (if any), and the first content reveal. Use motion to explain continuity, comparison, sequence, or focus. For example, a ring can lead into a timer, a line can assemble into a workflow, and opposing panels can introduce a comparison. A requested set of seven or eight distinct transitions needs visibly distinct motion, not eight names for the same crossfade. Keep a coherent palette and quiet moments so effects do not overwhelm the talk.
 
+When animated page transitions are requested, implement an actual outgoing/incoming sequence or shared-graphic continuity across the boundary; a hard cut followed only by an internal underline is not that transition.
+
 A transition may combine an outgoing state, a temporary graphic layer, the incoming layout, and staged content. Use a single coordinated timeline where sequencing is complex; overlap the beats deliberately. Let the presenter control meaningful content reveals independently of page transitions. In diagrams, connect the highlight, label, and progress marker to the same step state. On backwards navigation restore the correct previous state and support replay.
 
 Possible techniques include directional reveal, diagonal ribbon, radial expansion, staggered panels, line drawing, shared-element movement (measure first and last positions), a small particle burst, or an orbit. Pick mechanisms appropriate to the material and device. Avoid full-screen flashing, persistent sparkle, or excessive motion unless specifically requested. Keep text readable once motion settles.
