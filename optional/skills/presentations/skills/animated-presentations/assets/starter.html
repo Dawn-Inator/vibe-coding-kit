@@ -8,33 +8,29 @@
 <link rel="stylesheet" href="../viewport-base.css">
 <style>
 * { box-sizing: border-box; }
-:root { --slide-bg: #faf8f2; --stage-bg: #181818; --ink: #202020; --accent: #ad3e24; }
-body { font-family: Georgia, serif; color: var(--ink); }
+/* Technical scaffold only. Replace sample styling with the selected design. */
+:root { --slide-bg: #fff; --stage-bg: #181818; --ink: #202020; --accent: #555; }
+body { font-family: sans-serif; color: var(--ink); }
 .slide { padding: 100px; }
 h1, h2 { font-size: 100px; max-width: 1550px; margin: 0 0 48px; }
 p { font-size: 40px; line-height: 1.5; max-width: 1450px; }
-.reveal { opacity: 0; transform: translateY(24px); transition: opacity .4s, transform .4s; }
-.visible .reveal { opacity: 1; transform: none; }
+/* Content is visible by default; scene-specific choreography belongs in the deck. */
 .deck-controls { display: flex; gap: 12px; align-items: center; padding: 8px; background: #fff; color: #202020; border-radius: 8px; font: 16px sans-serif; }
 button { font: inherit; padding: 8px 16px; cursor: pointer; }
 button:focus-visible { outline: 3px solid var(--accent); }
 html.export-mode .deck-controls { display: none; }
-html.export-mode .reveal { opacity: 1; transform: none; transition: none; }
-@media (prefers-reduced-motion: reduce) {
-  .reveal { opacity: 1; transform: none; transition: none; }
-}
 </style>
 </head>
 <body>
 <div class="deck-viewport">
 <main class="deck-stage" id="deckStage" aria-label="Presentation">
   <section class="slide active visible" aria-labelledby="title-one">
-    <h1 id="title-one" class="reveal">Presentation title</h1>
-    <p class="reveal">Replace this text with your opening idea.</p>
+    <h1 id="title-one">Presentation title</h1>
+    <p>Replace this text with your opening idea.</p>
   </section>
   <section class="slide" aria-labelledby="title-two" aria-hidden="true" inert>
-    <h2 id="title-two" class="reveal">One clear idea</h2>
-    <p class="reveal">Expand the selected visual system across your actual content.</p>
+    <h2 id="title-two">One clear idea</h2>
+    <p>Expand the selected visual system across your actual content.</p>
   </section>
 </main>
 </div>
@@ -77,6 +73,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Home') { event.preventDefault(); showSlide(0); }
   if (event.key === 'End') { event.preventDefault(); showSlide(slides.length - 1); }
 });
+/* Add scene-specific clock cancellation and final-state rendering here when adding motion. */
 /* Export contract: final reveal state, deterministic slide selection, no overlays. */
 window.renderSlide = async (index, { exportMode = false } = {}) => {
   document.documentElement.classList.toggle('export-mode', exportMode);

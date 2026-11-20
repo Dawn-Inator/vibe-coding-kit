@@ -10,6 +10,14 @@ A transition may combine an outgoing state, a temporary graphic layer, the incom
 
 Possible techniques include directional reveal, diagonal ribbon, radial expansion, staggered panels, line drawing, shared-element movement (measure first and last positions), a small particle burst, or an orbit. Pick mechanisms appropriate to the material and device. Avoid full-screen flashing, persistent sparkle, or excessive motion unless specifically requested. Keep text readable once motion settles.
 
+## Shape the rhythm
+
+Keep a small shared vocabulary of motion, with a clear focal element per beat. Reserve more expressive movement for a meaningful opening, explanation, change of state, or close; give the audience quiet time to read. Do not replace choreography with many unrelated loops, or with the same entrance on every card. Visual continuity can come from a repeated shape or line that changes role, not just a shared palette.
+
+Choose easing for the action: an entrance can decelerate into place, an exit can accelerate away, and a visible object changing state needs continuity. Use stagger to express reading order or a causal handoff; overlap related movements enough to feel composed rather than like a queue. Durations depend on distance, scale, hierarchy, and presenter pacing. Small spatial or opacity changes must still be perceptible at the final displayed size. Full-motion and reduced-motion modes should be authored separately.
+
+For time-function scenes, read [function animation](function-animation.md). Use progress to coordinate the graphic, labels, and emphasis, not just to animate the opacity of a wrapper. A scene with a different meaning may need different geometry and timing, even while it shares the deck's easing and visual language. There is no required effect count and no universal bounce or fixed delay for every slide.
+
 ## Implementation choices
 
 - CSS animations and transitions are enough for simple reveals. Use Web Animations or a timeline library such as GSAP for coordinated, interruptible sequences. Choose based on the existing stack and delivery requirements, not novelty.
@@ -21,3 +29,13 @@ Possible techniques include directional reveal, diagonal ribbon, radial expansio
 - If external libraries, fonts or generated media are included, respect their licenses and make dependencies explicit. Self-contained/offline delivery means the dependencies really are bundled, not merely loaded from a CDN. Avoid copying whole upstream skills into the deliverable.
 
 Inspiration: [Frontend Slides](https://github.com/zarazhangrui/frontend-slides) and [web-animation-skills](https://github.com/iart-ai/web-animation-skills). This reference is a focused integration, not a bundled copy of either upstream package.
+
+
+## Primary-source design references
+
+Consulted 2026-11-20; these are inspiration and API references, not dependencies or universal slide specifications. The presentation-specific applications above are Kit guidance.
+
+- [Carbon motion](https://www.carbondesignsystem.com/building-blocks/foundations/motion/overview): separates functional and expressive moments, distinguishes easing by action, and relates timing to movement distance and scale.
+- [GSAP easing](https://gsap.com/docs/v3/Eases/): a visual reference for how easing changes the character of movement. Use its concepts without importing GSAP when native code fits the deliverable.
+- [Motion timeline sequences](https://motion.dev/docs/timeline-sequences): shows coordinated segments, overlap, and a controllable timeline. The same orchestration can be implemented in native JavaScript.
+- [Material motion](https://m3.material.io/styles/motion): distinguishes expressive and standard physics schemes and spatial/effect behavior. A spring is an option for suitable graphic motion, not a rule that every slide or text label should bounce.

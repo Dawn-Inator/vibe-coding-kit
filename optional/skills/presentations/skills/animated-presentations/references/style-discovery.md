@@ -1,17 +1,23 @@
 # Style discovery
 
-For a new deck, infer purpose, audience, duration, content, and speaker-led versus reading-first density from the request. Ask only for missing information that changes the result. Speaker-led decks favor one idea and fewer words per page; reading decks can carry structured detail, but split overflow instead of shrinking text.
+Resolve purpose, audience, duration, content, and speaker-led versus reading-first density from the request. Ask only for missing information that changes the result. Speaker-led decks favor one idea and fewer words per page; reading decks can carry structured detail, but split overflow instead of shrinking text.
 
-Unless the user already chose a theme or wants direct generation, show three distinct single-slide HTML previews using the actual title and content:
+## Research before implementation
 
-1. A readable option from [STYLE_PRESETS.md](../STYLE_PRESETS.md).
-2. A suitable bold design from [the compact selection index](../bold-template-pack/selection-index.json).
-3. A context-specific custom direction or a contrasting second template.
+For a new visual direction, read [STYLE_PRESETS.md](../STYLE_PRESETS.md) and [the compact bold selection index](../bold-template-pack/selection-index.json). Shortlist a suitable base preset and a contrasting bold candidate using audience, formality, density, and mood. Read only shortlisted bold `preview.md` cards; index paths are relative to the skill root. Choose a direction, then read its actual recipe: the relevant preset section or the selected bold `design.md`. Do not bulk-load all designs.
 
-Index paths are relative to the skill root. Match mood, formality, density, and audience; read only shortlisted candidates’ `preview.md` files. After selection, read only that template’s `design.md`. Do not bulk-load all designs. The pack contains design recipes, not ready-made `template.html` decks; generate actual slides from the chosen system. If the user chooses a custom direction, expand that preview’s own system.
+A direction must affect actual design decisions: typography and hierarchy, layout rhythm, palette, graphic vocabulary, and opening/closing composition. Do not satisfy this step by naming a template, changing only an accent color, or copying the starter. Preserve the user's content instead of copying template demo text. A custom direction is valid when it better fits the subject; identify the useful traits retained from the researched candidates and the reason for departing. A clearly specified existing theme or a narrow edit does not need a new selection exercise.
 
-Use real slide content in previews. Keep option names, template names, paths, process notes, and requirement labels in the accompanying message, outside the slide. Present previews with available browser tooling and let the user select or combine them before full generation. For a settled theme, skip selection and apply it directly.
+## Direct generation versus user selection
 
-Treat source recipes as visual guidance. Preserve explicit brand, font, accessibility, aspect ratio, delivery, and language requirements. Online font examples are optional; package licensed fonts locally or use suitable system fonts for offline delivery. Translate viewport-fluid recipe values into fixed-stage coordinates when using a fixed-stage deck. See [HTML architecture](../html-template.md).
+"Choose for me", "do not ask", or "generate directly" means select the best researched direction yourself and proceed. Do not wait for approval or force previews. It does not waive the research and recipe steps above. Record a concise rationale and actual resource paths in the requested process notes or delivery evidence, outside the slides.
 
-Save temporary previews separately from the final artifact. Remove only previews generated for this task when no longer needed. Do not remove user assets or earlier work.
+When the user wants to explore or has not waived selection, show three real title-slide HTML previews: a base preset, a suitable bold candidate, and a contrasting custom or second template. Use actual title/content, keep internal option/template names and paths outside the slide, and let the user choose before full generation. Load the final bold design only after selection. Expand the selected system consistently across the deck rather than switching themes later.
+
+## Make the design serve the talk
+
+Choose a subject-relevant graphic motif and a relationship between the opening and closing. Vary composition for statement, sequence, comparison, evidence, and action scenes; do not turn every scene into the same row of cards. Design movement with those forms, using [motion direction](motion-direction.md), before wiring the controller. This is a design judgment, not a quota of effects, motifs, or slide layouts.
+
+Source recipes are guidance, subordinate to brand, accessibility, language, aspect ratio, delivery, and offline requirements. Online fonts are optional; package licensed fonts locally or use suitable system fonts. Translate viewport-fluid proportions into fixed-stage coordinates when using a fixed-stage deck. See [HTML architecture](../html-template.md).
+
+Save temporary previews separately and remove only task-generated previews when no longer needed. Keep user assets and earlier work.

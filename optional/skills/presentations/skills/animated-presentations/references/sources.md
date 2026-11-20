@@ -14,8 +14,9 @@ Imported resources:
 Kit adaptations:
 
 - Retain the existing motion and browser-verification guidance, inspired by [web-animation-skills](https://github.com/iart-ai/web-animation-skills); no additional files from that project are imported here.
-- Replace the upstream HTML reference with `html-template.md` and a runnable `assets/starter.html` containing actual navigation, accessibility state, and an explicit export hook.
+- Replace the upstream HTML reference with `html-template.md` and a runnable `assets/starter.html` containing actual navigation, accessibility state, and an explicit export hook. The starter is a technical scaffold with static sample pages, not the visual or motion default.
 - Replace the shell export/deploy helpers with Python adapters following the upstream screenshot/PDF and Vercel workflows. Dependency installation, login, publication, and opening apps are not automatic. Export preserves deck layout and uses an explicit final-state hook; publishing takes a reviewed complete folder.
+- Add mandatory resource research for new visual directions even in direct-generation mode, and Kit-authored function-animation/choreography guidance with primary-source references.
 - Keep the supplied style recipes intact as reference material, except the base-style introduction is clarified for Kit. Their original preferences for specific fonts, canvas size, or decorative vocabulary are subordinate to the entry point’s explicit user, brand, accessibility, and offline requirements. Omit the upstream pack workflow README and unused legacy stage controller to avoid competing controllers/instructions.
 
 The optional catalog records the pinned source and the complete staged component tree hash. Update both provenance and the staged hash when changing this component. Do not import the upstream skill/plugin manifests as another entry point.
