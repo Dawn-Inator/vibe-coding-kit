@@ -29,7 +29,7 @@ function render(p) {
 }
 ```
 
-Adapt the geometry and stages to the message. A process can draw its connections, hand off a marker, then resolve its outcome; a comparison can converge two states before highlighting the difference; a shared shape can change role between scenes. These are mechanisms, not mandatory effects. Plain text should settle promptly and remain readable. A long auto-playing sequence must not gate navigation or force the speaker to wait.
+Adapt the geometry and stages to the message. A process can draw its connections, hand off a marker, then resolve its outcome; a comparison can converge two states before highlighting the difference; a shared shape can change role between scenes. These are mechanisms, not mandatory effects. For a motion-led deck, include meaningful state changes in the primary diagram or compared objects; animated underlines alone do not meet that intent. Plain text should settle promptly and remain readable. Keep moving geometry clear of text at every sampled state, including final endpoints and any overshoot. A long auto-playing sequence must not gate navigation or force the speaker to wait.
 
 Avoid applying a small translate/fade to every wrapper and calling that function-driven storytelling. Name what a moving element represents, what changes, and why that change helps the audience. Functions can control scale, rotation, clipping, paths, or spring-like settling when those fit the scene. Bound any overshoot on graphics; opacity and colors must remain in their valid ranges. Continuous sine/orbit motion is optional and should stop when its explanatory job is done.
 
