@@ -81,7 +81,7 @@ test('catalog memberships point at complete staged content and retain factual pr
   assert.match(catalog.components['aliyun-skill-discovery'].provenance.upstreamSkillSha256, /^[a-f0-9]{64}$/);
   assert.equal(catalog.components['aliyun-skill-discovery'].provenance.license, 'not-stated-in-imported-files');
   assert.equal(catalog.components.lark.provenance.license, 'not-stated-in-imported-files');
-  assert.equal(catalog.components.presentations.provenance.license, 'not-stated-in-imported-files');
+  assert.equal(catalog.components.presentations.provenance.license, 'MIT');
   for (const id of ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']) {
     const component = catalog.components[id];
     assert.match(component.provenance.stagedTreeSha256, /^[a-f0-9]{64}$/);

@@ -62,6 +62,12 @@ This command changes only the private signing configuration; it does not build, 
 
 The Task Progress component retains its upstream license and attribution notices. Its source is maintained here with the Kit; projects should follow the component's own setup and compatibility instructions in [`plugins/codex-task-progress/README.md`](plugins/codex-task-progress/README.md). Distinguish installer health checks from confirmation that the native panel is visible in the UI.
 
+## Presentation authoring
+
+The optional `non-code` category includes one presentation entry point, `animated-presentations`. It bundles Frontend Slides’ 12 base styles, 34 progressively loaded bold design recipes, a fixed-stage HTML starter, and optional PPTX extraction, PDF export, and publishing helpers. It retains Kit’s motion and browser-verification guidance; no separate `frontend-slides` skill/plugin is installed.
+
+Enabling this category installs the resources, not Python packages, browsers, hosting CLI tools, or credentials. Viewable HTML needs no build step. PPTX extraction and PDF export have operation-specific dependencies; publication requires an explicit user request. See the [presentation skill](skills/presentations/skills/animated-presentations/SKILL.md) and its [tool usage](skills/presentations/skills/animated-presentations/references/tools.md).
+
 ## Project-specific boundaries
 
 These components are reusable sources, not a declaration of project policy. In particular, selecting Alibaba Cloud discovery or Lark does not copy LingoFly account, region, project, incident, or tracker conventions into another project. Projects decide their own credentials, authorization, account setup, and operating procedures.

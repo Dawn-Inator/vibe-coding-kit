@@ -1,0 +1,13 @@
+# HTML architecture
+
+Start from [assets/starter.html](assets/starter.html) for a new standalone HTML deck. It is a runnable two-slide skeleton with local stage CSS, navigation, active-slide accessibility, reduced motion, and a deterministic export hook. Inline [viewport-base.css](viewport-base.css) before delivery for a single-file artifact; otherwise package the referenced CSS alongside the HTML. The starter’s relative CSS path works inside this skill but must be adjusted when copied.
+
+Default: a 1920×1080 `.deck-stage` inside `.deck-viewport`, scaled uniformly to fit, with letterboxing on other viewports. Respect an existing deck or requested aspect ratio; update CSS dimensions, scaling constants, and export dimensions together. Keep controls outside the authored stage and leave safe space for them. Do not reflow a fixed-stage deck on phones; explain the resulting small portrait text.
+
+Use `.slide.active` / `.slide.visible` with visibility, opacity, and pointer-events. Do not switch slides with display toggles that later layout rules can override. Inactive slides must be inert and hidden from assistive technology. Ignore navigation shortcuts inside interactive/editable controls. Move focus out of a slide before deactivating it.
+
+Expose `window.renderSlide(index, { exportMode: true })` for deterministic export. It must cancel transitions, select exactly one slide, show all intended reveals in their final state, and resolve after rendering. Keep normal interactive behavior separate from export behavior. The bundled exporter requires this hook rather than guessing how arbitrary deck controllers work.
+
+Use [animation-patterns.md](animation-patterns.md) for effect ideas and [motion direction](references/motion-direction.md) for sequencing. Add editing, presenter notes, swipe, or step controls when useful; do not promise persistence or file saving until implemented and checked. Essential content stays visible under reduced motion.
+
+Bundle images and licensed fonts or embed them when practical. No build dependencies does not imply offline operation: remote fonts, media, and scripts require network access. Adapt template fonts and palettes to the user’s actual constraints.

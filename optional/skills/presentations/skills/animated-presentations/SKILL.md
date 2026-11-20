@@ -1,11 +1,11 @@
 ---
 name: animated-presentations
-description: Create or enhance browser-based presentations with visual storytelling, coordinated transitions, and accessible animation. Use for HTML slide decks, interactive talks, or animating existing web slides.
+description: Create or enhance browser-based presentations with visual storytelling, coordinated transitions, and accessible animation. Use for HTML slide decks, interactive talks, animating existing web slides, or adapting PPTX content into HTML.
 ---
 
 # Animated presentations
 
-Build a presentation people can actually present: a clear narrative and readable pages, purposeful motion, and controls that work. This skill combines the presentation-design approach of [Frontend Slides](https://github.com/zarazhangrui/frontend-slides) with techniques from [web-animation-skills](https://github.com/iart-ai/web-animation-skills). Its instructions are self-contained; neither upstream skill needs to be installed.
+Build a presentation people can actually present: a clear narrative and readable pages, purposeful motion, and controls that work. This skill combines the presentation-design approach of [Frontend Slides](https://github.com/zarazhangrui/frontend-slides) with techniques from [web-animation-skills](https://github.com/iart-ai/web-animation-skills). Frontend Slides resources are bundled at a pinned revision; no separate upstream skill or plugin installation is needed. See [sources and adaptations](references/sources.md).
 
 ## Scope and format
 
@@ -16,12 +16,18 @@ Build a presentation people can actually present: a clear narrative and readable
 
 ## Design and motion workflow
 
-1. Outline the story and choose a coherent visual direction before coding. Give each slide a clear job, a legible hierarchy, and breathing room. Use diagrams, photography, illustration, or working interactions when they help explain the subject; avoid decorative repetition. Honor explicit preferences such as a white background.
+1. Outline the story and choose a coherent visual direction before coding. For a new visual direction, follow [style discovery](references/style-discovery.md): offer three real title-slide previews unless a theme is already settled or the user wants direct generation. Load only shortlisted preview cards and the selected design recipe. Give each slide a clear job, a legible hierarchy, and breathing room. Use diagrams, photography, illustration, or working interactions when they help explain the subject; avoid decorative repetition. Honor explicit preferences such as a white background.
 2. Plan motion as a sequence across the deck. Match transitions to meaning and vary their shape, direction, timing, or choreography when an expressive deck calls for variety. Animate related title, diagram, and emphasis elements as one composed beat, and preserve shared visual continuity where it helps orientation. Do not satisfy a request for varied motion with the same fade and repeated particles on every page. See [motion direction](references/motion-direction.md).
-3. Build the deck and its controls. Support keyboard navigation, visible navigation/progress, a logical reading order, and presenter notes or editable text when useful. For fixed-stage slides, scale the whole intended aspect ratio to the viewport; keep all content inside the slide and account for overlays and controls. Avoid trapping interactive controls inside navigation gestures.
+3. Build the deck and its controls. For a new standalone deck, read [HTML architecture](html-template.md) and adapt [the runnable starter](assets/starter.html); include [stage CSS](viewport-base.css) inline. Default to 1920×1080, preserving an explicitly requested aspect ratio or existing deck structure. Template style suggestions do not override the user’s format, brand, language, offline requirements, or motion preferences. System fonts and locally packaged fonts are supported; check Chinese glyph coverage when needed. Support keyboard navigation, visible navigation/progress, a logical reading order, and presenter notes or editable text when useful. For fixed-stage slides, scale the whole intended aspect ratio to the viewport; keep all content inside the slide and account for overlays and controls. Avoid trapping interactive controls inside navigation gestures.
 4. Respect `prefers-reduced-motion`; use short opacity changes in place of large movement and retain the content and functionality. Favor compositor-friendly `transform` and `opacity`, clean up interrupted timelines, and do not rely on animation completion to reveal essential content. See [motion direction](references/motion-direction.md).
 5. Open the finished deck in a real browser and inspect every slide and representative transition frames, including reverse and rapid navigation. Exercise interactive examples, reduced motion, and at least desktop and phone viewports. Iterate on visible defects; report what was actually checked and any limitations. See [browser verification](references/browser-verification.md).
 
 ## Delivery
 
 Provide the runnable artifact and concise navigation instructions. State any network or local-server requirement, whether media are embedded, and the practical limits of exports or small screens. Do not describe an animation as tested merely because its code exists.
+
+## Conversion, export, and sharing
+
+Read [tool usage](references/tools.md) only when extracting PPTX, exporting PDF, or publishing. The bundled tools are `scripts/extract-pptx.py`, `scripts/export-pdf.py`, and `scripts/deploy.py`. Optional Python packages, Chromium, and hosting CLI credentials are needed only for the selected operation, not to install or view the HTML skill. Do not silently install them.
+
+PPTX extraction is a starting point for redesign, not a lossless conversion. Inspect omitted tables, charts, groups, media, and original slide rendering before claiming content preservation. PDF is a static snapshot; verify its pages separately. Publishing requires an explicit user request and a reviewed folder containing only intended public assets; no host is selected by default.
