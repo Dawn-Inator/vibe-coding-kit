@@ -10,7 +10,7 @@ Vibe Coding Kit is a versioned set of reusable AI-assisted engineering tools, pr
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org'
 ```
 
-这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。新项目默认关闭可选类别，已检测到的 Codex Task Progress 安装会作为复用默认值；例如可附加 `--optional task-progress=on`。安装不会因可选组件配置登录账号、创建仓库或云资源。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置和接入文件；不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
+这里的 `ai@example.org` 是格式示意，不能原样使用。默认将公开 skill 复制到项目自有的 `.vibe-coding/skills/`，再同步到工具目录；项目可按需调整。新项目默认关闭可选类别，已检测到的 Codex Task Progress 安装会作为复用默认值；例如可附加 `--optional task-progress=on`。安装不会因可选组件配置登录账号、创建仓库或云资源。命令将 Kit 注册为 `.vibe-coding/kit` submodule，并生成项目自有配置、接入文件及根目录边界声明和检查入口；项目需按实际情况适配边界。安装不会替项目配置门禁、提交变更或安装业务依赖。完整安装、技能选择、适配和升级步骤见[中文安装与项目适配指南](INSTALL.md)。
 
 ## Repository and consumer path
 

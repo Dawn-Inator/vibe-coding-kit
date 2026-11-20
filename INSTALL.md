@@ -55,6 +55,8 @@ Kit 作为名为 `vibe-coding-kit` 的 submodule 注册在 `.vibe-coding/kit`。
 engineering/automation/vibe-coding/
 ├── bootstrap.mjs                # 项目自有 submodule 准备入口
 └── project-adapter.mjs          # 项目自有生命周期 hooks
+engineering/automation/root-layout/check-root-layout.mjs # 项目自有目录边界检查入口
+docs/repository-layout.md        # 项目自有根目录职责声明
 .agents/skills/                  # 生成的 skill 镜像
 .claude/skills/                  # 生成的 skill 镜像
 AGENTS.md / CLAUDE.md            # 由 skills:sync 生成的根指令投影
@@ -66,12 +68,15 @@ AGENTS.md / CLAUDE.md            # 由 skills:sync 生成的根指令投影
 
 项目配置描述项目自身，不是 Kit 的模板真源。默认配置包含 Kit 路径和 URL、adapter 路径、`identity.name` / `identity.email`，以及供项目填写的 `worktrees`、`skills`、`knowledge`、`layout`、`contracts` 配置区域。详见 [配置 schema](schemas/project-config.schema.json)。
 
-如项目已有 `package.json`，安装会合并以下七个脚本；同名脚本已有其他命令时保留原命令并报告冲突。非 JavaScript 项目不会因此得到一个空的 `package.json`，可直接通过 Node 调用 bootstrap 或 CLI。
+首次安装默认生成根目录职责声明和检查入口。初始规则仅覆盖 Kit 接入所需的 `.vibe-coding/`、`docs/` 和 `engineering/`；项目须按实际用途同步扩展文档与入口中的允许列表。运行 `node engineering/automation/root-layout/check-root-layout.mjs` 检查 Git 跟踪的根目录（包括暂存文件），未跟踪或忽略的文件不在检查范围内；该检查不会自动接入 CI 或生命周期门禁。已有项目的其他目录需自行分类。已有同名文件发生冲突时安装会保留文件并报错；升级 Kit 不会自动覆盖或补建已有项目的文件。
+
+如项目已有 `package.json`，安装会合并以下八个脚本；同名脚本已有其他命令时保留原命令并报告冲突。非 JavaScript 项目不会因此得到一个空的 `package.json`，可直接通过 Node 调用 bootstrap 或 CLI。
 
 | 脚本 | 用途 |
 | --- | --- |
 | `skills:sync` | 准备固定版本并生成 skill 投影 |
 | `skills:check` | 准备固定版本并检查 skill 投影 |
+| `layout:check` | 检查已跟踪的根目录是否符合项目声明 |
 | `worktree:begin` | 创建隔离工作树 |
 | `worktree:end` | 完成并落地工作树 |
 | `worktree:status` | 查看工作树状态 |

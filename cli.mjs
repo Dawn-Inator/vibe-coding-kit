@@ -631,6 +631,8 @@ function plannedInitFiles(root, options) {
     { path: adapterPath, content: readFileSync(resolve(REPO_ROOT, 'templates/project-adapter.mjs'), 'utf8') },
     { path: bootstrapPath, content: readFileSync(resolve(REPO_ROOT, 'templates/bootstrap.mjs'), 'utf8') },
     { path: loadingPath, content: readFileSync(resolve(REPO_ROOT, 'templates/loading.md'), 'utf8') },
+    { path: resolve(root, 'docs/repository-layout.md'), content: readFileSync(resolve(REPO_ROOT, 'templates/repository-layout.md'), 'utf8') },
+    { path: resolve(root, 'engineering/automation/root-layout/check-root-layout.mjs'), content: readFileSync(resolve(REPO_ROOT, 'templates/check-root-layout.mjs'), 'utf8') },
   ];
   const addSnapshot = (source, target, skillPath) => {
     for (const entry of readdirSync(source, { withFileTypes: true })) {
@@ -667,6 +669,7 @@ function plannedInitFiles(root, options) {
     const requestedScripts = {
       'skills:sync': 'node engineering/automation/vibe-coding/bootstrap.mjs skills sync',
       'skills:check': 'node engineering/automation/vibe-coding/bootstrap.mjs skills check',
+      'layout:check': 'node engineering/automation/root-layout/check-root-layout.mjs',
       'worktree:begin': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree begin',
       'worktree:end': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree finish',
       'worktree:status': 'node engineering/automation/vibe-coding/bootstrap.mjs worktree status',

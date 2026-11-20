@@ -212,18 +212,19 @@ kebab-case,代码/数据库里的值按所在层已有的惯例用 snake_case �
 ## 怎么把这套机制做成机器可强制的门禁
 
 跟这个 starter kit 里其它治理类 skill 一样,价值在自动化脚本落地之前只是写在文档里的约定。
-这个 starter kit 直接带了一份可运行的起点——`engineering/automation/root-layout/
-check-root-layout.mjs`(随 kit 一起复制进你项目,见 INSTALL.md),做的是:
+首次安装默认生成项目自有的 `docs/repository-layout.md` 和
+`engineering/automation/root-layout/check-root-layout.mjs`。检查入口调用固定 Kit 中的共享实现,做的是:
 
-1. 读取一份 `ALLOWED_ROOT_DIRECTORIES` 声明(默认只有一个占位起点,需要按你项目实际的根目录
-   改成真实的分类清单)。
+1. 使用入口中的 `allowedRootDirectories` 声明(初始仅覆盖 Kit 接入目录,需要按项目实际情况
+   扩展,并同步更新目录职责文档)。
 2. 用 `git ls-files` 遍历仓库根目录下实际存在的每一项,判断它是否精确匹配某条已声明的规则。
 3. 任何不匹配的新增目录,判定为违规,报错并指出"这属于哪条规则的职责范围不清楚,需要先在
    声明文档里补充分类,或者放进已有的正确目录"。
-4. 维护一份 `RETIRED_ROOT_DIRECTORIES`(旧路径 → 新路径),已退役的目录一旦回流,报错直接
+4. 维护入口中的 `retiredRootDirectories`(旧路径 → 新路径),已退役的目录一旦回流,报错直接
    指向该去的地方,而不是笼统地说"未分类"。
 
-如果项目实现了根目录分类检查器,把它接进测试/CI 流程,新增一个不属于任何已声明分类的根目录,就会在
+检查范围是 Git 跟踪的目录(包括暂存文件),不包含未跟踪或忽略的文件。安装不会自动接入门禁;
+已有项目升级 Kit 也不会自动补建项目文件。项目可把检查器接进测试/CI 流程,新增一个不属于任何已声明分类的根目录,就会在
 提交前被挡下来,而不是等到项目变得杂乱无章之后才有人想起来整理。这份校验脚本只是起点——你项目
 真正的根目录分类清单,还是要写进一份长期维护的文档里(参考 `.vibe-coding/tutorial/
 06-codebase-architecture/monorepo-layout.md` 的 Nova 案例),脚本只负责把文档里的声明变成
