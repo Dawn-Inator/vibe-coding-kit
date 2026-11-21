@@ -57,3 +57,5 @@ For `window.renderSlide(index, {exportMode:true})`: stop clocks, invalidate call
 For representative scene types, inspect `p = 0`, a middle value, and `p = 1`, then watch normal playback. Confirm the movement actually explains the scene, related parts have a deliberate order, and the settled layout is readable. Test interruption and reverse navigation, the live reduced-motion preference change, and export. Distinguish a working time function from a visually successful result. See [browser verification](browser-verification.md).
 
 These mechanisms apply the independently written [motion design guidance and sources](motion-direction.md); they do not require GSAP, Motion, or a particular easing family.
+
+For a complete, runnable example of scene-specific renderers, path choreography, a controlled clock and deterministic inspection, see [Delivery Practice](delivery-practice.md). Its scene keys lead to the corresponding code in the example.

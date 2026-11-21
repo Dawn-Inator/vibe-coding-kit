@@ -11,6 +11,8 @@ Imported resources:
 - `viewport-base.css` and `animation-patterns.md`: stage layout and animation examples.
 - `scripts/extract-pptx.py`: PPTX text, image, and notes extraction, adapted to reject an existing output folder.
 
+Kit-authored worked example: [Delivery Practice](delivery-practice.md), including its own runnable HTML and preview, demonstrates a custom primary direction and function animation. It is not a new upstream import; the pinned resources above are unchanged.
+
 Kit adaptations:
 
 - Retain the existing motion and browser-verification guidance, inspired by [web-animation-skills](https://github.com/iart-ai/web-animation-skills); no additional files from that project are imported here.

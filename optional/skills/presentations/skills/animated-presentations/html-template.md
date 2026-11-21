@@ -13,3 +13,5 @@ For time/progress-driven graphics, read [function animation](references/function
 Use [animation-patterns.md](animation-patterns.md) for effect ideas and [motion direction](references/motion-direction.md) for sequencing. Add editing, presenter notes, swipe, or step controls when useful; do not promise persistence or file saving until implemented and checked. Essential content stays visible under reduced motion.
 
 Bundle images and licensed fonts or embed them when practical. No build dependencies does not imply offline operation: remote fonts, media, and scripts require network access. Adapt template fonts and palettes to the user’s actual constraints.
+
+For a complete composed, function-animated deck rather than starter mechanics, see the optional [Delivery Practice recipe and runnable example](references/delivery-practice.md). Select it only when its visual grammar fits the content and adapt the actual scenes.
