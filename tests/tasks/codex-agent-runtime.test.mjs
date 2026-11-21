@@ -61,6 +61,29 @@ test('previous completion cannot certify a new turn or missing event identity', 
   assert.equal((await readCodexAgentObservation(options)).state, 'unknown');
 }));
 
+test('untagged historical lifecycle events do not hide a resumed child turn', () => fixture(async ({ header, write, options }) => {
+  const history = [event('turn_aborted', null, -60), event('task_complete', undefined, -30)];
+  await write([header(), ...history, event('task_started', 'turn-2', 1)]);
+  const working = await readCodexAgentObservation(options);
+  assert.equal(working.state, 'working');
+  assert.equal(working.eventTurnId, 'turn-2');
+  assert.equal(working.observedAt, at(1));
+  assert.equal(working.readStable, true);
+  await write([header(), ...history, event('task_started', 'turn-2', 1), event('task_complete', 'turn-2', 2)]);
+  assert.equal((await readCodexAgentObservation(options)).state, 'completed');
+  for (const ambiguous of [
+    event('turn_aborted', null, 0),
+    event('task_complete', undefined, 2),
+    { type: 'event_msg', payload: { type: 'turn_aborted', turn_id: null } },
+    { type: 'event_msg', timestamp: 'invalid', payload: { type: 'turn_aborted' } },
+    event('turn_aborted', 'turn-2', -1),
+    event('turn_aborted', 'turn-2', -1, { turnId: 'different' }),
+  ]) {
+    await write([header(), event('task_started', 'turn-2', 1), ambiguous]);
+    assert.equal((await readCodexAgentObservation(options)).state, 'unknown');
+  }
+}));
+
 test('partial append, corrupt line, oversize and byte budget never certify a state', () => fixture(async ({ header, write, options }) => {
   await write([header(), event('task_started', 'turn-2', 1)], '{"type":');
   assert.equal((await readCodexAgentObservation(options)).reason, 'incomplete-or-invalid');

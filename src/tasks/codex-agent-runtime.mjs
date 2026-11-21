@@ -80,7 +80,14 @@ export async function readCodexAgentObservation({ path, trustedRoot, threadId, c
         const event = record.payload;
         if (event.turn_id != null && event.turnId != null && event.turn_id !== event.turnId) { invalid = true; return; }
         const eventTurn = event.turn_id ?? event.turnId;
-        if (eventTurn == null) { invalid = true; return; }
+        if (eventTurn == null) {
+          // A cloned child rollout can retain an untagged abort from before
+          // this turn. It cannot describe the verified current turn, while an
+          // untagged event inside (or without) that time fence remains unsafe.
+          const timestamp = typeof record.timestamp === 'string' ? Date.parse(record.timestamp) : NaN;
+          if (Number.isFinite(timestamp) && timestamp < startMs) return;
+          invalid = true; return;
+        }
         if (eventTurn !== turnId) return;
         if (event.root_turn_id != null && event.rootTurnId != null && event.root_turn_id !== event.rootTurnId) { invalid = true; return; }
         const eventRoot = event.root_turn_id ?? event.rootTurnId;
