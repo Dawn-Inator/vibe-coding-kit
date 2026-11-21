@@ -1,0 +1,18 @@
+/* Optional Deep Space Theatre presentation theme. MIT, Vibe Coding Kit. */
+.deep-space-theme {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+  background: #070e16;
+}
+.deep-space-theme > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+.deep-space-theme > canvas[hidden] { display: none; }

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <!-- Original Kit-authored artwork. MIT License. -->
+  <title id="title">交付验收记录示意</title>
+  <desc id="desc">登录与找回密码示例项目的三项验收记录，结果与证据编号均为示意，不代表真实测试结果。</desc>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbfaf5"/>
+      <stop offset="1" stop-color="#f0f0e7"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#183b3d"/>
+      <stop offset="1" stop-color="#2c5552"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="1198" height="648" rx="16" fill="url(#paper)" stroke="#d7ded5" stroke-width="2"/>
+  <path d="M17 1h1166a16 16 0 0 1 16 16v7H1v-7A16 16 0 0 1 17 1Z" fill="url(#ink)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+    <g fill="#50706d" font-size="17" font-weight="600" letter-spacing="3">
+      <text x="58" y="74">DELIVERY RECORD</text>
+      <text x="1142" y="74" text-anchor="end" letter-spacing="1">EXAMPLE / 001</text>
+    </g>
+    <text x="58" y="135" fill="#173b3e" font-size="44" font-weight="650" letter-spacing="-1">交付验收记录</text>
+    <text x="60" y="176" fill="#607772" font-size="24">登录与找回密码 · 示例项目</text>
+    <g transform="translate(995 107)">
+      <rect width="147" height="49" rx="24.5" fill="#ddeee3" stroke="#bbd5c2"/>
+      <circle cx="27" cy="24.5" r="4.5" fill="#42846b"/>
+      <text x="83" y="33" text-anchor="middle" font-size="23" font-weight="600" fill="#34694f">可复核</text>
+    </g>
+    <path d="M58 211H1142" stroke="#b9c9c1"/>
+    <g fill="#75837d" font-size="19" font-weight="600">
+      <text x="61" y="251">验收条件</text>
+      <text x="813" y="251">示例结果</text>
+      <text x="1034" y="251">证据编号</text>
+    </g>
+    <g stroke="#d4ddd4" fill="none">
+      <path d="M58 277H1142M58 370H1142M58 463H1142M58 556H1142"/>
+      <path d="M767 285V548M984 285V548" stroke="#dde3da"/>
+    </g>
+    <g fill="#264742" font-size="30" font-weight="550">
+      <text x="113" y="329">新用户完成注册</text>
+      <text x="113" y="422">忘记密码后找回</text>
+      <text x="113" y="515">异常输入有反馈</text>
+    </g>
+    <g fill="#a2b3a7" font-size="18" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">
+      <text x="61" y="327">01</text>
+      <text x="61" y="420">02</text>
+      <text x="61" y="513">03</text>
+    </g>
+    <g fill="none" stroke="#458067" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m806 318 6 6 12-15M806 411l6 6 12-15M806 504l6 6 12-15"/>
+    </g>
+    <g fill="#387254" font-size="26" font-weight="550">
+      <text x="841" y="328">通过</text>
+      <text x="841" y="421">通过</text>
+      <text x="841" y="514">通过</text>
+    </g>
+    <g fill="#577068" font-size="24" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">
+      <text x="1036" y="327">E-01</text>
+      <text x="1036" y="420">E-02</text>
+      <text x="1036" y="513">E-03</text>
+    </g>
+    <g font-size="19" fill="#708077">
+      <text x="60" y="601">版本 demo-2026.11 · 范围 3 项</text>
+      <text x="1141" y="601" text-anchor="end" fill="#8a7760">示意材料 · 不代表真实测试结果</text>
+    </g>
+  </g>
+</svg>

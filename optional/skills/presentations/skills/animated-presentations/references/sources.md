@@ -13,6 +13,10 @@ Imported resources:
 
 Kit-authored worked example: [Delivery Practice](delivery-practice.md), including its own runnable HTML and preview, demonstrates a custom primary direction and function animation. It is not a new upstream import; the pinned resources above are unchanged.
 
+Kit-authored optional theme and worked example: [Deep Space Theatre](deep-space-theatre.md), together with the theme-independent presenter runtime, demonstrates semantic steps, a continuous celestial stage, procedural main objects, and material-led quiet scenes. The local `pku-vibecoding` presentation informed the design methods and stage behavior; its project-specific source, speech text, screenshots, music, textures, posters and models are not bundled here. The example's delivery record is an original explanatory illustration, clearly labelled as such. Its palette and six-page structure are optional examples, not defaults for other decks.
+
+The theme's `vendor/three-r180.js` is Three.js r180 under MIT, with its notice retained in `assets/themes/deep-space-theatre/vendor/three-LICENSE.txt`. Other theme graphics are Kit-authored procedural work. The theme, presenter runtime and example are covered by their retained Kit MIT notices. No third-party font or media license is implied by the local reference; the example uses system font stacks.
+
 Kit adaptations:
 
 - Retain the existing motion and browser-verification guidance, inspired by [web-animation-skills](https://github.com/iart-ai/web-animation-skills); no additional files from that project are imported here.
@@ -20,6 +24,7 @@ Kit adaptations:
 - Replace the shell export/deploy helpers with Python adapters following the upstream screenshot/PDF and Vercel workflows. Dependency installation, login, publication, and opening apps are not automatic. Export preserves deck layout and uses an explicit final-state hook; publishing takes a reviewed complete folder.
 - Adapt the stage CSS reduced-motion rule to disable animation/transition by default. A global nonzero transition duration would otherwise animate slide visibility changes during deterministic export.
 - Put story, slide purpose, and focal hierarchy first, select direction for content fit, and co-design motion; library recipes, custom systems, and user references are valid primary directions. Require full-recipe research before authoring slides in a selected library direction, preserve its essential grammar, and prove representative pages with actual motion before expansion. Explicit user confirmation milestones cannot be bypassed by worker/test-packet wording. Include Kit-authored function-animation/choreography guidance with primary-source references.
+- Prefer speaker-triggered semantic steps for new live talks, with deterministic progress renderers and stable back-step states. Keep chapter continuity while varying the main explanatory object, make source material prominent, and review consecutive-page rhythm. The optional theme consumes scene parameters and explicit time; it does not own navigation or impose a celestial style on other directions.
 - Keep the supplied style recipes intact as reference material, except the base-style introduction is clarified for Kit. Their original preferences for specific fonts, canvas size, or decorative vocabulary are subordinate to the entry point’s explicit user, brand, accessibility, and offline requirements. Omit the upstream pack workflow README and unused legacy stage controller to avoid competing controllers/instructions.
 
 The optional catalog records the pinned source and the complete staged component tree hash. Update both provenance and the staged hash when changing this component. Do not import the upstream skill/plugin manifests as another entry point.

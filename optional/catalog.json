@@ -211,11 +211,12 @@
       "provenance": {
         "sourceUrls": [
           "https://github.com/zarazhangrui/frontend-slides",
-          "https://github.com/iart-ai/web-animation-skills"
+          "https://github.com/iart-ai/web-animation-skills",
+          "https://github.com/mrdoob/three.js/tree/r180"
         ],
-        "stagedTreeSha256": "b36897a59c2aa5c4699105ab86dda6f1c11dd5a1b644c9fbce3820b6fae77f19",
+        "stagedTreeSha256": "ae1959646814962a8acd6a066aaf719bc35115f6c02aef635065317ce88f5770",
         "license": "MIT",
-        "notes": "Kit-authored single-entry skill with pinned MIT Frontend Slides styles, design recipes, stage CSS, and PPTX extractor; HTML starter and Python PDF/publishing adapters are adapted for Kit. Includes the Kit-authored Delivery Practice runnable example, scene factories, preview, and adaptation recipe with its own MIT notice. See references/sources.md and bundled LICENSE. Other listed upstream is an inspiration reference only.",
+        "notes": "Kit-authored single-entry skill with pinned MIT Frontend Slides styles, design recipes, stage CSS, and PPTX extractor; HTML starter and Python PDF/publishing adapters are adapted for Kit. Includes Delivery Practice and the optional Deep Space Theatre six-page worked example, a theme-independent semantic-step presenter, original procedural graphics, previews, adaptation recipes, and MIT notices. Three.js r180 is bundled locally with its MIT license. The local PKU deck and web-animation-skills inform design methods only; no PKU speech, private media, music, or project engine is imported. See references/sources.md and bundled licenses.",
         "sourceRevision": "9906a34d640d2111f724544cbc50f7f130569ae1"
       },
       "requirements": [],

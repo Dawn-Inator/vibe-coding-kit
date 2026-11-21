@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>从一句需求到可验收交付</title>
+  <link rel="stylesheet" href="../../themes/deep-space-theatre/theme.css">
+  <link rel="stylesheet" href="example.css">
+</head>
+<body>
+  <main class="presentation" aria-label="从一句需求到可验收交付，六页演示">
+    <div id="viewport" class="viewport">
+      <div id="stage" data-width="1600" data-height="900" aria-label="演示画布">
+        <div id="space-layer" aria-hidden="true"></div>
+
+        <section class="slide cover active" data-scene="cover" aria-label="封面：从一句需求到可验收交付">
+          <div class="eyebrow">需求 · 执行 · 验收</div>
+          <div class="cover-copy">
+            <p class="cover-preface">让协作沿着同一个方向前进</p>
+            <h1>从一句需求<br>到<span>可验收交付</span></h1>
+            <p class="cover-deck">把意图，变成能被验证的结果。</p>
+          </div>
+          <svg class="cover-orbit graphic" viewBox="0 0 1600 900" aria-hidden="true">
+            <defs><linearGradient id="cover-gold"><stop stop-color="#e9bd82" stop-opacity=".12"/><stop offset=".55" stop-color="#f5d5a2"/><stop offset="1" stop-color="#8bd9cf" stop-opacity=".15"/></linearGradient></defs>
+            <path class="cover-arc" d="M870 645C1000 730 1420 610 1510 425C1580 275 1180 195 1005 385" fill="none" stroke="url(#cover-gold)" stroke-width="2"/>
+            <circle class="cover-packet" r="5" fill="#ffdfa6"/>
+            <path class="cover-check" d="m1170 449 40 40 88-95" fill="none" stroke="#bce9d7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="cover-coordinate"><span>从不确定的起点</span><i></i><span>走向共同确认的结果</span></div>
+          <div class="slide-foot"><span>一次可验证的协作</span><span>01 / 06</span></div>
+        </section>
+
+        <section class="slide atlas" data-scene="atlas" aria-label="章节地图：三个问题">
+          <div class="eyebrow">先看清这条路</div>
+          <h2>三个问题，走完交付这条路。</h2>
+          <p class="subtitle">目标、过程、结果，各自留下一个清晰的对象。</p>
+          <svg class="graphic atlas-path" viewBox="0 0 1600 900" aria-hidden="true">
+            <path class="atlas-base" d="M85 493C250 470 310 355 510 400S780 513 940 426S1240 345 1512 420"/>
+            <path class="atlas-route" d="M85 493C250 470 310 355 510 400S780 513 940 426S1240 345 1512 420"/>
+            <circle class="atlas-marker" r="5"/>
+            <path class="atlas-datum" d="M320 546V577M800 551V577M1280 545V577"/>
+          </svg>
+          <div class="atlas-stops">
+            <article class="atlas-stop"><span class="atlas-no">01</span><h3>交付什么</h3><p>把目标与边界写清楚</p><small>一份验收约定</small></article>
+            <article class="atlas-stop"><span class="atlas-no">02</span><h3>怎样前进</h3><p>让输出成为下一步输入</p><small>一条可追踪的过程</small></article>
+            <article class="atlas-stop"><span class="atlas-no">03</span><h3>如何确认</h3><p>用行为与证据共同复核</p><small>一份可检查的结果</small></article>
+          </div>
+          <p class="atlas-landing">每一步的输出，都成为下一步的输入。</p>
+          <div class="slide-foot"><span>目标 → 过程 → 结果</span><span>02 / 06</span></div>
+        </section>
+
+        <section class="slide process" data-scene="process" aria-label="流程：从需求到验收的四步">
+          <div class="eyebrow">让对象沿着流程前进</div>
+          <h2>交付不是跳到终点。</h2>
+          <p class="subtitle">每一步，把一个模糊问题变成一个可检查的对象。</p>
+          <svg class="graphic process-route" viewBox="0 0 1600 900" aria-hidden="true">
+            <path class="route-base" d="M225 300C350 244 480 244 610 300S860 356 990 300S1240 244 1375 300"/>
+            <path class="route-progress" d="M225 300C350 244 480 244 610 300S860 356 990 300S1240 244 1375 300"/>
+            <circle class="route-packet" r="7"/>
+            <g class="route-node" transform="translate(225 300)"><circle r="20"/><text y="7">01</text></g>
+            <g class="route-node" transform="translate(610 300)"><circle r="20"/><text y="7">02</text></g>
+            <g class="route-node" transform="translate(990 300)"><circle r="20"/><text y="7">03</text></g>
+            <g class="route-node" transform="translate(1375 300)"><circle r="20"/><text y="7">04</text></g>
+          </svg>
+          <div class="route-labels"><b>说出需求</b><b>约定完成</b><b>拆解执行</b><b>验收交付</b></div>
+          <div class="process-focus">
+            <article class="workpiece demand-piece"><div class="workpiece-tag">输入 / 意图</div><div class="request-quote">“帮我做个登录。”</div><div class="request-prompts"><span>给谁用？</span><span>做到哪？</span><span>怎样算完成？</span></div></article>
+            <article class="workpiece contract-piece"><div class="workpiece-tag">输出 / 验收约定</div><h3>先把“完成”写清楚</h3><dl><div class="contract-row"><dt>范围</dt><dd>注册、登录与找回密码</dd></div><div class="contract-row"><dt>行为</dt><dd>在真实设备走完关键路径</dd></div><div class="contract-row"><dt>边界</dt><dd>异常输入有明确反馈</dd></div></dl></article>
+            <article class="workpiece build-piece"><div class="workpiece-tag">输出 / 可运行的版本</div><h3>让任务带着约定前进</h3><div class="build-files"><div><span>01</span><b>实现</b><small>功能与交互</small></div><i>→</i><div><span>02</span><b>检查</b><small>关键路径</small></div><i>→</i><div><span>03</span><b>复核</b><small>独立视角</small></div></div><svg class="build-beam" viewBox="0 0 600 45" aria-hidden="true"><path d="M55 23H545"/><circle r="5"/></svg></article>
+            <article class="workpiece receipt-piece"><div class="workpiece-tag">输出 / 可复核的交付记录</div><h3>把结果交到对方手里</h3><div class="receipt-items"><div><i>✓</i><span>哪个版本</span></div><div><i>✓</i><span>做到了什么</span></div><div><i>✓</i><span>证据在哪里</span></div></div><div class="receipt-stamp">可以共同确认</div></article>
+          </div>
+          <div class="process-asides"><p data-aside="0">一句话，<br>还藏着很多问题。</p><p data-aside="1">验收约定，<br>是协作的坐标。</p><p data-aside="2">每个任务，<br>带着标准往前走。</p><p data-aside="3">完成，<br>由双方共同确认。</p></div>
+          <div class="process-output"><small>当前留下的对象</small><strong></strong><span></span></div>
+          <div class="slide-foot"><span>每一步都留下可检查的输出</span><span>03 / 06</span></div>
+        </section>
+
+        <section class="slide comparison" data-scene="comparison" aria-label="对比：实现线索与可验收行为">
+          <div class="eyebrow">让判断落在行为上</div>
+          <h2>代码写了，行为成立了吗？</h2>
+          <p class="subtitle">把实现线索，连到一条真正可以复核的证据线上。</p>
+          <div class="comparison-head"><div><span>看见实现</span><b>实现线索</b></div><div><span>确认结果</span><b>可验收行为</b></div></div>
+          <div class="comparison-rows">
+            <article class="comparison-row"><div class="clue"><code>RegisterForm</code><h3>注册表单已完成</h3></div><div class="behavior"><span class="verify-mark">✓</span><h3>新用户可以注册，<br>并进入首页</h3><small>真实设备 · 关键路径</small></div></article>
+            <article class="comparison-row"><div class="clue"><code>resetPassword()</code><h3>找回密码逻辑已接入</h3></div><div class="behavior"><span class="verify-mark">✓</span><h3>忘记密码后，<br>用户能重新登录</h3><small>流程可重复 · 结果可观察</small></div></article>
+            <article class="comparison-row"><div class="clue"><code>validateInput()</code><h3>输入校验已经添加</h3></div><div class="behavior"><span class="verify-mark">✓</span><h3>输入有误时，<br>用户知道下一步怎么办</h3><small>异常路径 · 反馈明确</small></div></article>
+          </div>
+          <svg class="graphic comparison-links" viewBox="0 0 1600 900" aria-hidden="true"><g><path d="M665 427C750 427 800 427 915 427"/><circle r="5"/></g><g><path d="M665 557C750 557 800 557 915 557"/><circle r="5"/></g><g><path d="M665 687C750 687 800 687 915 687"/><circle r="5"/></g></svg>
+          <p class="comparison-landing">用可观察的行为，替代模糊的“已经做了”。</p>
+          <div class="slide-foot"><span>从实现线索，走向验收事实</span><span>04 / 06</span></div>
+        </section>
+
+        <section class="slide evidence" data-scene="evidence" aria-label="证据：交付验收记录示意">
+          <div class="eyebrow">让结果可复核</div>
+          <h2>结果，要能被别人复核。</h2>
+          <p class="subtitle">把版本、行为与证据，留在同一份记录。</p>
+          <figure class="evidence-figure"><button class="evidence-open" aria-label="放大交付验收记录示意图"><img src="evidence.svg" width="1200" height="650" alt="交付验收记录示意：注册、找回密码和异常输入三项验收条件，示例结果与证据编号；不代表真实测试结果。"></button><figcaption>原创示意材料 · 示例结果不代表真实测试结论 · 点击查看完整图</figcaption></figure>
+          <div class="evidence-focus" aria-hidden="true"></div>
+          <aside class="evidence-notes"><div class="evidence-note"><span>01 / 定位</span><h3>找到同一个版本</h3><p>先确认检查对象，再讨论结果。</p></div><div class="evidence-note"><span>02 / 复现</span><h3>重复同一条路径</h3><p>约定动作、输入，以及预期行为。</p></div><div class="evidence-note"><span>03 / 复核</span><h3>查看原始材料</h3><p>用证据编号，连回完整记录。</p></div></aside>
+          <div class="slide-foot"><span>示意记录 / 不代表真实测试结果</span><span>05 / 06</span></div>
+        </section>
+
+        <section class="slide closing" data-scene="closing" aria-label="收束：先约定完成，再开始执行">
+          <div class="eyebrow">把下一次协作，变得更清楚</div>
+          <div class="closing-copy"><p>从同一个起点，走向同一个结果。</p><h2>先约定完成，<br>再开始执行。</h2><div class="closing-action">下一次需求，<br>从一句验收条件开始。</div></div>
+          <svg class="graphic closing-seal" viewBox="0 0 1600 900" aria-hidden="true"><circle class="closing-ring" cx="1220" cy="445" r="165"/><path class="closing-check" d="m1146 445 47 47 101-112"/><circle class="closing-packet" r="5"/></svg>
+          <div class="closing-route"><span>需求</span><i></i><span>约定</span><i></i><span>执行</span><i></i><span>确认</span></div>
+          <div class="slide-foot"><span>把意图，变成能被验证的结果。</span><span>06 / 06</span></div>
+        </section>
+      </div>
+    </div>
+    <nav class="control-bar" data-presentation-controls aria-label="演示播放控制">
+      <div class="page-controls"><button id="previous-page" title="上一页（Page Up）" aria-label="上一页">⇤</button><span id="page-label">01 / 06</span><button id="next-page" title="下一页（Page Down）" aria-label="下一页">⇥</button></div>
+      <div class="step-controls"><button id="previous-step" title="上一步（←）">← 上一步</button><button id="next-step" title="下一步（→ / 空格）">下一步 →</button><span id="step-label" role="status" aria-live="polite">步骤 1 / 2</span></div>
+      <div class="play-controls"><button id="replay">重播此步</button><button id="pause">暂停</button><label class="seek-control">进度 <input id="seek" type="range" min="0" max="1" step=".001" value="0" aria-label="当前步骤动画进度"></label></div>
+    </nav>
+    <p class="operation-note" data-presentation-controls>→ / 空格逐步讲解 · ← 回到上一步 · Page Down / Page Up 翻页 · 动画结束后停留，等待讲者继续</p>
+  </main>
+  <dialog id="evidence-dialog" aria-label="交付验收记录完整示意图"><button class="dialog-close" aria-label="关闭完整图">关闭 ×</button><img src="evidence.svg" alt="完整交付验收记录示意，包含三项验收条件、示例结果与证据编号；不代表真实测试结果。"><p>原创示意材料 · 不代表真实测试结果</p></dialog>
+  <script src="../../runtime/presenter.js"></script>
+  <script src="../../themes/deep-space-theatre/vendor/three-r180.js"></script>
+  <script src="../../themes/deep-space-theatre/theme.js"></script>
+  <script src="scenes.js"></script>
+</body>
+</html>
