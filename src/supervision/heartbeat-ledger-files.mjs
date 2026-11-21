@@ -1,10 +1,12 @@
 import { validateHeartbeatOrchestration } from "./heartbeat-orchestration.mjs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
 	constants,
 	existsSync,
 	fstatSync,
+	lstatSync,
+	linkSync,
 	openSync,
 	readFileSync,
 	readSync,
@@ -36,6 +38,7 @@ import {
 } from "./heartbeat-ledger-api.mjs";
 import {
 	resolveProjectLedgerPathSync,
+	resolveProjectLedgerCreationPathSync,
 	validateProjectLedgerSidecarSync,
 } from "../tasks/project-ledger-path.mjs";
 import {
@@ -64,7 +67,7 @@ export function heartbeatLedgerPairPaths(path) {
 				);
 	return { headPath, historyPath, legacyBackupPath: `${headPath}.legacy` };
 }
-function safePaths(root, path) {
+function safePaths(root, path, { creating = false } = {}) {
 	if (typeof root !== "string" || !root.trim() || !isAbsolute(root))
 		throw new TypeError("root must be an absolute path");
 	if (typeof path !== "string" || !path.trim())
@@ -81,7 +84,10 @@ function safePaths(root, path) {
 		throw new Error(
 			"History, backup, lock, and temporary files cannot be used as heartbeat heads",
 		);
-	const { path: canonicalHead } = resolveProjectLedgerPathSync(
+	const resolveHead = creating
+		? resolveProjectLedgerCreationPathSync
+		: resolveProjectLedgerPathSync;
+	const { path: canonicalHead } = resolveHead(
 		canonicalRoot,
 		requested,
 	);
@@ -106,6 +112,26 @@ function atomicWrite(path, text) {
 	const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
 	atomicWriteFileSync(path, text, { mode });
 }
+function publishNewHead(path, text) {
+	const temporary = `${path}.tmp-create-${randomBytes(8).toString("hex")}`;
+	try {
+		atomicWriteFileSync(temporary, text, { mode: 0o600 });
+		// Linking publishes the complete file exclusively, including on Windows.
+		// Readers can never observe a partially written initial Markdown seed.
+		linkSync(temporary, path);
+		let directory;
+		try {
+			directory = openSync(dirname(path), "r");
+			fsyncSync(directory);
+		} catch (error) {
+			if (!["EINVAL", "EPERM", "EISDIR"].includes(error?.code)) throw error;
+		} finally {
+			if (directory !== undefined) closeSync(directory);
+		}
+	} finally {
+		if (existsSync(temporary)) unlinkSync(temporary);
+	}
+}
 function withWriterLock(paths, work) {
 	const lock = `${paths.headPath}.lock`;
 	let fd;
@@ -125,15 +151,15 @@ function withWriterLock(paths, work) {
 		unlinkSync(lock);
 	}
 }
-function requireOwnership(options) {
+function requireOwnership(options, { creating = false } = {}) {
 	if (options.legacyWritersQuiescent !== true)
 		throw new Error(
 			"Heartbeat writes require explicit exclusive ownership and quiescent legacy writers",
 		);
-	if (
+	if (!creating && (
 		typeof options.expectedContentHash !== "string" ||
 		!/^[a-f0-9]{64}$/.test(options.expectedContentHash)
-	)
+	))
 		throw new Error(
 			"Heartbeat writes require expectedContentHash from a fresh read",
 		);
@@ -508,7 +534,7 @@ export function inspectHeartbeatLedgerPair(
 	)
 		throw new TypeError("A heartbeat ledger pair is required");
 	const input =
-		mode === "items"
+		mode === "items" || mode === "format"
 			? {
 					text: pair.headText,
 					lineSources: pair.headText
@@ -552,7 +578,7 @@ export function inspectHeartbeatLedgerPair(
 				sourceLocations: locations,
 			};
 		});
-	if (mode !== "items") {
+	if (mode !== "items" && mode !== "format") {
 		const headInventory = inspect(pair.headText, {
 			mode: "items",
 			latest: true,
@@ -667,6 +693,7 @@ function readWritablePair(paths, options) {
 	return prior;
 }
 function publishPairHead(paths, options, prior, head, historyBody) {
+	assertWritableHeartbeat(head);
 	const backup = readFileSync(paths.legacyBackupPath, "utf8");
 	assertExpected(paths, options.expectedContentHash);
 	atomicWrite(
@@ -681,10 +708,7 @@ function publishPairHead(paths, options, prior, head, historyBody) {
 	atomicWrite(paths.headPath, head);
 	return readPair(paths);
 }
-function writeLocked(paths, options, kind) {
-	const prior = readWritablePair(paths, options);
-	const marker = HISTORY.exec(prior.historyText),
-		body = prior.historyText.slice(marker[0].length);
+function prepareWriteInput(options, kind) {
 	let input = kind === "append" ? options.wakeText : options.text;
 	if (typeof input !== "string")
 		throw new TypeError("Heartbeat writer requires text");
@@ -704,6 +728,56 @@ function writeLocked(paths, options, kind) {
 	}
 	if (!wake)
 		throw new Error("Heartbeat writer requires at least one wake section");
+	return { input, wake };
+}
+
+function assertWritableHeartbeat(text) {
+	const report = inspectHeartbeatLedger(text, { mode: "format" });
+	if (report.passed) return;
+	const error = new Error(
+		`Refusing invalid heartbeat ledger before publication: ${report.findings.map(({ rule, message }) => `${rule}: ${message}`).join("; ")}`,
+	);
+	error.code = "HEARTBEAT_LEDGER_INVALID";
+	error.findings = report.findings;
+	throw error;
+}
+
+/** Generate a validated ledger without exposing an unchecked raw seed to readers. */
+export function createHeartbeatLedgerPair(options) {
+	requireOwnership(options, { creating: true });
+	const paths = safePaths(options.root, options.path, { creating: true });
+	const { input } = prepareWriteInput(options, "write");
+	if (/<!-- heartbeat-(?:head|history):v\d+\b/.test(input))
+		throw new Error("Heartbeat creation requires source Markdown, without storage markers");
+	assertWritableHeartbeat(input);
+	assertWritableHeartbeat(canonicalHead(input, paths));
+	return withWriterLock(paths, () => {
+		for (const path of [paths.headPath, paths.historyPath, paths.legacyBackupPath]) {
+			try {
+				lstatSync(path);
+			} catch (error) {
+				if (error?.code === "ENOENT") continue;
+				throw error;
+			}
+			throw new Error("Heartbeat creation requires absent head, history, and backup files");
+		}
+		// A crash before migration leaves valid source Markdown, never an unchecked
+		// seed. Migration/recovery can preserve it using the existing version contract.
+		publishNewHead(paths.headPath, input);
+		return migrateLocked(paths, {
+			...options,
+			expectedContentHash: sha(`${input}\0`),
+		});
+	});
+}
+
+function writeLocked(paths, options, kind) {
+	const prior = readWritablePair(paths, options);
+	const marker = HISTORY.exec(prior.historyText),
+		body = prior.historyText.slice(marker[0].length);
+	const { input, wake } = prepareWriteInput(options, kind);
+	// Reject malformed input even when canonicalization would omit an older wake.
+	assertWritableHeartbeat(input);
 	// Incorporate any manual suffix by its validated byte boundary before writing the new wake.
 	const bytes = Number(marker[4]);
 	const suffix = Buffer.from(prior.headText).subarray(bytes).toString("utf8");

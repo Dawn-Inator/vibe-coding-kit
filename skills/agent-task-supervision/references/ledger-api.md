@@ -73,11 +73,16 @@ The result has `schemaVersion: 1`, `mode`, `contract`, `certifiesCurrent`, `pass
 - `history`: reads the legacy wake history, optionally limited with `latest: true`; it is always
   non-certifying.
 - `items`: inventories/checks the Items registry without certifying a current wake.
+- `format`: checks readable current Items when present, plus the timestamps and orchestration metadata of
+  every recognized wake in the supplied candidate. It tolerates legacy storage without an Items registry;
+  it does not establish the complete v2 audit or its business evidence and never certifies current state.
 
 `passed` means this selected mode produced no error findings. It does **not** mean the call certifies current
-heartbeat state. Check `certifiesCurrent`, which is true only for a clean `current` report. Neither a history
-read nor an Items inventory is current certification. The API's `wakes`, `items`, and `tables` expose parsed
+heartbeat state. Check `certifiesCurrent`, which is true only for a clean `current` report. A history read,
+format check or Items inventory is not current certification. The API's `wakes`, `items`, and `tables` expose parsed
 records alongside findings so callers do not need to invoke separate low-level parser functions.
+`latest` does not limit the format checks to one wake. Compatibility with Items-free storage does not remove
+the Items requirement for a new supervision audit.
 
 Keep `check-heartbeat-ledger.mjs` parser and validator functions as Kit internals or backward-compatible
 exports. New Kit consumers should use `inspectHeartbeatLedger`; do not build a local array-return alias,
@@ -93,7 +98,7 @@ The Kit stores a project heartbeat as a readable current head plus its complete 
 <project>/heartbeat.md                    # current head
 <project>/taskhistory.md                  # complete history when the head is heartbeat.md
 <project>/<custom-head>.taskhistory.md    # complete history for a custom head, e.g. release.taskhistory.md
-<project>/heartbeat.md.legacy             # immutable original bytes after migration
+<project>/heartbeat.md.legacy             # immutable original bytes from creation or migration
 ```
 
 `heartbeatLedgerPairPaths(path)` returns `headPath`, `historyPath`, and `legacyBackupPath`. A companion or
@@ -104,14 +109,61 @@ remains a single file during display/read; its `historyPath` and wake source pat
 Reading an unrelated active heartbeat must never trigger a cutover, since the owner may still be appending
 directly to it. For a paired ledger, `historyPath` and archived wake sources point to the companion, while the
 current head suffix points to the head. Call `inspectHeartbeatLedgerPair(pair, options)` when reports must
-point to real file locations. `mode: 'items'` inspects the current head's Items table; history/current modes
-inspect the complete logical text.
+point to real file locations. `mode: 'items'` and `mode: 'format'` inspect only the current head, without
+certifying its history or current audit; history/current modes inspect the complete logical text.
 
 For read-only display use `await readHeartbeatDisplay({root, path, cursor, pageSize})` from the Kit pair API. It returns current Items inventory, latest wake and a bounded history page; cursors are tied to the exact source version. For a paired ledger it validates the complete history and backup integrity in chunks, without applying the earlier bounded full-ledger path’s combined 32 MiB limit to the entire history. The head (including a legacy single-file head), individual wake records, pages and index remain bounded. Integrity verification does not certify a current business audit: the result reports `audit: 'not-performed'`. The optional index cache is reconstructible memory only; source records remain authoritative. Use the full pair reader and strict current inspection for audit or writer operations.
 
-Migration and source writes are explicit writer-owned cutovers, never part of project display or a read API.
-Before each operation, obtain a fresh `contentHash` from `readHeartbeatLedgerPair({root, path})` and call the
-write API with that value:
+### Creating and updating a ledger
+
+Build a new ledger's complete text in memory, including its current Items registry and initial wake, then
+call `createHeartbeatLedgerPair` from `src/supervision/heartbeat-ledger-files.mjs`:
+
+```js
+import {
+  createHeartbeatLedgerPair,
+  readHeartbeatLedgerPair,
+} from './src/supervision/heartbeat-ledger-files.mjs';
+
+createHeartbeatLedgerPair({
+  root,
+  path,
+  text,
+  legacyWritersQuiescent: true,
+  // orchestration, // optional, with observed evidence only
+});
+const created = readHeartbeatLedgerPair({ root, path });
+```
+
+The parent directory must already exist, and the head, history and `.legacy` backup paths must all be absent.
+Creation does not take `expectedContentHash`, because there is no existing source version. Never publish an
+unchecked seed with `writeFile`, a shell redirect or a direct append and then call migration; an invalid seed
+can already be discovered by a reader before migration runs.
+
+The create API validates the complete source text, atomically publishes that validated seed, and performs the
+pair cutover under the same writer lock. A file I/O interruption may leave a valid single-file seed or a
+recoverable pair. Reread its state and use the migration or recovery procedure below; do not overwrite it or
+blindly retry creation against existing files.
+
+Creation, `writeHeartbeatLedgerPair`, `appendHeartbeatWake` and `recordHeartbeatAgentAssignments` validate the
+final candidate before publishing it. A format rejection throws `HEARTBEAT_LEDGER_INVALID` with normalized
+`findings` and writes none of the head, history or backup. For an existing ledger, all three retain their
+prior bytes. Fix the candidate using those diagnostics and retry the writer; do not bypass the guard or weaken
+the stored evidence. For an optional in-memory preflight use `inspectHeartbeatLedger(text, { mode: 'format',
+ledgerPath: path })`; the writer still performs its own mandatory check. After publication, reread the pair
+and use strict `current` inspection to assess the audit.
+
+Items sources need a supported prefix such as `owner:intake.md`; a bare value such as `user-2026-11-21` is
+invalid. A blocked Item names its resource, for example `blocked <- Owner/ops production functionSwitch.redPoint value`.
+Literal `unknown` is valid unfinished state and must remain unknown when evidence is missing. `ready` is still
+rejected by the Items rules; do not silently turn it into a dispatch. Passing format checks does not prove
+dispatch acceptance, current activity, acceptance or landing.
+
+### Migrating an existing single-file ledger
+
+Migration and source writes are explicit writer-owned operations, never part of project display or a read API.
+Migration is for an existing legacy ledger, not new generation. Before migration and each existing-source write,
+obtain a fresh `contentHash` from `readHeartbeatLedgerPair({root, path})` and call the API with that value:
 
 ```js
 const observed = readHeartbeatLedgerPair({ root, path });
@@ -130,7 +182,9 @@ coordinates Kit writers and serializes cutovers; it cannot stop or lock an unrel
 fresh `expectedContentHash` adds optimistic version checking so a source change fails closed. A cutover preserves
 the original complete file in `.legacy`, copies earlier wakes into the version-marked companion, and leaves the
 latest wake and Items in the readable head. `appendHeartbeatWake` and `writeHeartbeatLedgerPair` require that
-this explicit cutover has already completed; they update companion and head together. Before each later write,
+the source is already a pair, through creation or this explicit cutover; they update companion and head together.
+Migration preserves existing historical bytes without applying the new-candidate format gate to old records.
+Before each later write,
 read a fresh version and pass it with the ownership assertion:
 
 ```js
@@ -146,11 +200,15 @@ appendHeartbeatWake({
 
 Never let a display/read path claim ownership or write to an unrelated active project heartbeat.
 
+### Recovering an interrupted publication
+
 `readHeartbeatLedgerPairVersion({root, path})` returns the raw pair hash without interpreting an interrupted
 pair. If a history-first publication is interrupted, pass the caller's quiescence assertion and a fresh hash
 from that helper to `recoverHeartbeatLedgerPair(options)`. Recovery verifies the v3 history body, immutable
 backup, planned head and previous-head hash; it publishes only if the current head still equals the previous
-or planned head. Any other change is a conflict. Do not edit an incomplete pair by hand:
+or planned head. Any other change is a conflict. Recovery completes the recorded publication without rewriting
+historical bytes or treating them as a new candidate; it is not an alternate generation or update path. Do not
+edit an incomplete pair by hand:
 
 ```js
 const rawVersion = readHeartbeatLedgerPairVersion({ root, path });
@@ -175,7 +233,9 @@ Read the current pair and call the writer with `root`, `path`, `expectedContentH
 When replacing a previous ID, also pass its exact value as `expectedAgentThreadId` and retain evidence for
 the reassignment. Reread and recheck the assignment evidence if the source has changed. The writer updates the optional
 `agent_thread_id` column after `dispatch_ref` (after `children` when present). The assignment preserves
-the row's status, dispatch receipt, and existing wake history. The panel reads these records from the pair.
+the row's status, dispatch receipt, and existing wake history. Its final candidate must also pass the shared
+format guard before publication; fix invalid current Items rather than writing around that rejection. The
+panel reads these records from the pair.
 
 Use the exact returned child thread ID and evidence tying that native dispatch to the same Item. For a legacy
 row, preserve and compare the observed `dispatch_ref` even if it is blank or `-`. That value is a source

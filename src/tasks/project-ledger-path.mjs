@@ -1,6 +1,6 @@
 import { lstat, realpath, stat } from "node:fs/promises";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 
 export class ProjectLedgerPathError extends Error {
 	constructor(code, message) {
@@ -140,6 +140,15 @@ export function resolveProjectLedgerPathSync(root, candidate) {
 	} catch (error) {
 		throw new ProjectLedgerPathError("unreadable", `Project ledger path cannot be resolved: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	assertProjectLedgerBoundarySync(canonicalRoot, canonicalPath);
+	let info;
+	try { info = statSync(canonicalPath); }
+	catch (error) { throw new ProjectLedgerPathError("unreadable", `Project ledger cannot be read: ${error instanceof Error ? error.message : String(error)}`); }
+	if (!info.isFile()) throw new ProjectLedgerPathError("not-file", "Project ledger path is not a file");
+	return { path: canonicalPath, info };
+}
+
+function assertProjectLedgerBoundarySync(canonicalRoot, canonicalPath) {
 	if (!isProjectPathWithinRoot(canonicalRoot, canonicalPath))
 		throw new ProjectLedgerPathError("outside-root", "Project ledger path must stay within the project root");
 	let current = dirname(canonicalPath);
@@ -150,11 +159,22 @@ export function resolveProjectLedgerPathSync(root, candidate) {
 		if (parent === current) break;
 		current = parent;
 	}
-	let info;
-	try { info = statSync(canonicalPath); }
-	catch (error) { throw new ProjectLedgerPathError("unreadable", `Project ledger cannot be read: ${error instanceof Error ? error.message : String(error)}`); }
-	if (!info.isFile()) throw new ProjectLedgerPathError("not-file", "Project ledger path is not a file");
-	return { path: canonicalPath, info };
+}
+
+/** Resolve an absent ledger beneath an existing, project-local parent directory. */
+export function resolveProjectLedgerCreationPathSync(root, candidate) {
+	const canonicalRoot = realpathSync(root);
+	const requested = resolve(canonicalRoot, candidate);
+	const canonicalPath = resolve(realpathSync(dirname(requested)), basename(requested));
+	assertProjectLedgerBoundarySync(canonicalRoot, canonicalPath);
+	try {
+		// lstat also catches dangling symlinks; creation must never reuse an entry.
+		lstatSync(canonicalPath);
+	} catch (error) {
+		if (error?.code === "ENOENT") return { path: canonicalPath };
+		throw error;
+	}
+	throw new ProjectLedgerPathError("already-exists", "Project ledger creation requires an absent head");
 }
 
 /** Validate an existing companion with the same root and nested-Git boundary as a ledger. */

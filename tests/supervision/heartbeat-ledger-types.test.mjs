@@ -20,11 +20,17 @@ test("heartbeat declarations distinguish raw callback rows/findings from normali
 	const fixture = join(fixtureRoot, "api-types.ts");
 	const modulePath = relative(fixtureRoot, API).split(sep).join("/");
 	const specifier = modulePath.startsWith(".") ? modulePath : `./${modulePath}`;
+	const filesSpecifier = specifier.replace("heartbeat-ledger-api.mjs", "heartbeat-ledger-files.mjs");
 	writeFileSync(
 		fixture,
 		[
 			`import { heartbeatAuditDue, inspectHeartbeatLedger } from ${JSON.stringify(specifier)};`,
+			`import { createHeartbeatLedgerPair } from ${JSON.stringify(filesSpecifier)};`,
 			"const text = \"ledger\";",
+			"inspectHeartbeatLedger(text, { mode: 'format' });",
+			"createHeartbeatLedgerPair({ root: '/project', path: 'heartbeat.md', text, legacyWritersQuiescent: true });",
+			"// @ts-expect-error creation still requires explicit writer ownership",
+			"createHeartbeatLedgerPair({ root: '/project', path: 'heartbeat.md', text });",
 			"const report = inspectHeartbeatLedger(text, {",
 			"  mode: 'current',",
 			"  extraChecks: (context) => {",

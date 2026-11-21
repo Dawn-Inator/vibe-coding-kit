@@ -4,9 +4,10 @@ export { projectAgentAllocation, projectHeartbeatOrchestration, validateHeartbea
 import { checkItems, checkLedger, findStrayItemRows, ownerFindings, parseItemTables, parseItems, parseWakes, WAKE_HEADING_RE } from './check-heartbeat-ledger.mjs';
 import { checkHeartbeatV2 } from './heartbeat-ledger-v2.mjs';
 import { checkV2Guards } from './heartbeat-ledger-v2-guards.mjs';
+import { checkHeartbeatLedgerFormat } from './heartbeat-ledger-format.mjs';
 export { heartbeatAuditDue } from './heartbeat-audit-due.mjs';
 
-const MODES = new Set(['current', 'history', 'items']);
+const MODES = new Set(['current', 'history', 'items', 'format']);
 
 function normalizeFindings(findings) {
   return findings.map((finding) => ({ ...finding, severity: finding.severity === 'advisory' ? 'advisory' : 'error' }));
@@ -25,7 +26,8 @@ export function summarizeHeartbeatLedger(text, { includeItems = true, includeWak
 /**
  * Inspect a heartbeat ledger with one shared report shape.
  * @param {string} text Markdown ledger contents.
- * @param {{mode?: 'current'|'history'|'items', latest?: boolean, now?: Date, ledgerPath?: string, baseDir?: string, extraChecks?: Function|Function[]}} options
+ * Format checks prospective head syntax and readable Items, without certifying an audit.
+ * @param {{mode?: 'current'|'history'|'items'|'format', latest?: boolean, now?: Date, ledgerPath?: string, baseDir?: string, extraChecks?: Function|Function[]}} options
  */
 export function inspectHeartbeatLedger(text, {
   mode = 'current',
@@ -54,6 +56,8 @@ export function inspectHeartbeatLedger(text, {
     }
     const latestWake = wakes.at(-1);
     if (latestWake) rawFindings.push(...checkV2Guards({ text, wakes, items, latestWake, now }));
+  } else if (mode === 'format') {
+    rawFindings = checkHeartbeatLedgerFormat(text, { now });
   } else {
     rawFindings = [...checkItems(text, { now }), ...ownerFindings(tables)];
   }

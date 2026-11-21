@@ -42,8 +42,9 @@ blocker or new evidence. The CLI probe is `node .vibe-coding/kit/src/supervision
 hook or wake capability. To prepare an event audit without arming a timer, render the canonical read-only
 block with `node .vibe-coding/kit/src/supervision/heartbeat-arm.mjs --template`. It prints a template only; it
 does not claim a delivered wake or write files. Fill every source and state from checks actually performed,
-append only the completed block, then run strict current validation. Never append unfilled placeholders or
-claim unchecked work as complete.
+prepare the completed block in memory, and publish it through the Kit heartbeat pair writer, which checks
+format before writing. Then reread the pair and run strict current validation. Never append unfilled
+placeholders or claim unchecked work as complete.
 
 The configured adapter may provide project-specific command strings for `arm`, `due`, `check`, `sweep`,
 `inflight`, and `branches`; invocation overrides must not alter audit obligations. The Kit arm template accepts
@@ -131,9 +132,17 @@ The wake marker selects denominator semantics: v2 counts all valid assessed rows
 unmarked legacy wakes retain their proof-only denominator. Preserve historical bytes; never redispatch for a count.
 
 Use the canonical [ledger API and CLI modes](references/ledger-api.md). For new ledger reads and writes use
-the Kit heartbeat pair API; do not append to a split ledger's head file directly. Run strict current mode
-after appending the wake. A missing v2 marker or incomplete current format fails current certification. Historical inspection
-and Items inventory are useful read modes, but neither can certify a current v2 audit.
+the Kit heartbeat pair API. Build a new ledger in memory and call `createHeartbeatLedgerPair`; never write a
+raw seed file and then migrate it. For an existing pair, read its fresh version and use
+`writeHeartbeatLedgerPair`, `appendHeartbeatWake`, or `recordHeartbeatAgentAssignments`. These writers validate
+the final candidate before publishing; `HEARTBEAT_LEDGER_INVALID` with `findings` means correct the candidate
+and retry through the writer, preserving the existing head, history and backup. Do not bypass a rejection with
+direct file writes. Optional `inspectHeartbeatLedger(..., { mode: 'format' })` checks a candidate in memory;
+it does not certify an audit. Literal `unknown` preserves unfinished work; it does not authorize `ready` or
+invent a dispatch. Migration and recovery preserve existing historical bytes and are not generation paths.
+After writing, reread the pair and run strict current mode. A missing v2 marker or incomplete current format
+fails current certification. Historical inspection, format checks and Items inventory cannot certify a current
+v2 audit.
 
 For adoption or resume, reconcile Items individually against original goals, dispatches, finals, and landings.
 Missing transitions are `unknown`, not done. Legacy inactive/unverified work stays unfinished absent item-specific

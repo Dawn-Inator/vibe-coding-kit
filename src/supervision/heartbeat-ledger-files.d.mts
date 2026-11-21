@@ -104,6 +104,14 @@ export type HeartbeatWriteOptions = {
 export function migrateHeartbeatLedgerPair(
 	options: HeartbeatWriteOptions,
 ): HeartbeatLedgerPair;
+/** Validate in memory before creating any ledger files. The parent directory must exist.
+ * Requires absent head/history/backup entries; never overwrites a ledger. */
+export function createHeartbeatLedgerPair(
+	options: Omit<HeartbeatWriteOptions, "expectedContentHash"> & {
+		text: string;
+		orchestration?: HeartbeatOrchestration;
+	},
+): HeartbeatLedgerPair;
 export function writeHeartbeatLedgerPair(
 	options: HeartbeatWriteOptions & {
 		text: string;

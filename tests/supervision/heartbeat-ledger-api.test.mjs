@@ -247,3 +247,110 @@ test('orchestration JSON rejects duplicate keys at every nesting level', async (
   const valid = base.replace('"before":null,"after":null', '"before":{"activeAgents":0,"observedAt":"2026-01-01T10:00:00Z","evidence":"a"},"after":{"activeAgents":1,"observedAt":"2026-01-01T10:01:00Z","evidence":"b"}');
   assert.equal(parseWakes(prefix + valid)[0].orchestration.after.activeAgents, 1);
 });
+
+const formatRegistry = (rows, { header = 'id | source | item | status | evidence', metadata = '' } = {}) =>
+  `${metadata}## Items\n| ${header} |\n| ${header.split('|').map(() => '---').join(' | ')} |\n${rows.join('\n')}\n`;
+
+test('format mode preserves literal unknown and does not certify a current audit', () => {
+  const text = formatRegistry(['| I1 | owner:intake.md | pending work | unknown | not assessed |']);
+  const report = inspectHeartbeatLedger(text, { mode: 'format', now: NOW });
+  assert.deepEqual(Object.keys(report).sort(), [...REPORT_KEYS].sort());
+  assert.equal(report.mode, 'format');
+  assert.equal(report.contract, null);
+  assert.equal(report.certifiesCurrent, false);
+  assert.equal(report.passed, true, JSON.stringify(report.findings));
+  assert.equal(report.items[0].status, 'unknown');
+  assert.equal(inspectHeartbeatLedger(text, { mode: 'current', now: NOW }).certifiesCurrent, false);
+  assert.equal(inspectHeartbeatLedger(historicalLedger(8), { mode: 'format', now: NOW }).passed, true);
+});
+
+test('format mode rejects plugin-unreadable source and incomplete status fields', () => {
+  const cases = [
+    ['user-2026-11-21', 'unknown', 'not assessed', 'item-source'],
+    ['owner:intake.md', 'blocked', 'not assessed', 'item-blocked'],
+    ['owner:intake.md', 'blocked <- working', 'not assessed', 'item-blocked'],
+    ['owner:intake.md', 'done', '-', 'item-done-evidence'],
+    ['owner:intake.md', 'ready', 'not assessed', 'item-ready'],
+    ['owner:intake.md', 'unknwon', 'not assessed', 'item-status'],
+    ['owner:intake.md', 'deferred', 'not assessed', 'item-deferred'],
+    ['owner:intake.md', 'owner <- approval', 'not assessed', 'item-owner-category'],
+    ['owner:intake.md', 'dispatched worker', 'not assessed', 'item-dispatched-no-owner'],
+  ];
+  for (const [source, status, evidence, rule] of cases) {
+    const report = inspectHeartbeatLedger(formatRegistry([`| I1 | ${source} | task | ${status} | ${evidence} |`]), { mode: 'format', now: NOW });
+    assert.equal(report.passed, false, `${source} / ${status}`);
+    assert.ok(report.findings.some((finding) => finding.rule === rule), JSON.stringify(report.findings));
+  }
+  const blocked = formatRegistry(['| I1 | owner:intake.md | red point | blocked <- Owner/ops production functionSwitch.redPoint value | awaiting owner value |']);
+  assert.equal(inspectHeartbeatLedger(blocked, { mode: 'format', now: NOW }).passed, true);
+});
+
+test('format mode rejects ambiguous Items shape instead of relying on lenient read parsing', () => {
+  const valid = formatRegistry(['| I1 | report:r1 | task | done | receipt |']);
+  const cases = [
+    [valid + '## Items\nno table\n', 'items-table-count'],
+    [valid.replace('status | evidence', 'status | Status'), 'items-header'],
+    [valid.replace('status | evidence', 'status | note'), 'items-header'],
+    [valid.replace('| --- | --- | --- | --- | --- |', '| --- | nope | --- | --- | --- |'), 'items-separator'],
+    [valid.replace('task | done | receipt |', 'task | done |'), 'items-row-shape'],
+    [valid.replace('task | done | receipt |', 'task | done | receipt | extra |'), 'items-row-shape'],
+    [valid.replace('task | done | receipt |', 'task | done | receipt'), 'items-row-shape'],
+    [valid.replace('| I1 |', '\n| I1 |'), 'item-outside-table'],
+    [valid.replace('receipt |', 'receipt |\n| I1 | report:r2 | duplicate | done | receipt |'), 'item-id'],
+  ];
+  for (const [text, rule] of cases) {
+    const report = inspectHeartbeatLedger(text, { mode: 'format', now: NOW });
+    assert.equal(report.passed, false, text);
+    assert.ok(report.findings.some((finding) => finding.rule === rule), JSON.stringify(report.findings));
+  }
+  assert.equal(inspectHeartbeatLedger(formatRegistry([]), { mode: 'format', now: NOW }).passed, false);
+});
+
+test('format mode validates task_root and child topology while permitting a shared DAG', () => {
+  const header = 'id | source | item | status | evidence | owner | repository | worktree | mode | write_set | dispatch_ref | children';
+  const parent = (id, children) => `| ${id} | report:${id} | coordination | tracking | checked children | parent-chat | kit | /tmp/kit | read-only | [] | - | ${JSON.stringify(children)} |`;
+  const leaf = '| I1 | report:i1 | pending work | unknown | not assessed | - | - | - | - | [] | - | [] |';
+  const rows = [parent('R', ['P1', 'P2']), parent('P1', ['I1']), parent('P2', ['I1']), leaf];
+  const text = formatRegistry(rows, { header, metadata: 'task_root: R\n' });
+  assert.equal(inspectHeartbeatLedger(text, { mode: 'format', now: NOW }).passed, true);
+  const cases = [
+    [text.replace('task_root: R', 'task_root: missing'), 'task-root'],
+    [text.replace('task_root: R', 'task_root: I1'), 'task-root'],
+    [text.replace('task_root: R', 'task_root: bad ID'), 'task-root'],
+    [`task_root: R\n${text}`, 'task-root'],
+    [text.replace('["P1","P2"]', '["missing"]'), 'tracking-child-unknown'],
+    [text.replace('["P1","P2"]', '["R"]'), 'tracking-child-self'],
+    [text.replace('["P1","P2"]', '["P1","P1"]'), 'tracking-child-duplicate'],
+    [text.replace('["I1"]', '["R"]'), 'tracking-child-cycle'],
+    [text.replace(leaf, leaf.replace('| [] | - | [] |', '| [] | - | {bad} |')), 'item-children-json'],
+    [text.replace(leaf, leaf.replace('| [] | - | [] |', '| [] | - | ["R"] |')), 'item-children-kind'],
+  ];
+  for (const [bad, rule] of cases) {
+    const report = inspectHeartbeatLedger(bad, { mode: 'format', now: NOW });
+    assert.equal(report.passed, false, bad);
+    assert.ok(report.findings.some((finding) => finding.rule === rule), JSON.stringify(report.findings));
+  }
+  assert.equal(inspectHeartbeatLedger(`\`\`\`md\ntask_root: example\n\`\`\`\n${text}`, { mode: 'format', now: NOW }).passed, true);
+});
+
+test('format mode rejects malformed orchestration and wake syntax without requiring a full audit', () => {
+  const heading = '## 2026-01-01T10:00Z wake (10-row ledger)\n';
+  const metadata = 'orchestration: {"scope":"task","before":null,"after":null,"blockedTasks":null,"blockersEvidence":null}\n';
+  assert.equal(inspectHeartbeatLedger(heading + metadata, { mode: 'format', now: NOW }).passed, true);
+  for (const text of [heading + 'orchestration: {bad}\n', heading + metadata + metadata, metadata + heading]) {
+    const report = inspectHeartbeatLedger(text, { mode: 'format', now: NOW });
+    assert.equal(report.passed, false);
+    assert.ok(report.findings.some((finding) => finding.rule === 'orchestration-metadata'));
+  }
+  for (const text of ['## invalid wake (10-row ledger)\n', '## 2026-01-01T10:00Z wake (9-row ledger)\n']) {
+    assert.equal(inspectHeartbeatLedger(text, { mode: 'format', now: NOW }).passed, false);
+  }
+});
+
+test('format validation does not require replay governance to pass', () => {
+  const text = formatRegistry(['| I1 | report:r1 | implementation | done | receipt replays:worker=3 |']);
+  assert.ok(inspectHeartbeatLedger(text, { mode: 'items', now: NOW }).findings.some((finding) => finding.rule === 'replay-audit'));
+  const report = inspectHeartbeatLedger(text, { mode: 'format', now: NOW });
+  assert.equal(report.passed, true, JSON.stringify(report.findings));
+  assert.equal(report.certifiesCurrent, false);
+});

@@ -57,7 +57,7 @@ test("project heartbeat carries Kit orchestration projections without changing l
         "",
       ].join("\n");
     const invalidWake = wake("08").replace("\n", "\norchestration: {invalid}\n");
-    const legacy = `# Supervision\n\n${invalidWake}\n${wake("09")}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | request | example | blocked | waiting |\n`;
+    const legacy = `# Supervision\n\n${invalidWake}\n${wake("09")}\n## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n| A | report:request | example | blocked <- test fixture resource | waiting |\n`;
     await writeFile(f.source, legacy);
     const root = await realpath(f.project);
     const path = await realpath(f.source);
@@ -620,7 +620,7 @@ test("project history pages reuse the selected pair, fail closed on changes, and
     "## Items",
     "| id | source | item | status | evidence |",
     "| --- | --- | --- | --- | --- |",
-    "| H1 | request | Original project source | pending | - |",
+    "| H1 | report:request | Original project source | unknown | - |",
     "## 2026-11-11T10:00:00Z wake (10-row ledger)",
     "contract: heartbeat/v2",
     "",

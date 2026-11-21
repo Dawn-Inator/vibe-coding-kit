@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	appendHeartbeatWake,
+	createHeartbeatLedgerPair,
 	heartbeatLedgerPairPaths,
 	inspectHeartbeatLedgerPair,
 	migrateHeartbeatLedgerPair,
@@ -83,6 +84,130 @@ const write = (options) =>
 		legacyWritersQuiescent: true,
 		expectedContentHash: version(options.path),
 	});
+
+const registry = (row) =>
+	`## Items\n| id | source | item | status | evidence |\n| --- | --- | --- | --- | --- |\n${row}\n`;
+const invalidRows = [
+	"| R1 | user-2026-11-21 | task | unknown | pending |",
+	"| R1 | owner:intake.md | task | blocked | pending |",
+	"| R1 | owner:intake.md | task | unknwon | pending |",
+	"| R1 | owner:intake.md | task | done | - |",
+];
+const pairBytes = (path) => Object.values(heartbeatLedgerPairPaths(path))
+	.map((file) => readFileSync(file, "utf8"));
+
+test("validated creation rejects illegal candidates before creating any ledger file", () => {
+	for (const row of invalidRows) {
+		const dir = root();
+		const path = join(dir, "heartbeat.md");
+		assert.throws(() => createHeartbeatLedgerPair({
+			root: dir, path, legacyWritersQuiescent: true,
+			text: `${registry(row)}\n${wake("2026-01-01T10:00Z")}`,
+			beforeHeadPublish() { assert.fail("invalid content must never reach publication"); },
+		}), (error) => error.code === "HEARTBEAT_LEDGER_INVALID" && error.findings.length > 0);
+		for (const file of [...Object.values(heartbeatLedgerPairPaths(path)), `${path}.lock`])
+			assert.equal(existsSync(file), false, file);
+	}
+});
+
+test("validated creation preserves unknown, initializes a readable pair, and never overwrites existing data", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const text = `${registry("| R1 | owner:intake.md | pending work | unknown | not assessed |")}\n${wake("2026-01-01T10:00Z")}`;
+	const options = { root: dir, path, text, legacyWritersQuiescent: true };
+	assert.throws(() => createHeartbeatLedgerPair({ ...options, legacyWritersQuiescent: false }), /exclusive ownership/i);
+	const created = createHeartbeatLedgerPair(options);
+	assert.equal(created.isLegacy, false);
+	assert.deepEqual(readHeartbeatLedgerPair({ root: dir, path }), created);
+	assert.equal(inspectHeartbeatLedgerPair(created, { mode: "format" }).passed, true);
+	assert.equal(inspectHeartbeatLedgerPair(created, { mode: "format" }).certifiesCurrent, false);
+	assert.equal(inspectHeartbeatLedgerPair(created, { mode: "format" }).items[0].status, "unknown");
+	assert.equal(readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, "utf8"), text);
+	const before = pairBytes(path);
+	assert.throws(() => createHeartbeatLedgerPair(options), /absent|exists/i);
+	assert.deepEqual(pairBytes(path), before);
+});
+
+test("creation respects project boundaries and refuses orphaned companions without publishing a head", () => {
+	const dir = root();
+	const outside = root();
+	const text = wake("2026-01-01T10:00Z");
+	const create = (path) => createHeartbeatLedgerPair({ root: dir, path, text, legacyWritersQuiescent: true });
+	assert.throws(() => create(join(outside, "heartbeat.md")), /within the project root/i);
+	const nested = join(dir, "nested");
+	mkdirSync(nested);
+	writeFileSync(join(nested, ".git"), "gitdir: elsewhere");
+	assert.throws(() => create(join(nested, "heartbeat.md")), /nested Git/i);
+	const path = join(dir, "heartbeat.md");
+	const { historyPath } = heartbeatLedgerPairPaths(path);
+	writeFileSync(historyPath, "orphaned history");
+	assert.throws(() => create(path), /absent/i);
+	assert.equal(existsSync(path), false);
+	assert.equal(readFileSync(historyPath, "utf8"), "orphaned history");
+});
+
+test("creation refuses dangling head and companion symlinks", { skip: process.platform === "win32" }, () => {
+	for (const target of ["headPath", "historyPath", "legacyBackupPath"]) {
+		const dir = root();
+		const path = join(dir, "heartbeat.md");
+		const missing = join(dir, "missing.md");
+		symlinkSync(missing, heartbeatLedgerPairPaths(path)[target]);
+		assert.throws(() => createHeartbeatLedgerPair({
+			root: dir, path, text: wake("2026-01-01T10:00Z"), legacyWritersQuiescent: true,
+		}), /absent/i);
+		assert.equal(existsSync(missing), false);
+		assert.equal(existsSync(path), false);
+	}
+});
+
+test("an interrupted validated creation leaves a recoverable valid source", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const text = `${registry("| R1 | owner:intake.md | pending work | unknown | pending |")}\n${wake("2026-01-01T10:00Z")}`;
+	assert.throws(() => createHeartbeatLedgerPair({
+		root: dir, path, text, legacyWritersQuiescent: true,
+		beforeHeadPublish() { throw new Error("creation interrupted"); },
+	}), /creation interrupted/);
+	assert.equal(readFileSync(path, "utf8"), text);
+	assert.equal(inspectHeartbeatLedger(readFileSync(path, "utf8"), { mode: "format" }).passed, true);
+	const recovered = recoverHeartbeatLedgerPair({ root: dir, path, legacyWritersQuiescent: true, expectedContentHash: version(path) });
+	assert.equal(inspectHeartbeatLedgerPair(recovered, { mode: "format" }).passed, true);
+	assert.equal(inspectHeartbeatLedgerPair(recovered, { mode: "format" }).items[0].status, "unknown");
+});
+
+test("invalid updates and appends leave head, history, and backup byte-for-byte unchanged", () => {
+	for (const row of invalidRows) {
+		const dir = root();
+		const path = join(dir, "heartbeat.md");
+		createHeartbeatLedgerPair({ root: dir, path, text: wake("2026-01-01T10:00Z"), legacyWritersQuiescent: true });
+		const before = pairBytes(path);
+		const candidate = `${registry(row)}\n${wake("2026-01-01T11:00Z")}`;
+		for (const publish of [
+			() => write({ root: dir, path, text: candidate }),
+			() => append({ root: dir, path, wakeText: candidate }),
+		]) {
+			assert.throws(publish, { code: "HEARTBEAT_LEDGER_INVALID" });
+			assert.deepEqual(pairBytes(path), before);
+			assert.equal(existsSync(`${path}.lock`), false);
+		}
+		const fixed = write({ root: dir, path, text: candidate.replace(row, "| R1 | owner:intake.md | task | unknown | pending |") });
+		assert.equal(inspectHeartbeatLedgerPair(fixed, { mode: "format" }).passed, true);
+	}
+});
+
+test("invalid historical bytes remain migratable and recoverable without weakening ordinary writes", () => {
+	const dir = root();
+	const path = join(dir, "heartbeat.md");
+	const original = `${registry(invalidRows[0])}\n${wake("2026-01-01T10:00Z")}`;
+	writeFileSync(path, original);
+	assert.throws(() => migrate({ root: dir, path, beforeHeadPublish() { throw new Error("interrupted migration"); } }), /interrupted migration/);
+	const recovered = recoverHeartbeatLedgerPair({ root: dir, path, legacyWritersQuiescent: true, expectedContentHash: version(path) });
+	assert.equal(readFileSync(heartbeatLedgerPairPaths(path).legacyBackupPath, "utf8"), original);
+	assert.equal(inspectHeartbeatLedgerPair(recovered, { mode: "format" }).passed, false);
+	const before = pairBytes(path);
+	assert.throws(() => append({ root: dir, path, wakeText: wake("2026-01-01T11:00Z") }), { code: "HEARTBEAT_LEDGER_INVALID" });
+	assert.deepEqual(pairBytes(path), before);
+});
 
 test("migration preserves every original byte in immutable backup and retains wake count/order", () => {
 	const dir = root();
@@ -180,16 +305,16 @@ test("identical legitimate wakes remain distinct and writer keeps all history pl
 	);
 });
 
-const assignmentHeader = "| id | source | item | status | evidence | owner | dispatch_ref | children | note |";
-const assignmentSeparator = "| --- | --- | --- | --- | --- | --- | --- | --- | :---: |";
+const assignmentHeader = "| id | source | item | status | evidence | owner | dispatch_ref | children | note | repository | worktree | mode | write_set |";
+const assignmentSeparator = "| --- | --- | --- | --- | --- | --- | --- | --- | :---: | --- | --- | --- | --- |";
 const reportedRef = "receipts/first returned.json";
 const assignmentRows = [
 	`| I1 | report:r1 | first | dispatched | observed | /root/first | ${reportedRef} | [] | retained |  `,
 	"| I2 | report:r2 | second | done | historical evidence | legacy owner | | - | 例 |",
 	"| I3 | report:r3 | third | blocked <- review | dependency | old owner | - | | untargeted |",
 	'| P1 | report:p1 | parent | tracking | coordination | /root | - | ["I1"] | parent note |',
-	'| P2 | report:p2 | parent in another state | done | coordination | /root | - | ["I2"] | parent note |',
-];
+	'| P2 | report:p2 | second parent | tracking | coordination | /root | - | ["I2"] | parent note |',
+].map((row) => `${row.trimEnd()} /repo | /tree | read-only | [] |`);
 
 function assignmentFixture({ header = assignmentHeader, separator = assignmentSeparator, rows = assignmentRows, extra = "", crlf = false } = {}) {
 	const dir = root();
@@ -212,6 +337,19 @@ const firstAgentAssignment = {
 	agentThreadId: "native-thread-01",
 	expectedDispatchRef: reportedRef,
 };
+
+test("assignment publication cannot carry an invalid legacy registry into a new head", () => {
+	const { path, prior, request } = assignmentFixture({
+		rows: assignmentRows.map((row) => row.replace("report:r3", "user-2026-11-21")),
+	});
+	const before = pairBytes(path);
+	assert.throws(() => recordHeartbeatAgentAssignments({
+		...request, assignments: [firstAgentAssignment],
+		beforeHeadPublish() { assert.fail("invalid registry must not be published"); },
+	}), { code: "HEARTBEAT_LEDGER_INVALID" });
+	assert.deepEqual(pairBytes(path), before);
+	assert.deepEqual(readHeartbeatLedgerPair(request), prior);
+});
 
 test("mechanical assignments preserve the canonical CRLF head outside the new cells and keep archive and backup bytes", async () => {
 	const { path, original, prior, request } = assignmentFixture({ crlf: true });
@@ -264,7 +402,7 @@ test("assignment writes add their column immediately after dispatch_ref on table
 		header: assignmentHeader.replace(" children |", ""),
 		separator: assignmentSeparator.replace(" --- | :---: |", " :---: |"),
 		rows: [
-			`| I1 | report:r1 | first | dispatched | observed | /root/first | ${reportedRef} | retained |`,
+			`| I1 | report:r1 | first | dispatched | observed | /root/first | ${reportedRef} | retained | /repo | /tree | read-only | [] |`,
 		],
 	});
 	const after = recordHeartbeatAgentAssignments({ ...request, assignments: [firstAgentAssignment] });
@@ -844,8 +982,19 @@ test("current and history audit current inventory instead of archived Items", ()
 	const historical = `${wake("2026-01-01T10:00Z")}\n${table("| I1 | report:r1 | old | done | receipt |")}`;
 	writeFileSync(path, historical);
 	migrate({ root: dir, path });
+	const updated = write({ root: dir, path, text: `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | done | receipt |")}` });
+	for (const mode of ["current", "history"]) {
+		const report = inspectHeartbeatLedgerPair(updated, { mode });
+		assert.equal(report.itemCount, 1);
+		assert.equal(report.items[0].item, "changed");
+	}
 	const live = `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | done | |")}\n## Notes\n| I2 | report:r2 | stray | done | receipt |\n`;
-	const pair = write({ root: dir, path, text: live });
+	// Bad historical data must remain inspectable through migration; ordinary
+	// writers now reject this current inventory before changing either file.
+	assert.throws(() => write({ root: dir, path, text: live }), { code: "HEARTBEAT_LEDGER_INVALID" });
+	const malformedPath = join(dir, "malformed.md");
+	writeFileSync(malformedPath, `${wake("2026-01-01T10:00Z")}\n${live}`);
+	const pair = migrate({ root: dir, path: malformedPath });
 	const current = inspectHeartbeatLedgerPair(pair, {
 		mode: "current",
 		now: new Date("2026-01-01T11:30Z"),
@@ -887,11 +1036,9 @@ test("owner and inventory guard findings use current Items in paired history", (
 		`${wake("2026-01-01T10:00Z")}\n${table("| I1 | report:r1 | old | done | receipt |")}`,
 	);
 	migrate({ root: dir, path });
-	const pair = write({
-		root: dir,
-		path,
-		text: `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | owner <- it is hard | |")}`,
-	});
+	const ownerPath = join(dir, "malformed-owner.md");
+	writeFileSync(ownerPath, `${wake("2026-01-01T11:00Z")}\n${table("| I1 | report:r1 | changed | owner <- it is hard | |")}`);
+	const pair = migrate({ root: dir, path: ownerPath });
 	for (const mode of ["current", "items"]) {
 		const result = inspectHeartbeatLedgerPair(pair, { mode, latest: true });
 		assert.ok(
@@ -903,11 +1050,9 @@ test("owner and inventory guard findings use current Items in paired history", (
 			mode,
 		);
 	}
-	const dispatched = write({
-		root: dir,
-		path,
-		text: `${wake("2026-01-01T12:00Z")}\n${table("| I1 | report:r1 | changed | dispatched worker | |")}`,
-	});
+	const dispatchedPath = join(dir, "malformed-dispatched.md");
+	writeFileSync(dispatchedPath, `${wake("2026-01-01T12:00Z")}\n${table("| I1 | report:r1 | changed | dispatched worker | |")}`);
+	const dispatched = migrate({ root: dir, path: dispatchedPath });
 	const history = inspectHeartbeatLedgerPair(dispatched, {
 		mode: "history",
 		latest: true,

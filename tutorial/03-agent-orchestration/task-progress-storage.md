@@ -69,17 +69,62 @@ SHA-256 隔离：
 <project>/.workspace/task/<session>/taskhistory.md      # 完整 wake 历史
 <project>/release.md                                    # 自定义头部示例
 <project>/release.taskhistory.md                        # 自定义头部的历史 companion
-<project>/heartbeat.md.legacy                           # 迁移保留的旧文件原始字节
+<project>/heartbeat.md.legacy                           # 新建或迁移时保留的原始字节
 ```
 
 使用 Kit `readHeartbeatLedgerPair({root, path})` 兼容读取旧单文件或完整文件对；它是只读的。UI 展示、自动
 发现和普通读取都不能迁移一个仍由其他 writer 使用的旧台账；旧单文件在所有者明确接管之前保持原状，报告
 来源就是该头部文件。使用
 `inspectHeartbeatLedgerPair(pair, options)` 校验逻辑完整台账，并让每条 wake/Items 行指向真实来源文件和行号。
-`mode: 'items'` 只读当前头部的 Items；history/current 模式读取完整逻辑历史。来源行号可能落在头部或
-companion，消费者应展示 API 提供的物理来源。`readProjectHeartbeat` 的 `source.historyPath` 对 legacy
+`mode: 'items'` 和 `mode: 'format'` 只检查当前头部，不认证历史或 current 审计；history/current 模式读取
+完整逻辑历史。来源行号可能落在头部或 companion，消费者应展示 API 提供的物理来源。
+`readProjectHeartbeat` 的 `source.historyPath` 对 legacy
 单文件等于原始 `headPath`；对 paired ledger 指向 companion。配对历史中的 archived wakes 指向 companion，
 当前头部 wakes 和 Items 指向 head。
+
+### 新建和更新前校验
+
+新台账先在内存中生成完整文本，包含当前 Items 和首次 wake，再调用 Kit 的
+`createHeartbeatLedgerPair`。父目录必须已经存在，head、history 和 `.legacy` 备份路径必须全部不存在；
+新建没有旧版本，因此不传 `expectedContentHash`。
+
+```js
+import {
+  createHeartbeatLedgerPair,
+  readHeartbeatLedgerPair,
+} from './src/supervision/heartbeat-ledger-files.mjs';
+
+createHeartbeatLedgerPair({
+  root,
+  path,
+  text,
+  legacyWritersQuiescent: true,
+  // orchestration, // 可选，只记录实际观察及证据
+});
+const created = readHeartbeatLedgerPair({ root, path });
+```
+
+需要预检时，用 `inspectHeartbeatLedger(text, { mode: 'format', ledgerPath: path })` 检查内存中的候选。
+`inspectHeartbeatLedger` 从 `src/supervision/heartbeat-ledger-api.mjs` 导入。`format` 检查存在的当前 Items，
+以及候选内所有可识别 wake 的时间与 orchestration 元数据，`latest` 不把检查限制为最后一段。它兼容没有
+Items 的旧存储，但这不免除新监督审计的 Items 要求；此模式始终不认证 current，预检也不替代 writer 的强制检查。
+新建、`writeHeartbeatLedgerPair`、`appendHeartbeatWake` 和 `recordHeartbeatAgentAssignments` 都在
+发布最终候选之前校验。格式不合法会抛出带 `findings` 的 `HEARTBEAT_LEDGER_INVALID`，不会写入 head、
+history 或备份；已有文件保留原字节。根据诊断修正候选后再通过 API 写入，不能直接覆盖或追加来绕过校验。
+
+例如，source 使用 `owner:intake.md` 等支持的前缀，不能填 `user-2026-11-21`；阻塞状态使用
+`blocked <- Owner/ops production functionSwitch.redPoint value`，明确所等待的资源。字面值 `unknown`
+是合法的未完成状态，缺失证据时保持未知；`ready` 仍由 Items 规则拒绝，不能自动改成已调度。格式通过
+不证明实际活动、验收或落地；写入后回读 pair，再用严格 `current` 模式审计。
+
+禁止先用 `writeFile`、重定向或直接追加发布原始 seed，再调用 migrate；非法 seed 在迁移前已经可能被插件
+发现。create 会先验证完整原文，再原子发布这个已验证的 seed，并在同一 writer 锁内完成 pair 切换。
+文件 I/O 中断时，可能留下合法单文件 seed 或可恢复的 pair；应回读确认状态，再按下文迁移或恢复，不能
+覆盖已有文件或盲目重跑 create。格式拒绝与这种 I/O 中断不同：格式拒绝不会写入 head、history 或备份。
+新建使用 create；已有 pair 先读取新鲜版本再使用 write/append/assignment API。migration 和 recovery
+用于既有历史数据的兼容切换或中断恢复，不替代正常新建和更新。
+
+### 迁移既有单文件
 
 旧单文件转为双文件属于 writer-owned 显式切换：只有 writer 在整个事务期间停止旧 writer 并确认台账
 quiescent 后，才能设置 `legacyWritersQuiescent: true` 并传入新鲜的 `expectedContentHash`。先读：
@@ -99,12 +144,16 @@ migrateHeartbeatLedgerPair(writeOptions);
 直接追加旧文件的外部 writer。不能由发现、UI display 或只读 API 触发切换。写入会检查新鲜哈希；发生
 版本冲突就 fail closed。完成切换时，原始完整字节保留到 `.legacy`，既有 wake 历史复制到带版本标记的
 companion，最新 wake 与 Items 留在头部。新 wake 使用 `appendHeartbeatWake` 或
-`writeHeartbeatLedgerPair` 并提供相同所有权断言和刚读取的 `expectedContentHash`，不能再直接追加到头部。
+`writeHeartbeatLedgerPair` 并提供相同所有权断言和刚读取的 `expectedContentHash`，来源须已通过 create 或
+迁移成为 pair，不能再直接追加到头部。迁移保存既有历史原始字节，不把旧记录当作新候选重新套用格式门禁。
+
+### 恢复中断发布及后续更新
 
 如果 history 已落盘而发布 head 中断，`readHeartbeatLedgerPair` 会拒绝将不完整 pair 当成完整台账；用只读
 `readHeartbeatLedgerPairVersion({root, path})` 获取当前原始 hash，再把 hash 和 ownership 断言传给
 `recoverHeartbeatLedgerPair`。Kit 会校验 v3 history body、不可变备份、计划 head 与旧 head hash，仅当当前
-head 仍等于旧 head 或计划 head 时才完成发布；其他情况是冲突，禁止手工编辑任一副本。
+head 仍等于旧 head 或计划 head 时才完成发布；其他情况是冲突，禁止手工编辑任一副本。恢复按已记录的
+计划完成发布并保留历史字节，不是绕过新候选校验的另一种写入方式。
 
 ```js
 const rawVersion = readHeartbeatLedgerPairVersion({ root, path });

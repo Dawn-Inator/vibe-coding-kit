@@ -3,7 +3,8 @@
 ## 问题:为什么需要这个机制
 
 > 本文早期示例描述的是历史账本格式。当前写入请按 `heartbeat/v2`：保留旧段落，只追加带独立
-> `contract: heartbeat/v2` 标记的新段。统一报告 API 和 CLI 读模式见文末「当前格式与 API」。
+> `contract: heartbeat/v2` 标记的新段。追加通过 Kit pair writer 完成，不直接写 head；新建和更新的写前
+> 校验流程见[任务存储规范](task-progress-storage.md#新建和更新前校验)。统一报告 API 和 CLI 读模式见文末「当前格式与 API」。
 
 当一个编排会话同时管理多个 subagent、跨越较长时间运行时,会出现两类单靠编排者的"当下注意力"很难
 自己发现的问题:
@@ -230,6 +231,12 @@ const report = inspectHeartbeatLedger(markdown, { mode: 'current', latest: true,
 
 报告固定包含 `schemaVersion`、`mode`、`contract`、`certifiesCurrent`、`passed`、唤醒/Items 数量、解析记录和统一格式的
 `findings`。`passed` 只表示所选模式没有错误;只有 `certifiesCurrent: true` 才表示当前 v2 检查通过。
+
+新台账在内存中生成后通过 `createHeartbeatLedgerPair` 发布；已有 pair 先读新鲜版本，再通过 Kit 的
+write/append/assignment API 更新。它们强制在写入前校验最终候选，拒绝时返回
+`HEARTBEAT_LEDGER_INVALID` 及 `findings`，保留已有文件。不要先发布原始 seed 再迁移，也不要直接改文件
+绕过拒绝。`mode: 'format'` 可预检内存文本，但不认证 current；写入后仍须回读并审计。完整调用方式见
+[任务存储规范](task-progress-storage.md#新建和更新前校验)。
 
 - 默认 CLI 与 `--latest` 都是严格 current 检查。
 - `--history [--latest]` 只读旧格式历史,始终非认证并返回非零退出码;旧 `--latest --legacy` 是弃用兼容别名。

@@ -19,7 +19,7 @@ export function validateHeartbeatOrchestration(snapshot: HeartbeatOrchestration)
 export function projectHeartbeatOrchestration(snapshot: HeartbeatOrchestration, options?: { maxBlockedPreview?: number }): HeartbeatOrchestrationProjection;
 export function projectHeartbeatOrchestration(snapshot: null | undefined, options?: { maxBlockedPreview?: number }): null;
 
-export type HeartbeatInspectionMode = "current" | "history" | "items";
+export type HeartbeatInspectionMode = "current" | "history" | "items" | "format";
 
 export interface HeartbeatLedgerRow {
 	num: number;
@@ -182,7 +182,7 @@ export type HeartbeatAuditDueResult =
 /** Parse metadata using the same parsers as inspection; this does not validate a ledger. */
 export function summarizeHeartbeatLedger(text: string, options?: { includeItems?: boolean; includeWakes?: boolean }): { wakes: HeartbeatWake[]; itemCount: number };
 
-/** Inspect a heartbeat ledger using the shared current, history, or Items report shape. */
+/** Inspect a heartbeat ledger using the shared current, history, Items, or publication-format report shape. */
 export function inspectHeartbeatLedger(
 	text: string,
 	options?: InspectHeartbeatLedgerOptions,

@@ -17,4 +17,6 @@ export function createProjectLedgerPathScan(root: string): {
 };
 export function resolveProjectLedgerPath(root: string, candidate: string): Promise<{ path: string; info: Stats }>;
 export function resolveProjectLedgerPathSync(root: string, candidate: string): { path: string; info: Stats };
+/** Requires an existing parent directory and no entry at the target, including dangling symlinks. */
+export function resolveProjectLedgerCreationPathSync(root: string, candidate: string): { path: string };
 export function validateProjectLedgerSidecarSync(root: string, candidate: string): { path: string; info?: Stats; exists: boolean };
