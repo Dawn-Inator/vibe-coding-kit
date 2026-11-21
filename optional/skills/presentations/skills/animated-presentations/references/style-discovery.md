@@ -4,7 +4,7 @@
 
 Resolve purpose, audience, duration, content, and speaker-led versus reading-first density from the request. Ask only for missing information that changes the result. A clearly specified theme or narrow edit keeps the existing system instead of starting another selection process.
 
-For a new direction, read [STYLE_PRESETS.md](../STYLE_PRESETS.md) and [the compact bold selection index](../bold-template-pack/selection-index.json). Shortlist relevant candidates; read only their `preview.md` cards. If the user wants alternative directions, show distinct real title-slide previews so they can choose. Do not force a three-option exercise when they have already chosen a template or ask for representative pages in one direction.
+For a new direction, read [STYLE_PRESETS.md](../STYLE_PRESETS.md) and [the compact bold selection index](../bold-template-pack/selection-index.json). Shortlist relevant candidates; read only their `preview.md` cards. If the user wants alternative directions, read the complete recipe for each direction that will be rendered, then show distinct real title-slide previews so they can choose. Preview cards serve shortlisting only; they are not enough to implement a real slide. Do not force a three-option exercise when they have already chosen a template or ask for representative pages in one direction.
 
 Once a primary direction is selected, read its full recipe before coding: the relevant preset section or the selected bold `design.md`. Index paths are relative to the skill root. Split long reads into ranges so every section is actually available; do not treat truncated output, an index, or a preview as the recipe. Do not read unrelated full recipes.
 
