@@ -13,7 +13,7 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'kit-optional-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const kitRoot = join(root, 'kit'), projectRoot = join(root, 'project');
-  const groups = { aliyun: { components: ['aliyun-skill-discovery'] }, lark: { components: ['lark'] }, 'non-code': { components: ['hyperframes', 'presentations'] }, 'task-progress': { components: ['codex-task-progress'] } };
+  const groups = { aliyun: { components: ['aliyun-skill-discovery'] }, lark: { components: ['lark'] }, 'non-code': { components: ['hyperframes', 'presentations'] }, 'task-progress': { components: ['codex-task-progress'] }, 'app-store-compliance': { components: ['app-store-compliance'] } };
   const components = Object.fromEntries(Object.values(groups).flatMap((g) => g.components).map((id) => [id, { type: id === 'codex-task-progress' ? 'plugin' : 'skills', path: `optional/${id}`, skillsPath: 'skills', skills: id === 'presentations' ? ['animated-presentations'] : id === 'lark' ? ['lark', 'feishu-bugfix-workflow'] : id === 'codex-task-progress' ? [] : [id] }]));
   components.lark.pack = { entry: 'lark', memberPrefix: 'feishu-' };
   mkdirSync(join(kitRoot, 'skills'), { recursive: true });
@@ -32,7 +32,7 @@ function fixture(t) {
 
 test('fresh selection is opt in and validates preferences', (t) => {
   const f = fixture(t);
-  assert.deepEqual(resolveOptionalSelection({ ...f, fresh: true }).selection, { aliyun: false, lark: false, 'non-code': false, 'task-progress': false });
+  assert.deepEqual(resolveOptionalSelection({ ...f, fresh: true }).selection, { aliyun: false, lark: false, 'non-code': false, 'task-progress': false, 'app-store-compliance': false });
   const chosen = resolveOptionalSelection({ ...f, overrides: { lark: true }, fresh: true });
   assert.deepEqual([...chosen.skills.keys()], ['lark', 'feishu-bugfix-workflow']);
   assert.deepEqual(chosen.packs[0].members, ['feishu-bugfix-workflow']);
@@ -131,11 +131,11 @@ function realProject(t) {
   return { projectRoot, kitRoot: realKitRoot, skillsConfig: { skills } };
 }
 
-test('all sixteen combinations compose the actual catalog skills and packs', (t) => {
+test('all optional category combinations compose the actual catalog skills and packs', (t) => {
   const f = realProject(t);
   const catalog = loadOptionalCatalog(realKitRoot);
   const groups = Object.keys(catalog.groups);
-  for (let mask = 0; mask < 16; mask++) {
+  for (let mask = 0; mask < 2 ** groups.length; mask++) {
     const optional = Object.fromEntries(groups.map((group, index) => [group, Boolean(mask & (1 << index))]));
     const result = composeSources({ ...f, projectConfig: { optional } });
     const expectedPacks = [];
@@ -190,7 +190,7 @@ test('first configuration preserves an untouched legacy animated skill and later
   const local = '---\nname: animated-presentations\ndescription: legacy\n---\ncustom local body\n';
   writeFileSync(join(localDir, 'SKILL.md'), local);
   const legacy = { skills: { skills: { ...f.skillsConfig.skills, 'animated-presentations': { mode: 'local' } }, packs: [] } };
-  const nextSelection = { aliyun: true, lark: false, 'non-code': true, 'task-progress': false };
+  const nextSelection = { aliyun: true, lark: false, 'non-code': true, 'task-progress': false, 'app-store-compliance': false };
   const config = planOptionalConfiguration({ ...f, projectConfig: legacy, nextSelection, explicitGroups: ['aliyun'] });
   assert.equal(config.skills.skills['animated-presentations'].mode, 'replace');
   assert.equal(config.skills.skills.hyperframes.rationale, GENERATED_EXCLUDE_RATIONALE);

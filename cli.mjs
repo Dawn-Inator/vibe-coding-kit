@@ -314,7 +314,7 @@ function parseOptionalOverrides(values = []) {
   const result = {};
   for (const value of values) {
     const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)=(on|off)$/.exec(value);
-    if (!match || !OPTIONAL_GROUPS.includes(match[1])) throw new Error(`Invalid --optional '${value}'; use aliyun|lark|non-code|task-progress=on|off`);
+    if (!match || !OPTIONAL_GROUPS.includes(match[1])) throw new Error(`Invalid --optional '${value}'; use ${OPTIONAL_GROUPS.join('|')}=on|off`);
     if (Object.hasOwn(result, match[1])) throw new Error(`Optional category ${match[1]} was selected more than once`);
     result[match[1]] = match[2] === 'on';
   }
@@ -864,7 +864,7 @@ async function main() {
       return;
     }
     case 'help':
-      console.log('Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check|reuse-catalog> --project-root <path> [options]\nOptional groups: aliyun, lark, non-code, task-progress. Backend: --config <project-relative JSON path>');
+      console.log(`Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check|reuse-catalog> --project-root <path> [options]\nOptional groups: ${OPTIONAL_GROUPS.join(', ')}. Backend: --config <project-relative JSON path>`);
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }

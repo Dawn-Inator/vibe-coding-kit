@@ -25,6 +25,12 @@
       "components": [
         "codex-task-progress"
       ]
+    },
+    "app-store-compliance": {
+      "question": "是否需要 App Store / Google Play 提交审核技能？",
+      "components": [
+        "app-store-compliance"
+      ]
     }
   },
   "components": {
@@ -211,6 +217,34 @@
         "license": "MIT",
         "notes": "Kit-authored single-entry skill with pinned MIT Frontend Slides styles, design recipes, stage CSS, and PPTX extractor; HTML starter and Python PDF/publishing adapters are adapted for Kit. Includes the Kit-authored Delivery Practice runnable example, scene factories, preview, and adaptation recipe with its own MIT notice. See references/sources.md and bundled LICENSE. Other listed upstream is an inspiration reference only.",
         "sourceRevision": "9906a34d640d2111f724544cbc50f7f130569ae1"
+      },
+      "requirements": [],
+      "platforms": [
+        "*"
+      ],
+      "detection": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "inspectOptionalComponent"
+      },
+      "installation": {
+        "entry": "src/optional/runtime.mjs",
+        "export": "installOptionalComponent"
+      }
+    },
+    "app-store-compliance": {
+      "type": "skills",
+      "path": "optional/skills/app-store-compliance",
+      "skillsPath": "skills",
+      "skills": [
+        "app-store-compliance"
+      ],
+      "provenance": {
+        "sourceUrl": "https://github.com/mjmirza/app-store-compliance",
+        "sourceRevision": "d2156bab9d7189835631c0a99adcc2479d32138d",
+        "stagedTreeSha256": "b6174168dbfb5552125a8ed6f2403d317db4340f92afe5d810ce04932af44142",
+        "license": "MIT",
+        "upstreamLicense": "LicenseRef-OpenRoots-ORA-2.3",
+        "notes": "Kit-authored audit skill under Kit's MIT license. Upstream is an external reference only; no upstream source, documentation, data or installer is bundled. The pinned upstream checkout remains subject to its own license. Enabling this component only projects the skill and does not clone upstream, install dependencies or register global hooks."
       },
       "requirements": [],
       "platforms": [

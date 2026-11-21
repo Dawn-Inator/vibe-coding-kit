@@ -43,22 +43,24 @@ function treeHash(dir) {
   return hash.digest('hex');
 }
 
-test('optional catalog exposes the five opted-in components and frozen group questions', () => {
+test('optional catalog exposes the six opted-in components and frozen group questions', () => {
   assert.equal(catalog.schemaVersion, 1);
   assert.deepEqual(Object.keys(catalog.components).sort(), [
-    'aliyun-skill-discovery', 'codex-task-progress', 'hyperframes', 'lark', 'presentations',
+    'aliyun-skill-discovery', 'app-store-compliance', 'codex-task-progress', 'hyperframes', 'lark', 'presentations',
   ]);
   assert.deepEqual(catalog.groups, {
     aliyun: { question: '是否使用阿里云？', components: ['aliyun-skill-discovery'] },
     lark: { question: '是否使用飞书？', components: ['lark'] },
     'non-code': { question: '是否需要非代码能力，例如演示文稿、视频制作？', components: ['hyperframes', 'presentations'] },
     'task-progress': { question: '是否使用原生 Codex 任务进度插件？', components: ['codex-task-progress'] },
+    'app-store-compliance': { question: '是否需要 App Store / Google Play 提交审核技能？', components: ['app-store-compliance'] },
   });
 });
 
 test('catalog memberships point at complete staged content and retain factual provenance', () => {
   const expected = {
     'aliyun-skill-discovery': ['alibabacloud-find-skills'],
+    'app-store-compliance': ['app-store-compliance'],
     lark: larkSkills,
     hyperframes: hyperframesSkills,
     presentations: ['animated-presentations'],
@@ -82,7 +84,11 @@ test('catalog memberships point at complete staged content and retain factual pr
   assert.equal(catalog.components['aliyun-skill-discovery'].provenance.license, 'not-stated-in-imported-files');
   assert.equal(catalog.components.lark.provenance.license, 'not-stated-in-imported-files');
   assert.equal(catalog.components.presentations.provenance.license, 'MIT');
-  for (const id of ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']) {
+  assert.equal(catalog.components['app-store-compliance'].provenance.license, 'MIT');
+  assert.equal(catalog.components['app-store-compliance'].provenance.upstreamLicense, 'LicenseRef-OpenRoots-ORA-2.3');
+  assert.equal(catalog.components['app-store-compliance'].provenance.sourceRevision, 'd2156bab9d7189835631c0a99adcc2479d32138d');
+  assert.deepEqual(catalog.components['app-store-compliance'].requirements, []);
+  for (const id of ['aliyun-skill-discovery', 'app-store-compliance', 'lark', 'hyperframes', 'presentations']) {
     const component = catalog.components[id];
     assert.match(component.provenance.stagedTreeSha256, /^[a-f0-9]{64}$/);
     assert.equal(component.provenance.stagedTreeSha256, treeHash(join(root, component.path)), `${id} provenance hash`);
@@ -102,7 +108,7 @@ test('catalog provides platform, detection, and installation metadata for the op
   }
   assert.equal(catalog.components['codex-task-progress'].installation.script, 'optional/plugins/codex-task-progress/scripts/install-from-kit.mjs');
   assert.ok(existsSync(join(root, catalog.components['codex-task-progress'].installation.script)));
-  for (const id of ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']) {
+  for (const id of ['aliyun-skill-discovery', 'app-store-compliance', 'lark', 'hyperframes', 'presentations']) {
     assert.equal(catalog.components[id].installation.script, undefined, `${id} uses the runtime without a plugin installer script`);
   }
 });
@@ -122,7 +128,7 @@ test('skill IDs, local navigation, third-party notices, and project-private mark
 
   const hyperframes = catalog.components.hyperframes;
   assert.ok(existsSync(join(root, hyperframes.path, 'skills', 'hyperframes', 'LICENSE')));
-  const allMarkdown = ['aliyun-skill-discovery', 'lark', 'hyperframes', 'presentations']
+  const allMarkdown = ['aliyun-skill-discovery', 'app-store-compliance', 'lark', 'hyperframes', 'presentations']
     .flatMap((id) => listFiles(join(root, catalog.components[id].path)).filter((path) => extname(path) === '.md'));
   for (const file of allMarkdown) {
     assert.doesNotMatch(readFileSync(file, 'utf8'), /lingofly|glosight|dawn-inator/i, `${relative(root, file)} has no project/private branding`);

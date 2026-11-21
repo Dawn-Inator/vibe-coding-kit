@@ -1,6 +1,6 @@
 # Optional Components
 
-Optional components extend the Kit for projects that need them. Their registry is [`catalog.json`](catalog.json); the Kit installer reads that catalog to resolve the categories below. New installs leave the first three categories off by default. Project settings live in `.vibe-coding/project.config.json` under `optional` and do not override project-specific policies.
+Optional components extend the Kit for projects that need them. Their registry is [`catalog.json`](catalog.json); the Kit installer reads that catalog to resolve the categories below. New installs leave skill categories off by default; an existing supported Task Progress installation may be reused. Project settings live in `.vibe-coding/project.config.json` under `optional` and do not override project-specific policies.
 
 The directory tree groups sources by physical type:
 
@@ -11,18 +11,20 @@ optional/
 │   └── codex-task-progress/
 └── skills/
     ├── aliyun-skill-discovery/
+    ├── app-store-compliance/
     ├── hyperframes/
     ├── lark/
     └── presentations/
 ```
 
-These folders do not change the four installation-purpose categories. `catalog.json` maps `task-progress` to the plugin, `aliyun` to its skill component, `lark` to its skill component, and `non-code` to both `hyperframes` and `presentations`.
+`catalog.json` maps the installation-purpose categories to these sources: `task-progress` to the plugin, `aliyun` and `lark` to their skill components, `non-code` to both `hyperframes` and `presentations`, and `app-store-compliance` to its audit skill.
 
 Choose categories during a new interactive install, or pass repeated flags in scripted installs:
 
 ```sh
 vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' \
-  --optional aliyun=off --optional lark=on --optional non-code=off --optional task-progress=on
+  --optional aliyun=off --optional lark=on --optional non-code=off --optional task-progress=on \
+  --optional app-store-compliance=off
 ```
 
 For an initialized project, set a category explicitly with:
@@ -43,8 +45,9 @@ For a registered project, ordinary `install` checks the pinned Kit and current p
 | `lark` | `lark` | Use the Lark skill entry point and its documented operations. |
 | `non-code` | `hyperframes`, `presentations` | Add the HyperFrames video workflow and presentation authoring guidance. |
 | `task-progress` | `codex-task-progress` | Add Codex chat task progress and its optional project Heartbeat view. |
+| `app-store-compliance` | `app-store-compliance` | Review iOS and Android submission evidence against current official store policies. |
 
-The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. Interactive setup presents it as one of the four optional-purpose categories; it does not ask for individual skills or a separate native-app setup. Selecting it installs the native Codex plugin and its Helper data service from [`plugins/codex-task-progress/scripts/install-from-kit.mjs`](plugins/codex-task-progress/scripts/install-from-kit.mjs) in the pinned Kit checkout. Existing installations are detected and reused without an automatic upgrade. Setup does not use a custom application or Dock entry, or restart Codex. The native panel requires host MCP Apps support and the host-controlled `enable_mcp_apps` feature; check with `codex features list` and, if selected, enable with `codex features enable enable_mcp_apps`. Kit does not toggle it or promise visibility on unsupported hosts; the installer returns `NATIVE_MCP_SETUP_REQUIRED` if it is disabled or unsupported. The only separate Task Progress consent is the signing-certificate choice when the installer requires one; it is independent of category selection. The installer builds and installs from the component embedded in Kit and does not depend on cloning another repository. The plugin package uses its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path. The installer automatically reuses a previously confirmed signing identity and places the Helper at the stable `install/bin/goal-progress` path while retaining versioned release assets. Version 0.6.0 stops if retired CDP/launcher installation markers remain; safely remove those using the old installed version before upgrading.
+The `task-progress` category is offered only on supported Apple Silicon macOS with Codex Desktop. Interactive setup presents it alongside the other available optional-purpose categories; it does not ask for individual skills or a separate native-app setup. Selecting it installs the native Codex plugin and its Helper data service from [`plugins/codex-task-progress/scripts/install-from-kit.mjs`](plugins/codex-task-progress/scripts/install-from-kit.mjs) in the pinned Kit checkout. Existing installations are detected and reused without an automatic upgrade. Setup does not use a custom application or Dock entry, or restart Codex. The native panel requires host MCP Apps support and the host-controlled `enable_mcp_apps` feature; check with `codex features list` and, if selected, enable with `codex features enable enable_mcp_apps`. Kit does not toggle it or promise visibility on unsupported hosts; the installer returns `NATIVE_MCP_SETUP_REQUIRED` if it is disabled or unsupported. The only separate Task Progress consent is the signing-certificate choice when the installer requires one; it is independent of category selection. The installer builds and installs from the component embedded in Kit and does not depend on cloning another repository. The plugin package uses its separate Node.js 22+ toolchain, while Kit itself uses Node.js 20; generated output is self-contained and derives from the checked-out Kit revision. No prebuilt release asset is implied by this source-install path. The installer automatically reuses a previously confirmed signing identity and places the Helper at the stable `install/bin/goal-progress` path while retaining versioned release assets. Version 0.6.0 stops if retired CDP/launcher installation markers remain; safely remove those using the old installed version before upgrading.
 
 Before a missing plugin is installed, an interactive TTY offers one explicit confirmation to select an eligible local signing certificate. In non-interactive use, Kit reports that signing setup is required and prints the command sequence instead of guessing an identity. To inspect signing status and available local candidates without writing anything, run:
 
@@ -67,6 +70,18 @@ The Task Progress component retains its upstream license and attribution notices
 The optional `non-code` category includes one presentation entry point, `animated-presentations`. It bundles Frontend Slides’ 12 base styles, 34 progressively loaded bold design recipes, a fixed-stage HTML starter, and optional PPTX extraction, PDF export, and publishing helpers. It retains Kit’s motion and browser-verification guidance; no separate `frontend-slides` skill/plugin is installed.
 
 Enabling this category installs the resources, not Python packages, browsers, hosting CLI tools, or credentials. Viewable HTML needs no build step. PPTX extraction and PDF export have operation-specific dependencies; publication requires an explicit user request. See the [presentation skill](skills/presentations/skills/animated-presentations/SKILL.md) and its [tool usage](skills/presentations/skills/animated-presentations/references/tools.md).
+
+## App store submission review
+
+The optional `app-store-compliance` category installs one Kit-authored [audit skill](skills/app-store-compliance/skills/app-store-compliance/SKILL.md). Enable it for an initialized project with:
+
+```sh
+node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional app-store-compliance=on
+```
+
+Use `$app-store-compliance` for a submission review or rejection fix plan. The skill supports a manual evidence review using current official Apple and Google policies. It links to a fixed revision of [mjmirza/app-store-compliance](https://github.com/mjmirza/app-store-compliance/tree/d2156bab9d7189835631c0a99adcc2479d32138d) as an external reference; Kit does not bundle that project's source, documentation or data. The Kit-authored skill is MIT-licensed. The referenced upstream revision uses [OpenRoots Agent License 2.3](https://github.com/mjmirza/app-store-compliance/blob/d2156bab9d7189835631c0a99adcc2479d32138d/LICENSE), with separate conditions for its use.
+
+Enabling this category only projects the skill. It does not clone upstream, install dependencies, register global hooks, access store accounts or submit an app. To use the optional upstream scanner, provide a separate checkout under its applicable license and its Bash/Python dependencies; on Windows that requires a compatible Bash environment. Scanner findings still need evidence review and current policy verification.
 
 ## Project-specific boundaries
 

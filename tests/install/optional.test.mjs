@@ -84,7 +84,7 @@ test('installer accepts the full inline optional assignment and stores category 
   const result = install(fixture, ['--optional=aliyun=on', '--optional', 'task-progress=off']);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
-  assert.deepEqual(config.optional, { aliyun: true, lark: false, 'non-code': false, 'task-progress': false });
+  assert.deepEqual(config.optional, { aliyun: true, lark: false, 'non-code': false, 'task-progress': false, 'app-store-compliance': false });
   assert.match(result.stdout, /Optional categories:/);
   const optionalMirror = join(fixture.project, '.agents/skills/alibabacloud-find-skills/SKILL.md');
   assert.equal(existsSync(optionalMirror), true);

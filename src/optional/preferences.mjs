@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const OPTIONAL_GROUPS = Object.freeze(['aliyun', 'lark', 'non-code', 'task-progress']);
+export const OPTIONAL_GROUPS = Object.freeze(['aliyun', 'lark', 'non-code', 'task-progress', 'app-store-compliance']);
 
 export function validateOptionalPreferences(value) {
   if (value === undefined) return;

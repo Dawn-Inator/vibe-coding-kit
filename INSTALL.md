@@ -113,7 +113,7 @@ node .vibe-coding/kit/cli.mjs help
 
 ## 选择可选组件
 
-可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记。源码按物理类型放在 `optional/plugins/` 与 `optional/skills/`；安装用途类别仍是 `aliyun`、`lark`、`non-code` 和 `task-progress`，由 catalog 映射到对应组件。完整目录与映射见[可选组件指南](optional/README.md)。新项目默认关闭前三类。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会直接复用，不询问签名身份、不重建，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
+可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记。源码按物理类型放在 `optional/plugins/` 与 `optional/skills/`；安装用途类别是 `aliyun`、`lark`、`non-code`、`task-progress` 和 `app-store-compliance`，由 catalog 映射到对应组件。完整目录与映射见[可选组件指南](optional/README.md)。新项目默认关闭 skill 类别。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会直接复用，不询问签名身份、不重建，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
 
 ```sh
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --optional lark=on --optional non-code=off
@@ -128,6 +128,8 @@ npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install -
 ```sh
 node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional task-progress=on
 ```
+
+需要应用商店提交前检查或拒审修复建议时，可设置 `--optional app-store-compliance=on`，再调用 `$app-store-compliance`。这会安装 Kit 自有审核 skill，按当前 Apple/Google 官方政策核查项目与提交材料，并引用固定版本的上游资料。Kit 不分发上游源码，也不会自动克隆上游、安装扫描依赖或注册全局 hooks。若使用可选的上游扫描工具，需另备适用许可下的 checkout 和 Bash/Python 环境；上游当前采用含商业条件的 OpenRoots Agent License 2.3，与 Kit 自有技能的 MIT 许可分开。详情见[应用商店审核技能说明](optional/README.md#app-store-submission-review)。
 
 类别偏好保存在项目自有 `.vibe-coding/project.config.json` 的 `optional` 对象中。老项目未声明该对象时，Kit 从已经选用或存在的可选 skill 源识别 legacy 选择，并识别可复用的已安装插件；新项目默认值不会覆盖这些现状。首次保存偏好会保留已有 skill 决策与 pack 布局：例如原来只选了 `animated-presentations`，配置 `aliyun=on` 会保留它，但不会自动展开整个 `non-code` 类别；之后显式设置 `non-code=on` 才启用该类别的完整 skill 集。用户的 exclude 和 local/replace 决策会继续保留；只有 Kit 迁移时生成的 exclude 理由会在显式启用对应类别时清除。禁用类别只清理由 Kit 生成的投影和入口，项目自有文件、历史、凭据与自定义 skill 内容应由项目自行保管。路径冲突会保留现有内容并报告，需人工处理后再配置。
 
