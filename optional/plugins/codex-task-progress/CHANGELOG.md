@@ -1,3 +1,7 @@
+# Task Progress 0.12.10
+
+- Keep resumed subagents visible when their rollout contains an older untagged abort before the verified current turn. Current-turn, undated, conflicting, or invalid lifecycle records still fail closed.
+
 # Task Progress 0.12.9
 
 - Observe subagents through a separate current-CLI session per scan, closing it afterward. Desktop updates no longer leave subagent scans attached to an obsolete sidecar; the native Goal watcher stays separate. This does not promise parity with Desktop's live count.
