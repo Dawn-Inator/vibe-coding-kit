@@ -10,4 +10,6 @@ Read when finishing or modifying the deck. Use available browser tooling and rec
 
 6. Verify the design decision and motion plan against rendered output: identify how the selected recipe shaped composition and the graphic vocabulary, whether the opening/closing have a deliberate relationship, and whether explanatory scenes move differently for a reason. A resource-read log, zero overflow, or many named animations does not prove quality. For function-driven scenes, inspect initial, middle, and final states plus actual playback; verify live reduced-motion changes stop existing clocks and export leaves stable graphics. Compare with an available reference on the same content without treating one run as a general win rate.
 
+For a representative proof, verify and present only the agreed pages and real motion; record the user direction decision separately from technical results. Do not expand the deck while an explicit direction confirmation is pending.
+
 Fix issues and repeat the affected checks. Deliver the file path or runnable URL, navigation instructions, and concise facts about what was checked; avoid reporting unobserved performance or exports as successful.
