@@ -7,6 +7,7 @@ import {
   CodexAppServerClient,
   type CodexAppServerSession,
   createCodexAppServerRuntime,
+  type DirectSubagentMetadata,
 } from "../src/index.js";
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -521,6 +522,127 @@ test("runtime wraps verified child metadata and records exact current-turn rollo
     assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "unknown");
   } finally {
     await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh subagent readers see continued turns without closing the parent goal connection", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agent-fresh-readers-")));
+  const cwd = join(root, "project");
+  const sessions = join(root, "sessions");
+  await mkdir(cwd);
+  await mkdir(sessions);
+  const path = join(sessions, "child.jsonl");
+  const header = {
+    type: "session_meta",
+    payload: {
+      id: "child",
+      cwd,
+      source: { subAgent: { thread_spawn: { parent_thread_id: "parent" } } },
+    },
+  };
+  let metadata: DirectSubagentMetadata = {
+    path,
+    cwd,
+    turnId: "first-turn",
+    rootTurnId: "first-root",
+    turnStartedAt: "2026-11-16T12:00:00.000Z",
+    turnStatus: "completed",
+    turnCompletedAt: "2026-11-16T12:00:02.000Z",
+  };
+  const connections: { closed: boolean; goalReads: number }[] = [];
+  const runtime = createCodexAppServerRuntime({
+    env: { CODEX_HOME: root },
+    connect: async () => {
+      // Model the CLI retaining its first indexed turn across later reads.
+      const pinnedMetadata = { ...metadata };
+      const connection = { closed: false, goalReads: 0 };
+      connections.push(connection);
+      let resolveClosed!: () => void;
+      return {
+        closed: new Promise<void>((resolve) => {
+          resolveClosed = resolve;
+        }),
+        requestMethods: [],
+        getGoal: async () => {
+          assert.equal(connection.closed, false);
+          connection.goalReads++;
+          return null;
+        },
+        readThreadIdentity: async (threadId) => ({
+          id: threadId,
+          sessionId: threadId,
+          cwd,
+          threadSource: "user",
+          agentRole: null,
+          ephemeral: false,
+          status: { type: "idle" },
+        }),
+        listLoadedThreads: async () => [],
+        listThreads: async () => [],
+        listTurnIds: async () => [pinnedMetadata.turnId],
+        readSubagentObservationMetadata: async (threadId, parentThreadId) => {
+          assert.equal(connection.closed, false);
+          return threadId === "child" && parentThreadId === "parent" ? pinnedMetadata : null;
+        },
+        close: async () => {
+          connection.closed = true;
+          resolveClosed();
+        },
+      };
+    },
+    setTimeout: () => assert.fail("a reader must not start a goal polling timer"),
+  });
+  const first = runtime.createSubagentReader?.();
+  const second = runtime.createSubagentReader?.();
+  assert.ok(first && second);
+  const context = { parentThreadId: "parent", cwd, activityScope: "parent-thread" as const };
+  try {
+    await runtime.getGoal("parent");
+    const completed = await first.observeDirectSubagent?.("child", context);
+    assert.equal(completed?.state, "completed");
+    assert.equal(completed?.eventTurnId, "first-turn");
+    await first.close();
+    assert.equal(connections[1]?.closed, true);
+    assert.equal(connections[0]?.closed, false);
+    metadata = {
+      path,
+      cwd,
+      turnId: "continued-turn",
+      rootTurnId: "continued-root",
+      turnStartedAt: "2026-11-16T12:10:00.000Z",
+      turnStatus: "inProgress",
+    };
+    await writeFile(
+      path,
+      `${JSON.stringify(header)}\n${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-11-16T12:10:01.000Z",
+        payload: {
+          type: "task_started",
+          turn_id: "continued-turn",
+          root_turn_id: "continued-root",
+        },
+      })}\n`,
+    );
+    // Reusing the old connection cannot see the continuation's indexed turn.
+    assert.equal((await runtime.observeDirectSubagent?.("child", context))?.state, "completed");
+    const working = await second.observeDirectSubagent?.("child", context);
+    assert.equal(working?.state, "working");
+    assert.equal(working?.basis, "codex-rollout");
+    assert.equal(working?.eventTurnId, "continued-turn");
+    await second.close();
+    assert.equal(connections.length, 3);
+    assert.deepEqual(
+      connections.map((connection) => connection.closed),
+      [false, true, true],
+    );
+    await runtime.getGoal("parent");
+    assert.equal(connections[0]?.goalReads, 2);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+    await runtime.close();
+    assert.ok(connections.every((connection) => connection.closed));
     await rm(root, { recursive: true, force: true });
   }
 });

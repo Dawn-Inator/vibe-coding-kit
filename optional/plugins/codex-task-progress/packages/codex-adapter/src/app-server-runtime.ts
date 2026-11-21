@@ -111,6 +111,7 @@ export interface CodexAppServerSession {
 }
 
 export interface CodexAppServerRuntime {
+  createSubagentReader?(): CodexAppServerRuntime;
   verifyDirectSubagent?(
     threadId: string,
     context: DirectSubagentContext,
@@ -323,6 +324,13 @@ class CodexAppServerRuntimeImpl implements CodexAppServerRuntime {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#setTimeout = options.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout));
     this.#clearTimeout = options.clearTimeout ?? ((id) => clearTimeout(id as NodeJS.Timeout));
+  }
+
+  createSubagentReader(): CodexAppServerRuntime {
+    if (this.#closing) throw new Error("GOAL_PROGRESS_APP_SERVER_CLOSING");
+    // Resolve the current CLI for each scan without sharing or interrupting
+    // the long-lived goal watcher connection retained across Desktop updates.
+    return new CodexAppServerRuntimeImpl(this.#options);
   }
 
   async listSubagentTurns(

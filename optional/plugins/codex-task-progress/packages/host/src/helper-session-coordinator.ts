@@ -54,7 +54,7 @@ const DirectSubagentSourceSchema = z.strictObject({
       .object({
         parent_thread_id: z.string().min(1).max(512),
         depth: z.literal(1),
-        agent_role: z.string().min(1).max(256),
+        agent_role: z.string().min(1).max(256).nullish(),
       })
       .passthrough(),
   }),
@@ -538,15 +538,25 @@ export class GoalProgressSessionCoordinator {
     }
 
     const thread = await this.#readExactThreadIdentity(requestIdentity.threadId);
+    // Native child records may omit the derived source label or use the parent
+    // session alias. Only child task requests may use those forms; both session
+    // IDs are checked against the exact ancestry below.
+    const childTaskRequest = allowSubagentTask && requestIdentity.threadSource === "subagent";
+    const conflictingFields: string[] = [];
+    if (thread.id !== requestIdentity.threadId) conflictingFields.push("threadId");
+    if (!childTaskRequest && thread.sessionId !== requestIdentity.sessionId)
+      conflictingFields.push("sessionId");
     if (
-      thread.id !== requestIdentity.threadId ||
-      thread.sessionId !== requestIdentity.sessionId ||
-      thread.threadSource !== requestIdentity.threadSource ||
-      (requestIdentity.cwd !== undefined && requestIdentity.cwd !== thread.cwd)
-    ) {
+      thread.threadSource !== requestIdentity.threadSource &&
+      !(childTaskRequest && thread.threadSource === null)
+    )
+      conflictingFields.push("threadSource");
+    if (requestIdentity.cwd !== undefined && requestIdentity.cwd !== thread.cwd)
+      conflictingFields.push("cwd");
+    if (conflictingFields.length) {
       throw new GoalProgressIpcHandlerError(
         "CODEX_REQUEST_IDENTITY_CONFLICT",
-        "Codex request identity conflicts with the exact thread record",
+        `Codex request identity conflicts with the exact thread record (${conflictingFields.join(", ")})`,
       );
     }
     if (requestIdentity.threadSource === "user") {
@@ -609,10 +619,10 @@ export class GoalProgressSessionCoordinator {
       parentThreadId === thread.id ||
       parentThreadId.trim() !== parentThreadId ||
       /\p{Cc}/u.test(parentThreadId) ||
-      agentRole.trim() !== agentRole ||
-      /\p{Cc}/u.test(agentRole) ||
-      thread.agentRole !== agentRole ||
+      (agentRole != null && (agentRole.trim() !== agentRole || /\p{Cc}/u.test(agentRole))) ||
+      thread.agentRole !== (agentRole ?? null) ||
       (thread.sessionId !== thread.id && thread.sessionId !== parentThreadId) ||
+      (request.sessionId !== thread.id && request.sessionId !== parentThreadId) ||
       (thread.parentThreadId != null && thread.parentThreadId !== parentThreadId) ||
       (request.parentThreadId !== undefined && request.parentThreadId !== parentThreadId) ||
       (request.agentRole !== undefined && request.agentRole !== thread.agentRole)

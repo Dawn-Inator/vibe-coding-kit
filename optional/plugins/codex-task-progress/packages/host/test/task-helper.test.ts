@@ -991,6 +991,7 @@ test("Codex authorization still rejects conflicting and untrusted thread records
     [{ sessionId: "other" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
     [{ cwd: "/other" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
     [{ threadSource: "system" }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
+    [{ threadSource: null }, "CODEX_REQUEST_IDENTITY_CONFLICT"],
     [{ agentRole: "worker" }, "CODEX_REQUEST_THREAD_UNTRUSTED"],
     [{ ephemeral: true }, "CODEX_REQUEST_THREAD_UNTRUSTED"],
   ];
@@ -1022,6 +1023,237 @@ test("Codex authorization still rejects conflicting and untrusted thread records
     await assert.rejects(coordinator.authorizeSessionRequest(auth), {
       code: "CODEX_REQUEST_REPLAYED",
     });
+  }
+});
+
+test("child task authorization accepts native null source and role only after direct ancestry checks", async () => {
+  for (const nativeSessionId of ["child", "parent"]) {
+    for (const requestSessionId of ["child", "parent"]) {
+      for (const role of ["worker", null, undefined]) {
+        const child = {
+          ...identity("child", "/tmp"),
+          sessionId: nativeSessionId,
+          threadSource: role === "worker" ? "subagent" : null,
+          agentRole: role ?? null,
+          path: "/tmp/child.jsonl",
+          source: {
+            subAgent: {
+              thread_spawn: {
+                parent_thread_id: "parent",
+                depth: 1,
+                ...(role === undefined ? {} : { agent_role: role }),
+              },
+            },
+          },
+        };
+        const reads: string[] = [];
+        const coordinator = new GoalProgressSessionCoordinator({
+          store: null as never,
+          resolveNativeGoal: async () => null,
+          resolveCurrentThread: async () => {
+            throw new Error("unexpected hook resolution");
+          },
+          readThreadIdentity: async (threadId) => {
+            reads.push(threadId);
+            return threadId === "child" ? child : identity(threadId, "/tmp");
+          },
+          consumeRuntimeProof: async () => false,
+          log: async () => {},
+        });
+        const result = await coordinator.authorizeTaskRequest({
+          kind: "codex-request",
+          toolName: "task_progress_get",
+          identity: {
+            threadId: "child",
+            sessionId: requestSessionId,
+            turnId: "turn",
+            callId: "call",
+            model: "test",
+            threadSource: "subagent",
+            cwd: "/tmp",
+            parentThreadId: "parent",
+            ...(role == null ? {} : { agentRole: role }),
+          },
+        });
+        assert.equal(result.identity.threadId, "child");
+        assert.deepEqual(reads, ["child", "parent"]);
+      }
+    }
+  }
+});
+
+test("native null child labels cannot bypass source, role, parent, or task-only authorization", async () => {
+  const source = (parent = "parent", role: string | null = null, depth = 1) => ({
+    subAgent: { thread_spawn: { parent_thread_id: parent, depth, agent_role: role } },
+  });
+  const child = {
+    ...identity("child", "/tmp"),
+    threadSource: null,
+    agentRole: null,
+    path: "/tmp/child.jsonl",
+    source: source(),
+  };
+  const request = {
+    threadId: "child",
+    sessionId: "child",
+    turnId: "turn",
+    callId: "call",
+    model: "test",
+    threadSource: "subagent" as const,
+    cwd: "/tmp",
+    parentThreadId: "parent",
+  };
+  const cases: Array<{
+    child?: Partial<CodexThreadIdentity>;
+    request?: Partial<typeof request> & { agentRole?: string };
+    parent?: Partial<CodexThreadIdentity>;
+    ordinaryAuthorization?: boolean;
+    code: string;
+  }> = [
+    { child: { threadSource: "user" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { source: null }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { child: { source: { subAgent: "compact" } }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { child: { source: source("parent", null, 2) }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { child: { source: source("foreign") }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { source: source("child") }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { source: source("parent", "worker") }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { agentRole: "worker" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { request: { agentRole: "worker" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { request: { sessionId: "foreign" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { sessionId: "foreign" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { cwd: "/other" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { parentThreadId: "foreign" }, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+    { child: { path: "relative.jsonl" }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { child: { ephemeral: true }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { parent: { threadSource: null }, code: "CODEX_REQUEST_THREAD_UNTRUSTED" },
+    { ordinaryAuthorization: true, code: "CODEX_REQUEST_IDENTITY_CONFLICT" },
+  ];
+  for (const entry of cases) {
+    const coordinator = new GoalProgressSessionCoordinator({
+      store: null as never,
+      resolveNativeGoal: async () => null,
+      resolveCurrentThread: async () => {
+        throw new Error("unexpected hook resolution");
+      },
+      readThreadIdentity: async (threadId) =>
+        threadId === "child"
+          ? { ...child, ...entry.child }
+          : { ...identity(threadId, "/tmp"), ...entry.parent },
+      consumeRuntimeProof: async () => false,
+      log: async () => {},
+    });
+    const auth = {
+      kind: "codex-request" as const,
+      toolName: "task_progress_get",
+      identity: { ...request, ...entry.request },
+    } satisfies GoalProgressIpcAuthorization;
+    await assert.rejects(
+      entry.ordinaryAuthorization
+        ? coordinator.authorizeSessionRequest(auth)
+        : coordinator.authorizeTaskRequest(auth),
+      { code: entry.code },
+    );
+  }
+});
+
+test("native null child records keep task reads and mutations in their own journal", async () => {
+  const root = await mkdtemp("/tmp/ctph-null-child-");
+  await mkdir(join(root, ".git"));
+  const mocked = runtime(root);
+  const parent = "parent-chat";
+  const child = "child-chat";
+  mocked.readThreadIdentity = async (threadId) => ({
+    ...identity(threadId, root),
+    ...(threadId === child
+      ? {
+          threadSource: null,
+          agentRole: null,
+          path: join(root, "child.jsonl"),
+          source: {
+            subAgent: { thread_spawn: { parent_thread_id: parent, depth: 1, agent_role: null } },
+          },
+        }
+      : {}),
+  });
+  mocked.listDirectSubagents = async () => {
+    assert.fail("child journal must not load an agent roster");
+  };
+  mocked.listSubagentTurns = async () => {
+    assert.fail("child journal must not load parent activity");
+  };
+  const paths = resolveGoalProgressPaths({ root: join(root, "data") });
+  const helper = new GoalProgressHelper({
+    paths,
+    runtime: mocked,
+    resolveNativeGoal: async () => null,
+  });
+  const client = new GoalProgressIpcClient(paths.helperSocketPath, { clientKind: "mcp" });
+  let calls = 0;
+  const request = (action: "get" | "initialize" | "update" | "rescope", input = {}) =>
+    client.request({
+      method: "task.request",
+      params: {
+        action,
+        input,
+        auth: {
+          kind: "codex-request",
+          toolName: `task_progress_${action}`,
+          identity: {
+            threadId: child,
+            sessionId: child,
+            turnId: "child-turn",
+            callId: `child-${++calls}`,
+            model: "test",
+            threadSource: "subagent",
+            parentThreadId: parent,
+            cwd: root,
+          },
+        },
+      },
+    });
+  try {
+    await helper.start();
+    const empty = (await request("get")).result as Record<string, unknown>;
+    assert.equal(empty.task, null);
+    await request("initialize", {
+      requestId: "child-init",
+      expectedRevision: 0,
+      reason: "Register child milestones",
+      title: "Child module",
+      objectives: [{ id: "module", title: "Implement module" }],
+    });
+    await request("update", {
+      requestId: "child-update",
+      expectedRevision: 1,
+      reason: "Record module progress",
+      changes: [{ targetId: "module", status: "active" }],
+    });
+    await request("rescope", {
+      requestId: "child-rescope",
+      expectedRevision: 2,
+      reason: "Include module evidence review",
+      objectives: [
+        { id: "module", title: "Implement module", status: "active" },
+        { id: "evidence", title: "Review module evidence" },
+      ],
+    });
+    const own = (await request("get")).result as Record<string, unknown> & { task: TaskState };
+    assert.equal(own.task.threadId, child);
+    assert.equal(own.task.title, "Child module");
+    assert.equal(own.task.revision, 3);
+    for (const value of [empty, own])
+      for (const field of ["heartbeat", "subagents", "presentation", "storage", "archiveCount"])
+        assert.equal(Object.hasOwn(value, field), false, field);
+    await assert.rejects(
+      client.request({
+        method: "task.native-read",
+        params: { action: "get", threadId: child, input: {} },
+      }),
+      hasCode("TASK_THREAD_UNTRUSTED"),
+    );
+  } finally {
+    await helper.stop();
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -3523,12 +3755,30 @@ test("subagent snapshot is background, scoped to its parent, and reports the kno
   const root = await mkdtemp("/tmp/ctph-subagents-");
   await mkdir(join(root, ".git"));
   const testRuntime = runtime(root);
+  const readerRuntime = runtime(root);
+  let readers = 0;
+  let closedReaders = 0;
+  testRuntime.createSubagentReader = () => {
+    readers++;
+    return {
+      ...readerRuntime,
+      close: async () => {
+        closedReaders++;
+      },
+    };
+  };
+  testRuntime.listDirectSubagents = async () => {
+    throw new Error("the long-lived session has stale child history");
+  };
+  testRuntime.listSubagentTurns = async () => {
+    throw new Error("the long-lived session has stale parent history");
+  };
   let release!: () => void;
   const gate = new Promise<void>((resolveGate) => {
     release = resolveGate;
   });
   const calls: string[] = [];
-  testRuntime.listDirectSubagents = async (parentThreadId) => {
+  readerRuntime.listDirectSubagents = async (parentThreadId) => {
     calls.push(parentThreadId);
     await gate;
     return {
@@ -3544,7 +3794,7 @@ test("subagent snapshot is background, scoped to its parent, and reports the kno
       nextCursor: null,
     };
   };
-  testRuntime.listSubagentTurns = async (threadId) => ({
+  readerRuntime.listSubagentTurns = async (threadId) => ({
     data: [
       {
         id: "turn",
@@ -3628,6 +3878,8 @@ test("subagent snapshot is background, scoped to its parent, and reports the kno
       b.subagents.agents.map((agent) => agent.id),
       ["chat-B-child"],
     );
+    assert.equal(readers, 2);
+    assert.equal(closedReaders, readers);
   } finally {
     release();
     KitTaskStore.prototype.get = originalGet;

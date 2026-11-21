@@ -1,3 +1,8 @@
+# Task Progress 0.12.9
+
+- Observe subagents through a separate current-CLI session per scan, closing it afterward. Desktop updates no longer leave subagent scans attached to an obsolete sidecar; the native Goal watcher stays separate. This does not promise parity with Desktop's live count.
+- Accept native direct-child records with null source labels, optional roles, and child/parent session aliases only after verifying exact parent ancestry, workspace, and task-only authorization. Explicit identity conflicts remain rejected.
+
 # Task Progress 0.12.8
 
 - Record verified child thread assignments on the existing Kit heartbeat Items. The parent panel shows child checklist progress after validating the exact dispatch, task scope, and workspace. Assignments and progress use the existing Kit ledgers.

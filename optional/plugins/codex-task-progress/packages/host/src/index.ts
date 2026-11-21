@@ -1431,7 +1431,9 @@ export class GoalProgressHelper {
       threadId = authorized.identity.threadId;
       cwd = authorized.identity.cwd;
       input = request.params.input;
-      ownTaskOnly = authorized.thread?.threadSource === "subagent";
+      ownTaskOnly =
+        request.params.auth.kind === "codex-request" &&
+        request.params.auth.identity.threadSource === "subagent";
       nativeStatus = authorized.thread
         ? authorized.thread.status
         : await measureStage("native-identity", () =>
@@ -1962,33 +1964,43 @@ export class GoalProgressHelper {
           previous.value?.status === "ready" &&
           previous.value.complete &&
           !previous.value.truncated;
-        const listDirectSubagents = this.#runtime.listDirectSubagents.bind(this.#runtime);
-        const listSubagentTurns = this.#runtime.listSubagentTurns.bind(this.#runtime);
-        const observer = this.#runtime.observeDirectSubagent?.bind(this.#runtime);
-        const verifier = this.#runtime.verifyDirectSubagent?.bind(this.#runtime);
         const children = recent
           ? previous
           : this.#subagentPresentation.read(subagentKey, async () => {
               if (this.#stopping) throw new Error("Helper is stopping");
               const load = (async () => {
-                const result = await collectSubagentProgress({
-                  parentThreadId: threadId,
-                  activityScope: "parent-thread",
-                  cwd: canonicalCwd,
-                  storageRoot: storage.root as string,
-                  schemas: createTaskProgressSchemas(z),
-                  listPage: (cursor) => listDirectSubagents(threadId, cursor),
-                  listTurnsPage: (cursor) => listSubagentTurns(threadId, cursor),
-                  lookupAgent: (childId) => this.#runtime.readThreadIdentity(childId),
-                  ...(observer ? { observeAgent: observer } : {}),
-                  ...(verifier ? { verifyAgent: verifier } : {}),
-                  ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
-                  ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
-                  ...(sourcePath === undefined
-                    ? {}
-                    : { taskCycleId: null, cycleStartedAt: null, taskSourcePath: sourcePath }),
-                });
-                return result;
+                // Desktop can replace its bundled CLI while an older sidecar
+                // keeps running. Observe with the current verified CLI per scan.
+                const reader = this.#runtime.createSubagentReader?.() ?? this.#runtime;
+                try {
+                  const listPage = reader.listDirectSubagents?.bind(reader);
+                  const listTurnsPage = reader.listSubagentTurns?.bind(reader);
+                  if (!listPage || !listTurnsPage)
+                    throw new Error("Subagent observation reader unavailable");
+                  return await collectSubagentProgress({
+                    parentThreadId: threadId,
+                    activityScope: "parent-thread",
+                    cwd: canonicalCwd,
+                    storageRoot: storage.root as string,
+                    schemas: createTaskProgressSchemas(z),
+                    listPage: (cursor) => listPage(threadId, cursor),
+                    listTurnsPage: (cursor) => listTurnsPage(threadId, cursor),
+                    lookupAgent: (childId) => reader.readThreadIdentity(childId),
+                    ...(reader.observeDirectSubagent
+                      ? { observeAgent: reader.observeDirectSubagent.bind(reader) }
+                      : {}),
+                    ...(reader.verifyDirectSubagent
+                      ? { verifyAgent: reader.verifyDirectSubagent.bind(reader) }
+                      : {}),
+                    ...(cycleId === undefined ? {} : { taskCycleId: cycleId }),
+                    ...(cycleStartedAt === undefined ? {} : { cycleStartedAt }),
+                    ...(sourcePath === undefined
+                      ? {}
+                      : { taskCycleId: null, cycleStartedAt: null, taskSourcePath: sourcePath }),
+                  });
+                } finally {
+                  if (reader !== this.#runtime) await reader.close();
+                }
               })();
               this.#presentationLoads.add(load);
               try {

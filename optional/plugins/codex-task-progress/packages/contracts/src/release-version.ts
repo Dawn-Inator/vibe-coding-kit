@@ -1,1 +1,1 @@
-export const GOAL_PROGRESS_RELEASE_VERSION = "0.12.8" as const;
+export const GOAL_PROGRESS_RELEASE_VERSION = "0.12.9" as const;
