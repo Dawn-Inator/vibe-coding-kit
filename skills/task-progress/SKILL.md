@@ -5,6 +5,11 @@ description: Use for actionable work in parent and child sessions, when reading 
 
 # Shared task progress
 
+This is Kit guidance, independent of the retired Task Progress plugin. Use the canonical Kit APIs directly;
+no plugin, native panel, Hook, or background Helper is required. See the
+[direct API workflow](../../tutorial/03-agent-orchestration/task-progress-storage.md#direct-api-workflow)
+for storage selection and lifecycle operations.
+
 For actionable work, read the current task before execution. Register the actual scope when the task has no
 related source or ordinary record, then persist material milestones and their evidence during execution and
 reconcile them before the final response. Update at real checkpoints such as implementing a change, running
@@ -29,9 +34,9 @@ Read [dispatch and child milestones](references/dispatch-and-child-milestones.md
 
 Report completion from recorded task state and evidence. Use the applicable project planning guidance when a plan is needed; this skill does not add a separate planning or heartbeat policy.
 
-## Helper-managed task lifecycle
+## Kit task lifecycle
 
-Read [task lifecycle](references/lifecycle.md) before opting into `lifecycle: true`, closing a task, rescoping after completion, reading cycle archives, or reporting the Heartbeat orchestration snapshot. Keep one closeout checkpoint; checklist 100% is not completion, and only `task_progress_complete` with verified branch, merge, push and audit evidence closes a lifecycle.
+Read [task lifecycle](references/lifecycle.md) before opting into `lifecycle: true`, closing a task, rescoping after completion, reading cycle archives, or reporting the Heartbeat orchestration snapshot. Keep one closeout checkpoint; checklist 100% is not completion, and only `TaskStore.complete` with verified branch, merge, push and audit evidence closes a lifecycle.
 
 ## Persistent Markdown storage
 

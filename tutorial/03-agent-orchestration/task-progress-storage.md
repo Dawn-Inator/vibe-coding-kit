@@ -1,7 +1,7 @@
 # 当前工作目录中的任务进度记录
 
-任务面板可以在经过验证的聊天工作目录中保存普通任务清单及完整变更历史，也可以读取项目 Heartbeat 并
-投影为只读任务视图。存储规范和迁移由共享 Kit 拥有；插件只适配 Kit API 与展示数据。
+Kit 可以在经过验证的聊天工作目录中保存普通任务清单及完整变更历史，也可以读取项目 Heartbeat 并
+投影为只读任务视图。存储规范和迁移由共享 Kit 拥有，不依赖已移除的 Task Progress 插件、Hooks 或后台服务。
 
 接手任务时，按[任务交接规范](../../skills/manage-knowledge-artifacts/references/authoring-details.md#task-handoff)
 查找进度来源，并根据接手人能否访问同一工作区选择交接文件的存放位置。
@@ -17,6 +17,18 @@ const storage = resolveTaskProgressStorage({ cwd: trustedChatCwd });
 `cwd` 必须来自已验证的聊天身份或项目上下文，并且是非空绝对路径。它不是 Helper 进程的工作目录。
 契约只解析路径，不寻找父级 Git 仓库，不访问文件系统，也不创建或迁移记录。不同工作目录和 worktree
 使用各自的 `.workspace`。
+
+## Direct API workflow
+
+Task Progress 插件及其 `task_progress_*` MCP 工具已移除。心跳与编排直接使用 Kit API；不要安装旧插件或调用已不存在的工具。
+
+- 使用可信的当前聊天 ID 与 cwd，通过 `WorkspaceTaskStorage` 解析已有存储与来源关系；未知身份或未解决的来源关系应报告缺口，不能猜测身份或另建记录。
+- 无来源绑定的普通任务使用 `TaskStore.getReadOnly` 读取；仅在不存在记录时用 `initialize`。用 `update` 记录实际里程碑，用 `rescope` 修订范围，保留稳定 ID、证据和历史。
+- 每次写入使用当前 revision 和稳定的 requestId；同一逻辑写入重试沿用 requestId。同一存储根由一个写入进程串行维护。
+- 需要生命周期验收时，初始化或更新显式传入 `lifecycle: true`；分支、集成、推送及剩余事项审计完成后调用 `complete`。历史周期由 `archives` 读取。
+- 关联到 Heartbeat 的任务投影只读。通过 [Heartbeat writer API](../../skills/agent-task-supervision/references/ledger-api.md) 更新原始 Items、派发关联与审计，不创建第二份进度真源。
+
+`taskhistory.md`、`heartbeat.md` 及既有路径保持兼容。面板或后台进程均不是心跳定时执行器；是否启动定时监督，仍由项目编排指引及用户授权决定。
 
 ## 普通聊天任务记录
 
@@ -56,7 +68,7 @@ SHA-256 隔离：
 
 ## Agent 与任务范围关联
 
-派发后，将工具实际返回的原生 agent thread ID 写入普通任务的既有 `task_progress_rescope` 目标或条目：`agent: { threadId, path? }`，使用当前 revision 并保留仍需跟踪的范围。当前周期中省略该字段会按条目 ID 保留原关联（包括移动）；显式 `agent: null` 清除，新周期不继承。目标关联可由子项继承，子项可显式覆盖或清除。Kit 从现有规范叶节点派生模块进度，不复制清单或新建存储；agent 进度不等于父任务完成。
+派发后，将工具实际返回的原生 agent thread ID 写入普通任务的既有 `TaskStore.rescope` 目标或条目：`agent: { threadId, path? }`，使用当前 revision 并保留仍需跟踪的范围。当前周期中省略该字段会按条目 ID 保留原关联（包括移动）；显式 `agent: null` 清除，新周期不继承。目标关联可由子项继承，子项可显式覆盖或清除。Kit 从现有规范叶节点派生模块进度，不复制清单或新建存储；agent 进度不等于父任务完成。
 
 绑定的只读 Heartbeat 由来源写入方通过现有 Items 工作流维护可选 `agent_thread_id` 或精确且唯一的 owner 路径；面板不能改写来源，也不能补造缺失的证据。运行时事件只是有时间的记录观察，不保证进程实时状态；不完整覆盖时已观察数仅是下界，未知不是零，只有当前计划分母准确时才显示比例。
 

@@ -2,7 +2,7 @@
 
 The Kit owns durable task state and source associations. Ordinary task events, explicit or automatic heartbeat
 bindings, and the binding-migration marker are records in the per-chat `taskhistory.md`; `heartbeat.md` is the
-readable projection of the latest task state. The helper serializes writers for a storage root. Treat the
+readable projection of the latest task state. The caller must serialize writers for a storage root; use one writer process and never run competing TaskStore writers. Treat the
 history as the canonical record and the head as a projection, never append prior task events manually to the
 head.
 
