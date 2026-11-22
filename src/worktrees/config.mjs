@@ -66,8 +66,7 @@ export const DEFAULT_CONFIG = {
   // (refs/<internalRefNamespace>/*).
   internalRefNamespace: 'wtg',
 
-  // Capacity guards for `create`.
-  maxWorktrees: 25,
+  // Disk-space guard for `create`; worktree count is unrestricted.
   minFreeDiskGb: 5,
 
   // Mass-deletion guard.

@@ -25,7 +25,7 @@ test('loadConfig: override file replaces a top-level key entirely, leaves the re
     // Everything else stays at the default.
     assert.equal(result.defaultTool, DEFAULT_CONFIG.defaultTool);
     assert.deepEqual(result.tools, DEFAULT_CONFIG.tools);
-    assert.equal(result.maxWorktrees, DEFAULT_CONFIG.maxWorktrees);
+    assert.equal(result.minFreeDiskGb, DEFAULT_CONFIG.minFreeDiskGb);
     assert.deepEqual(result.massDeletion, DEFAULT_CONFIG.massDeletion);
   } finally {
     rmSync(dir, { recursive: true, force: true });

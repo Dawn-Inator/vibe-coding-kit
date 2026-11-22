@@ -1,7 +1,7 @@
 // worktree-guard/worktree-core.mjs
 //
 // Core business logic for the worktree-guard toolkit: repo discovery, branch
-// naming, capacity checks, per-worktree metadata read/write, mass-deletion
+// naming, disk-space checks, per-worktree metadata read/write, mass-deletion
 // classification, and sync-primary precondition checks. Every function here
 // is a plain unit -- no argv parsing, no process.exit, no console output --
 // so the CLI layer (cli.mjs) can stay a thin wrapper that this module's
@@ -726,21 +726,14 @@ function freeDiskGb(path) {
 }
 
 /**
- * Throw if creating another worktree would exceed config.maxWorktrees
- * managed worktrees, or if free disk space is below config.minFreeDiskGb.
+ * Throw if free disk space is below config.minFreeDiskGb.
+ * Worktree count, including legacy maxWorktrees overrides, does not limit creation.
  *
  * @param {RepoInfo} repo
  * @param {typeof import('./config.mjs').DEFAULT_CONFIG} config
  * @returns {void}
  */
 export function checkCapacity(repo, config) {
-  const existingCount = repo.worktrees.length - 1; // exclude the primary worktree itself
-  if (existingCount >= config.maxWorktrees) {
-    throw new Error(
-      `refusing to create: already at capacity (${existingCount}/${config.maxWorktrees} managed worktrees)`,
-    );
-  }
-
   const free = freeDiskGb(repo.topLevel);
   if (free < config.minFreeDiskGb) {
     throw new Error(

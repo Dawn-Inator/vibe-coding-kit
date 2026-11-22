@@ -250,23 +250,23 @@ function mkDirSync(path) {
 // ---------------------------------------------------------------------------
 
 describe('checkCapacity', () => {
-  test('throws when at or over maxWorktrees', () => {
-    const smallConfig = { ...config, maxWorktrees: 2 };
+  test('worktree count is unrestricted even with a legacy maxWorktrees override', () => {
+    const smallConfig = { ...config, maxWorktrees: 2, minFreeDiskGb: 0 };
     const fakeRepo = {
       topLevel: tmpdir(),
-      worktrees: [{ path: 'a' }, { path: 'b' }, { path: 'c' }, { path: 'd' }],
+      worktrees: Array.from({ length: 1000 }, (_, i) => ({ path: `worktree-${i}` })),
     };
-    assert.throws(() => checkCapacity(fakeRepo, smallConfig), /capacity/);
+    assert.doesNotThrow(() => checkCapacity(fakeRepo, smallConfig));
   });
 
   test('throws when free disk space is below the configured minimum', () => {
-    const hugeMinConfig = { ...config, maxWorktrees: 999, minFreeDiskGb: 1e9 };
+    const hugeMinConfig = { ...config, minFreeDiskGb: 1e9 };
     const fakeRepo = { topLevel: tmpdir(), worktrees: [{ path: 'a' }] };
     assert.throws(() => checkCapacity(fakeRepo, hugeMinConfig), /free disk/);
   });
 
-  test('does not throw when within capacity and disk space', () => {
-    const okConfig = { ...config, maxWorktrees: 999, minFreeDiskGb: 0 };
+  test('does not throw when sufficient disk space is available', () => {
+    const okConfig = { ...config, minFreeDiskGb: 0 };
     const fakeRepo = { topLevel: tmpdir(), worktrees: [{ path: 'a' }] };
     assert.doesNotThrow(() => checkCapacity(fakeRepo, okConfig));
   });

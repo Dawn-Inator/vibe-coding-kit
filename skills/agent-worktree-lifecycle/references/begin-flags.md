@@ -34,6 +34,8 @@ check. Commit initialization to the selected base and, when using its upstream, 
 before retrying. Unrelated uncommitted files do not prevent creation. A missing required
 registration after `afterCreate` also prevents a successful result.
 
+Worktree count is unrestricted. Creation still checks the configured minimum free disk space; existing worktrees retain their ownership and cleanup protections. Legacy `maxWorktrees` settings are ignored.
+
 Key flags:
 
 - `--name "<scope goal>"` — required. Used to derive the branch slug.
