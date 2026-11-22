@@ -246,7 +246,7 @@ test('fresh noninteractive install defaults secret storage off without creating 
   assert.equal(config.optional.aliyun, false);
   assert.equal(config.optional.lark, false);
   assert.equal(config.optional['non-code'], false);
-  assert.equal(config.optional['task-progress'], false);
+  assert.equal(config.optional['task-progress'], undefined);
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), true);
 });
 

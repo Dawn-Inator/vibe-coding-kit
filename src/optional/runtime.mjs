@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { constants, existsSync, lstatSync, realpathSync, statSync, accessSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const execFileAsync = promisify(execFile);
 const SAFE_ENV_KEYS = new Set([
@@ -11,31 +11,11 @@ const SAFE_ENV_KEYS = new Set([
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
 ]);
-const SIGNING_IDENTITY_ENV_KEY = 'GOAL_PROGRESS_CODESIGN_IDENTITY';
-const SIGNING_CONFIG_ENV_KEY = 'GOAL_PROGRESS_CODESIGN_CONFIG';
-const SIGNING_IDENTITY_RE = /^[0-9a-f]{40}$/i;
 const VERSION_RE = /(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?(?:\s|$)/i;
 const minimumVersions = { node22: [22, 0, 0] };
 
 function safeEnv(env) {
   const safe = Object.fromEntries(Object.entries(env ?? {}).filter(([key, value]) => SAFE_ENV_KEYS.has(key) && typeof value === 'string'));
-  const signingIdentity = env?.[SIGNING_IDENTITY_ENV_KEY];
-  if (typeof signingIdentity === 'string' && SIGNING_IDENTITY_RE.test(signingIdentity)) {
-    safe[SIGNING_IDENTITY_ENV_KEY] = signingIdentity;
-  }
-  const signingConfig = env?.[SIGNING_CONFIG_ENV_KEY];
-  if (typeof signingConfig === 'string' && isAbsolute(signingConfig) && !/[\0\r\n]/.test(signingConfig)) {
-    safe[SIGNING_CONFIG_ENV_KEY] = signingConfig;
-  }
-  const nodeBinary = env?.GOAL_PROGRESS_NODE_BINARY;
-  if (typeof nodeBinary === 'string' && isAbsolute(nodeBinary)) {
-    try {
-      if (statSync(nodeBinary).isFile()) {
-        accessSync(nodeBinary, constants.X_OK);
-        safe.GOAL_PROGRESS_NODE_BINARY = nodeBinary;
-      }
-    } catch { /* Ignore unverified explicit Node paths. */ }
-  }
   return safe;
 }
 
@@ -89,19 +69,6 @@ function supportsDeclaredPlatform(component, platform, arch) {
     throw new Error('invalid optional component platforms metadata');
   }
   return component.platforms.includes('*') || component.platforms.includes(platform) || component.platforms.includes(`${platform}-${arch}`);
-}
-
-function componentInstallerPath(kitRoot, component) {
-  const script = component.installation?.script ?? `${component.path}/scripts/install-from-kit.mjs`;
-  if (typeof script !== 'string' || !script || isAbsolute(script) || script.includes('\\') || script.split('/').some((part) => !part || part === '.' || part === '..')) {
-    throw new Error('invalid optional component installer script path');
-  }
-  const root = resolve(kitRoot);
-  const path = resolve(root, script);
-  if (!inside(root, path)) throw new Error('optional component installer escapes kit root');
-  rejectSymlinks(root, path);
-  if (existsSync(path) && !inside(realpathSync(root), realpathSync(path))) throw new Error('optional component installer escapes kit root');
-  return path;
 }
 
 function result(status, message, details = {}) {
@@ -168,103 +135,6 @@ async function inspectCommandRequirement(requirement, context) {
   return { name: spec.name, installed: true, ...(version ? { version: version.join('.') } : {}) };
 }
 
-async function inspectTaskProgress(context) {
-  if (context.platform !== 'darwin' || context.arch !== 'arm64') return result('unsupported', 'Codex Task Progress installation supports macOS arm64 only.');
-  const dataRoot = join(context.home, 'Library', 'Application Support', 'CodexTaskProgress');
-  const stableHelper = resolveInstalledTaskProgressHelper(dataRoot, context.lstat);
-  if (stableHelper) {
-    const doctor = await run(context.runner, stableHelper, ['doctor', '--json'], dirname(stableHelper), context.env);
-    let document;
-    try { document = JSON.parse(doctor.stdout); } catch { throw new Error('goal-progress doctor returned invalid JSON'); }
-    if (document?.details?.pluginInstalled === true) {
-      return result('installed', document?.ok === false || doctor.code !== 0
-        ? 'The registered plugin remains installed; doctor reports a separate issue.' : undefined,
-      {
-        component: 'codex-task-progress', source: 'stable-install',
-        pluginInstalled: true,
-        diagnostic: document,
-      });
-    }
-    if (doctor.code !== 0) throw new Error(`goal-progress doctor failed (exit ${doctor.code})`);
-    if (document?.ok === true || document?.status === 'DOCTOR_OK' || document?.code === 'DOCTOR_OK') {
-      return result('installed', undefined, { component: 'codex-task-progress', source: 'stable-install', pluginInstalled: true });
-    }
-    if (document?.ok === false || document?.status || document?.code) return result('error', 'The existing Codex Task Progress installation needs attention; run its doctor command and follow the reported repair step.');
-    throw new Error('goal-progress doctor result is unrecognized');
-  }
-  const codex = await run(context.runner, 'codex', ['plugin', 'list', '--marketplace', 'codex-task-progress-local', '--json'], context.cwd, context.env);
-  if (codex.code !== 0) {
-    if (codex.code === 127) return result('missing', 'Codex Task Progress is not installed and the Codex CLI is unavailable for checking plugin registration.');
-    throw new Error(`Codex plugin list failed (exit ${codex.code})`);
-  }
-  let document;
-  try { document = JSON.parse(codex.stdout); } catch { throw new Error('Codex plugin list returned invalid JSON'); }
-  const installed = Array.isArray(document) ? document : document?.installed;
-  if (!Array.isArray(installed)) throw new Error('Codex plugin list JSON has no installed plugin records');
-  const record = installed.find((entry) => entry && typeof entry === 'object' && entry.pluginId === 'codex-task-progress@codex-task-progress-local' && entry.installed === true);
-  return record
-    ? result('installed', undefined, {
-      component: 'codex-task-progress', source: 'codex-plugin-registration', pluginInstalled: true,
-      version: typeof record.version === 'string' ? record.version : undefined,
-    })
-    : result('missing', 'Codex Task Progress is not installed.');
-}
-
-// `probeLink` (lstat) is injectable so symlink rejection is testable on hosts that cannot create symlinks.
-function resolveInstalledTaskProgressHelper(dataRoot, probeLink = lstatSync) {
-  const installRoot = join(dataRoot, 'install');
-  const fixedBin = join(installRoot, 'bin');
-  const fixedHelper = join(fixedBin, 'goal-progress');
-  const legacyHelper = join(installRoot, 'current', 'bin', 'goal-progress');
-  const applicationSupport = dirname(dataRoot);
-  const library = dirname(applicationSupport);
-
-  // A missing ancestor makes the fixed helper absent. Existing ancestors must
-  // themselves be physical directories, so dangling or directory symlinks do
-  // not turn an unsafe fixed location into a legacy fallback.
-  const fixedParentChain = [
-    library,
-    applicationSupport,
-    dataRoot,
-    installRoot,
-    fixedBin,
-  ];
-  let fixedParentAbsent = false;
-  for (const path of fixedParentChain) {
-    let stat;
-    try { stat = probeLink(path); }
-    catch (error) {
-      if (error.code === 'ENOENT') { fixedParentAbsent = true; break; }
-      throw new Error('installed fixed goal-progress helper parent could not be inspected');
-    }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error('installed fixed goal-progress helper parent is not a physical directory');
-    }
-  }
-
-  if (!fixedParentAbsent) {
-    const selectedFixed = inspectHelperFile(fixedHelper, 'fixed', probeLink);
-    if (selectedFixed) return selectedFixed;
-  }
-
-  return inspectHelperFile(legacyHelper, 'legacy', probeLink);
-}
-
-function inspectHelperFile(path, label, probeLink = lstatSync) {
-    let stat;
-    try { stat = probeLink(path); }
-    catch (error) {
-      if (error.code === 'ENOENT') return null;
-      throw new Error(`installed ${label} goal-progress helper could not be inspected`);
-    }
-    if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new Error(`installed ${label} goal-progress helper is not a regular non-symlink file`);
-    }
-    try { realpathSync(path); }
-    catch { throw new Error(`installed ${label} goal-progress helper could not be resolved`); }
-    return path;
-}
-
 async function inspectRegularComponent(component, context) {
   const checks = [];
   for (const requirement of requirementsFor(component)) {
@@ -316,9 +186,7 @@ export async function inspectOptionalComponent(options) {
     if (!supportsDeclaredPlatform(component, platform, arch)) return result('unsupported', `This component does not support ${platform}-${arch}.`);
     const directory = componentDirectory(kitRoot, component);
     const context = contextFor({ ...options, platform, arch }, component, directory);
-    return component.id === 'codex-task-progress'
-      ? await inspectTaskProgress(context)
-      : await inspectRegularComponent(component, context);
+    return await inspectRegularComponent(component, context);
   } catch (error) {
     return result('error', error instanceof Error ? error.message : String(error));
   }
@@ -371,110 +239,6 @@ function npxArgs(args, mode) {
   return [mode, ...packageArgs];
 }
 
-async function installTaskProgress(component, context, priorInspection = undefined) {
-  if (context.platform !== 'darwin' || context.arch !== 'arm64') return result('unsupported', 'Codex Task Progress installation supports macOS arm64 only.');
-  const helper = componentInstallerPath(context.kitRoot, component);
-  const existing = priorInspection ?? await inspectTaskProgress(context);
-  if (existing.status === 'installed') return existing;
-  if (existing.status === 'error') return existing;
-  if (!existsSync(helper) || !statSync(helper).isFile()) return result('setup-required', 'The bundled Codex Task Progress installer is unavailable in this Kit checkout.');
-  const signing = await prepareTaskProgressSigning(helper, context);
-  if (signing.status !== 'ready') return signing;
-  const installerArgs = [helper];
-  const installed = await context.runner('node', installerArgs, { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 10 * 60_000 });
-  if (!installed || !Number.isInteger(installed.code)) return result('error', 'Codex Task Progress installer returned an invalid runner response.');
-  let document;
-  try { document = JSON.parse(installed.stdout); } catch { return result('error', `Codex Task Progress installer returned invalid JSON (exit ${installed.code}).`); }
-  const installerCode = document?.output?.code ?? document?.output?.status ?? document?.code;
-  const installerReason = document?.reason ?? document?.message ?? document?.output?.reason ?? document?.output?.message;
-  if (installerCode === 'INSTALL_RESTART_REQUIRED' || document?.status === 'INSTALL_RESTART_REQUIRED') {
-    return result('error', 'The bundled Codex Task Progress installer requested a Codex restart; the native-only installer contract forbids application restarts.');
-  }
-  if (document?.status === 'setup-required') return result('setup-required', installerReason ?? 'Codex Task Progress setup requires the next step shown by its installer.');
-  if (installed.code !== 0) return result(document?.status === 'setup-required' ? 'setup-required' : 'error', installerReason ?? `Codex Task Progress installation failed (exit ${installed.code}).`);
-  if (document?.status !== 'installed' && document?.status !== 'INSTALL_OK' && document?.code !== 'INSTALL_OK') return result('error', installerReason ?? 'Codex Task Progress installer did not report a successful install.');
-  const after = await inspectTaskProgress(context);
-  if (after.status === 'installed') return after;
-  return after.status === 'error' ? after : result('setup-required', 'The installer completed but the existing installation could not be verified.');
-}
-
-function parseInstallerJson(response, action) {
-  if (!response || !Number.isInteger(response.code)) throw new Error(`Codex Task Progress ${action} returned an invalid runner response.`);
-  try { return JSON.parse(response.stdout); }
-  catch { throw new Error(`Codex Task Progress ${action} returned invalid JSON (exit ${response.code}).`); }
-}
-
-function signingCandidates(signing) {
-  if (!Array.isArray(signing?.candidates)) return [];
-  return signing.candidates.filter((candidate) => candidate && typeof candidate === 'object'
-    && typeof candidate.identity === 'string' && SIGNING_IDENTITY_RE.test(candidate.identity)
-    && typeof candidate.name === 'string');
-}
-
-function shellQuote(value) { return `'${String(value).replace(/'/g, `'\\''`)}'`; }
-
-function signingSetupMessage(signing, reason, helper) {
-  const candidates = signingCandidates(signing);
-  const details = candidates.length
-    ? `Available certificates: ${candidates.map(({ name, identity }) => `${name} (${identity})`).join('; ')}. To configure one non-interactively, run: node ${shellQuote(helper)} --configure-signing --identity <40-character fingerprint>.`
-    : 'No eligible macOS code-signing certificate was reported. Add an eligible signing identity to the macOS login Keychain, then rerun setup.';
-  const config = typeof signing?.configPath === 'string' ? ` Signing config: ${signing.configPath}.` : '';
-  return `${reason}${config} ${details}`;
-}
-
-async function checkTaskProgressSigning(helper, context) {
-  const response = await context.runner('node', [helper, '--check'], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 60_000 });
-  let document;
-  try { document = parseInstallerJson(response, 'signing check'); }
-  catch (error) { return { error: error.message }; }
-  if (response.code !== 0) return { error: document?.reason ?? document?.message ?? `Signing check failed (exit ${response.code}).` };
-  const signing = document?.signing;
-  if (!signing || !['ready', 'confirmation-required', 'unavailable'].includes(signing.status)) {
-    return { error: 'The bundled installer does not report the required signing readiness contract; update the Kit before installing.' };
-  }
-  return { signing, document };
-}
-
-async function prepareTaskProgressSigning(helper, context) {
-  let checked = await checkTaskProgressSigning(helper, context);
-  if (checked.error) return result('setup-required', checked.error, { component: 'codex-task-progress' });
-  if (checked.signing.status === 'ready') return { status: 'ready' };
-  if (checked.signing.status === 'unavailable') {
-    return result('setup-required', signingSetupMessage(checked.signing, 'A stable macOS signing identity is required before the installer can build the plugin.', helper), { component: 'codex-task-progress' });
-  }
-
-  const candidates = signingCandidates(checked.signing);
-  if (!candidates.length) {
-    return result('setup-required', signingSetupMessage(checked.signing, 'The installer requires a certificate choice, but reported no valid certificate candidates.', helper), { component: 'codex-task-progress' });
-  }
-  if (typeof context.confirmSigning !== 'function') {
-    return result('setup-required', signingSetupMessage(checked.signing, 'Choose a signing certificate before installation can continue.', helper), { component: 'codex-task-progress' });
-  }
-  let selected;
-  try { selected = await context.confirmSigning(candidates, checked.signing.configPath); }
-  catch (error) { return result('setup-required', `Signing certificate selection failed: ${error instanceof Error ? error.message : String(error)}`, { component: 'codex-task-progress' }); }
-  if (selected === null || selected === undefined || selected === '') {
-    return result('setup-required', signingSetupMessage(checked.signing, 'Signing certificate selection was declined; installation stopped before building.', helper), { component: 'codex-task-progress' });
-  }
-  if (typeof selected !== 'string' || !SIGNING_IDENTITY_RE.test(selected) || !candidates.some((candidate) => candidate.identity.toLowerCase() === selected.toLowerCase())) {
-    return result('setup-required', signingSetupMessage(checked.signing, 'The selected identity was not one of the reported certificate fingerprints.', helper), { component: 'codex-task-progress' });
-  }
-
-  const configured = await context.runner('node', [helper, '--configure-signing', '--identity', selected], { cwd: context.cwd, env: safeEnv(context.env), timeoutMs: 60_000 });
-  let configuration;
-  try { configuration = parseInstallerJson(configured, 'signing configuration'); }
-  catch (error) { return result('setup-required', error.message, { component: 'codex-task-progress' }); }
-  if (configured.code !== 0 || configuration?.status !== 'configured') {
-    return result('setup-required', configuration?.reason ?? configuration?.message ?? 'Signing identity configuration was not confirmed.', { component: 'codex-task-progress' });
-  }
-
-  checked = await checkTaskProgressSigning(helper, context);
-  if (checked.error || checked.signing?.status !== 'ready') {
-    return result('setup-required', checked.error ?? 'Signing identity was saved but the read-only readiness check did not confirm it.', { component: 'codex-task-progress' });
-  }
-  return { status: 'ready' };
-}
-
 export async function installOptionalComponent(options) {
   try {
     const { kitRoot, component } = options ?? {};
@@ -483,15 +247,6 @@ export async function installOptionalComponent(options) {
     if (!supportsDeclaredPlatform(component, platform, arch)) return result('unsupported', `This component does not support ${platform}-${arch}.`);
     const directory = componentDirectory(kitRoot, component);
     const context = contextFor({ ...options, kitRoot, platform, arch }, component, directory);
-    if (component.id === 'codex-task-progress') {
-      // Validate the installer target before any external probe so malformed catalog
-      // paths cannot cause even read-only commands to run.
-      componentInstallerPath(kitRoot, component);
-      const existing = await inspectTaskProgress(context);
-      if (existing.status === 'error') return existing;
-      if (existing.status === 'installed') return existing;
-      return await installTaskProgress(component, context, existing);
-    }
     if (component.id === 'lark') return await installLark(component, context);
     if (component.id === 'hyperframes') return await installHyperframes(component, context);
     const inspection = await inspectRegularComponent(component, context);

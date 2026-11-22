@@ -113,20 +113,20 @@ node .vibe-coding/kit/cli.mjs help
 
 ## 选择可选组件
 
-可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记。源码按物理类型放在 `optional/plugins/` 与 `optional/skills/`；安装用途类别是 `aliyun`、`lark`、`non-code`、`task-progress` 和 `app-store-compliance`，由 catalog 映射到对应组件。完整目录与映射见[可选组件指南](optional/README.md)。新项目默认关闭 skill 类别。Codex Task Progress 只在受支持的 macOS Apple Silicon + Codex Desktop 环境中提供选择；若已安装，Kit 会直接复用，不询问签名身份、不重建，也不重启 Codex。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
+可选组件由 [`optional/catalog.json`](optional/catalog.json) 统一登记。当前可选技能源码放在 `optional/skills/`；安装用途类别是 `aliyun`、`lark`、`non-code` 和 `app-store-compliance`，由 catalog 映射到对应组件。完整目录与映射见[可选组件指南](optional/README.md)。新项目默认关闭 skill 类别。交互式首次安装只询问当前可选的类别；非交互安装可重复传入类别覆盖，例如：
 
 ```sh
 npx --yes --package=github:Dawn-Inator/vibe-coding-kit vibe-coding-kit install --project-root . --identity-name 'Your Project AI' --identity-email 'ai@example.org' --optional lark=on --optional non-code=off
 ```
 
-选择组件只接入已随 Kit 提供的技能或插件；它不会隐式登录账号、创建远端仓库、配置云账号或建立业务资源。未选择的类别不会安装或生成对应工具入口。受支持的平台缺少 Codex Task Progress 时，Kit 会在用户选择后调用内置安装器。交互式安装会对符合条件的本地签名证书请求一次明确确认；非交互安装不会猜选证书，而会返回 `setup-required` 状态和可执行命令。已保存的证书选择会被后续构建自动复用；Helper 会安装在真实的稳定 `install/bin/goal-progress` 路径，版本资源仍分目录保留。TCC 授权不会自动转移，首次迁移到稳定路径时系统仍可能要求用户批准，之后是否再次弹窗也不作保证。完整流程、只读候选检查和仅配置证书的命令见[可选组件指南](optional/README.md#categories)。
+选择组件只接入已随 Kit 提供的技能或插件；它不会隐式登录账号、创建远端仓库、配置云账号或建立业务资源。未选择的类别不会安装或生成对应工具入口。
 
-首次交互安装会把已检测到的 Task Progress 安装作为复用默认值，除非已有设置或本次选择明确关闭它。其他类别新项目默认关闭。非交互安装可用重复 `--optional <group>=on|off` 指定选择；类别偏好写入项目配置。
+所有可选类别新项目默认关闭。非交互安装可用重复 `--optional <group>=on|off` 指定选择；类别偏好写入项目配置。
 
 已初始化项目可显式调整类别；未指定的类别沿用配置：
 
 ```sh
-node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional task-progress=on
+node .vibe-coding/kit/cli.mjs optional configure --project-root . --optional lark=on
 ```
 
 需要应用商店提交前检查或拒审修复建议时，可设置 `--optional app-store-compliance=on`，再调用 `$app-store-compliance`。这会安装 Kit 自有审核 skill，按当前 Apple/Google 官方政策核查项目与提交材料，并引用固定版本的上游资料。Kit 不分发上游源码，也不会自动克隆上游、安装扫描依赖或注册全局 hooks。若使用可选的上游扫描工具，需另备适用许可下的 checkout 和 Bash/Python 环境；上游当前采用含商业条件的 OpenRoots Agent License 2.3，与 Kit 自有技能的 MIT 许可分开。详情见[应用商店审核技能说明](optional/README.md#app-store-submission-review)。

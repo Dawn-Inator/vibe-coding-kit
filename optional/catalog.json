@@ -20,12 +20,6 @@
         "presentations"
       ]
     },
-    "task-progress": {
-      "question": "是否使用原生 Codex 任务进度插件？",
-      "components": [
-        "codex-task-progress"
-      ]
-    },
     "app-store-compliance": {
       "question": "是否需要 App Store / Google Play 提交审核技能？",
       "components": [
@@ -258,32 +252,6 @@
       "installation": {
         "entry": "src/optional/runtime.mjs",
         "export": "installOptionalComponent"
-      }
-    },
-    "codex-task-progress": {
-      "type": "plugin",
-      "path": "optional/plugins/codex-task-progress",
-      "skillsPath": "skills",
-      "skills": [],
-      "nativePluginSkill": true,
-      "provenance": {
-        "sourceUrl": "https://github.com/Dawn-Inator/vibe-coding-kit/tree/main/optional/plugins/codex-task-progress",
-        "sourceRevision": "0.4.4",
-        "license": "MIT",
-        "notes": "Optional Codex plugin; native plugin skills are loaded through the plugin manifest."
-      },
-      "requirements": [],
-      "platforms": [
-        "darwin-arm64"
-      ],
-      "detection": {
-        "entry": "src/optional/runtime.mjs",
-        "export": "inspectOptionalComponent"
-      },
-      "installation": {
-        "entry": "src/optional/runtime.mjs",
-        "export": "installOptionalComponent",
-        "script": "optional/plugins/codex-task-progress/scripts/install-from-kit.mjs"
       }
     }
   }

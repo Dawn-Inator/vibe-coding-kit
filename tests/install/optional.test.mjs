@@ -4,42 +4,16 @@ import { spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { askTaskProgressSigningIdentity, configureOptional } from '../../cli.mjs';
+import { configureOptional } from '../../cli.mjs';
 import { cleanupTempDirs } from '../support/temp-dirs.mjs';
 import { cliPath, configure, install, optionalConsumer, optionalProbeEnv, repoRoot } from '../support/optional-install-harness.mjs';
 
 after(cleanupTempDirs);
 
-test('signing identity prompt is TTY-only, lists certificates, and declines by default', async () => {
-  const candidates = [{ name: 'Developer ID Application: Example', identity: '0123456789abcdef0123456789abcdef01234567' }];
-  const unavailableQuestion = async () => assert.fail('a non-TTY invocation must not prompt');
-  assert.equal(await askTaskProgressSigningIdentity(candidates, {
-    input: { isTTY: false }, output: { isTTY: true }, ask: unavailableQuestion,
-  }), null);
-
-  let questionCount = 0, message = '';
-  const ask = async (text) => { questionCount += 1; message = text; return ''; };
-  assert.equal(await askTaskProgressSigningIdentity(candidates, {
-    input: { isTTY: true }, output: { isTTY: true }, ask,
-  }), null);
-  assert.equal(questionCount, 1);
-  assert.match(message, /1\. Developer ID Application: Example/);
-  assert.match(message, /0123456789abcdef0123456789abcdef01234567/);
-  assert.match(message, /Enter to decline/);
-
-  assert.equal(await askTaskProgressSigningIdentity(candidates, {
-    input: { isTTY: true }, output: { isTTY: true }, ask: async () => '1',
-  }), candidates[0].identity);
-  assert.equal(await askTaskProgressSigningIdentity(candidates, {
-    input: { isTTY: true }, output: { isTTY: true }, ask: async () => candidates[0].identity,
-  }), candidates[0].identity);
-});
-
 // In-process host simulation: platform, architecture, home and every external command are injected, so the
-// darwin-arm64 reuse paths and the missing-tool paths run identically on every operating system.
+// missing-tool paths run identically on every operating system.
 // Tools the catalog probes for unrelated categories; present by default so only the case under test varies.
 const DEFAULT_COMMANDS = { curl: () => ({ code: 0, stdout: 'curl 8.0.0\n', stderr: '' }) };
-const DARWIN_ARM64 = { platform: 'darwin', arch: 'arm64' };
 
 function simulatedHost(fixture, { home, platform = 'darwin', arch = 'arm64', commands = {} } = {}) {
   const calls = [];
@@ -52,13 +26,6 @@ function simulatedHost(fixture, { home, platform = 'darwin', arch = 'arm64', com
   };
   const base = home ?? join(fixture.root, 'isolated-home');
   return { host: { platform, arch, env: { ...process.env, HOME: base, USERPROFILE: base }, runner }, calls };
-}
-
-function writeInstalledHelper(home, ...segments) {
-  const helper = join(home, 'Library', 'Application Support', 'CodexTaskProgress', 'install', ...segments, 'goal-progress');
-  mkdirSync(join(helper, '..'), { recursive: true });
-  writeFileSync(helper, 'simulated helper; the injected runner answers for it\n');
-  return helper;
 }
 
 async function configureInProcess(fixture, overrides, host) {
@@ -75,16 +42,12 @@ function readProjectConfig(fixture) {
   return JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
 }
 
-function writeProjectConfig(fixture, config) {
-  writeFileSync(join(fixture.project, '.vibe-coding/project.config.json'), `${JSON.stringify(config, null, 2)}\n`);
-}
-
 test('installer accepts the full inline optional assignment and stores category preferences', () => {
   const fixture = optionalConsumer();
-  const result = install(fixture, ['--optional=aliyun=on', '--optional', 'task-progress=off']);
+  const result = install(fixture, ['--optional=aliyun=on', '--optional', 'lark=off']);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const config = JSON.parse(readFileSync(join(fixture.project, '.vibe-coding/project.config.json'), 'utf8'));
-  assert.deepEqual(config.optional, { aliyun: true, lark: false, 'non-code': false, 'task-progress': false, 'app-store-compliance': false });
+  assert.deepEqual(config.optional, { aliyun: true, lark: false, 'non-code': false, 'app-store-compliance': false });
   assert.match(result.stdout, /Optional categories:/);
   const optionalMirror = join(fixture.project, '.agents/skills/alibabacloud-find-skills/SKILL.md');
   assert.equal(existsSync(optionalMirror), true);
@@ -189,77 +152,8 @@ test('retired Dock setup CLI flag gives a migration hint before project changes'
   const fixture = optionalConsumer();
   const result = install(fixture, ['--managed-dock-opt-in', 'true']);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /managed Dock setup options are retired.*native Codex plugin installer/);
+  assert.match(result.stderr, /managed Dock setup options are retired/);
   assert.equal(existsSync(join(fixture.project, '.gitmodules')), false);
-});
-
-test('a fresh optional selection reuses an already installed task progress plugin while configuring another category', async () => {
-  const fixture = optionalConsumer();
-  const installed = install(fixture);
-  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
-  const config = readProjectConfig(fixture);
-  delete config.optional; // a fresh selection: no saved preferences yet
-  writeProjectConfig(fixture, config);
-  const home = join(fixture.root, 'fake-home');
-  writeInstalledHelper(home, 'current', 'bin');
-  const { host } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: { 'goal-progress': () => ({ code: 0, stdout: '{"ok":true}\n', stderr: '' }) } });
-
-  const output = await configureInProcess(fixture, { aliyun: true }, host);
-  assert.equal(readProjectConfig(fixture).optional['task-progress'], true);
-  assert.match(output, /Optional codex-task-progress: already installed; reused/);
-
-  const partial = readProjectConfig(fixture);
-  partial.optional = { aliyun: false };
-  writeProjectConfig(fixture, partial);
-  await configureInProcess(fixture, { aliyun: true }, host);
-  assert.equal(readProjectConfig(fixture).optional['task-progress'], false);
-});
-
-test('explicit task-progress selection reuses the native plugin without launcher setup', async () => {
-  const fixture = optionalConsumer();
-  const initialized = install(fixture);
-  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
-  const home = join(fixture.root, 'fake-home');
-  writeInstalledHelper(home, 'bin');
-  const { host, calls } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: {
-    'goal-progress': (args) => args[0] === 'doctor'
-      ? { code: 0, stdout: '{"ok":true,"details":{"pluginInstalled":true}}\n', stderr: '' }
-      : { code: 97, stdout: '', stderr: '' },
-  } });
-  const output = await configureInProcess(fixture, { 'task-progress': true }, host);
-  assert.match(output, /codex-task-progress: already installed; reused/);
-  assert.doesNotMatch(output + calls.join('\n'), /Dock|launcher/i);
-  assert.deepEqual(calls.filter((call) => !/ doctor /.test(` ${call} `)), [], 'only the doctor probe ran');
-});
-
-test('unselected Task Progress detection failure does not block core optional setup', async () => {
-  const fixture = optionalConsumer();
-  const initialized = install(fixture);
-  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
-  const { host } = simulatedHost(fixture, { ...DARWIN_ARM64, commands: { codex: () => ({ code: 9, stdout: '', stderr: '' }) } });
-  const output = await configureInProcess(fixture, { aliyun: true }, host);
-  const config = readProjectConfig(fixture);
-  assert.equal(config.optional.aliyun, true);
-  assert.equal(config.optional['task-progress'], false);
-  assert.match(output, /task-progress: plugin detection failed/);
-});
-
-test('task progress detection errors do not block other categories but selected setup fails clearly', async () => {
-  const fixture = optionalConsumer();
-  const initialized = install(fixture);
-  assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
-  const home = join(fixture.root, 'fake-home');
-  writeInstalledHelper(home, 'current', 'bin');
-  const { host } = simulatedHost(fixture, { home, ...DARWIN_ARM64, commands: { 'goal-progress': () => ({ code: 1, stdout: '{"ok":false}\n', stderr: '' }) } });
-
-  const output = await configureInProcess(fixture, { aliyun: true }, host);
-  assert.match(output, /plugin detection failed/);
-  assert.equal(readProjectConfig(fixture).optional.aliyun, true);
-
-  await assert.rejects(
-    configureInProcess(fixture, { 'task-progress': true }, host),
-    /Could not detect selected optional plugin codex-task-progress/,
-  );
 });
 
 test('legacy animated-presentations selection survives enabling Aliyun without selecting HyperFrames', () => {

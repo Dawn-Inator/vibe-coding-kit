@@ -13,8 +13,8 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'kit-optional-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const kitRoot = join(root, 'kit'), projectRoot = join(root, 'project');
-  const groups = { aliyun: { components: ['aliyun-skill-discovery'] }, lark: { components: ['lark'] }, 'non-code': { components: ['hyperframes', 'presentations'] }, 'task-progress': { components: ['codex-task-progress'] }, 'app-store-compliance': { components: ['app-store-compliance'] } };
-  const components = Object.fromEntries(Object.values(groups).flatMap((g) => g.components).map((id) => [id, { type: id === 'codex-task-progress' ? 'plugin' : 'skills', path: `optional/${id}`, skillsPath: 'skills', skills: id === 'presentations' ? ['animated-presentations'] : id === 'lark' ? ['lark', 'feishu-bugfix-workflow'] : id === 'codex-task-progress' ? [] : [id] }]));
+  const groups = { aliyun: { components: ['aliyun-skill-discovery'] }, lark: { components: ['lark'] }, 'non-code': { components: ['hyperframes', 'presentations'] }, 'app-store-compliance': { components: ['app-store-compliance'] } };
+  const components = Object.fromEntries(Object.values(groups).flatMap((g) => g.components).map((id) => [id, { type: 'skills', path: `optional/${id}`, skillsPath: 'skills', skills: id === 'presentations' ? ['animated-presentations'] : id === 'lark' ? ['lark', 'feishu-bugfix-workflow'] : [id] }]));
   components.lark.pack = { entry: 'lark', memberPrefix: 'feishu-' };
   mkdirSync(join(kitRoot, 'skills'), { recursive: true });
   mkdirSync(join(projectRoot, '.vibe-coding', 'skills'), { recursive: true });
@@ -23,7 +23,6 @@ function fixture(t) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: test\n---\ncommon\n`);
   }
-  mkdirSync(join(kitRoot, 'optional', 'codex-task-progress'), { recursive: true });
   const catalog = { schemaVersion: 1, groups, components };
   const writeCatalog = () => writeFileSync(join(kitRoot, 'optional', 'catalog.json'), JSON.stringify(catalog));
   writeCatalog();
@@ -32,7 +31,7 @@ function fixture(t) {
 
 test('fresh selection is opt in and validates preferences', (t) => {
   const f = fixture(t);
-  assert.deepEqual(resolveOptionalSelection({ ...f, fresh: true }).selection, { aliyun: false, lark: false, 'non-code': false, 'task-progress': false, 'app-store-compliance': false });
+  assert.deepEqual(resolveOptionalSelection({ ...f, fresh: true }).selection, { aliyun: false, lark: false, 'non-code': false, 'app-store-compliance': false });
   const chosen = resolveOptionalSelection({ ...f, overrides: { lark: true }, fresh: true });
   assert.deepEqual([...chosen.skills.keys()], ['lark', 'feishu-bugfix-workflow']);
   assert.deepEqual(chosen.packs[0].members, ['feishu-bugfix-workflow']);
@@ -67,12 +66,12 @@ test('preference reader is synchronous and rejects malformed configuration', (t)
   const f = fixture(t), path = join(f.projectRoot, '.vibe-coding', 'project.config.json');
   assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), undefined);
   writeFileSync(path, JSON.stringify({ skills: {} }));
-  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), undefined);
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'app-store-compliance'), undefined);
   writeFileSync(path, JSON.stringify({ optional: { lark: true } }));
   assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), true);
-  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), false);
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'app-store-compliance'), false);
   writeFileSync(path, JSON.stringify({ optional: {} }));
-  assert.equal(readOptionalGroupPreference(f.projectRoot, 'task-progress'), false);
+  assert.equal(readOptionalGroupPreference(f.projectRoot, 'app-store-compliance'), false);
   writeFileSync(path, JSON.stringify({ optional: { lark: false } }));
   assert.equal(readOptionalGroupPreference(f.projectRoot, 'lark'), false);
   writeFileSync(path, JSON.stringify({ optional: { lark: 'false' } }));
@@ -190,7 +189,7 @@ test('first configuration preserves an untouched legacy animated skill and later
   const local = '---\nname: animated-presentations\ndescription: legacy\n---\ncustom local body\n';
   writeFileSync(join(localDir, 'SKILL.md'), local);
   const legacy = { skills: { skills: { ...f.skillsConfig.skills, 'animated-presentations': { mode: 'local' } }, packs: [] } };
-  const nextSelection = { aliyun: true, lark: false, 'non-code': true, 'task-progress': false, 'app-store-compliance': false };
+  const nextSelection = { aliyun: true, lark: false, 'non-code': true, 'app-store-compliance': false };
   const config = planOptionalConfiguration({ ...f, projectConfig: legacy, nextSelection, explicitGroups: ['aliyun'] });
   assert.equal(config.skills.skills['animated-presentations'].mode, 'replace');
   assert.equal(config.skills.skills.hyperframes.rationale, GENERATED_EXCLUDE_RATIONALE);

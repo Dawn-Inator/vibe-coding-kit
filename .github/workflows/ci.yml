@@ -50,15 +50,6 @@ jobs:
       - name: Install locked analyzer test dependencies
         run: npm ci --ignore-scripts
 
-      # The Task Progress plugin's test toolchain (esbuild, tsx, Playwright) is required, not optional: missing
-      # packages fail the manifest instead of skipping it.
-      - name: Install Task Progress test toolchain
-        shell: bash
-        working-directory: optional/plugins/codex-task-progress
-        run: |
-          npx --yes pnpm@11.19.0 install --frozen-lockfile
-          npx --yes pnpm@11.19.0 exec playwright install --with-deps chromium
-
       - name: Record backend analyzer toolchains
         shell: bash
         run: |

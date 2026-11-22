@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const OPTIONAL_GROUPS = Object.freeze(['aliyun', 'lark', 'non-code', 'task-progress', 'app-store-compliance']);
+export const OPTIONAL_GROUPS = Object.freeze(['aliyun', 'lark', 'non-code', 'app-store-compliance']);
 
 export function validateOptionalPreferences(value) {
   if (value === undefined) return;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('optional must be an object');
   for (const [group, enabled] of Object.entries(value)) {
-    if (!OPTIONAL_GROUPS.includes(group)) throw new Error(`unknown optional group: ${group}`);
+    // Accept saved preferences from older Kit versions without restoring the retired plugin.
+    if (group !== 'task-progress' && !OPTIONAL_GROUPS.includes(group)) throw new Error(`unknown optional group: ${group}`);
     if (typeof enabled !== 'boolean') throw new Error(`optional.${group} must be a boolean`);
   }
 }

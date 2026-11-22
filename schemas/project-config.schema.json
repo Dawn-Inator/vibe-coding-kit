@@ -122,7 +122,9 @@
           "type": "boolean"
         },
         "task-progress": {
-          "type": "boolean"
+          "type": "boolean",
+          "deprecated": true,
+          "description": "Retired plugin preference; accepted for compatibility and ignored."
         },
         "app-store-compliance": {
           "type": "boolean"
