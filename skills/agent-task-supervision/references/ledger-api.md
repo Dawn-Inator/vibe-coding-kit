@@ -329,4 +329,3 @@ Record `orchestration.before` and `orchestration.after` actual `activeAgents`, o
 in that wake's optional Kit `orchestration` metadata, not a parallel plugin record. For an explicit plan,
 record trusted `agentPlan` identity and update its revision when allocation changes. Unknown stays unknown;
 keep ten raw rows, never infer plans/activity from them or rewrite historical wakes.
-

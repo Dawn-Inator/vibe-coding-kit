@@ -6,8 +6,7 @@ description: Use for long-running autonomous or multi-agent work to audit module
 # Agent task supervision
 
 This policy coordinates work, not authority: no permission to finish/merge, archive, delete, kill/restart,
-or veto a session finish. Project adapters may expose read-only probes and approved command strings;
-invocation overrides change neither audit duties nor repository/current-turn authorization.
+or veto a session finish. Adapters may expose read-only probes and approved commands; overrides change neither audit duties nor authorization.
 
 ## When to activate
 
@@ -50,10 +49,9 @@ The configured adapter may provide project-specific command strings for `arm`, `
 `inflight`, and `branches`; invocation overrides must not alter audit obligations. The Kit arm template accepts
 `--commands '<JSON object>'`; values can use `{ledger}`, `{minutes}`, or `{interval}` placeholders.
 
-At every delivered timer wake, re-arm first, then audit. The timer firing leads to a fresh audit. On other turns,
-handle the event and run relevant discovery; if the due probe says a meaningful event is due, complete the full
-audit before unrelated next-batch work. Do not describe event handling as a full audit unless the full checklist
-and ledger append were completed. A separate one-shot waiter does not replace or swallow the recurring heartbeat.
+At a delivered timer wake, re-arm before a fresh audit. Other meaningful events run discovery and the due
+probe; if due, finish the full checklist and ledger write before unrelated next-batch work. Event handling
+alone is not a full audit, and a one-shot waiter never replaces the recurring heartbeat.
 
 ## Required audit
 
