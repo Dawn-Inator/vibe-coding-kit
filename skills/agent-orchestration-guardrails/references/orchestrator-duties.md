@@ -28,8 +28,9 @@ dispatch prompt rather than assuming a worker already knows them. Additional orc
   actual per-host grants. Unauthorized heavy commands are violations even when they succeed. Keep selected
   shared checks and final acceptance centralized; the [module owner](module-delivery.md) owns tests and repairs.
 - Independently accept each module against its criteria and exact candidate before recording acceptance.
-  Inspect real wiring and critical negative/recovery behavior; reviewer findings are evidence, not the
-  final decision. Record self-verification, acceptance and landing separately. Drain pending acceptance
+  Confirm real wiring and critical negative/recovery behavior from the owner's evidence and the
+  [review verdict](review-verdict.md); open raw diffs only in that page's cases. Reviewer findings are
+  evidence, not the final decision. Record self-verification, acceptance and landing separately. Drain pending acceptance
   and check queues before expanding a wave that would only add more unfinished candidates.
 - For long-running commands, redirect output directly to a log file; avoid shell pipelines that can
   silently block progress.

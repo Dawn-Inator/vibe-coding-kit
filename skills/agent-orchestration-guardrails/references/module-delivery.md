@@ -83,8 +83,11 @@ record; keep them separate from operational Item status. Do not infer them for l
 
 On every candidate return, the orchestrator:
 
-1. Matches the result to the approved criteria and exact candidate, inspects the diff and real dependency
-   wiring, and examines evidence for success, failure and recovery behavior. Independent review may supply
+1. Matches the owner's final and the independent [review verdict](review-verdict.md) to the approved
+   criteria and exact candidate, covering real dependency wiring and success, failure and recovery
+   behavior. It opens the diff, logs or evidence files itself only in the cases that page lists (risk
+   classes, disagreement or low confidence, changed contracts or shared files, sampling, its own
+   integration edits); a candidate without a verdict is reviewed directly. Independent review supplies
    evidence; it cannot make the final acceptance decision.
 2. Runs or delegates the necessary independent checks against that candidate, including critical paths not
    established by the owner's evidence. Select scope by impact; avoid rerunning unchanged owner checks

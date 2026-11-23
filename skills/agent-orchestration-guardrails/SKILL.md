@@ -34,7 +34,8 @@ Adjust cross-module wiring, execution and acceptance effort from observed bottle
 preserve module ownership, independent review and all host/authorization limits.
 
 **Threshold B:** when a single-agent autonomous session has run or is expected to run over two hours
-(including overnight or unattended work), the orchestrator switches to dispatch-only: delegate each
+(including overnight or unattended work), or has compacted its context at least once while implementation
+work remains, the orchestrator switches to dispatch-only: delegate each
 implementation write unit to a worker; retain decomposition, dispatch, integration, verification, and
 acceptance. Orchestration artifacts and owned merge conflict resolution remain with the orchestrator.
 Respect higher-priority delegation restrictions; if dispatch is unavailable, report the blocker instead
@@ -96,21 +97,22 @@ One private final per invocation can be a resumable checkpoint; it does not end 
 
 Whichever platform and model you use as the top-level orchestrator, keep goal interpretation, dependency
 ordering, conflict resolution, architecture forks, integration, and final semantic acceptance **in the
-orchestrator**. When delegating, assign bounded execution to a mid-tier write-capable worker (Sonnet on Claude, Terra on
-Codex); Luna is read-only exploration. Owners decide local implementation within approved contracts;
+orchestrator**. When delegating, assign bounded execution to a write-tier worker (see Worker Model
+Selection). Owners decide local implementation within approved contracts;
 return cross-module architectural or authority changes to the top orchestrator.
 
 After an implementation candidate is committed, and before final acceptance of a non-trivial integrated
-multi-agent candidate, dispatch an **independent pre-review worker** (Terra on Codex; Opus/Fable-tier on
-Claude). Give it `write_scope: none`, bind it to the exact candidate commit, name its oracle and negative
+multi-agent candidate, dispatch an **independent pre-review worker** (model per Worker Model Selection).
+Give it `write_scope: none`, bind it to the exact candidate commit, name its oracle and negative
 checks, and keep it separate from every implementation owner. It must not
 edit, commit, merge, finish, push, deploy, invoke release/gate authority, or spawn another agent — it
-returns commit-bound findings and a fix/blocked recommendation; the orchestrator combines that with the
-approved goal and centralized validation for the final call. A changed candidate commit makes the
+returns a commit-bound [review verdict](references/review-verdict.md); the orchestrator combines that with
+the approved goal and centralized validation for the final call. A changed candidate commit makes the
 pre-review stale; redo it. Skip only for a bounded single-worker candidate with an exact oracle, and
 record why.
 
-Claude workers: Haiku is read-only; Sonnet owns bounded writes. Opus/Fable return judgment only.
+The orchestrator reads verdicts, not raw diffs, except for risk classes and the other cases the verdict
+page lists. Judgment-tier workers return judgment only, never repository writes.
 Read [coordinated-worker-protocol](references/coordinated-worker-protocol.md) for the platform review
 seats and acceptance split when they apply.
 
@@ -158,4 +160,6 @@ setting.
 Read `references/<name>.md` only when the scenario applies: `heavy-processes` (limits, memory watch) ·
 `quota-and-cadence` · `dispatch-decision` (modes, Codex limit recovery, spawned windows) ·
 `coordinated-worker-protocol` · `task-packet` · `model-selection` · `worker-prompt` · `context-offloading`
-· `ownership-and-recovery` · `worker-selfcheck` · `orchestrator-duties` · `module-delivery`.
+· `ownership-and-recovery` · `worker-selfcheck` · `orchestrator-duties` · `module-delivery` ·
+`review-verdict` (what reaches the orchestrator) · `rule-assumptions` (why each red line exists, when to
+revisit it after a model generation change).

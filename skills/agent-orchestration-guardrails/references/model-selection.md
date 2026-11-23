@@ -2,6 +2,19 @@
 
 Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and pinned rules.
 
+## Tier map
+
+This table is the single place outside the SKILL.md digest that maps tiers to model names. Other references
+name the tier. When a model generation changes, update this table and the digest, then revisit the rules in
+[rule assumptions](rule-assumptions.md).
+
+| Tier | Claude | Codex | Used for |
+| --- | --- | --- | --- |
+| Read-only | Haiku | Luna | Exploration, search, inventory and classification with `write_scope: none` |
+| Write | Sonnet | Terra | Every write-capable bounded task, including wiring, mechanical edits and high-risk work whose design or root cause is settled |
+| Judgment | Opus; Fable when it holds the orchestrator seat | Sol | Review and falsification, unknown root causes, security-boundary design; returns judgment, never repository writes |
+| Independent pre-review | Judgment tier | Terra, with a different implementation owner and isolated context; Sol for additional review | Commit-bound [review verdicts](review-verdict.md) |
+
 ## Worker Model Selection (No Same-Tier Default)
 
 Every dispatch call must set the worker's model explicitly. Never leave it unset so a worker silently

@@ -11,7 +11,7 @@ surrounding conversation:
 
 | Field | The task packet must state | The worker's final must report |
 | --- | --- | --- |
-| Target & boundary | The result to achieve, the scope explicitly *not* to touch, the sole file owner; a pre-review task additionally states its independent-review status, a `write_scope: none` restriction, and which authorities it is forbidden from exercising | Whether the actual change stayed inside that boundary; escalate an out-of-scope need rather than silently expanding it |
+| Target & boundary | The result to achieve, the scope explicitly *not* to touch, the sole file owner; a pre-review task additionally states its independent-review status, a `write_scope: none` restriction, which authorities it is forbidden from exercising, and the offload path for its full review | Whether the actual change stayed inside that boundary; escalate an out-of-scope need rather than silently expanding it. A pre-review reports in the [review verdict](review-verdict.md) format |
 | Module delivery | Stable module ID, approved acceptance criteria, persistent delivery owner, required internal dependencies and their owners; include the ownership obligation from [module delivery](module-delivery.md) | Requirements/test coverage, actual wiring, current phase, remaining work and whether this is a candidate, resumable checkpoint or concrete blocker; never self-accept |
 | Basis & oracle | Known facts, unverified assumptions, the success/failure oracle, the evidence tier required | Actual observations, command/artifact results, unverified items and remaining risk |
 | Candidate | Base ref/SHA, target branch, the expected candidate SHA and when it goes stale | This run's commit SHA, its parent/base, and whether the candidate is still the target tip |
