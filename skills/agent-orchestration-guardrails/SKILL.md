@@ -45,7 +45,7 @@ of silently self-implementing. This mode does not depend on heartbeat tooling be
 
 - Every dispatch sets `model` explicitly (plus effort/context-carry on Codex), at **every** level of the
   chain; a worker that fans out lists each sub-agent and its model. On Claude Code the dispatch guard hook
-  enforces this and `vck-*` roles pin it ([runtime enforcement](references/runtime-enforcement.md)).
+  enforces this and the kit's Claude roles pin it ([runtime enforcement](references/runtime-enforcement.md)).
 - Workers run only the checks authorized in their packet. Module tests, typechecks, builds or scoped
   integration/E2E need an exact command, prepared environment and a granted per-host resource slot when
   heavy; without a slot, queue a checkpoint. No unassigned full suites, installs, host-sync, shared-resource

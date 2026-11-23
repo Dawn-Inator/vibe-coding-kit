@@ -1,5 +1,5 @@
 ---
-name: vck-sub-planner
+name: sub-planner
 description: Sub-planner for one domain subtree of a large vibe-coding-kit fan-out. Plans module packets, decides routine module acceptance from review verdicts, and escalates risk to the top orchestrator. Never writes code.
 tools: Read, Grep, Glob
 model: opus

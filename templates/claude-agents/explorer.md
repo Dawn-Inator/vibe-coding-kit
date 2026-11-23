@@ -1,5 +1,5 @@
 ---
-name: vck-explorer
+name: explorer
 description: Read-only exploration for a vibe-coding-kit orchestrator. Searches, locates, inventories and classifies code without changing anything. Use for packets with write_scope none.
 tools: Read, Grep, Glob
 model: haiku

@@ -32,7 +32,7 @@ test('sync writes every shipped role with the generated marker, and check is the
   const before = syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {}, checkOnly: true });
   assert.equal(before.ok, false);
   assert.equal(before.problems.length, SHIPPED.length);
-  assert.ok(before.problems.every((p) => p.startsWith('missing: .claude/agents/vck-')));
+  assert.ok(before.problems.every((p) => p.startsWith('missing: .claude/agents/')));
   assert.equal(existsSync(join(root, '.claude')), false, 'check mode must not write');
 
   const synced = syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {} });
@@ -47,12 +47,12 @@ test('sync writes every shipped role with the generated marker, and check is the
   assert.equal(syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {} }).written, 0);
 });
 
-test('drift is reported in check mode and repaired by sync; stale generated roles are removed', () => {
+test('drift is reported in check mode and repaired by sync; stale or legacy generated roles (such as vck-*) are removed', () => {
   const root = mkdtempTracked('roles-drift-');
   syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {} });
   const target = agentsPath(root, SHIPPED[0]);
   writeFileSync(target, `${readFileSync(target, 'utf8')}\nlocal edit\n`);
-  writeFileSync(agentsPath(root, 'vck-retired.md'), readFileSync(target, 'utf8').replace(/name: vck-[a-z-]+/, 'name: vck-retired'));
+  writeFileSync(agentsPath(root, 'vck-retired.md'), readFileSync(target, 'utf8').replace(/^name: .+$/m, 'name: vck-retired'));
   const check = syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {}, checkOnly: true });
   assert.deepEqual(check.problems.sort(), [`stale: .claude/agents/${SHIPPED[0]}`, 'unexpected: .claude/agents/vck-retired.md'].sort());
   const repaired = syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {} });
@@ -62,17 +62,17 @@ test('drift is reported in check mode and repaired by sync; stale generated role
   assert.ok(syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {}, checkOnly: true }).ok);
 });
 
-test('a project-owned file is never overwritten or removed, even with the vck- prefix', () => {
+test('a project-owned file is never overwritten or removed, even when it shares a kit role name', () => {
   const root = mkdtempTracked('roles-conflict-');
   mkdirSync(join(root, '.claude', 'agents'), { recursive: true });
-  const own = '---\nname: vck-reviewer\ndescription: our own reviewer\nmodel: sonnet\n---\n\nProject body.\n';
-  writeFileSync(agentsPath(root, 'vck-reviewer.md'), own);
-  writeFileSync(agentsPath(root, 'vck-local-helper.md'), '---\nname: vck-local-helper\nmodel: haiku\n---\n\nOurs.\n');
+  const own = '---\nname: reviewer\ndescription: our own reviewer\nmodel: sonnet\n---\n\nProject body.\n';
+  writeFileSync(agentsPath(root, 'reviewer.md'), own);
+  writeFileSync(agentsPath(root, 'local-helper.md'), '---\nname: local-helper\nmodel: haiku\n---\n\nOurs.\n');
   const result = syncRoleDefinitions({ projectRoot: root, kitRoot: KIT, projectConfig: {} });
   assert.equal(result.ok, false);
-  assert.deepEqual(result.problems, ['conflict: .claude/agents/vck-reviewer.md exists and is not kit-generated; rename or remove it to receive the kit role']);
-  assert.equal(readFileSync(agentsPath(root, 'vck-reviewer.md'), 'utf8'), own);
-  assert.equal(existsSync(agentsPath(root, 'vck-local-helper.md')), true);
+  assert.deepEqual(result.problems, ['conflict: .claude/agents/reviewer.md exists and is not kit-generated; rename or remove it to receive the kit role']);
+  assert.equal(readFileSync(agentsPath(root, 'reviewer.md'), 'utf8'), own);
+  assert.equal(existsSync(agentsPath(root, 'local-helper.md')), true);
 });
 
 test('excluding the orchestration skill removes generated roles and keeps project files', () => {
@@ -134,10 +134,10 @@ test('class guard: shipped roles pin the tier map models and least-privilege too
   const tiers = tierMapModels();
   assert.deepEqual([...tiers.keys()].sort(), ['Judgment', 'Read-only', 'Write']);
   const expected = {
-    'vck-explorer.md': { tier: 'Read-only', readOnly: true },
-    'vck-module-owner.md': { tier: 'Write', readOnly: false },
-    'vck-reviewer.md': { tier: 'Judgment', readOnly: true },
-    'vck-sub-planner.md': { tier: 'Judgment', readOnly: true },
+    'explorer.md': { tier: 'Read-only', readOnly: true },
+    'module-owner.md': { tier: 'Write', readOnly: false },
+    'reviewer.md': { tier: 'Judgment', readOnly: true },
+    'sub-planner.md': { tier: 'Judgment', readOnly: true },
   };
   assert.deepEqual(SHIPPED, Object.keys(expected).sort());
   for (const name of SHIPPED) {
@@ -153,4 +153,12 @@ test('class guard: shipped roles pin the tier map models and least-privilege too
     }
     assert.ok(fields.description && fields.description.length <= 240, `${name} needs a short description`);
   }
+});
+
+test('class guard: the mirror .gitignore block lists exactly the shipped role files', () => {
+  const cli = readFileSync(join(KIT, 'cli.mjs'), 'utf8');
+  const block = cli.match(/const MIRROR_IGNORE_BLOCK = `([^`]*)`/);
+  assert.ok(block, 'cli.mjs must define MIRROR_IGNORE_BLOCK');
+  const listed = [...block[1].matchAll(/\/\.claude\/agents\/([^\\]+)\\n/g)].map((m) => m[1]).sort();
+  assert.deepEqual(listed, SHIPPED);
 });

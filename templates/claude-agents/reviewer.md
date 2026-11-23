@@ -1,5 +1,5 @@
 ---
-name: vck-reviewer
+name: reviewer
 description: Independent read-only reviewer for a vibe-coding-kit orchestrator. Reviews one exact candidate commit against its acceptance criteria and returns a structured review verdict. Never edits, commits or dispatches.
 tools: Read, Grep, Glob
 model: opus

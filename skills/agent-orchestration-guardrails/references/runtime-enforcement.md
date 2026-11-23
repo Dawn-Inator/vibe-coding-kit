@@ -10,15 +10,15 @@ packet states only task-specific values.
 The kit ships Claude Code role definitions in `templates/claude-agents/`. The project's `skills sync`
 writes them to `.claude/agents/` with a generated marker, and `skills check` reports drift. They follow
 the orchestration skill: excluding `agent-orchestration-guardrails` in `project.config.json` removes them.
-A project file without the marker is never overwritten, even with the `vck-` prefix; it is reported as a
+A project file without the marker is never overwritten, even when it shares a kit role's name; it is reported as a
 conflict. Under the `local` mirror policy the generated files are git-ignored like the skill mirrors.
 
 | Role | Tier | Tools | What the allowlist guarantees |
 | --- | --- | --- | --- |
-| `vck-explorer` | Read-only | Read, Grep, Glob | Cannot edit, run shell commands or dispatch |
-| `vck-module-owner` | Write | Read, Grep, Glob, Edit, Write, Bash | Cannot dispatch, so it cannot add an agent layer |
-| `vck-reviewer` | Judgment | Read, Grep, Glob | Cannot edit, run shell commands or dispatch; read-only by construction |
-| `vck-sub-planner` | Judgment | Read, Grep, Glob | Plans and decides only; never writes code or dispatches |
+| `explorer` | Read-only | Read, Grep, Glob | Cannot edit, run shell commands or dispatch |
+| `module-owner` | Write | Read, Grep, Glob, Edit, Write, Bash | Cannot dispatch, so it cannot add an agent layer |
+| `reviewer` | Judgment | Read, Grep, Glob | Cannot edit, run shell commands or dispatch; read-only by construction |
+| `sub-planner` | Judgment | Read, Grep, Glob | Plans and decides only; never writes code or dispatches |
 
 Each role pins its model from the [tier map](model-selection.md#tier-map), and its body carries the fixed
 worker rules from [worker prompt](worker-prompt.md). Dispatch with `subagent_type` set to the role and a

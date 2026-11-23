@@ -19,7 +19,7 @@ a client domain. It is a persistent planning and acceptance seat for that subtre
   candidate and of every escalated module, integration and landing.
 
 Depth stays at two worker layers: top orchestrator, sub-planner, module owners. A sub-planner cannot create
-another sub-planner, and reviewers never delegate. Dispatch it with the `vck-sub-planner` role on Claude
+another sub-planner, and reviewers never delegate. Dispatch it with the `sub-planner` role on Claude
 Code ([runtime enforcement](runtime-enforcement.md)) and a packet with `role: "sub-planner"`.
 
 ## Two runtime modes
@@ -27,7 +27,7 @@ Code ([runtime enforcement](runtime-enforcement.md)) and a packet with `role: "s
 - **Nested dispatch available and authorized** (`nestedDispatch: true` in its packet): the sub-planner
   dispatches its own module owners and reviewers, reports every child identity and model, and returns a
   subtree summary.
-- **No nested dispatch** (the default, and the only mode for the `vck-sub-planner` role, which has no
+- **No nested dispatch** (the default, and the only mode for the `sub-planner` role, which has no
   dispatch tool): the sub-planner returns packets; the top orchestrator dispatches them unchanged and
   routes each owner final and verdict back to the sub-planner by file path. Workers write their finals and
   evidence to the offload directory, so the top orchestrator forwards paths, not contents.

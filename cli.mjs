@@ -24,7 +24,7 @@ const DEFAULT_URL = 'https://github.com/Dawn-Inator/vibe-coding-kit.git';
 const KIT_PATH = '.vibe-coding/kit';
 const MIRROR_IGNORE_BEGIN = '# BEGIN vibe-coding-kit local skill mirrors';
 const MIRROR_IGNORE_END = '# END vibe-coding-kit local skill mirrors';
-const MIRROR_IGNORE_BLOCK = `${MIRROR_IGNORE_BEGIN}\n/.agents/skills/\n/.claude/skills/\n/.claude/agents/vck-*.md\n${MIRROR_IGNORE_END}\n`;
+const MIRROR_IGNORE_BLOCK = `${MIRROR_IGNORE_BEGIN}\n/.agents/skills/\n/.claude/skills/\n/.claude/agents/explorer.md\n/.claude/agents/module-owner.md\n/.claude/agents/reviewer.md\n/.claude/agents/sub-planner.md\n${MIRROR_IGNORE_END}\n`;
 
 function parseArgs(argv) {
   const [command = 'help', ...rest] = argv;

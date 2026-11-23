@@ -113,7 +113,7 @@ test('hook output carries a deny only for a blocked dispatch', () => {
 });
 
 test('hook CLI: denies, allows through a project role, and fails open on garbage', () => {
-  const project = agentsDir({ 'vck-module-owner.md': role('vck-module-owner', 'sonnet') });
+  const project = agentsDir({ 'module-owner.md': role('module-owner', 'sonnet') });
   const home = mkdtempTracked('dispatch-guard-home-');
   const runHook = (input, env = {}) => spawnSync(process.execPath, [HOOK], {
     input: typeof input === 'string' ? input : JSON.stringify(input),
@@ -124,7 +124,7 @@ test('hook CLI: denies, allows through a project role, and fails open on garbage
   const denied = runHook({ tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'general-purpose' } });
   assert.equal(denied.status, 0);
   assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, 'deny');
-  const pinned = runHook({ tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'vck-module-owner' } });
+  const pinned = runHook({ tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'module-owner' } });
   assert.equal(pinned.status, 0);
   assert.deepEqual(JSON.parse(pinned.stdout), {});
   const explicit = runHook({ tool_name: 'Task', tool_input: { prompt: 'x', model: 'haiku' } });

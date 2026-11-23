@@ -1,5 +1,5 @@
 ---
-name: vck-module-owner
+name: module-owner
 description: Write-capable module delivery owner for a vibe-coding-kit orchestrator. Implements, tests, fixes and resubmits one bounded module inside a pre-created worktree. Cannot dispatch further agents.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet

@@ -24,7 +24,7 @@ to the offload path named in its packet ([context offloading](context-offloading
 | Risk classes | Every class the change touches: money/billing, auth(n/z), migrations/schema, secrets, irreversible actions, cross-module contract or shared-file changes; `none` only after checking each |
 | Coverage | What was examined and what was not (files, paths, criteria), and why |
 | Confidence | `high`, `medium` or `low`, with the reason for anything below `high` |
-| Evidence path | Offload path of the full review and its supporting excerpts; a reviewer without write tools, such as the kit's `vck-reviewer`, cites the exported diff and log files it read and keeps each finding to one line |
+| Evidence path | Offload path of the full review and its supporting excerpts; a reviewer without write tools, such as the kit's `reviewer`, cites the exported diff and log files it read and keeps each finding to one line |
 | Reviewer identity | Requested and actual model/effort, and whether its context was isolated from every owner and from the orchestrator |
 
 A verdict that misses a field, is bound to no SHA, or leaves risk classes unchecked is incomplete: treat it
@@ -57,7 +57,7 @@ the orchestrator directly. When several candidates are in flight, prefer dispatc
 
 A reviewer is read-only (`write_scope: none`), separate from every implementation owner, bound to one SHA,
 and cannot edit, commit, merge, finish, push, deploy, invoke gate or release authority, or spawn agents. On
-Claude Code the `vck-reviewer` role makes this structural: it has no edit, shell or dispatch tools, so the
+Claude Code the `reviewer` role makes this structural: it has no edit, shell or dispatch tools, so the
 orchestrator exports the candidate diff and logs into the reviewer's offload directory first.
 Context isolation is required. A reviewer from a different model family than the owner is preferred when
 the runtime offers one, for example a Codex reviewer for a Claude-authored candidate, because reviewers that

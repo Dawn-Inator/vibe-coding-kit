@@ -25,9 +25,9 @@ const ROLE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 const REASONS = {
   'explicit-model':
-    'Dispatch blocked by the vibe-coding-kit dispatch guard (explicit-model): set `model` on this call, or use a role definition that pins one (for example `vck-module-owner` or `vck-explorer`). Every dispatch sets the worker model explicitly instead of inheriting the caller\'s tier; see agent-orchestration-guardrails, Worker Model Selection.',
+    'Dispatch blocked by the vibe-coding-kit dispatch guard (explicit-model): set `model` on this call, or use a role definition that pins one (for example the kit roles `module-owner` or `explorer`). Every dispatch sets the worker model explicitly instead of inheriting the caller\'s tier; see agent-orchestration-guardrails, Worker Model Selection.',
   'fork-dispatch':
-    'Dispatch blocked by the vibe-coding-kit dispatch guard (fork-dispatch): a `fork` always runs on the caller\'s model and carries its full context, so it cannot set a worker model or serve as an isolated reviewer. Dispatch a fresh agent with `model` set, or a kit role such as `vck-reviewer`.',
+    'Dispatch blocked by the vibe-coding-kit dispatch guard (fork-dispatch): a `fork` always runs on the caller\'s model and carries its full context, so it cannot set a worker model or serve as an isolated reviewer. Dispatch a fresh agent with `model` set, or a kit role such as `reviewer`.',
 };
 
 /** The effective `config.dispatchGuard` settings, each key falling back to its default. Never throws. */
