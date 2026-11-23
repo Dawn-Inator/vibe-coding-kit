@@ -24,11 +24,13 @@ to the offload path named in its packet ([context offloading](context-offloading
 | Risk classes | Every class the change touches: money/billing, auth(n/z), migrations/schema, secrets, irreversible actions, cross-module contract or shared-file changes; `none` only after checking each |
 | Coverage | What was examined and what was not (files, paths, criteria), and why |
 | Confidence | `high`, `medium` or `low`, with the reason for anything below `high` |
-| Evidence path | Offload path of the full review and its supporting excerpts |
+| Evidence path | Offload path of the full review and its supporting excerpts; a reviewer without write tools, such as the kit's `vck-reviewer`, cites the exported diff and log files it read and keeps each finding to one line |
 | Reviewer identity | Requested and actual model/effort, and whether its context was isolated from every owner and from the orchestrator |
 
 A verdict that misses a field, is bound to no SHA, or leaves risk classes unchecked is incomplete: treat it
-as no review and return it to the reviewer.
+as no review and return it to the reviewer. The machine-readable form is `schemas/review-verdict.schema.json`;
+the kit's handoff contract validator checks it, and its `intakeDecision` export applies the intake cases
+below ([runtime enforcement](runtime-enforcement.md)).
 
 ## What reaches the orchestrator
 
@@ -54,7 +56,9 @@ the orchestrator directly. When several candidates are in flight, prefer dispatc
 ## Review seats
 
 A reviewer is read-only (`write_scope: none`), separate from every implementation owner, bound to one SHA,
-and cannot edit, commit, merge, finish, push, deploy, invoke gate or release authority, or spawn agents.
+and cannot edit, commit, merge, finish, push, deploy, invoke gate or release authority, or spawn agents. On
+Claude Code the `vck-reviewer` role makes this structural: it has no edit, shell or dispatch tools, so the
+orchestrator exports the candidate diff and logs into the reviewer's offload directory first.
 Context isolation is required. A reviewer from a different model family than the owner is preferred when
 the runtime offers one, for example a Codex reviewer for a Claude-authored candidate, because reviewers that
 share the author's model tend to share its blind spots. Findings return to the same delivery owner through

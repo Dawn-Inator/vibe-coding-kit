@@ -59,12 +59,15 @@ engineering/automation/root-layout/check-root-layout.mjs # 项目自有目录边
 docs/repository-layout.md        # 项目自有根目录职责声明
 .agents/skills/                  # 生成的 skill 镜像
 .claude/skills/                  # 生成的 skill 镜像
+.claude/agents/vck-*.md          # 生成的 Claude 编排角色定义
 AGENTS.md / CLAUDE.md            # 由 skills:sync 生成的根指令投影
 ```
 
-默认镜像策略会忽略前两个镜像目录；它们及根指令文件都是投影，实际生成范围由 skills 同步配置决定。Kit 中的 `templates/` 仅在首次安装时作为输入，不会复制成项目里的模板目录。
+默认镜像策略会忽略前两个镜像目录和生成的角色定义；它们及根指令文件都是投影，实际生成范围由 skills 同步配置决定。Kit 中的 `templates/` 仅在首次安装时作为输入，不会复制成项目里的模板目录；`templates/claude-agents/` 例外，它是 `skills sync` 每次生成角色定义的来源。
 
-默认 `--mirror-policy local` 会把生成的 `.agents/skills/` 与 `.claude/skills/` 镜像留在 Git 之外；项目明确要版本化这些投影时可传 `--mirror-policy tracked`。安装只维护自己标记的 `.gitignore` 区块，会保留其他条目。
+默认 `--mirror-policy local` 会把生成的 `.agents/skills/`、`.claude/skills/` 镜像和 `.claude/agents/vck-*.md` 留在 Git 之外；项目明确要版本化这些投影时可传 `--mirror-policy tracked`。安装只维护自己标记的 `.gitignore` 区块，会保留其他条目。
+
+`skills sync` 会把 Kit 的 Claude 编排角色（`vck-explorer`、`vck-module-owner`、`vck-reviewer`、`vck-sub-planner`）写入 `.claude/agents/`，每个角色固定模型和工具白名单；`skills check` 会报告漂移。只有带生成标记的文件归 Kit 管理，项目自己的 agent 文件即使同样以 `vck-` 开头也不会被覆盖，而是报告为冲突；在 `skills` 配置里排除 `agent-orchestration-guardrails` 会移除这些角色。派单守卫需要把 `templates/claude-settings-snippet.json` 里 `Agent|Task` 那一项合并进项目的 `.claude/settings.json`，详见编排 skill 的 `runtime-enforcement` 参考。
 
 项目配置描述项目自身，不是 Kit 的模板真源。默认配置包含 Kit 路径和 URL、adapter 路径、`identity.name` / `identity.email`，以及供项目填写的 `worktrees`、`skills`、`knowledge`、`layout`、`contracts` 配置区域。详见 [配置 schema](schemas/project-config.schema.json)。
 

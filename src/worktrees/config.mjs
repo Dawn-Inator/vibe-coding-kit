@@ -149,6 +149,18 @@ export const DEFAULT_CONFIG = {
     hints: {},
   },
 
+  // Dispatch guard (PreToolUse hook for Claude Code's Agent/Task tool, src/orchestration/dispatch-guard.mjs).
+  // Denies a dispatch that inherits the caller's model: no `model` on the call and no role definition that
+  // pins one, or a `fork` dispatch (which always runs on the caller's model and context).
+  //   disabledRules: rule ids to switch off (`explicit-model`, `fork-dispatch`).
+  //   hints: per-rule remediation text appended to the deny message, keyed by rule id.
+  // Note: loadConfig replaces a top-level key as a whole; omitted keys fall back to
+  // these defaults inside readDispatchGuardSettings().
+  dispatchGuard: {
+    disabledRules: [],
+    hints: {},
+  },
+
   // Refs whose commits are already published. `finish` must never rewrite a
   // commit reachable from any of these (rebase / re-author would change its
   // hash and desynchronise everyone who already has it). Full ref names.

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/review-verdict.schema.json",
+  "title": "Vibe Coding Kit review verdict",
+  "description": "An independent reviewer's final for one exact candidate. Validated by src/orchestration/handoff-contract.mjs (validateReviewVerdict); an invalid verdict counts as no review. The recommendation is never the acceptance decision.",
+  "type": "object",
+  "required": ["schemaVersion", "moduleId", "candidateSha", "baseSha", "recommendation", "findings", "riskClasses", "coverage", "confidence", "evidence", "reviewer"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "moduleId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "candidateSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+    "baseSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+    "recommendation": { "enum": ["accept", "return-for-fix", "blocked"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "location", "criterion", "fix"],
+        "properties": {
+          "severity": { "enum": ["high", "medium", "low"] },
+          "location": { "type": "string", "minLength": 1, "description": "file:line" },
+          "criterion": { "type": "string", "minLength": 1 },
+          "fix": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "riskClasses": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every class the change touches, or [\"none\"] after checking each.",
+      "items": { "enum": ["money", "auth", "migration", "secrets", "irreversible", "contract", "none"] }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["examined", "notExamined"],
+      "properties": {
+        "examined": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "notExamined": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "confidenceReason": { "type": "string", "description": "Required when confidence is below high." },
+    "evidence": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Files the review read, such as exported diffs and logs." },
+    "reviewer": {
+      "type": "object",
+      "required": ["requestedModel", "actualModel", "contextIsolated"],
+      "properties": {
+        "requestedModel": { "type": "string", "minLength": 1 },
+        "actualModel": { "type": "string", "minLength": 1 },
+        "contextIsolated": { "const": true }
+      }
+    }
+  }
+}

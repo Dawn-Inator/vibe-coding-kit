@@ -19,7 +19,9 @@ See your project's tutorial for the incident that motivated this section.
 
 The active bug-fix ownership rule, the symlink-prohibition, the light-self-check naming, and the per-host heavy
 process limit are stated in full above (see "Bug-Fix Ownership", "Worker Prompt
-Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule") — restate all of them in every
+Requirements", "Worker Light Self-Check Before Handoff", and "Core Rule"). Where the runtime has the kit's
+role definitions ([runtime enforcement](runtime-enforcement.md)), dispatch with the matching role: it carries
+these rules, so the packet states only task-specific values. Otherwise restate all of them in every
 dispatch prompt rather than assuming a worker already knows them. Additional orchestrator-only duties:
 
 - After dispatch, record the returned native agent thread ID on its assigned canonical task leaves using the existing task-progress workflow. Maintain or clear the association on evidence and record completion only after independent acceptance. Never invent an ID or write another worker’s private task record.

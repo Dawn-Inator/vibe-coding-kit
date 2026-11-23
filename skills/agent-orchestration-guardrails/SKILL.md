@@ -44,7 +44,8 @@ of silently self-implementing. This mode does not depend on heartbeat tooling be
 ### Dispatch Red Lines
 
 - Every dispatch sets `model` explicitly (plus effort/context-carry on Codex), at **every** level of the
-  chain; a worker that fans out lists each sub-agent and its model.
+  chain; a worker that fans out lists each sub-agent and its model. On Claude Code the dispatch guard hook
+  enforces this and `vck-*` roles pin it ([runtime enforcement](references/runtime-enforcement.md)).
 - Workers run only the checks authorized in their packet. Module tests, typechecks, builds or scoped
   integration/E2E need an exact command, prepared environment and a granted per-host resource slot when
   heavy; without a slot, queue a checkpoint. No unassigned full suites, installs, host-sync, shared-resource
@@ -119,6 +120,7 @@ seats and acceptance split when they apply.
 Before the first broad wave, dispatch one representative low-risk task as a health check: confirm one
 private structured final, respected write scope and verification grants, usable evidence.
 Nested delegation requires explicit top-level authorization and is limited to two worker layers; reviewers never delegate.
+Above about six active module owners, use [sub-planners](references/sub-planner.md).
 
 ### Task Packet Reference
 
@@ -162,4 +164,5 @@ Read `references/<name>.md` only when the scenario applies: `heavy-processes` (l
 `coordinated-worker-protocol` · `task-packet` · `model-selection` · `worker-prompt` · `context-offloading`
 · `ownership-and-recovery` · `worker-selfcheck` · `orchestrator-duties` · `module-delivery` ·
 `review-verdict` (what reaches the orchestrator) · `rule-assumptions` (why each red line exists, when to
-revisit it after a model generation change).
+revisit it after a model generation change) · `runtime-enforcement` (roles, dispatch guard, handoff
+validation) · `sub-planner` (large fan-outs).

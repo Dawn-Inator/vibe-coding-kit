@@ -99,6 +99,10 @@ On every candidate return, the orchestrator:
    owner self-verification, orchestrator acceptance and landed/pushed state distinct. Acceptance never
    implies deployment or a check that did not run.
 
+In a subtree run by a [sub-planner](sub-planner.md), the sub-planner performs steps 1 to 3 for routine
+modules and escalates every flagged risk class, cross-domain contract change and architecture fork; the
+top orchestrator performs step 4 and accepts each subtree candidate and every escalated module.
+
 Handle a private candidate final promptly; it need not wait for the next heartbeat. When acceptance or test
 queues accumulate, prioritize draining them and completing current modules before opening more work.
 Concurrency follows independent work, host capacity and acceptance capacity, not a target agent count.

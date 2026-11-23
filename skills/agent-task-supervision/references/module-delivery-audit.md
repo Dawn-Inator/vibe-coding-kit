@@ -9,8 +9,9 @@ owner's implementation/test/fix loop and the orchestrator's independent acceptan
 
 For each unfinished module, follow `evidence` to its current packet/checkpoint. Check the approved criteria,
 persistent delivery owner, current worktree/write ownership, exact candidate, current phase, last meaningful
-evidence and next action. Check dependency/queue ownership, actual tests and the orchestrator's acceptance
-decision. Report missing evidence as unknown and arrange reconciliation; do not infer it from an old status
+evidence and next action. Check dependency/queue ownership, actual tests and the acceptance decision with
+its intake case; in a subtree, also the sub-planner that owns routine acceptance and every escalation it
+raised. Report missing evidence as unknown and arrange reconciliation; do not infer it from an old status
 or manufacture a second registry. Aggregate `tracking` parents retain their read-only coordination role;
 link actual implementation leaves instead of inventing parent activity or dispatch receipts.
 
@@ -22,7 +23,7 @@ Use the phase to choose the next action, with original evidence:
 | A module check failed | Resume the same delivery owner to diagnose, fix and rerun affected checks; retain the failure oracle |
 | Internal adapter/contract/startup binding is missing | Orchestrator coordinates its named owner and interface; retain it as development work and continue independent work |
 | A required heavy check is queued | Check the exact command, queue/resource owner, source snapshot and continuation; orchestrator grants capacity or arranges a permitted verifier when available |
-| A candidate awaits acceptance | Orchestrator independently checks criteria, diff, actual wiring and critical success/failure/recovery paths against the exact candidate; record accept/return/blocked |
+| A candidate awaits acceptance | Orchestrator, or for a routine module in a subtree its sub-planner, matches the owner's final and the [review verdict](../../agent-orchestration-guardrails/references/review-verdict.md) to the criteria, actual wiring and critical success/failure/recovery paths of the exact candidate, opening the diff in that page's cases; record accept/return/blocked and the intake case |
 | Acceptance returned findings | Original delivery owner fixes and resubmits; do not count the module done or silently leave repairs to main |
 | Accepted but not landed | Orchestrator uses the authorized lifecycle/gates and verifies the target branch; acceptance alone is not landing |
 | Repeated identical failure or no new meaningful evidence | Diagnose dependency, resource or decomposition bottleneck and escalate/re-split as needed; no blind retry or churn of owners |

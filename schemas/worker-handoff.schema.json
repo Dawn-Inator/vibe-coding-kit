@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/worker-handoff.schema.json",
+  "title": "Vibe Coding Kit worker handoff",
+  "description": "A worker's single private final. Validated by src/orchestration/handoff-contract.mjs (validateWorkerHandoff); an invalid handoff is treated as blocked. A handoff never self-accepts.",
+  "type": "object",
+  "required": ["schemaVersion", "role", "moduleId", "outcome", "stayedInScope", "checks", "unverified", "model", "next"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "role": { "enum": ["explorer", "module-owner", "reviewer", "sub-planner"] },
+    "moduleId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "outcome": { "enum": ["candidate", "checkpoint", "blocked"] },
+    "candidateSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$", "description": "Required for a candidate." },
+    "baseSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$", "description": "Required for a candidate." },
+    "continuation": { "type": "string", "description": "Required for a checkpoint: the exact next step and its owner." },
+    "blocker": { "type": "string", "description": "Required when blocked: the concrete dependency, decision or authority." },
+    "stayedInScope": { "type": "boolean" },
+    "scopeNote": { "type": "string", "description": "Required when stayedInScope is false." },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "result"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "result": { "enum": ["passed", "failed", "not-run", "queued"] },
+          "exitCode": { "type": ["integer", "null"] }
+        }
+      }
+    },
+    "unverified": { "type": "array", "items": { "type": "string" } },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "base", "tip", "landed"],
+        "properties": {
+          "name": { "type": "string" },
+          "base": { "type": "string" },
+          "tip": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+          "landed": { "type": "boolean" }
+        }
+      }
+    },
+    "backgroundProcesses": {
+      "type": "object",
+      "description": "Required for a module owner: proof that every background shell, loop and watcher it started has stopped.",
+      "required": ["stopped", "psProof"],
+      "properties": { "stopped": { "const": true }, "psProof": { "type": "string", "minLength": 1 } }
+    },
+    "model": {
+      "type": "object",
+      "required": ["requested", "actual"],
+      "properties": { "requested": { "type": "string", "minLength": 1 }, "actual": { "type": "string", "minLength": 1, "description": "\"unknown\" when the runtime does not report it." } }
+    },
+    "next": {
+      "type": "object",
+      "required": ["action", "owner"],
+      "properties": { "action": { "type": "string", "minLength": 1 }, "owner": { "type": "string", "minLength": 1 } }
+    },
+    "subtree": {
+      "type": "array",
+      "description": "Sub-planner only: every module in the subtree with its phase and candidate SHA.",
+      "items": {
+        "type": "object",
+        "required": ["moduleId", "phase"],
+        "properties": {
+          "moduleId": { "type": "string" },
+          "phase": { "type": "string" },
+          "candidateSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" }
+        }
+      }
+    }
+  },
+  "not": { "anyOf": [{ "required": ["accepted"] }, { "required": ["acceptance"] }] }
+}

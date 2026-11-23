@@ -22,6 +22,10 @@ surrounding conversation:
 | Progress durability | **Mandatory in every write-capable dispatch prompt**: "commit to your own worktree branch each time a verifiable unit turns green (no push, no finish until the end)" | Which sub-steps were actually committed as they landed, with commit SHAs |
 | Branches created | The branch (and worktree) the orchestrator pre-created and recorded for this unit, its landing base, and "name every other branch you create, local or pushed, in your final report" | Every branch the run created or pushed, each with its base, tip SHA and whether it is landed, so the orchestrator records it in the heartbeat branch registry and cleans it after landing |
 
+The machine-readable form of this contract is `schemas/task-packet.schema.json` for the packet and
+`schemas/worker-handoff.schema.json` for the final; validate either with the kit's handoff contract
+validator ([runtime enforcement](runtime-enforcement.md)) and treat an invalid final as blocked.
+
 In a shared managed checkout, workers must not stage or commit concurrently: the orchestrator alone
 checkpoints the disjoint patches serially. The packet explicitly names that exception and commit owner;
 otherwise each write-capable worker has its own branch/worktree as the table requires.
@@ -48,4 +52,5 @@ defined check set — not a release readback), and `finish` (merges/cleans up/pu
 check into a passed one) conceptually separate; never let a worker report blur them into "everything is
 done." A worker may only report the actual output of the authority it actually holds.
 
-Default to no nested dispatch. Only a top-level packet may authorize a bounded module owner to spawn one worker layer, when runtime support, measurable benefit, scope ownership, result delivery and descendant completion are established. Name each child model, scope and owner; descendants cannot delegate. Reviewers cannot delegate. Independent windows are not nested workers. The module owner reports all child identities, models, results and unresolved work; the top orchestrator retains integration and final acceptance. If tracking or reliable return is unavailable, use top-level dispatch. Enforce depth/tool restrictions mechanically where supported.
+Default to no nested dispatch. A [sub-planner](sub-planner.md) for a large fan-out is the other
+authorized middle layer; it follows the same depth limit. Only a top-level packet may authorize a bounded module owner to spawn one worker layer, when runtime support, measurable benefit, scope ownership, result delivery and descendant completion are established. Name each child model, scope and owner; descendants cannot delegate. Reviewers cannot delegate. Independent windows are not nested workers. The module owner reports all child identities, models, results and unresolved work; the top orchestrator retains integration and final acceptance. If tracking or reliable return is unavailable, use top-level dispatch. Enforce depth/tool restrictions mechanically where supported.

@@ -4,7 +4,10 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 
 ## Worker Prompt Requirements
 
-When delegating implementation or workflow worker tasks, explicitly say:
+The kit's Claude role definitions (`templates/claude-agents/`, see
+[runtime enforcement](runtime-enforcement.md)) carry the fixed requirements below for explorers, module
+owners, reviewers and sub-planners. A dispatch that uses one states only the packet's task-specific values;
+keep a role's body and this list in step when either changes. Without a role definition, explicitly say:
 
 - For a read-only explorer, set `write_scope: none` and prohibit edits, patch application, commits, finish,
   and publishing. A discovered needed change returns as evidence; the orchestrator creates a new

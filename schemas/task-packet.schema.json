@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dawn-Inator/vibe-coding-kit/schemas/task-packet.schema.json",
+  "title": "Vibe Coding Kit task packet",
+  "description": "The contract an orchestrator dispatches to one worker. Validated by src/orchestration/handoff-contract.mjs (validateTaskPacket), which also enforces the role-specific rules stated in the descriptions below.",
+  "type": "object",
+  "required": ["schemaVersion", "role", "moduleId", "target", "writeScope", "base", "model", "verification", "offloadDir", "attempt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "role": { "enum": ["explorer", "module-owner", "reviewer", "sub-planner"] },
+    "moduleId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "target": { "type": "string", "minLength": 1, "description": "The result to achieve." },
+    "outOfScope": { "type": "array", "items": { "type": "string" }, "description": "What the worker must not touch." },
+    "writeScope": {
+      "description": "\"none\" for explorer, reviewer and sub-planner; a non-empty list of paths for a module owner.",
+      "oneOf": [
+        { "const": "none" },
+        { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      ]
+    },
+    "worktree": { "type": "string", "description": "Absolute path of the pre-created worktree; required for a module owner." },
+    "base": {
+      "type": "object",
+      "required": ["sha"],
+      "properties": { "ref": { "type": "string" }, "sha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" } }
+    },
+    "candidateSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$", "description": "Required for a reviewer: the one commit it reviews." },
+    "acceptanceCriteria": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "description": "Required for module-owner, reviewer and sub-planner packets." },
+    "model": {
+      "type": "object",
+      "required": ["requested"],
+      "properties": { "requested": { "type": "string", "minLength": 1 }, "effort": { "type": "string" } }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "heavy"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "heavy": { "type": "boolean" },
+          "slot": { "type": "string", "description": "The granted per-host slot; required when heavy is true." }
+        }
+      }
+    },
+    "offloadDir": { "type": "string", "description": "Absolute path for the worker's canvas, logs and long output." },
+    "attempt": {
+      "type": "object",
+      "required": ["number"],
+      "properties": { "number": { "type": "integer", "minimum": 1 }, "escalation": { "type": "string" } }
+    },
+    "nestedDispatch": { "type": "boolean", "description": "Only a module-owner or sub-planner packet may set this to true." }
+  }
+}

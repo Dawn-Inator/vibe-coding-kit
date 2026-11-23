@@ -24,7 +24,7 @@ const DEFAULT_URL = 'https://github.com/Dawn-Inator/vibe-coding-kit.git';
 const KIT_PATH = '.vibe-coding/kit';
 const MIRROR_IGNORE_BEGIN = '# BEGIN vibe-coding-kit local skill mirrors';
 const MIRROR_IGNORE_END = '# END vibe-coding-kit local skill mirrors';
-const MIRROR_IGNORE_BLOCK = `${MIRROR_IGNORE_BEGIN}\n/.agents/skills/\n/.claude/skills/\n${MIRROR_IGNORE_END}\n`;
+const MIRROR_IGNORE_BLOCK = `${MIRROR_IGNORE_BEGIN}\n/.agents/skills/\n/.claude/skills/\n/.claude/agents/vck-*.md\n${MIRROR_IGNORE_END}\n`;
 
 function parseArgs(argv) {
   const [command = 'help', ...rest] = argv;
@@ -844,6 +844,12 @@ async function main() {
         process.exitCode = 1;
       } else {
         console.log(action === 'check' ? 'Skill projections are current.' : `Synchronized ${result.written} skill projection file(s).`);
+        const roles = result.roles;
+        if (action === 'sync' && roles) {
+          if (roles.written || roles.removed) console.log(`Updated ${roles.written} and removed ${roles.removed} Claude role definition(s) in .claude/agents.`);
+          for (const problem of roles.problems) console.error(`Role definitions: ${problem}`);
+          if (!roles.ok) process.exitCode = 1;
+        }
       }
       return;
     }

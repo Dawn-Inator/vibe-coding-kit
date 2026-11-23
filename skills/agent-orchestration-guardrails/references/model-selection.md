@@ -5,8 +5,9 @@ Moved verbatim from SKILL.md (slimming); the SKILL.md entry keeps the digest and
 ## Tier map
 
 This table is the single place outside the SKILL.md digest that maps tiers to model names. Other references
-name the tier. When a model generation changes, update this table and the digest, then revisit the rules in
-[rule assumptions](rule-assumptions.md).
+name the tier. The Claude role definitions in `templates/claude-agents/` pin these models, and a kit test
+fails when a role's model drifts from this table. When a model generation changes, update this table, the
+digest and the role definitions together, then revisit the rules in [rule assumptions](rule-assumptions.md).
 
 | Tier | Claude | Codex | Used for |
 | --- | --- | --- | --- |

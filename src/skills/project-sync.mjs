@@ -5,6 +5,7 @@ import { check, sync } from './sync-skills.mjs';
 import { composeSources } from './composition.mjs';
 import { readProjectConfig } from '../dependencies/submodule.mjs';
 import { overrideSkillPacks } from './skill-packs.mjs';
+import { syncRoleDefinitions } from '../orchestration/roles.mjs';
 
 function materializeSkills(root, skills) {
   for (const [name, skill] of skills) {
@@ -29,7 +30,11 @@ export function syncProjectSkills({ projectRoot, kitRoot, checkOnly = false }) {
     const sourceSkillsDir = join(scratch, 'skills');
     mkdirSync(sourceSkillsDir, { recursive: true });
     materializeSkills(sourceSkillsDir, composition.skills);
-    return checkOnly ? check({ root, sourceSkillsDir }) : sync({ root, sourceSkillsDir });
+    const result = checkOnly ? check({ root, sourceSkillsDir }) : sync({ root, sourceSkillsDir });
+    // Claude role definitions ride on the same sync so `skills sync`/`skills check` keep them current.
+    const roles = syncRoleDefinitions({ projectRoot: root, kitRoot: kit, projectConfig, checkOnly });
+    if (!checkOnly) return { ...result, roles };
+    return { ...result, ok: result.ok && roles.ok, problems: [...result.problems, ...roles.problems], roles };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

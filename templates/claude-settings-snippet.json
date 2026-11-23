@@ -22,6 +22,17 @@
             "statusMessage": "Checking git hook-bypass guard..."
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.vibe-coding/kit/src/orchestration/dispatch-guard-hook.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking dispatch model guard..."
+          }
+        ]
       }
     ]
   }
