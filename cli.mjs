@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { arch, platform, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runReuseCatalog } from './src/contracts/reuse-catalog.mjs';
+import { checkHygiene, writeBaseline } from './src/hygiene/check.mjs';
 import { checkKit, getKitRegistration, inspectKit, prepareKit } from './src/dependencies/submodule.mjs';
 import { syncProjectSkills } from './src/skills/project-sync.mjs';
 import { composeSources } from './src/skills/composition.mjs';
@@ -785,6 +786,21 @@ async function main() {
       process.exitCode = result.status ?? 1;
       return;
     }
+    case 'hygiene': {
+      const usage = 'Usage: cli.mjs hygiene <check|write-baseline> --project-root <path> [--config <path>] [--base-ref <ref>] [--owner <x> --expiry <YYYY-MM-DD> --issue <x> --removal-plan <x>]';
+      const action = options.positional[0];
+      if (options.positional.length !== 1 || !['check', 'write-baseline'].includes(action)) throw new Error(usage);
+      const configPath = options.config;
+      if (action === 'check') {
+        const result = checkHygiene({ projectRoot: root, configPath, baseRef: options.baseRef });
+        console.log(JSON.stringify(result, null, 2));
+        if (!result.ok) process.exitCode = 1;
+        return;
+      }
+      const metadata = { owner: options.owner, expiry: options.expiry, issue: options.issue, removal_plan: options.removalPlan };
+      console.log(JSON.stringify(writeBaseline({ projectRoot: root, configPath, metadata }), null, 2));
+      return;
+    }
     case 'init': await init(root, options); return;
     case 'optional': {
       const action = options.positional[0];
@@ -847,7 +863,7 @@ async function main() {
       return;
     }
     case 'help':
-      console.log(`Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check|reuse-catalog> --project-root <path> [options]\nOptional groups: ${OPTIONAL_GROUPS.join(', ')}. Backend: --config <project-relative JSON path>`);
+      console.log(`Usage: vibe-coding-kit install --project-root <path> --identity-name <name> --identity-email <email> [--url <git-url>] [--ref <tag-or-commit>] [--skill <selection>] [--optional <group>=on|off] [--mirror-policy local|tracked] [--secrets github|vault] [--check]\n       node cli.mjs <init|check|prepare|inspect|skills|optional configure|worktree|backend-check|hygiene|reuse-catalog> --project-root <path> [options]\nOptional groups: ${OPTIONAL_GROUPS.join(', ')}. Backend: --config <project-relative JSON path>`);
       return;
     default: throw new Error(`Unknown command: ${options.command}`);
   }

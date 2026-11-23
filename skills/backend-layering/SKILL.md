@@ -124,6 +124,8 @@ Go 等语言按 package 与导出 API 表达领域边界,不要照搬 Python 的
 `backend-check` 只管结构(环、读写槽、ORM 泄漏、vendor SDK 位置)。下面几类需要项目自己补;每类的
 判据、反例、实现要点见 [references/machine-gates.md](references/machine-gates.md)。存量债务一律用
 [backend-governance-ratchets](../backend-governance-ratchets/SKILL.md) 的棘轮,新项目直接零债务。
+防御尺度、错误包装、组装根变薄等编码纪律见 [coding-discipline](../coding-discipline/SKILL.md),
+其中可静态判定的部分由 kit 的 `hygiene` 门禁检查。
 
 - **错误语义分层**:数据层禁抛 API 错误类型;服务层禁抛裸框架 HTTP 异常(走统一业务异常);
   provider 只抛 provider 自己的错误类型,由上层映射。

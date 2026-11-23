@@ -13,6 +13,7 @@
   "contracts/windows-transport-proof.test.mjs",
   "dependencies/submodule.test.mjs",
   "env-config/env-config.test.mjs",
+  "hygiene/check.test.mjs",
   "install/bootstrap.test.mjs",
   "install/command.test.mjs",
   "install/init.test.mjs",

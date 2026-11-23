@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "include": ["internal/**/*.go", "cmd/**/*.go"],
+  "exclude": ["**/*_test.go"],
+  "baseline": ".vibe-coding/code-hygiene-baseline.json",
+  "baseRef": "origin/main",
+  "wideConditionMax": 6,
+  "lineLengthMax": 160,
+  "compositionRoots": ["internal/bootstrap/**", "cmd/**"],
+  "dataAccessImports": ["example.com/app/internal/database"],
+  "disabledRules": []
+}

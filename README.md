@@ -51,6 +51,15 @@ then wire the command into the project's chosen gate. See the [setup, rule scope
 Shared ownership rules remain language-independent; transaction, API and event semantics remain
 project-aware checks. These source analyzers do not certify every backend contract.
 
+## Code hygiene checks
+
+`node .vibe-coding/kit/cli.mjs hygiene check --project-root .` reports defensive-programming and coupling
+smells (nil context and receiver guards, reflection nil probes, scattered `recover`, collapsed errors,
+unknown-field rejection, data access from the composition root, `gofmt`, line length) and enforces a
+shrink-only baseline. Copy `templates/code-hygiene.json` to `.vibe-coding/code-hygiene.json`; freeze existing
+debt with `hygiene write-baseline`. The rules and their rationale are in the
+[coding-discipline](skills/coding-discipline/SKILL.md) skill.
+
 ## Project lifecycle hooks
 
 The project adapter is a project-owned ES module selected by `.vibe-coding/project.config.json`. The initializer creates a valid adapter with an empty hook map, so a fresh setup uses the kit's default behavior without running project-defined hooks. Projects opt into named exports for `afterCreate`, `beforeCandidate`, `verifyCandidate`, `beforePush`, and `afterLand`; see the [adapter schema](schemas/adapter.schema.json) and [project config schema](schemas/project-config.schema.json).

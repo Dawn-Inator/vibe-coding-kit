@@ -18,6 +18,7 @@ description: Use when a project already carries legacy violations of a backend r
 | 已有存量违规 | 先用棘轮冻结存量,逐步还债,最终归零后基线文件保留为"空基线"继续守住 |
 | 基线归零 | 条目为空、预算为 0;从此与零债务等价,但"再长出来"的路径仍被棘轮守着 |
 
+kit 的 `hygiene` 门禁([coding-discipline](../coding-discipline/SKILL.md))是按这八条实现的现成棘轮。
 棘轮不替代 `backend-check`,是它之外的补充:凡是 `backend-check` 没覆盖、或项目暂时无法零债务的
 规则(见 [backend-layering 的机器门禁一节](../backend-layering/SKILL.md)),都可以套这套机制。
 
