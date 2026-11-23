@@ -57,16 +57,26 @@ function runGoAnalyzer(projectRoot, files, config) {
   return JSON.parse(run.stdout);
 }
 
-function gofmtFindings(projectRoot, files) {
-  const findings = [];
-  for (let i = 0; i < files.length; i += GOFMT_BATCH) {
-    const run = spawnSync('gofmt', ['-l', ...files.slice(i, i + GOFMT_BATCH)], { cwd: projectRoot, encoding: 'utf8' });
-    if (run.error || run.status !== 0) throw new Error(`gofmt failed: ${run.error?.message || run.stderr.trim()}`);
-    for (const path of run.stdout.split('\n').filter(Boolean)) {
-      findings.push({ rule: 'gofmt', path, symbol: '', line: 1, message: 'file is not gofmt-formatted' });
+/**
+ * Build the gofmt capability: given the project root and Go files, return the paths gofmt reports as unformatted.
+ * `spawn` is the host seam; the default runs the real `gofmt -l` over batches of files.
+ */
+export function createGofmt(spawn = spawnSync) {
+  return (projectRoot, files) => {
+    const unformatted = [];
+    for (let i = 0; i < files.length; i += GOFMT_BATCH) {
+      const run = spawn('gofmt', ['-l', ...files.slice(i, i + GOFMT_BATCH)], { cwd: projectRoot, encoding: 'utf8' });
+      if (run.error || run.status !== 0) throw new Error(`gofmt failed: ${run.error?.message || run.stderr.trim()}`);
+      unformatted.push(...run.stdout.split('\n').filter(Boolean));
     }
-  }
-  return findings;
+    return unformatted;
+  };
+}
+
+const hostGofmt = createGofmt();
+
+function gofmtFindings(projectRoot, files, gofmt) {
+  return gofmt(projectRoot, files).map((path) => ({ rule: 'gofmt', path, symbol: '', line: 1, message: 'file is not gofmt-formatted' }));
 }
 
 function lineLengthFindings(projectRoot, files, max) {
@@ -81,7 +91,7 @@ function lineLengthFindings(projectRoot, files, max) {
 }
 
 /** Scan the configured scope and return every finding, before any baseline is applied. */
-export function collectFindings(projectRoot, config) {
+export function collectFindings(projectRoot, config, { gofmt = hostGofmt } = {}) {
   const files = listFiles(projectRoot, config);
   const goFiles = files.filter((f) => f.endsWith('.go'));
   const go = runGoAnalyzer(projectRoot, goFiles, config);
@@ -89,7 +99,7 @@ export function collectFindings(projectRoot, config) {
   const handWritten = files.filter((f) => !generated.has(f));
   const findings = [
     ...go.findings,
-    ...gofmtFindings(projectRoot, handWritten.filter((f) => f.endsWith('.go'))),
+    ...gofmtFindings(projectRoot, handWritten.filter((f) => f.endsWith('.go')), gofmt),
     ...lineLengthFindings(projectRoot, handWritten, config.lineLengthMax),
   ].filter((f) => !config.disabledRules.has(f.rule));
   return { filesScanned: handWritten.length, findings };
@@ -175,9 +185,9 @@ function compareWithFindings(baseline, findings) {
 }
 
 /** Run the gate. Without a baseline every finding fails, which is the zero-debt default. */
-export function checkHygiene({ projectRoot, configPath = DEFAULT_CONFIG, baseRef, today = new Date(), env = process.env }) {
+export function checkHygiene({ projectRoot, configPath = DEFAULT_CONFIG, baseRef, today = new Date(), env = process.env, gofmt }) {
   const config = loadConfig(projectRoot, configPath);
-  const { filesScanned, findings } = collectFindings(projectRoot, config);
+  const { filesScanned, findings } = collectFindings(projectRoot, config, { gofmt });
   const baseline = readBaseline(projectRoot, config.baseline);
   const failures = [];
   const warnings = [];
@@ -206,9 +216,9 @@ export function checkHygiene({ projectRoot, configPath = DEFAULT_CONFIG, baseRef
 }
 
 /** Record current findings as debt. Refuses to grow an existing baseline unless a reason is given. */
-export function writeBaseline({ projectRoot, configPath = DEFAULT_CONFIG, metadata = {}, env = process.env }) {
+export function writeBaseline({ projectRoot, configPath = DEFAULT_CONFIG, metadata = {}, env = process.env, gofmt }) {
   const config = loadConfig(projectRoot, configPath);
-  const { filesScanned, findings } = collectFindings(projectRoot, config);
+  const { filesScanned, findings } = collectFindings(projectRoot, config, { gofmt });
   const previous = readBaseline(projectRoot, config.baseline);
   const exemptions = previous?.exemptions ?? [];
   const exempt = countByKey(exemptions, (e) => e.count);

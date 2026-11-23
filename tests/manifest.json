@@ -104,5 +104,6 @@
   "supervision/heartbeat-ledger-files.symlink.posix.test.mjs",
   "tasks/subagent-progress.fifo.posix.test.mjs",
   "install/install-optional-chain.posix.test.mjs",
-  "contracts/no-skip-policy.test.mjs"
+  "contracts/no-skip-policy.test.mjs",
+  "contracts/host-tool-isolation.posix.test.mjs"
 ]
