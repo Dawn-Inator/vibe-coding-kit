@@ -1,19 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { runReuseCatalog, validateReuseCatalog } from '../../src/contracts/reuse-catalog.mjs';
 
 // Simulated symlinks: the listed project-relative paths report isSymbolicLink() without touching the filesystem,
-// so the fail-closed branch runs identically on hosts where creating a symlink needs privileges.
+// so the fail-closed branch runs identically on hosts where creating a symlink needs privileges. runReuseCatalog
+// probes paths under the canonical project root, so `root` must already be canonical (see setup).
 function lstatWithLinks(root, links) {
   const linked = new Set(links.map((link) => join(root, link)));
   return async (path) => linked.has(path) ? { isSymbolicLink: () => true } : lstat(path);
 }
 
 async function setup(t, selection = { frontend: {} }) {
-  const root = await mkdtemp(join(tmpdir(), 'reuse-catalog-'));
+  // Canonicalize the temp root: tmpdir() can sit behind a symlink (macOS /var -> /private/var) or a short-name alias
+  // (Windows 8.3), and simulated link paths must match the canonical paths runReuseCatalog actually probes.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'reuse-catalog-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const put = async (path, value) => { const target = join(root, path); await mkdir(dirname(target), { recursive: true }); await writeFile(target, typeof value === 'string' ? value : JSON.stringify(value)); };
   const catalog = { schemaVersion: 1, kind: 'frontend', title: 'Components', entries: [{ id:'button', name:'Button', category:'Controls', owner:'UI', scope:['web'], source:'src/button.ts', publicEntry:{ module:'ui', symbol:'Button' }, summary:'Button', useWhen:'Actions', constraints:['Public only'], examples:['src/example.ts'], tests:['test/button.test.ts'] }] };

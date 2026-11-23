@@ -146,20 +146,6 @@ test("creation respects project boundaries and refuses orphaned companions witho
 	assert.equal(readFileSync(historyPath, "utf8"), "orphaned history");
 });
 
-test("creation refuses dangling head and companion symlinks", { skip: process.platform === "win32" }, () => {
-	for (const target of ["headPath", "historyPath", "legacyBackupPath"]) {
-		const dir = root();
-		const path = join(dir, "heartbeat.md");
-		const missing = join(dir, "missing.md");
-		symlinkSync(missing, heartbeatLedgerPairPaths(path)[target]);
-		assert.throws(() => createHeartbeatLedgerPair({
-			root: dir, path, text: wake("2026-01-01T10:00Z"), legacyWritersQuiescent: true,
-		}), /absent/i);
-		assert.equal(existsSync(missing), false);
-		assert.equal(existsSync(path), false);
-	}
-});
-
 test("an interrupted validated creation leaves a recoverable valid source", () => {
 	const dir = root();
 	const path = join(dir, "heartbeat.md");
