@@ -12,6 +12,10 @@
 //   fork-dispatch  -- `subagent_type: "fork"` always runs on the caller's model with its full context, so it
 //                     can neither set a worker model nor provide an isolated reviewer.
 //
+// Cloud sessions: `mcp__claude-code-remote__create_session` (or any tool ending in `__create_session`) is a
+// dispatch too. `explicit-model` requires a non-empty `model`; `opus-sub-planner-only` allows Opus only when
+// `tags` contains `sub-planner`.
+//
 // Fails open: an unreadable input, config or role file never blocks a dispatch on a guard bug. Codex
 // dispatches and agents started from workflow scripts do not pass through this hook.
 
@@ -22,7 +26,9 @@ import { loadConfig } from '../worktrees/config.mjs';
 import { parseRole } from './roles.mjs';
 
 export const RULE_IDS = Object.freeze(['explicit-model', 'fork-dispatch', 'opus-sub-planner-only']);
-export const GUARDED_TOOL_NAMES = Object.freeze(['Agent', 'Task']);
+export const CLOUD_SESSION_TOOL = 'mcp__claude-code-remote__create_session';
+export const GUARDED_TOOL_NAMES = Object.freeze(['Agent', 'Task', CLOUD_SESSION_TOOL]);
+const isCloudSessionTool = (name) => typeof name === 'string' && (name === CLOUD_SESSION_TOOL || name.endsWith('__create_session'));
 const ROLE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 const REASONS = {
@@ -32,6 +38,10 @@ const REASONS = {
     'Dispatch blocked by the vibe-coding-kit dispatch guard (fork-dispatch): a `fork` always runs on the caller\'s model and carries its full context, so it cannot set a worker model or serve as an isolated reviewer. Dispatch a fresh agent with `model` set, or a kit role such as `reviewer`.',
   'opus-sub-planner-only':
     'Dispatch blocked by the vibe-coding-kit dispatch guard (opus-sub-planner-only): only the `sub-planner` role may use Opus. Use `sonnet` for executors and reviewers (independent, isolated context) and `haiku` for read-only exploration; see agent-orchestration-guardrails, Worker Model Selection.',
+  'cloud-explicit-model':
+    'Cloud session creation blocked by the vibe-coding-kit dispatch guard (explicit-model): creating a cloud/remote session must pass an explicit `model` (default `sonnet`) and must not inherit the coordinator\'s tier; see agent-orchestration-guardrails, Cloud / remote sessions.',
+  'cloud-opus-sub-planner-only':
+    'Cloud session creation blocked by the vibe-coding-kit dispatch guard (opus-sub-planner-only): only a session acting as a sub-planner may use Opus, and it must carry the `sub-planner` tag in `tags`. Use `sonnet` for execution sessions; see agent-orchestration-guardrails, Cloud / remote sessions.',
 };
 
 const isOpus = (model) => typeof model === 'string' && model.toLowerCase().includes('opus');
@@ -76,9 +86,9 @@ export function defaultAgentDirs({ projectDir, home = homedir() } = {}) {
   return [projectDir ? join(projectDir, '.claude', 'agents') : null, home ? join(home, '.claude', 'agents') : null];
 }
 
-function reasonFor(rule, hints) {
+function reasonFor(rule, hints, key = rule) {
   const hint = hints && typeof hints[rule] === 'string' && hints[rule].trim() ? ` ${hints[rule].trim()}` : '';
-  return `${REASONS[rule]}${hint}`;
+  return `${REASONS[key]}${hint}`;
 }
 
 /**
@@ -86,10 +96,22 @@ function reasonFor(rule, hints) {
  * `options`: { disabledRules, hints, agentDirs }.
  */
 export function decideDispatch({ toolName, toolInput }, options = {}) {
-  if (!GUARDED_TOOL_NAMES.includes(toolName)) return { allow: true };
+  const cloud = isCloudSessionTool(toolName);
+  if (!cloud && !GUARDED_TOOL_NAMES.includes(toolName)) return { allow: true };
   try {
     const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
     const disabled = new Set(options.disabledRules ?? []);
+    if (cloud) {
+      const model = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : null;
+      if (!model) {
+        return disabled.has('explicit-model') ? { allow: true } : { allow: false, rule: 'explicit-model', reason: reasonFor('explicit-model', options.hints, 'cloud-explicit-model') };
+      }
+      const tags = Array.isArray(input.tags) ? input.tags : [];
+      if (!disabled.has('opus-sub-planner-only') && isOpus(model) && !tags.includes('sub-planner')) {
+        return { allow: false, rule: 'opus-sub-planner-only', reason: reasonFor('opus-sub-planner-only', options.hints, 'cloud-opus-sub-planner-only') };
+      }
+      return { allow: true };
+    }
     const type = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : '';
     if (type === 'fork') {
       return disabled.has('fork-dispatch') ? { allow: true } : { allow: false, rule: 'fork-dispatch', reason: reasonFor('fork-dispatch', options.hints) };

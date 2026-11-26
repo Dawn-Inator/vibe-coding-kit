@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // orchestration/dispatch-guard-hook.mjs
 //
-// Claude Code PreToolUse hook wrapper for dispatch-guard.mjs (Agent|Task matcher): hook input JSON on stdin
+// Claude Code PreToolUse hook wrapper for dispatch-guard.mjs (Agent|Task|mcp__claude-code-remote__create_session matcher; tool_name is passed to decideDispatch unchanged): hook input JSON on stdin
 // (`tool_name`, `tool_input`, `cwd`), hook output JSON on stdout, ALWAYS exit 0 (the decision is carried by
 // hookSpecificOutput.permissionDecision, not the exit code). Any parse or runtime failure is treated as
 // "allow" (fail open). Project knobs come from config `dispatchGuard` (loaded relative to the process cwd).

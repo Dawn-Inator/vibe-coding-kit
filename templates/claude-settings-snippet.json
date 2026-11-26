@@ -24,7 +24,7 @@
         ]
       },
       {
-        "matcher": "Agent|Task",
+        "matcher": "Agent|Task|mcp__claude-code-remote__create_session",
         "hooks": [
           {
             "type": "command",

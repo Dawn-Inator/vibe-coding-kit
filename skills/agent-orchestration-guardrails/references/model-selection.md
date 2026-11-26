@@ -114,6 +114,7 @@ unset started 27 sessions on Opus and exhausted the 5-hour quota in 30 minutes.
 - Pass `model` explicitly on every session create; never inherit the coordinator's tier.
 - Sessions default to Sonnet. Only a session acting as a sub-planner may use Opus, with at most 2 such
   sessions at once.
+- In a consuming project's `.claude/settings.json`, the dispatch guard matcher should be `Agent|Task|mcp__claude-code-remote__create_session`; it then denies a create without `model`, and Opus without a `sub-planner` tag.
 - At most 10 sessions run concurrently by default; a project may lower this in its always-loaded file.
 - Inside each session, at most 4 workers run concurrently, and each worker sets its model explicitly.
 - The task packet for a child session states the model its own sub-agent dispatches must use and the

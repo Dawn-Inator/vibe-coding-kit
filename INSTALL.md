@@ -67,7 +67,7 @@ AGENTS.md / CLAUDE.md            # 由 skills:sync 生成的根指令投影
 
 默认 `--mirror-policy local` 会把生成的 `.agents/skills/`、`.claude/skills/` 镜像和这四个生成的角色文件留在 Git 之外；项目明确要版本化这些投影时可传 `--mirror-policy tracked`。安装只维护自己标记的 `.gitignore` 区块，会保留其他条目。
 
-`skills sync` 会把 Kit 的 Claude 编排角色（`explorer`、`module-owner`、`reviewer`、`sub-planner`）写入 `.claude/agents/`，每个角色固定模型和工具白名单；`skills check` 会报告漂移。只有带生成标记的文件归 Kit 管理，项目自己的同名 agent 文件不会被覆盖，而是报告为冲突，改名或删除后才会收到 Kit 角色；旧版生成的 `vck-*.md` 会在下次同步时按标记自动删除；在 `skills` 配置里排除 `agent-orchestration-guardrails` 会移除这些角色。派单守卫需要把 `templates/claude-settings-snippet.json` 里 `Agent|Task` 那一项合并进项目的 `.claude/settings.json`，详见编排 skill 的 `runtime-enforcement` 参考。
+`skills sync` 会把 Kit 的 Claude 编排角色（`explorer`、`module-owner`、`reviewer`、`sub-planner`）写入 `.claude/agents/`，每个角色固定模型和工具白名单；`skills check` 会报告漂移。只有带生成标记的文件归 Kit 管理，项目自己的同名 agent 文件不会被覆盖，而是报告为冲突，改名或删除后才会收到 Kit 角色；旧版生成的 `vck-*.md` 会在下次同步时按标记自动删除；在 `skills` 配置里排除 `agent-orchestration-guardrails` 会移除这些角色。派单守卫需要把 `templates/claude-settings-snippet.json` 里 `Agent|Task|mcp__claude-code-remote__create_session` 那一项合并进项目的 `.claude/settings.json`，详见编排 skill 的 `runtime-enforcement` 参考。
 
 项目配置描述项目自身，不是 Kit 的模板真源。默认配置包含 Kit 路径和 URL、adapter 路径、`identity.name` / `identity.email`，以及供项目填写的 `worktrees`、`skills`、`knowledge`、`layout`、`contracts` 配置区域。详见 [配置 schema](schemas/project-config.schema.json)。
 

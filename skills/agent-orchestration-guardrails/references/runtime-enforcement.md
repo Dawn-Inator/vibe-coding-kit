@@ -31,7 +31,7 @@ read-only role under a different name; that copy is read-only by instruction, no
 
 ## Dispatch guard
 
-`src/orchestration/dispatch-guard-hook.mjs` is a Claude Code PreToolUse hook on `Agent|Task`, wired by
+`src/orchestration/dispatch-guard-hook.mjs` is a Claude Code PreToolUse hook on `Agent|Task|mcp__claude-code-remote__create_session` (the matcher in a consuming project's `.claude/settings.json` must be exactly that), wired by
 `templates/claude-settings-snippet.json`. Merge that snippet into the project's `.claude/settings.json`
 with the other kit guards.
 

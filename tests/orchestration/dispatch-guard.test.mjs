@@ -155,7 +155,7 @@ test('hook CLI: denies, allows through a project role, and fails open on garbage
   assert.deepEqual(JSON.parse(garbage.stdout), {});
 });
 
-test('class guard: the settings snippet wires the hook exactly once on the Agent|Task matcher', () => {
+test('class guard: the settings snippet wires the hook exactly once on the Agent|Task|create_session matcher', () => {
   const snippet = JSON.parse(readFileSync(join(here, '..', '..', 'templates', 'claude-settings-snippet.json'), 'utf8'));
   const wired = snippet.hooks.PreToolUse.filter((entry) =>
     entry.hooks.some((h) => String(h.command).includes('dispatch-guard-hook.mjs')));
@@ -164,4 +164,35 @@ test('class guard: the settings snippet wires the hook exactly once on the Agent
   assert.equal(wired[0].matcher.split('|').length, GUARDED_TOOL_NAMES.length);
   assert.match(wired[0].hooks[0].command, /\.vibe-coding\/kit\/src\/orchestration\/dispatch-guard-hook\.mjs/);
   assert.equal(wired[0].hooks[0].type, 'command');
+});
+
+const CS = 'mcp__claude-code-remote__create_session';
+
+test('cloud create_session: no model is blocked (explicit-model)', () => {
+  for (const toolInput of [{ prompt: 'x' }, { prompt: 'x', model: '' }]) {
+    const d = decideDispatch({ toolName: CS, toolInput });
+    assert.equal(d.allow, false);
+    assert.equal(d.rule, 'explicit-model');
+    assert.match(d.reason, /显式|explicit/);
+  }
+});
+
+test('cloud create_session: sonnet is allowed', () => {
+  assert.deepEqual(decideDispatch({ toolName: CS, toolInput: { model: 'sonnet' } }), { allow: true });
+});
+
+test('cloud create_session: opus needs the sub-planner tag', () => {
+  const none = decideDispatch({ toolName: CS, toolInput: { model: 'opus' } });
+  assert.equal(none.allow, false);
+  assert.equal(none.rule, 'opus-sub-planner-only');
+  assert.deepEqual(decideDispatch({ toolName: CS, toolInput: { model: 'opus', tags: ['sub-planner'] } }), { allow: true });
+  const wrong = decideDispatch({ toolName: CS, toolInput: { model: 'claude-opus-5-5', tags: ['x'] } });
+  assert.equal(wrong.allow, false);
+  assert.equal(wrong.rule, 'opus-sub-planner-only');
+});
+
+test('cloud create_session: disabled rules let it through', () => {
+  assert.equal(decideDispatch({ toolName: CS, toolInput: {} }, { disabledRules: ['explicit-model'] }).allow, true);
+  assert.equal(decideDispatch({ toolName: CS, toolInput: { model: 'opus' } }, { disabledRules: ['opus-sub-planner-only'] }).allow, true);
+  assert.equal(decideDispatch({ toolName: 'other__create_session', toolInput: {} }).rule, 'explicit-model');
 });
