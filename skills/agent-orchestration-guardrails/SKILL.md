@@ -135,13 +135,13 @@ Every dispatch sets the model explicitly; never inherit the caller's tier. An in
 worker must use an explicit model, explicit effort, and a "do not carry the orchestrator's full context"
 setting.
 
-- **Claude**: Haiku read-only only; Sonnet for every write-capable task, even "high-risk" ones once
-  design/root cause is known. Opus only for (a) review/falsification, (b) root-cause investigation, (c)
-  security-boundary design decisions; write `opus because (a|b|c): <reason>` first, else Sonnet.
+- **Claude**: Haiku read-only only; Sonnet for every executor, reviewer and verifier, even "high-risk"
+  ones. Opus only for the `sub-planner` role (planning, acceptance, unknown root cause, security-boundary
+  design); write `opus because sub-planner: <reason>` first. Cloud/remote sessions: always pass `model`
+  (default Sonnet), at most 2 Opus sub-planner sessions, 10 sessions, 4 workers per session.
 - **Codex**: pass model, effort and fork setting together; never mix an override with a full-history fork.
   Luna is for read-only exploration; Terra is the default executor for bounded write tasks, like Sonnet.
-  Sol is for architecture/semantic decisions or independent review. An independent Terra pre-review
-  must have a different implementation owner and isolated context; risk increases verification strength.
+  Sol is for planners only. Review is Terra: a different implementation owner and isolated context; risk increases verification strength.
 - Difficulty picks the tier; risk picks verification strength; "high-impact" alone never justifies a
   frontier tier. Mirror this floor into the always-loaded project file.
 

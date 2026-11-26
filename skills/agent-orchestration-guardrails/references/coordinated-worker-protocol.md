@@ -31,11 +31,11 @@ On every platform: delegate read-only exploration/search/inventory/classificatio
 tier with `write_scope: none`; delegate every task that may edit anything to the write tier, including
 mechanical edits and ordinary multi-file implementation. A read-only explorer that discovers a required
 change stops and returns evidence — it does not edit, commit, or expand its own scope. Outside the
-orchestrator seat, the judgment tier is an evidence-driven capability escalation or isolated final audit,
-not a bounded executor or a source of release authority — it returns judgment/audit evidence only, never
-repository writes.
+orchestrator seat, the planning tier (the sub-planner role, the only Opus role) is a decision-making
+escalation, not a bounded executor or a source of release authority — it returns judgment and plans only,
+never repository writes. Reviews and audits run on Sonnet in isolated context.
 
-**When Fable holds the orchestrator seat**, consider dispatching an Opus `write_scope: none` worker for
+**When Fable holds the orchestrator seat**, consider dispatching a Sonnet `write_scope: none` reviewer for
 sub-module integration and centralized/per-module semantic checking, bound to the exact candidate commit —
 the same pre-review pattern applied at integration time, with no final-acceptance/write/publish/gate/finish
 authority; Fable does final acceptance using the original goal, that review, and centralized verification.

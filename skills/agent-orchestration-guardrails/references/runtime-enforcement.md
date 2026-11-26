@@ -17,8 +17,8 @@ conflict. Under the `local` mirror policy the generated files are git-ignored li
 | --- | --- | --- | --- |
 | `explorer` | Read-only | Read, Grep, Glob | Cannot edit, run shell commands or dispatch |
 | `module-owner` | Write | Read, Grep, Glob, Edit, Write, Bash | Cannot dispatch, so it cannot add an agent layer |
-| `reviewer` | Judgment | Read, Grep, Glob | Cannot edit, run shell commands or dispatch; read-only by construction |
-| `sub-planner` | Judgment | Read, Grep, Glob | Plans and decides only; never writes code or dispatches |
+| `reviewer` | Review | Read, Grep, Glob | Cannot edit, run shell commands or dispatch; read-only by construction |
+| `sub-planner` | Planning | Read, Grep, Glob | Plans and decides only; never writes code or dispatches |
 
 Each role pins its model from the [tier map](model-selection.md#tier-map), and its body carries the fixed
 worker rules from [worker prompt](worker-prompt.md). Dispatch with `subagent_type` set to the role and a

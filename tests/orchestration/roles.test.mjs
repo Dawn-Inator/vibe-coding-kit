@@ -124,7 +124,7 @@ function tierMapModels() {
   const rows = new Map();
   for (const line of text.split('\n')) {
     const cells = line.split('|').map((c) => c.trim());
-    if (cells.length < 5 || !['Read-only', 'Write', 'Judgment'].includes(cells[1])) continue;
+    if (cells.length < 5 || !['Read-only', 'Write', 'Review', 'Planning'].includes(cells[1])) continue;
     rows.set(cells[1], cells[2].split(/[;\s]/)[0].toLowerCase());
   }
   return rows;
@@ -132,12 +132,12 @@ function tierMapModels() {
 
 test('class guard: shipped roles pin the tier map models and least-privilege tools', () => {
   const tiers = tierMapModels();
-  assert.deepEqual([...tiers.keys()].sort(), ['Judgment', 'Read-only', 'Write']);
+  assert.deepEqual([...tiers.keys()].sort(), ['Planning', 'Read-only', 'Review', 'Write']);
   const expected = {
     'explorer.md': { tier: 'Read-only', readOnly: true },
     'module-owner.md': { tier: 'Write', readOnly: false },
-    'reviewer.md': { tier: 'Judgment', readOnly: true },
-    'sub-planner.md': { tier: 'Judgment', readOnly: true },
+    'reviewer.md': { tier: 'Review', readOnly: true },
+    'sub-planner.md': { tier: 'Planning', readOnly: true },
   };
   assert.deepEqual(SHIPPED, Object.keys(expected).sort());
   for (const name of SHIPPED) {

@@ -75,7 +75,7 @@ const verdict = () => ({
   coverage: { examined: ['services/points/ledger/**'], notExamined: [] },
   confidence: 'high',
   evidence: ['/scratch/review/points-ledger.diff'],
-  reviewer: { requestedModel: 'opus', actualModel: 'unknown', contextIsolated: true },
+  reviewer: { requestedModel: 'sonnet', actualModel: 'unknown', contextIsolated: true },
 });
 
 function failsWith(validate, doc, pattern) {
@@ -142,7 +142,7 @@ test('review verdicts: risk classes, confidence, isolation and consistency', () 
   failsWith(validateReviewVerdict, { ...verdict(), riskClasses: ['none', 'money'] }, /cannot be combined/);
   failsWith(validateReviewVerdict, { ...verdict(), riskClasses: ['pii'] }, /riskClasses must use/);
   failsWith(validateReviewVerdict, { ...verdict(), confidence: 'medium' }, /confidenceReason/);
-  failsWith(validateReviewVerdict, { ...verdict(), reviewer: { requestedModel: 'opus', actualModel: 'opus', contextIsolated: false } }, /not independent/);
+  failsWith(validateReviewVerdict, { ...verdict(), reviewer: { requestedModel: 'sonnet', actualModel: 'sonnet', contextIsolated: false } }, /not independent/);
   failsWith(validateReviewVerdict, { ...verdict(), recommendation: 'accept', findings: [{ ...verdict().findings[0], severity: 'high' }] }, /accept recommendation cannot carry a high-severity finding/);
   failsWith(validateReviewVerdict, { ...verdict(), coverage: { examined: [], notExamined: [] } }, /coverage/);
   failsWith(validateReviewVerdict, { ...verdict(), evidence: [] }, /evidence/);

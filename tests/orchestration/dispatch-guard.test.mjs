@@ -73,6 +73,27 @@ test('decision table: explicit model, pinned roles, fork and other tools', () =>
   }
 });
 
+test('opus is allowed only for the sub-planner role', () => {
+  const { dir } = agentsDir({
+    'sub-planner.md': role('sub-planner', 'opus'),
+    'opus-worker.md': role('opus-worker', 'opus'),
+    'sonnet-worker.md': role('sonnet-worker', 'sonnet'),
+  });
+  const options = { agentDirs: [dir] };
+  const call = (toolInput) => ({ toolName: 'Agent', toolInput: { prompt: 'x', ...toolInput } });
+  assert.equal(decideDispatch(call({ subagent_type: 'sub-planner', model: 'opus' }), options).allow, true);
+  assert.equal(decideDispatch(call({ subagent_type: 'sub-planner' }), options).allow, true);
+  const denied = decideDispatch(call({ subagent_type: 'general-purpose', model: 'opus' }), options);
+  assert.equal(denied.allow, false);
+  assert.equal(denied.rule, 'opus-sub-planner-only');
+  assert.match(denied.reason, /\(opus-sub-planner-only\)/);
+  assert.equal(decideDispatch(call({ model: 'claude-OPUS-4-1' }), options).rule, 'opus-sub-planner-only');
+  assert.equal(decideDispatch(call({ subagent_type: 'opus-worker' }), options).rule, 'opus-sub-planner-only');
+  assert.equal(decideDispatch(call({ subagent_type: 'sonnet-worker' }), options).allow, true);
+  assert.equal(decideDispatch(call({ subagent_type: 'general-purpose', model: 'sonnet' }), options).allow, true);
+  assert.equal(decideDispatch(call({ subagent_type: 'general-purpose', model: 'opus' }), { ...options, disabledRules: ['opus-sub-planner-only'] }).allow, true);
+});
+
 test('disabled rules behave as if deleted, and hints are appended', () => {
   const missing = { toolName: 'Agent', toolInput: { prompt: 'x' } };
   const fork = { toolName: 'Agent', toolInput: { prompt: 'x', subagent_type: 'fork' } };
@@ -82,7 +103,7 @@ test('disabled rules behave as if deleted, and hints are appended', () => {
   assert.equal(decideDispatch(missing, { disabledRules: ['fork-dispatch'] }).allow, false);
   const hinted = decideDispatch(missing, { hints: { 'explicit-model': 'Project tier map: docs/models.md.' } });
   assert.match(hinted.reason, /Project tier map: docs\/models\.md\.$/);
-  assert.deepEqual([...RULE_IDS].sort(), ['explicit-model', 'fork-dispatch']);
+  assert.deepEqual([...RULE_IDS].sort(), ['explicit-model', 'fork-dispatch', 'opus-sub-planner-only']);
 });
 
 test('role lookup prefers the project directory and resolves only plain names', () => {

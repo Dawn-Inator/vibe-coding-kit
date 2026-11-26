@@ -13,8 +13,11 @@ digest and the role definitions together, then revisit the rules in [rule assump
 | --- | --- | --- | --- |
 | Read-only | Haiku | Luna | Exploration, search, inventory and classification with `write_scope: none` |
 | Write | Sonnet | Terra | Every write-capable bounded task, including wiring, mechanical edits and high-risk work whose design or root cause is settled |
-| Judgment | Opus; Fable when it holds the orchestrator seat | Sol | Review and falsification, unknown root causes, security-boundary design; returns judgment, never repository writes |
-| Independent pre-review | Judgment tier | Terra, with a different implementation owner and isolated context; Sol for additional review | Commit-bound [review verdicts](review-verdict.md) |
+| Review | Sonnet | Terra | Independent pre-review and review/falsification ([review verdicts](review-verdict.md)): fresh, isolated context, and never the implementation owner |
+| Planning | Opus (sub-planner role only) | Sol (planner only) | Decomposition, planning, acceptance decisions and judgment forks (unknown root cause, security-boundary design); returns judgment and plans, never repository writes |
+
+Only the `sub-planner` role may run on Opus (Sol on Codex). Every executor (module-owner, wiring and
+implementation workers), reviewer and verifier runs on Sonnet (Terra); explorers run on Haiku (Luna).
 
 ## Worker Model Selection (No Same-Tier Default)
 
@@ -31,36 +34,34 @@ independently clears the frontier bar, never as the default.
 
 Set the Agent/Task tool's `model` parameter (or a workflow's per-agent model option) explicitly on every
 dispatch. Pick each worker's tier by what it will actually do: Haiku only for read-only `write_scope: none`
-exploration, Sonnet for every write-capable bounded task, with a real judgment fork returning to the
-orchestrator before an isolated read-only Opus/Fable worker.
+exploration; Sonnet for every write-capable bounded task and for every independent reviewer or verifier;
+Opus only for the `sub-planner` role.
 
 **Default every write-capable task to Sonnet — explicitly including firmware, binary-format writers,
 cross-service contracts, migrations, and anything you'd label "high-risk" — as long as the design is
-already fixed (a design doc/plan settled the format and approach) or the root cause is already known.**
-"Mistakes here are expensive to get wrong" is explicitly **not** a valid reason to escalate the
-implementer to Opus: that risk is exactly what independent review (Review Fan-Out above) and orchestrator
-central verification exist to catch. Paying for it again with implementer model tier duplicates a budget
-review already spends.
+already fixed or the root cause is already known.** "Mistakes here are expensive to get wrong" is
+explicitly **not** a valid reason to escalate the implementer to Opus: independent Sonnet review (Review
+Fan-Out above) and orchestrator central verification exist to catch that risk.
 
-Opus is reserved for exactly three cases:
+Opus is reserved for the sub-planner, in these cases:
 
-- (a) **Review/falsification** inside the four Review Fan-Out categories (money/billing, security
-  boundary, never-executed SQL, real-device/real-browser-only behavior).
-- (b) **Root-cause investigation** where the cause is genuinely unknown — not implementation of an
-  already-understood fix.
-- (c) **Security-boundary design decisions** the worker itself must make — not implementation of an
-  already-decided design.
+- (a) **Decomposition, planning and acceptance decisions** for a domain subtree.
+- (b) **Root-cause investigation** where the cause is genuinely unknown: the sub-planner returns the
+  diagnosis and decision, and a Sonnet worker implements the fix.
+- (c) **Security-boundary design decisions**: the sub-planner returns the decision, and a Sonnet worker
+  implements it.
 
-These scope additional frontier-tier review spend, not the criteria for ordinary module acceptance or the
-required independent pre-review; the orchestrator still accepts each module against its full approved goal.
+Review and falsification (money/billing, security boundary, never-executed SQL, real-device/real-browser-only
+behavior) are done by Sonnet reviewers in fresh, isolated context who are not the implementation owner;
+a judgment fork they surface returns to the sub-planner. The dispatch guard rule `opus-sub-planner-only`
+blocks any Opus dispatch whose `subagent_type` is not `sub-planner`.
 
-If a task packet mixes an (a)/(b)/(c) decision with a larger chunk of ordinary implementation or
-scripting, split it: a small Opus design/decision package plus a separate Sonnet implementation package.
-Never send the whole bundle to Opus because one part of it qualifies.
+If a task packet mixes a judgment decision with ordinary implementation or scripting, split it: a small
+sub-planner (Opus) decision package plus a separate Sonnet implementation package.
 
 **Required pre-dispatch self-check for every Opus dispatch**: write one line before dispatching —
-`opus because (a|b|c): <one-line reason>`. If you cannot name (a), (b), or (c), use Sonnet. See your
-project's tutorial for the incident that motivated this line.
+`opus because sub-planner: <one-line reason>`. If the worker is not the sub-planner role, use Sonnet (or
+Haiku for read-only). See your project's tutorial for the incident that motivated this line.
 
 ### Codex
 
@@ -71,8 +72,9 @@ use only their schema-exposed fields.
 Pass an explicit model, effort, and fork/context-carry setting together — never mix an override with an
 "inherit everything" fork mode, since a full-history fork inherits the parent's own model/effort and
 rejects a partial override. Luna handles read-only exploration with `write_scope: none`; Terra executes
-bounded code, docs, tests and configuration changes, like Sonnet. Sol handles architecture/semantic
-decisions and may do additional independent review. Terra pre-review must be independent of the implementation owner.
+bounded code, docs, tests and configuration changes, like Sonnet. Sol is for planners only (architecture and
+semantic decisions, returned as judgment). Review uses Terra with isolated context, and its pre-review must
+be independent of the implementation owner.
 
 ⚠️ **"High-impact" alone is deliberately NOT a valid reason for frontier-tier dispatch** — during a
 production deploy or major gate overhaul nearly every dispatch is honestly high-impact, so treating that as
@@ -102,3 +104,19 @@ session's context** (a `CLAUDE.md` or `AGENTS.md` at the repo root, if your proj
 built-in parameter guidance sits in the system prompt, where a skill that only loads on trigger cannot
 outrank it — a session that never opens this skill never sees the override written here. See your project's
 tutorial for the incident that motivated this mirroring requirement.
+
+## Cloud / remote sessions
+
+Creating a cloud or remote session (for example Claude Code Remote `create_session`) is a dispatch and
+follows the same rules. An omitted model inherits the coordinator's tier: one orchestration that left it
+unset started 27 sessions on Opus and exhausted the 5-hour quota in 30 minutes.
+
+- Pass `model` explicitly on every session create; never inherit the coordinator's tier.
+- Sessions default to Sonnet. Only a session acting as a sub-planner may use Opus, with at most 2 such
+  sessions at once.
+- At most 10 sessions run concurrently by default; a project may lower this in its always-loaded file.
+- Inside each session, at most 4 workers run concurrently, and each worker sets its model explicitly.
+- The task packet for a child session states the model its own sub-agent dispatches must use and the
+  concurrency caps above.
+- Quota protection: on a 5-hour or weekly quota warning, pause new fan-out and close out the work already
+  open before starting more.

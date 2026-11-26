@@ -7,6 +7,8 @@
 // Rules (ids are stable; `config.dispatchGuard.disabledRules` switches one off):
 //   explicit-model -- the call carries no `model`, and its `subagent_type` names no role definition
 //                     (project or user `.claude/agents/<type>.md`) that pins a model other than `inherit`.
+//   opus-sub-planner-only -- the effective model (explicit `model`, else the role's pinned model) is an Opus
+//                     model and `subagent_type` is not `sub-planner`.
 //   fork-dispatch  -- `subagent_type: "fork"` always runs on the caller's model with its full context, so it
 //                     can neither set a worker model nor provide an isolated reviewer.
 //
@@ -19,7 +21,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../worktrees/config.mjs';
 import { parseRole } from './roles.mjs';
 
-export const RULE_IDS = Object.freeze(['explicit-model', 'fork-dispatch']);
+export const RULE_IDS = Object.freeze(['explicit-model', 'fork-dispatch', 'opus-sub-planner-only']);
 export const GUARDED_TOOL_NAMES = Object.freeze(['Agent', 'Task']);
 const ROLE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -28,7 +30,11 @@ const REASONS = {
     'Dispatch blocked by the vibe-coding-kit dispatch guard (explicit-model): set `model` on this call, or use a role definition that pins one (for example the kit roles `module-owner` or `explorer`). Every dispatch sets the worker model explicitly instead of inheriting the caller\'s tier; see agent-orchestration-guardrails, Worker Model Selection.',
   'fork-dispatch':
     'Dispatch blocked by the vibe-coding-kit dispatch guard (fork-dispatch): a `fork` always runs on the caller\'s model and carries its full context, so it cannot set a worker model or serve as an isolated reviewer. Dispatch a fresh agent with `model` set, or a kit role such as `reviewer`.',
+  'opus-sub-planner-only':
+    'Dispatch blocked by the vibe-coding-kit dispatch guard (opus-sub-planner-only): only the `sub-planner` role may use Opus. Use `sonnet` for executors and reviewers (independent, isolated context) and `haiku` for read-only exploration; see agent-orchestration-guardrails, Worker Model Selection.',
 };
+
+const isOpus = (model) => typeof model === 'string' && model.toLowerCase().includes('opus');
 
 /** The effective `config.dispatchGuard` settings, each key falling back to its default. Never throws. */
 export function readDispatchGuardSettings(config) {
@@ -88,9 +94,14 @@ export function decideDispatch({ toolName, toolInput }, options = {}) {
     if (type === 'fork') {
       return disabled.has('fork-dispatch') ? { allow: true } : { allow: false, rule: 'fork-dispatch', reason: reasonFor('fork-dispatch', options.hints) };
     }
+    const explicit = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : null;
+    const pinned = type ? pinnedRoleModel(type, options.agentDirs ?? []) : null;
+    if (!disabled.has('opus-sub-planner-only') && type !== 'sub-planner' && isOpus(explicit ?? pinned)) {
+      return { allow: false, rule: 'opus-sub-planner-only', reason: reasonFor('opus-sub-planner-only', options.hints) };
+    }
     if (disabled.has('explicit-model')) return { allow: true };
-    if (typeof input.model === 'string' && input.model.trim()) return { allow: true };
-    if (type && pinnedRoleModel(type, options.agentDirs ?? [])) return { allow: true };
+    if (explicit) return { allow: true };
+    if (pinned) return { allow: true };
     return { allow: false, rule: 'explicit-model', reason: reasonFor('explicit-model', options.hints) };
   } catch {
     return { allow: true }; // fail open on a guard bug
